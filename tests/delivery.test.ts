@@ -52,6 +52,7 @@ test('known-card updates are retried and concurrent outbox instances claim once'
 test('lazy attachments are accessible only from the current room', async () => {
     const f = await fixture();
     try {
+        f.config.limits.backgroundMessages = 30; // Optional cache is explicitly enabled in this regression.
         const resource = { key: 'file-key', kind: 'file' as const, name: '资料.txt' };
         const context = message({ mentioned: false, resources: [resource] });
         await f.gateway.message(context);
@@ -144,9 +145,9 @@ test('ambiguous preview creation is not retried or duplicated by final delivery'
         await f.gateway.message(message());
         await until(() => f.workers.length === 1 && f.workers[0]!.sent.length === 1);
         const worker = f.workers[0]!;
-        worker.emit({ type: 'text', text: 'working', partial: true });
+        worker.emit({ type: 'text', text: 'working', partial: true, turnId: worker.sent[0]!.uuid });
         await until(() => creates === 1);
-        worker.emit({ type: 'text', text: ' more', partial: true });
+        worker.emit({ type: 'text', text: ' more', partial: true, turnId: worker.sent[0]!.uuid });
         await new Promise(resolve => setTimeout(resolve, 350));
         assert.equal(creates, 1);
         worker.emit({ type: 'result', text: 'final answer', success: true, uuids: [worker.sent[0]!.uuid] });

@@ -120,7 +120,9 @@ test('idle timeout releases process without resetting conversation', async () =>
     try {
         await f.gateway.message(message()); await until(() => f.workers[0]?.sent.length === 1);
         const w = f.workers[0]!, id = w.sent[0]!.sessionId;
-        finish(w); await f.gateway.sweep(Date.now() + 5000);
+        finish(w); await until(() => f.transport.sent.some(s => s.card));
+        await new Promise(resolve => setTimeout(resolve, 10));
+        await f.gateway.sweep(Date.now() + 5000);
         assert.equal(w.stopped, true); assert.equal(f.store.session(w.room.key).id, id);
         await f.gateway.message(message()); await until(() => f.workers[1]?.sent.length === 1);
         assert.equal(f.workers[1]!.sent[0]!.sessionId, id);

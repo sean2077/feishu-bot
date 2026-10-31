@@ -3,7 +3,7 @@ export type Args = Record<string, unknown>;
 export interface Resource { key: string; kind: 'image' | 'file'; name: string; }
 export interface Message {
     id: string; chatId: string; chatType: 'group' | 'p2p'; senderId: string;
-    senderName?: string; senderIsBot?: boolean; text: string; time: number;
+    senderName?: string; senderIsBot?: boolean; senderIsSelf?: boolean; text: string; time: number;
     mentioned: boolean; replyTo?: string; threadId?: string; resources: Resource[];
 }
 export interface Room {
@@ -17,6 +17,7 @@ export interface Session {
 export interface Delivery {
     uuid: string; roomKey: string; sessionId: string; message: Message;
     background: Message[]; quote?: Message;
+    command?: { name: 'compact'; instructions: string };
     attachments: { path: string; name: string }[];
 }
 export interface ActionSpec {
@@ -48,23 +49,31 @@ export interface Config {
         attachmentBytes: number; approvalMs: number; updateMs: number; messagesPerMinute: number;
     };
 }
+export type ReceiptState = 'processing' | 'done' | 'clear';
+export interface HistoryQuery {
+    limit: number; startTime?: number; endTime?: number; pageToken?: string; threadId?: string;
+}
+export interface HistoryPage { messages: Message[]; nextPageToken?: string; }
+export interface Origin { id: string; senderId: string; }
 export interface Transport {
     send(room: Room, text: string, replyTo?: string, threadId?: string): Promise<string>;
     card(room: Room, card: object, replyTo?: string, threadId?: string): Promise<string>;
     update(messageId: string, card: object): Promise<void>;
     download(messageId: string, resource: Resource): Promise<Uint8Array>;
-    fetch(messageId: string): Promise<Message | undefined>;
-    receipt(messageId: string): Promise<void>;
+    fetch(messageId: string, room?: Room): Promise<Message | undefined>;
+    history(room: Room, query: HistoryQuery): Promise<HistoryPage>;
+    receipt(messageId: string, state?: ReceiptState): Promise<void>;
     file(room: Room, path: string, name: string): Promise<string>;
 }
 export type WorkerEvent =
     { type: 'ready'; ccId: string } |
     { type: 'accepted'; uuid: string } |
     { type: 'consumed'; uuid: string } |
-    { type: 'text'; text: string; partial: boolean } |
-    { type: 'result'; text: string; success: boolean; uuid?: string; uuids?: string[]; usage?: Args } |
+    { type: 'text' | 'thinking'; text: string; partial: boolean; blockId?: string; turnId?: string } |
+    { type: 'compaction'; phase: 'start' | 'complete'; trigger: 'manual' | 'auto' } |
+    { type: 'result'; text: string; success: boolean; uuid?: string; uuids?: string[]; usage?: Args; replyToUuid?: string; compact?: 'compacted' | 'not_needed' | 'failed' } |
     { type: 'activity'; tool?: string; background?: number; pinned?: boolean; state?: 'idle' | 'running' | 'requires_action' } |
-    { type: 'request'; id: string; kind: 'permission' | 'question' | 'action' | 'send_file' | 'attachment'; name: string; input: Args } |
+    { type: 'request'; id: string; kind: 'permission' | 'question' | 'action' | 'send_file' | 'attachment' | 'history'; name: string; input: Args } |
     { type: 'error'; message: string } |
     { type: 'exit'; code: number | null };
 export interface Worker {

@@ -113,7 +113,7 @@ export function parseConfig(value: unknown, baseDir = process.cwd()): Config {
     const groups = list(c.groups ?? [], 'groups').map(v => {
         const g = obj(v, 'group');
         keys(g, ['chatId', 'projectId', 'members'], 'group');
-        return { chatId: identifier(g.chatId, 'chatId'), projectId: identifier(g.projectId, 'projectId'), members: g.members === undefined ? undefined : strings(g.members, 'members') };
+        return { chatId: identifier(g.chatId, 'chatId'), projectId: identifier(g.projectId, 'projectId'), members: strings(g.members ?? [], 'members').map(id => identifier(id, 'members')) };
     });
     const dms = list(c.dms ?? [], 'dms').map(v => {
         const d = obj(v, 'dm');
@@ -134,7 +134,7 @@ export function parseConfig(value: unknown, baseDir = process.cwd()): Config {
         },
         projects, groups, dms,
         limits: {
-            backgroundMessages: integer(l.backgroundMessages, 'backgroundMessages', 30, 0, 200), backgroundMs: integer(l.backgroundMs, 'backgroundMs', 900000, 0, 86400000),
+            backgroundMessages: integer(l.backgroundMessages, 'backgroundMessages', 0, 0, 200), backgroundMs: integer(l.backgroundMs, 'backgroundMs', 900000, 0, 86400000),
             textChars: integer(l.textChars, 'textChars', 20000, 100, 200000), inboxPerRoom: integer(l.inboxPerRoom, 'inboxPerRoom', 64, 1, 64),
             attachmentBytes: integer(l.attachmentBytes, 'attachmentBytes', 20 * 1024 * 1024, 1024, 100 * 1024 * 1024),
             approvalMs: integer(l.approvalMs, 'approvalMs', 300000, 1000, 3600000), updateMs: integer(l.updateMs, 'updateMs', 1000, 250, 30000),
