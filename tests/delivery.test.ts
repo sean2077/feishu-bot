@@ -188,3 +188,34 @@ test('agent send_file request snapshots bytes and prevents a false completed tur
         assert.equal(f.gateway.outbox.pending(worker.room.key).find(r => r.id === id)?.stage, 'file');
     } finally { await f.close(); }
 });
+
+test('retention removes completed export snapshots but preserves uncertain files and unrelated paths', async () => {
+    const f = await fixture();
+    try {
+        const room = route(f.config, message())!, session = f.store.session(room.key);
+        const dir = join(f.config.dataDir, 'exports', 'fixture');
+        await mkdir(dir, { recursive: true });
+        const completedPath = join(dir, 'delivered.txt');
+        const uncertainPath = join(dir, 'unconfirmed.txt');
+        const unrelatedPath = join(f.config.dataDir, 'other-file.txt');
+        await writeFile(completedPath, 'already delivered');
+        await writeFile(uncertainPath, 'may still require manual retry');
+        await writeFile(unrelatedPath, 'never delete outside exports');
+        const doneId = f.gateway.outbox.saveFile(room, session.id, completedPath, 'delivered.txt');
+        const pendingId = f.gateway.outbox.saveFile(room, session.id, uncertainPath, 'unconfirmed.txt');
+        const unrelatedId = f.gateway.outbox.saveFile(room, session.id, unrelatedPath, 'other-file.txt');
+        assert.equal(await f.gateway.outbox.deliver(doneId, room), true);
+        assert.equal(await f.gateway.outbox.deliver(unrelatedId, room), true);
+        f.store.db.prepare("UPDATE outbox SET state='uncertain',file_state='uncertain' WHERE id=?").run(pendingId);
+        const now = Date.now();
+        f.store.db.prepare('UPDATE outbox SET at=? WHERE id IN (?,?,?)').run(now - 8 * 86400000, doneId, pendingId, unrelatedId);
+        await f.gateway.sweep(now);
+        await assert.rejects(readFile(completedPath), { code: 'ENOENT' });
+        assert.equal(f.store.db.prepare('SELECT id FROM outbox WHERE id=?').get(doneId), undefined);
+        assert.equal(await readFile(uncertainPath, 'utf8'), 'may still require manual retry');
+        assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(pendingId)?.state, 'uncertain');
+        assert.equal(await readFile(unrelatedPath, 'utf8'), 'never delete outside exports');
+        assert.ok(f.store.db.prepare('SELECT id FROM outbox WHERE id=?').get(unrelatedId),
+            'An unexpected snapshot path must retain its record for investigation');
+    } finally { await f.close(); }
+});
