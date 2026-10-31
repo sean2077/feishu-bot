@@ -1,0 +1,22 @@
+[Unit]
+Description=Feishu team gateway
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=feishu-bot
+Group=feishu-bot
+WorkingDirectory=/opt/feishu-bot
+EnvironmentFile=/etc/feishu-bot/environment
+ExecStart=/usr/bin/node /opt/feishu-bot/dist/cli.js run --config /etc/feishu-bot/config.json
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
