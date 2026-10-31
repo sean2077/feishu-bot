@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -14,13 +14,15 @@ test('native CC consumes a busy follow-up, approves a write and continues the sa
   const work=join(root,'工作目录'),home=join(root,'home');
   await mkdir(work);await mkdir(home);
   const target=join(work,'审批 文件.txt');
+  const attachmentDir=join(root,'received');await mkdir(attachmentDir);
+  const attachment=join(attachmentDir,'外部 附件.txt');await writeFile(attachment,'SCOPED_ATTACHMENT_CONTENT');
   const requests=[];let calls=0;
   const server=http.createServer(async(req,res)=>{
     const chunks=[];for await(const chunk of req)chunks.push(chunk);
     const body=JSON.parse(Buffer.concat(chunks).toString());
     if(req.url.includes('count_tokens')){res.writeHead(200,{'content-type':'application/json'});res.end('{"input_tokens":500}');return;}
     requests.push(body);calls++;
-    const content=calls===1?{type:'tool_use',id:'toolu_fixture',name:'Write',input:{file_path:target,content:'approved by maintainer'}}:{type:'text',text:'Native fixture completed.'};
+    const content=calls===1?{type:'tool_use',id:'toolu_fixture',name:'Write',input:{file_path:target,content:'approved by maintainer'}}:calls===3?{type:'tool_use',id:'toolu_attachment',name:'Read',input:{file_path:attachment}}:{type:'text',text:'Native fixture completed.'};
     const stop=content.type==='tool_use'?'tool_use':'end_turn';
     const message={id:'msg_'+calls,type:'message',role:'assistant',model:'company-test-model',content:[content],stop_reason:stop,stop_sequence:null,usage:{input_tokens:500,output_tokens:30}};
     if(!body.stream){res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(message));return;}
@@ -61,7 +63,7 @@ test('native CC consumes a busy follow-up, approves a write and continues the sa
   });
   const deadline=setTimeout(()=>{failure=new Error('native fixture timeout\n'+stderr);child.kill();},50000);
   try{
-    send({type:'init',sessionId:'session',workDir:work,homeDir:home,autoApproveWorkspace:false,queueLimit:64,model:{url:`http://127.0.0.1:${server.address().port}`,token:'fixture-not-a-real-key',model:'company-test-model',smallModel:'company-test-model'},actions:[]});
+    send({type:'init',sessionId:'session',workDir:work,homeDir:home,attachmentDir,autoApproveWorkspace:false,queueLimit:64,model:{url:`http://127.0.0.1:${server.address().port}`,token:'fixture-not-a-real-key',model:'company-test-model',smallModel:'company-test-model'},actions:[]});
     send({type:'input',delivery:first});
     const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
     if(failure)throw failure;
@@ -70,6 +72,7 @@ test('native CC consumes a busy follow-up, approves a write and continues the sa
     assert.equal(await readFile(target,'utf8'),'approved by maintainer');
     assert.ok(JSON.stringify(requests[1]).includes('BUSY_CORRECTION_FROM_BOB'));
     assert.ok(JSON.stringify(requests.at(-1)).includes('FIRST_NATIVE_REQUEST'));
+    assert.ok(JSON.stringify(requests.at(-1)).includes('SCOPED_ATTACHMENT_CONTENT'),'native Read can access only the supplied attachment directory');
     assert.ok(requests[0].tools.some(t=>t.name==='Agent'));
     assert.ok(requests[0].tools.some(t=>t.name==='Skill'));
     assert.ok(requests[0].tools.some(t=>t.name==='ScheduleWakeup'));

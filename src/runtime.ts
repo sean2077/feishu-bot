@@ -85,7 +85,7 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
         child.on('error', error => onEvent({ type: 'error', message: redact(error.message, secrets) }));
         child.on('close', code => { exited = true; void proxy.close().catch(() => { }); onEvent({ type: 'exit', code }); });
         try {
-            await write({ type: 'init', sessionId: session.id, ccId: session.ccId, workDir: paths.work, homeDir: paths.home,
+            await write({ type: 'init', sessionId: session.id, ccId: session.ccId, workDir: paths.work, homeDir: paths.home, attachmentDir: config.runtime.mode === 'docker' ? '/attachments' : w.inbound,
                 model: { url: proxy.url, socket: proxy.socket ? '/run/model/model.sock' : undefined, token: proxy.token, model: config.model.model, smallModel: config.model.smallModel },
                 autoApproveWorkspace: project.autoApproveWorkspace, actions: project.actions.map(a => ({ id: a.id, description: a.description, parameters: a.parameters, readOnly: a.readOnly })),
                 queueLimit: config.limits.inboxPerRoom });

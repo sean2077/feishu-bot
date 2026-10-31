@@ -12,6 +12,7 @@ interface Init {
     ccId?: string;
     workDir: string;
     homeDir: string;
+    attachmentDir?: string;
     autoApproveWorkspace: boolean;
     queueLimit: number;
     model: {
@@ -109,7 +110,7 @@ async function start(init: Init): Promise<void> {
                             // These checks complement Docker mounts. They are not a shell sandbox.
                             const i = raw.tool_input as Args;
                             for (const key of ['file_path', 'notebook_path'])
-                                if (typeof i[key] === 'string' && !inside(init.workDir, i[key] as string) && !inside(init.homeDir, i[key] as string) && !(init.model.socket && inside('/attachments', i[key] as string)))
+                                if (typeof i[key] === 'string' && !inside(init.workDir, i[key] as string) && !inside(init.homeDir, i[key] as string) && !(init.attachmentDir && inside(init.attachmentDir, i[key] as string)))
                                     return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Outside conversation workspace' } };
                             return {};
                         }] }], Stop: [{ hooks: [async (raw) => { if (raw.hook_event_name === 'Stop')
