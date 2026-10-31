@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Room, Transport, Origin } from './types.ts';
 import { Store } from './store.ts';
@@ -7,6 +7,7 @@ import { displayCard } from './approvals.ts';
 import type { Receipts } from './receipts.ts';
 export interface Outgoing {
     id: string;
+    kind: 'reply' | 'file';
     room: string;
     session: string;
     text: string;
@@ -37,10 +38,23 @@ export class Outbox {
             card ? JSON.stringify(card) : null, JSON.stringify(origins), file?.name ?? null, file ? join(file.directory, `${id}.md`) : null, file ? 'pending' : 'none');
         return id;
     }
+    /** A file created by the agent is a first-class durable output, not a best-effort side effect. */
+    saveFile(room: Room, session: string, path: string, name: string, origins: Origin[] = [], replyTo?: string): string {
+        const id = randomUUID();
+        // The caller snapshots the bytes into dataDir before inserting this record.
+        this.store.db.prepare("INSERT INTO outbox(id,room,session,text,reply_to,success,state,at,origins,file_name,file_path,file_state,kind) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
+            id, room.key, session, '', replyTo ?? null, 1, 'pending', Date.now(),
+            JSON.stringify(origins), name, path, 'pending', 'file');
+        return id;
+    }
+    /** Session-wide conservative barrier: do not claim success while any agent file is unconfirmed. */
+    private unfinishedFiles(room: string, session: string): number {
+        return Number(this.store.db.prepare("SELECT count(*) AS n FROM outbox WHERE room=? AND session=? AND kind='file' AND state NOT IN ('done','cancelled')").get(room, session)?.n ?? 0);
+    }
     private get(id: string): Outgoing | undefined {
         const r = this.store.db.prepare('SELECT * FROM outbox WHERE id=?').get(id);
         if (!r) return undefined;
-        return { id: String(r.id), room: String(r.room), session: String(r.session), text: String(r.text),
+        return { id: String(r.id), kind: r.kind === 'file' ? 'file' : 'reply', room: String(r.room), session: String(r.session), text: String(r.text),
             card: r.card ? JSON.parse(String(r.card)) : undefined, origins: JSON.parse(String(r.origins ?? '[]')),
             target: r.target as string | undefined, replyTo: r.reply_to as string | undefined, threadId: r.thread_id as string | undefined,
             success: !!r.success, state: String(r.state), fileName: r.file_name as string | undefined,
@@ -62,48 +76,71 @@ export class Outbox {
         const row = this.get(id);
         if (!row || row.room !== room.key || row.state === 'done' || row.state === 'cancelled') return false;
         if (!this.permitted(row, room)) return false;
-        // Unknown creates (card or file) require an explicit decision about possible duplication.
+        // A timed-out file upload may already have succeeded; only an explicit retry can repeat it.
         if (!['pending', 'uncertain'].includes(row.state) || (row.state === 'uncertain' && !explicit) ||
             (row.fileState === 'uncertain' && !explicit)) return false;
         const claimed = this.store.db.prepare("UPDATE outbox SET state='sending',delivery_error=NULL WHERE id=? AND state=?").run(id, row.state).changes;
         if (!claimed) return false;
         this.active.add(id);
         let target = row.target;
-        let phase: 'card' | 'file_prepare' | 'file_send' = 'card';
+        let phase: 'card' | 'file_prepare' | 'file_send' = row.kind === 'file' ? 'file_prepare' : 'card';
         try {
-            const text = row.text.length > 24000 ? row.text.slice(0, 23800) + '\n\n（完整答案另附文件。）' : row.text;
-            const card = row.card ?? displayCard(row.success ? '回复' : '执行失败', text || '本轮已结束。');
-            if (target) await this.transport.update(target, card);
-            else target = await this.transport.card(room, card, row.replyTo, row.threadId);
-            const saved = this.store.db.prepare("UPDATE outbox SET target=? WHERE id=? AND state='sending'").run(target, id).changes;
-            if (!saved || !this.sending(id, room)) return false;
-            this.store.recordOutput(target, room.key, row.session);
-            if (row.fileName && row.fileState !== 'done') {
-                phase = 'file_prepare';
-                if (!row.filePath) throw new Error('Missing export destination');
-                await mkdir(dirname(row.filePath), { recursive: true, mode: 0o700 });
-                await writeFile(row.filePath, row.text, { mode: 0o600 });
+            if (row.kind === 'file') {
+                if (row.fileState !== 'done') {
+                    if (!row.filePath || !row.fileName) throw new Error('Missing file snapshot');
+                    await stat(row.filePath);
+                    if (!this.sending(id, room)) return false;
+                    this.store.db.prepare("UPDATE outbox SET file_state='sending' WHERE id=? AND state='sending'").run(id);
+                    phase = 'file_send';
+                    const fileTarget = await this.transport.file(room, row.filePath, row.fileName);
+                    const saved = this.store.db.prepare("UPDATE outbox SET file_target=?,file_state='done' WHERE id=? AND state='sending'").run(fileTarget, id).changes;
+                    if (!saved || !this.sending(id, room)) return false;
+                    this.store.recordOutput(fileTarget, room.key, row.session);
+                } else if (!row.fileTarget) throw new Error('Missing recorded file receipt');
+            } else {
+                const text = row.text.length > 24000 ? row.text.slice(0, 23800) + '\n\n（完整答案另附文件。）' : row.text;
+                const card = row.card ?? displayCard(row.success ? '回复' : '执行失败', text || '本轮已结束。');
+                if (target) await this.transport.update(target, card);
+                else target = await this.transport.card(room, card, row.replyTo, row.threadId);
+                const saved = this.store.db.prepare("UPDATE outbox SET target=? WHERE id=? AND state='sending'").run(target, id).changes;
+                if (!saved || !this.sending(id, room)) return false;
+                this.store.recordOutput(target, room.key, row.session);
+                if (row.fileName && row.fileState !== 'done') {
+                    phase = 'file_prepare';
+                    if (!row.filePath) throw new Error('Missing export destination');
+                    await mkdir(dirname(row.filePath), { recursive: true, mode: 0o700 });
+                    await writeFile(row.filePath, row.text, { mode: 0o600 });
+                    if (!this.sending(id, room)) return false;
+                    this.store.db.prepare("UPDATE outbox SET file_state='sending' WHERE id=? AND state='sending'").run(id);
+                    phase = 'file_send';
+                    const fileTarget = await this.transport.file(room, row.filePath, row.fileName);
+                    const fileSaved = this.store.db.prepare("UPDATE outbox SET file_target=?,file_state='done' WHERE id=? AND state='sending'").run(fileTarget, id).changes;
+                    if (!fileSaved || !this.sending(id, room)) return false;
+                    this.store.recordOutput(fileTarget, room.key, row.session);
+                }
                 if (!this.sending(id, room)) return false;
-                this.store.db.prepare("UPDATE outbox SET file_state='sending' WHERE id=? AND state='sending'").run(id);
-                phase = 'file_send';
-                const fileTarget = await this.transport.file(room, row.filePath, row.fileName);
-                const fileSaved = this.store.db.prepare("UPDATE outbox SET file_target=?,file_state='done' WHERE id=? AND state='sending'").run(fileTarget, id).changes;
-                if (!fileSaved || !this.sending(id, room)) return false;
-                this.store.recordOutput(fileTarget, room.key, row.session);
+                if (this.unfinishedFiles(room.key, row.session)) {
+                    this.store.db.prepare("UPDATE outbox SET state='pending',delivery_error=? WHERE id=? AND state='sending'").run(
+                        'An agent file has not been confirmed delivered; the reply is not complete.', id);
+                    if (target) await this.pendingAttachmentNotice(row, room, target);
+                    return false;
+                }
             }
             if (!this.sending(id, room)) return false;
             const completed = this.store.db.prepare("UPDATE outbox SET state='done',delivery_error=NULL WHERE id=? AND state='sending'").run(id).changes;
             if (!completed) return false;
-            // The shortened card alone is not full delivery. Required attachments must also succeed.
-            this.receipts?.settle(room.key, row.session, row.origins, row.success);
+            // File jobs alone never mark a turn Done. Only a fully delivered final reply can do so.
+            if (row.kind === 'reply') this.receipts?.settle(room.key, row.session, row.origins, row.success);
             return true;
         } catch {
-            const state = phase === 'file_send' || !target ? 'uncertain' : 'pending';
-            const reason = phase === 'file_send' ? 'Full-answer file delivery is unconfirmed; explicit retry may duplicate a previously accepted message.'
-                : phase === 'file_prepare' ? 'Cannot prepare the full-answer file; check the data directory permissions and capacity.'
+            const state = phase === 'file_send' || (phase === 'card' && !target) ? 'uncertain' : 'pending';
+            const reason = phase === 'file_send' ? row.kind === 'file'
+                ? 'Agent file upload is unconfirmed; an explicit retry may duplicate a previously accepted file.'
+                : 'Full-answer file delivery is unconfirmed; explicit retry may duplicate a previously accepted message.'
+                : phase === 'file_prepare' ? 'Cannot read or prepare the file; check the data directory permissions and capacity.'
                 : 'Reply card delivery is unconfirmed.';
             const changed = this.store.db.prepare("UPDATE outbox SET state=?,file_state=CASE WHEN file_state='sending' THEN 'uncertain' ELSE file_state END,delivery_error=? WHERE id=? AND state='sending'").run(state, reason, id).changes;
-            this.store.audit(room.key, 'output_delivery_failed', { id, phase, knownTarget: !!target });
+            this.store.audit(room.key, 'output_delivery_failed', { id, phase, kind: row.kind, knownTarget: !!target });
             if (changed && target && phase !== 'card') await this.pendingFileNotice(row, room, target, reason);
             return false;
         } finally { this.active.delete(id); }
@@ -120,7 +157,19 @@ export class Outbox {
         try { await this.transport.update(target, card); }
         catch { this.store.audit(room.key, 'delivery_notice_pending', { id: row.id, reason }); }
     }
-    retryable(room: string): string[] { return this.store.db.prepare("SELECT id FROM outbox WHERE room=? AND state='pending' AND target IS NOT NULL AND file_state!='uncertain' ORDER BY at LIMIT 10").all(room).map(r => String(r.id)); }
+    private async pendingAttachmentNotice(row: Outgoing, room: Room, target: string): Promise<void> {
+        const current = this.get(row.id);
+        if (!current || current.state !== 'pending' || !this.permitted(current, room)) return;
+        const card = structuredClone(row.card ?? displayCard('回复', row.text.slice(0, 23800))) as {
+            header?: { title?: object }; body?: { elements?: object[] };
+        };
+        card.header = { ...card.header, title: { tag: 'plain_text', content: '回复附件尚未完整送达' } };
+        card.body = { ...card.body, elements: [...(card.body?.elements ?? []), { tag: 'markdown',
+            content: '主动发送的文件尚未确认送达；本轮未标记完成。可用 /outputs 查看待交付记录，必要时由维护者明确补发。' }] };
+        try { await this.transport.update(target, card); }
+        catch { this.store.audit(room.key, 'delivery_notice_pending', { id: row.id }); }
+    }
+    retryable(room: string): string[] { return this.store.db.prepare("SELECT id FROM outbox WHERE room=? AND state='pending' AND file_state!='uncertain' AND (target IS NOT NULL OR (kind='file' AND file_state='pending')) ORDER BY at LIMIT 10").all(room).map(r => String(r.id)); }
     pending(room: string): { id: string; state: string; stage: string; detail?: string }[] {
         return this.store.db.prepare("SELECT id,state,file_state,delivery_error FROM outbox WHERE room=? AND state NOT IN ('done','cancelled') ORDER BY at DESC LIMIT 20").all(room)
             .map(r => ({ id: String(r.id), state: String(r.state), stage: r.file_state !== 'none' && r.file_state !== 'done' ? 'file' : 'reply', ...(r.delivery_error ? { detail: String(r.delivery_error) } : {}) }));
