@@ -12,7 +12,6 @@ interface Slot {
     room: Room;
     session: Session;
     worker?: Worker;
-    starting?: Promise<void>;
     abort: AbortController;
     live: boolean;
     busy: boolean;
@@ -24,6 +23,7 @@ interface Slot {
     anchor?: Delivery;
     render?: Render;
     requests: Set<string>;
+    activeRequests: number;
 }
 /** A coalescing display sink; API latency never blocks the native event reader. */
 class Render {
@@ -132,6 +132,8 @@ export class Gateway {
     private rooms = new Map<string, Room>();
     private inputSerial = new Serial();
     private dispatchSerial = new Serial();
+    private poolSerial = new Serial();
+    private waitingNotified = new Set<string>();
     private rates = new Map<string, number[]>();
     private tasks = new Set<Promise<unknown>>();
     private track<T>(task: Promise<T>): Promise<T> { this.tasks.add(task); void task.finally(() => this.tasks.delete(task)).catch(() => { }); return task; }
@@ -230,17 +232,38 @@ export class Gateway {
             return;
         let slot = this.slots.get(room.key);
         if (!slot) {
-            if (this.slots.size >= this.config.runtime.maxWorkers) {
-                await this.notice(room, '运行容量已满，输入已保存。其他会话释放容量后再交付，不会中止正在监控的任务。');
+            // Reserve capacity atomically, but never hold the pool lock while starting CC.
+            slot = await this.poolSerial.run('admission', async () => {
+                if (this.closing || !this.store.pending(room.key).length) return undefined;
+                const existing = this.slots.get(room.key);
+                if (existing) return existing;
+                if (this.slots.size >= this.config.runtime.maxWorkers) {
+                    const oldest = [...this.slots.values()].filter(s => this.reclaimable(s))
+                        .sort((a, b) => a.lastActivity - b.lastActivity)[0];
+                    if (!oldest) return undefined;
+                    await this.releaseIdle(oldest);
+                }
+                const session = this.store.session(room.key);
+                const created: Slot = { room, session, abort: new AbortController(), live: true, busy: false,
+                    background: -1, pinned: false, lastActivity: Date.now(), deliveries: new Map(),
+                    requests: new Set(), activeRequests: 0 };
+                this.slots.set(room.key, created);
+                return created;
+            });
+            if (!slot) {
+                if (this.closing || !this.store.pending(room.key).length) return;
+                if (!this.waitingNotified.has(room.key)) {
+                    this.waitingNotified.add(room.key);
+                    await this.notice(room, '当前会话都在工作或监控，输入已保存。有空闲进程时会自动处理；不会中止其他人的任务。');
+                }
                 return;
             }
-            const session = this.store.session(room.key);
-            slot = { room, session, abort: new AbortController(), live: true, busy: false, background: 0, pinned: false, lastActivity: Date.now(), deliveries: new Map(), requests: new Set() };
-            this.slots.set(room.key, slot);
+            this.waitingNotified.delete(room.key);
+            const session = slot.session;
             const captured = slot;
             try {
                 slot.workspace = await prepareWorkspace(this.config, room, session, this.config.projects.find(p => p.id === room.projectId)!);
-                slot.worker = await this.factory(room, session, event => this.event(captured, event));
+                slot.worker = await this.factory(room, session, event => this.event(captured, event), slot.workspace);
             }
             catch (e) {
                 this.slots.delete(room.key);
@@ -267,7 +290,6 @@ export class Gateway {
                         this.store.insert(room.key, delivery.quote, 'context');
                     }
                 }
-                const project = this.config.projects.find(p => p.id === room.projectId)!;
                 const w = slot.workspace!;
                 for (const [index, resource] of delivery.message.resources.entries()) {
                     const bytes = await this.transport.download(delivery.message.id, resource);
@@ -319,13 +341,14 @@ export class Gateway {
                     slot.busy = event.state !== 'idle';
                 if (event.tool && /Monitor|CronCreate|ScheduleWakeup/.test(event.tool))
                     slot.pinned = true;
+                this.kickWaiting();
                 break;
             case 'text':
                 slot.render ??= new Render(slot.room, slot.session.id, this.transport, this.store, this.config.limits.updateMs, slot.anchor);
                 slot.render.update(redact(event.text, this.secrets), event.partial);
                 break;
             case 'result': {
-                const finished = event.uuids ?? (event.uuid ? [event.uuid] : []);
+                const finished = event.uuids?.length ? event.uuids : (event.uuid ? [event.uuid] : []);
                 for (const id of finished)
                     if (slot.deliveries.has(id)) {
                         this.store.mark(id, 'done');
@@ -338,6 +361,7 @@ export class Gateway {
                 slot.anchor = slot.deliveries.values().next().value;
                 void this.track(render.finish(redact(event.text, this.secrets), event.success, this.config.dataDir)).catch(() => { });
                 this.store.audit(slot.room.key, 'turn_result', { session: slot.session.id, success: event.success, usage: event.usage ?? {} });
+                this.kickWaiting();
                 break;
             }
             case 'request':
@@ -348,9 +372,10 @@ export class Gateway {
                 }
                 if (!slot.requests.has(event.id)) {
                     slot.requests.add(event.id);
+                    slot.activeRequests++;
                     void this.track(this.request(slot, event)).then(value => { if (slot.live)
                         slot.worker?.respond(event.id, value); }).catch(e => { if (slot.live)
-                        slot.worker?.respond(event.id, { approved: false, ok: false, error: redact(errorText(e), this.secrets) }); });
+                        slot.worker?.respond(event.id, { approved: false, ok: false, error: redact(errorText(e), this.secrets) }); }).finally(() => { slot.activeRequests--; this.kickWaiting(); });
                 }
                 break;
             case 'error':
@@ -397,7 +422,7 @@ export class Gateway {
             const name = `${hash(id + key).slice(0, 24)}-${basename(resource.name).replace(/[^\p{L}\p{N}_.-]/gu, '_').slice(0, 100)}`;
             const path = join(w.inbound, name);
             await writeFile(path, data, { mode: 0o600 });
-            return { ok: true, path: this.config.runtime.mode === 'docker' ? '/attachments/' + name : path };
+            return { ok: true, path };
         }
         if (event.kind === 'send_file') {
             const w = slot.workspace!;
@@ -525,19 +550,35 @@ export class Gateway {
             else
                 this.rates.delete(key);
         }
-        if (!this.config.runtime.idleMs)
-            return;
-        for (const slot of this.slots.values()) {
-            if (!slot.busy && !slot.pinned && slot.background === 0 && !this.store.countPending(slot.room.key) && !this.approvals.size(slot.session.id) && now - slot.lastActivity > this.config.runtime.idleMs) {
-                slot.live = false;
-                slot.abort.abort();
-                await slot.worker?.stop();
-                this.slots.delete(slot.room.key);
-                // Keep native session ID and history. Reclaim process, not conversation.
+        await this.poolSerial.run('admission', async () => {
+            if (this.closing || !this.config.runtime.idleMs) return;
+            for (const slot of this.slots.values()) {
+                if (this.reclaimable(slot) && now - slot.lastActivity > this.config.runtime.idleMs) await this.releaseIdle(slot);
             }
+        });
+        this.kickWaiting();
+    }
+    private reclaimable(slot: Slot): boolean {
+        return slot.live && !!slot.worker && !slot.busy && !slot.pinned && slot.background === 0 &&
+            slot.activeRequests === 0 && slot.deliveries.size === 0 &&
+            !this.store.countPending(slot.room.key) && !this.approvals.size(slot.session.id);
+    }
+    private async releaseIdle(slot: Slot): Promise<void> {
+        slot.live = false;
+        slot.abort.abort();
+        try { await slot.worker!.stop(); }
+        finally {
+            if (this.slots.get(slot.room.key) === slot) this.slots.delete(slot.room.key);
         }
-        for (const room of this.rooms.values())
-            this.kick(room);
+        this.store.audit(slot.room.key, 'idle_process_released', { session: slot.session.id });
+        // Native session ID, memory and workspace survive process reclamation.
+    }
+    private kickWaiting(): void {
+        if (this.closing) return;
+        for (const key of this.store.pendingRooms()) {
+            const room = this.rooms.get(key);
+            if (room) this.kick(room);
+        }
     }
     async close(): Promise<void> {
         this.closing = true;
@@ -546,6 +587,7 @@ export class Gateway {
         await Promise.allSettled([...this.slots.values()].map(async (slot) => { slot.live = false; slot.abort.abort(); await slot.render?.cancel(); await slot.worker?.stop(); }));
         await this.inputSerial.drain();
         await this.dispatchSerial.drain();
+        await this.poolSerial.drain();
         await Promise.allSettled([...this.tasks]);
         this.slots.clear();
     }

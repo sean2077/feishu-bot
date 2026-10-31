@@ -1,11 +1,11 @@
 # 开发
 
-Node.js 22.16+，Git；`npm ci --ignore-scripts` 后运行 `npm run check`。依赖使用精确版本和 lockfile，不使用 `--force` 或 `--legacy-peer-deps` 掩盖 peer 冲突。
+Node.js 22.16+、Git；`npm ci --ignore-scripts`，然后 `npm run check`。Linux 和 Windows 同一套 native 运行，不需要容器。依赖使用现有精确版本及 lockfile。
 
-核心原则：只支持 Feishu＋Claude Code；不增加模型意图分类、通用 adapter 框架、业务 cron 或重复的 agent loop。新增代码必须明确属于交付、身份、审批、隔离或运行托管。
+只服务飞书和 CC，不增加路由 LLM、planner、压缩器、业务 cron 或通用 adapter。新增代码应改善真实交互、权限、交付或原生运行；不要把简单部署重新包成基础设施平台。
 
-关键回归：忙时输入合并归属；不同群／DM 不串；旧审批／复制卡片失效；停止后不复活旧任务；不盲目重放外部写；附件和发布补丁的 fd／快照边界；原生 Windows 和 Linux 分别测试。
+回归重点：忙时输入／结果归属、热进程复用、容量竞争、后台不被误回收、会话恢复、群／DM 所属关系、一次性审批、停止、附件、outbox 和结果未知的外部写。
 
-`tests/native-runtime.test.mjs` 使用真实 SDK 携带的 CC 进程和本地模拟模型，不需要真实密钥。`tests/docker-smoke.mjs` 需先构建 worker 镜像，只在 Linux 非 root 账户运行。`docs/validation.md` 区分自动化证据与真实渠道验收。
+`tests/native-runtime.test.mjs` 使用真实 launcher／CC 和本地模型 fixture，不需要真实密钥。CI 验证 Ubuntu／Windows 和两个 Node 版本；实际飞书、公司网关和用户工作机结果单独记录。
 
-改动不应把服务凭据传入 worker，也不应以 allowlist 提示词代替宿主校验。高权限执行器路径、环境和资源目标来自管理员配置。配置只在重启时加载；运行中的工具参数不能更改项目或会话归属。
+团队运行使用专用系统账户。业务凭据不主动注入 agent，不在携带凭据的执行器中运行不可信项目脚本；也不要把同账户原生进程描述为相互隔离的安全沙箱。
