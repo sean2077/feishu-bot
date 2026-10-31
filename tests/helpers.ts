@@ -6,7 +6,7 @@ import { parseConfig } from '../src/config.ts';
 import { Store } from '../src/store.ts';
 import { Gateway } from '../src/gateway.ts';
 import type { Args, Delivery, Message, Room, Transport, WorkerEvent, WorkerFactory } from '../src/types.ts';
-export function rawConfig(dir: string): Args { return { tenantId: 'tenant', appId: 'cli_test', dataDir: dir, runtime: { mode: 'local' }, model: { baseUrl: 'https://gateway.example/anthropic', model: 'deepseek' }, projects: [{ id: 'p', maintainers: ['admin'], actions: [] }], groups: [{ chatId: 'group1', projectId: 'p' }, { chatId: 'group2', projectId: 'p' }], dms: [{ userId: 'alice', projectId: 'p' }, { userId: 'bob', projectId: 'p' }], limits: { updateMs: 250 } }; }
+export function rawConfig(dir: string): Args { return { tenantId: 'tenant', appId: 'cli_test', dataDir: dir, runtime: { mode: 'local' }, model: { baseUrl: 'https://gateway.example/anthropic', model: 'fixture-model' }, projects: [{ id: 'p', maintainers: ['admin'], actions: [] }], groups: [{ chatId: 'group1', projectId: 'p' }, { chatId: 'group2', projectId: 'p' }], dms: [{ userId: 'alice', projectId: 'p' }, { userId: 'bob', projectId: 'p' }], limits: { updateMs: 250 } }; }
 export function message(overrides: Partial<Message> = {}): Message { return { id: randomUUID(), chatId: 'group1', chatType: 'group', senderId: 'alice', text: 'test', time: Date.now(), mentioned: true, resources: [], ...overrides }; }
 export class FakeTransport implements Transport {
     sent: {

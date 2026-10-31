@@ -11,7 +11,7 @@ import { hash, redact, Serial } from './util.ts';
 
 /** Only the required native toolchain/network settings cross into a session. */
 export function nativeEnv(w: Workspace): NodeJS.ProcessEnv {
-    const env = cleanEnv({ HOME: w.home, USERPROFILE: w.home, CLAUDE_CONFIG_DIR: join(w.home, '.claude'), TZ: 'Asia/Singapore' });
+    const env = cleanEnv({ HOME: w.home, USERPROFILE: w.home, CLAUDE_CONFIG_DIR: join(w.home, '.claude') });
     for (const name of ['CLAUDE_CODE_GIT_BASH_PATH', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE']) {
         if (process.env[name]) env[name] = process.env[name];
     }

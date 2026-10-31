@@ -11,19 +11,22 @@ import { runtimeFactory } from '../dist/runtime.js';
 
 // Real native SDK/CLI and production launcher; only inference is a deterministic fixture.
 for (const permissionMode of ['default', 'acceptEdits']) {
-    test(`native service: direct company endpoint, warm reuse, ${permissionMode}`, { timeout: 60000 }, async t => {
+    test(`native service: direct model endpoint, warm reuse, ${permissionMode}`, { timeout: 60000 }, async t => {
         const root = await mkdtemp(join(tmpdir(), 'feishu native 中文 '));
         const requests = [], timings = [], logs = [];
         let calls = 0, failure, worker, permissionCount = 0, resultCount = 0, target, attachment;
         const events = [];
         const savedToken = process.env.NATIVE_FIXTURE_TOKEN;
-        process.env.NATIVE_FIXTURE_TOKEN = 'fixture-company-token';
+        const savedTimezone = process.env.TZ;
+        const timezone = permissionMode === 'default' ? 'UTC' : 'Europe/Paris';
+        process.env.TZ = timezone;
+        process.env.NATIVE_FIXTURE_TOKEN = 'fixture-model-token';
         const server = http.createServer(async (req, res) => {
             const chunks = []; for await (const chunk of req) chunks.push(chunk);
             try {
-                assert.ok(['/company/v1/messages', '/company/v1/messages/count_tokens'].includes(new URL(req.url, 'http://local').pathname));
-                assert.equal(req.headers.authorization, 'Bearer fixture-company-token');
-                assert.equal(req.headers['x-company-project'], 'fixture-project');
+                assert.ok(['/api-prefix/v1/messages', '/api-prefix/v1/messages/count_tokens'].includes(new URL(req.url, 'http://local').pathname));
+                assert.equal(req.headers.authorization, 'Bearer fixture-model-token');
+                assert.equal(req.headers['x-test-project'], 'fixture-project');
                 const body = JSON.parse(Buffer.concat(chunks).toString());
                 if (req.url.includes('count_tokens')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"input_tokens":500}'); return; }
                 requests.push(body); calls++;
@@ -43,7 +46,7 @@ for (const permissionMode of ['default', 'acceptEdits']) {
         });
         await new Promise(r => server.listen(0, '127.0.0.1', r));
         const config = parseConfig({ tenantId: 'fixture', appId: 'cli_fixture', dataDir: root,
-            model: { baseUrl: `http://127.0.0.1:${server.address().port}/company${permissionMode === 'acceptEdits' ? '/v1' : ''}`, allowHttp: true, tokenEnv: 'NATIVE_FIXTURE_TOKEN', model: 'fixture-model', extraHeaders: { 'x-company-project': 'fixture-project' } },
+            model: { baseUrl: `http://127.0.0.1:${server.address().port}/api-prefix${permissionMode === 'acceptEdits' ? '/v1' : ''}`, allowHttp: true, tokenEnv: 'NATIVE_FIXTURE_TOKEN', model: 'fixture-model', extraHeaders: { 'x-test-project': 'fixture-project' } },
             projects: [{ id: 'p', maintainers: ['admin'], permissionMode }], groups: [], dms: [] });
         const room = { key: 'room', chatId: 'chat', projectId: 'p', maintainers: ['admin'] };
         const session = { id: randomUUID(), roomKey: room.key, state: 'open', createdAt: Date.now() };
@@ -58,7 +61,7 @@ for (const permissionMode of ['default', 'acceptEdits']) {
         let sentAt = performance.now();
         const timer = setTimeout(() => rejectDone(new Error('native fixture timeout\n' + JSON.stringify(logs))), 50000);
         try {
-            worker = await runtimeFactory(config, ['fixture-company-token'], (name, value) => logs.push({ name, value }))(room, session, event => {
+            worker = await runtimeFactory(config, ['fixture-model-token'], (name, value) => logs.push({ name, value }))(room, session, event => {
                 events.push(event);
                 try {
                     if (event.type === 'error') throw new Error(event.message + '\n' + JSON.stringify(logs));
@@ -87,6 +90,10 @@ for (const permissionMode of ['default', 'acceptEdits']) {
             if (permissionMode === 'default') assert.ok(JSON.stringify(requests[1]).includes('BUSY_CORRECTION_FROM_BOB'));
             assert.ok(JSON.stringify(requests.at(-1)).includes('FIRST_NATIVE_REQUEST'));
             assert.ok(JSON.stringify(requests.at(-1)).includes('SCOPED_ATTACHMENT_CONTENT'));
+            const userText = requests[0].messages.filter(m => m.role === 'user').flatMap(m => typeof m.content === 'string'
+                ? [m.content] : m.content.filter(b => b.type === 'text').map(b => b.text)).join('\n');
+            assert.ok(userText.includes(`"timezone":"${timezone}"`), 'input timezone follows the native process environment');
+            assert.ok(JSON.stringify(requests[0].system).includes('language of the latest human request'));
             for (const tool of ['Agent', 'Skill', 'ScheduleWakeup']) assert.ok(requests[0].tools.some(t => t.name === tool));
             assert.ok(!requests[0].tools.some(t => t.name.endsWith('project_action')), 'no empty action catalogue');
             assert.equal(events.some(e => e.type === 'thinking'), false);
@@ -95,6 +102,7 @@ for (const permissionMode of ['default', 'acceptEdits']) {
             clearTimeout(timer); await worker?.stop(); server.closeAllConnections(); await new Promise(r => server.close(r));
             await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
             if (savedToken === undefined) delete process.env.NATIVE_FIXTURE_TOKEN; else process.env.NATIVE_FIXTURE_TOKEN = savedToken;
+            if (savedTimezone === undefined) delete process.env.TZ; else process.env.TZ = savedTimezone;
         }
     });
 }

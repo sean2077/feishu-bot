@@ -1,7 +1,7 @@
 {
   "name": "@sean2077/feishu-bot",
   "version": "0.1.0",
-  "description": "A Feishu team gateway for native Claude Code sessions",
+  "description": "A Feishu interface for native Claude Code conversations and tools",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.16.0" },

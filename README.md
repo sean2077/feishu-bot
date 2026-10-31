@@ -1,84 +1,87 @@
 # feishu-bot
 
-项目组的飞书机器人，直接运行 Claude Code。支持 Linux 和 Windows，不需要 Docker。
+在飞书群聊和私聊中使用 Claude Code。可用于个人助手、资料整理、协作开发，以及经授权的外部系统操作。支持 Linux 和 Windows 原生运行。
 
-一个常驻服务接收飞书消息；各群和私聊的 CC 会话按需启动并复用。网关负责身份、消息交付、审批和状态，任务理解、工具使用、子代理、压缩和监控交给 CC。
+一个常驻服务接收消息，按需启动并复用会话。消息处理、子代理、上下文压缩和后台工作由 Claude Code 完成；feishu-bot 负责聊天路由、消息交付、权限交互和运行状态。
 
-## 开始使用
+## 快速开始
 
-安装 Node.js 22.16+（推荐 24）和 Git。Windows 安装 Git for Windows。
+需要 Node.js 22.16+ 和 Git。Windows 使用 Git for Windows。克隆本仓库后，在仓库目录执行：
 
 ```sh
 npm ci --ignore-scripts
 npm run init
 ```
 
-`init` 会构建程序并生成 `config.json`，不会覆盖已有配置。填写飞书 app、允许的群／私聊、维护者，以及公司模型网关地址和模型 ID。`baseUrl` 与你在 Claude Code 中使用的 `ANTHROPIC_BASE_URL` 相同，不添加本地模型转换服务。
+`init` 会构建程序并生成 `config.json`，不会覆盖已有文件。填写飞书应用、允许接入的群或私聊、维护者 ID，以及模型服务配置。只使用私聊时可将 `groups` 设为 `[]`，无需建立群组或绑定代码仓库。
 
-设置密钥后运行。Windows PowerShell：
+模型入口需要兼容 Anthropic Messages；`baseUrl` 对应 Claude Code 的 `ANTHROPIC_BASE_URL`，模型 ID 按服务实际支持的值配置。项目不绑定特定供应商，也不提供协议转换层。兼容接口不等于所有模型能力均已验证。
 
-```powershell
-$env:FEISHU_APP_SECRET = "测试应用密钥"
-$env:COMPANY_MODEL_TOKEN = "公司网关凭据"
+Linux：
+
+```sh
+export FEISHU_APP_SECRET='replace-with-app-secret'
+export MODEL_AUTH_TOKEN='replace-with-model-token'
 npm run doctor
 npm start
 ```
 
-Linux 使用对应的 `export` 设置环境变量，执行同样命令。首次先用独立测试飞书应用；测试与生产不要复用同一个 app 的长连接。[飞书配置与后台部署](docs/deployment.md)
+Windows PowerShell：
 
-## 日常使用
+```powershell
+$env:FEISHU_APP_SECRET = "replace-with-app-secret"
+$env:MODEL_AUTH_TOKEN = "replace-with-model-token"
+npm run doctor
+npm start
+```
 
-群里 @ 机器人或回复它的消息即可。处理中有人继续 @，新消息直接送入当前 CC 输入流，不等待整项任务完成；不需要学习 queue／steer 等输入模式。
+模型凭据的环境变量名可通过 `model.tokenEnv` 指定；已有显式配置保持有效，不需要改用示例中的名称。未配置时默认读取 `MODEL_AUTH_TOKEN`，不会尝试其他账号或凭据。
 
-未 @ 的获准群消息只作为有限的增量背景，不启动模型。每条消息保留作者、引用和附件；同群成员共享主会话，不同群和私聊分别管理会话、目录和原生记忆。
+[部署与配置](docs/deployment.md) · [不同使用场景](docs/usage.md)
 
-- **少冷启动**：服务启动和普通群闲聊不启动 CC。首次任务启动，后续消息复用进程和上下文。
-- **不让空闲群占满资源**：默认真正空闲 15 分钟后只回收进程，保留历史；容量满时优先释放空闲进程。监控、子代理、执行中的操作和审批不会被当成空闲。
-- **少打断**：默认使用 CC 的 `acceptEdits`，文件编辑不逐次审批。项目的常用测试命令可通过 `allowedTools` 预授权；其余权限请求仍发给维护者。没有默认全权限模式。
+## 对话与会话
 
-### 少量管理命令
+群聊中 @ 机器人或回复它的消息即可触发处理；私聊中的消息直接进入该私聊会话。处理中发送的新消息交给同一 CC 输入流，由 CC 判断如何继续，不额外增加任务分类模型。
+
+获准接收的非 @ 群消息可作为有条数和时间限制的增量背景，不单独触发模型。将 `limits.backgroundMessages` 设为 `0` 可关闭背景缓存。每条消息保留作者、引用和附件信息。
+
+同群成员共享会话；不同群、不同私聊分别管理历史、目录和原生记忆。首次任务启动进程，后续消息热复用。默认真正空闲 15 分钟后回收进程但保留会话；存在后台工作、监控、审批或未处理输入时不回收。
 
 | 命令 | 作用 |
 |---|---|
-| `/status` | 当前会话、后台活动、输入与审批状态 |
-| `/sessions`、`/resume <ID>` | 查看和恢复本聊天的历史会话 |
-| `/new`、`/stop` | 新会话；停止当前聊天运行及待交付输入 |
+| `/status` | 查看当前会话、后台工作、输入与审批状态 |
+| `/sessions`、`/resume <ID>` | 查看和恢复当前聊天的历史会话 |
+| `/new`、`/stop` | 新建会话；停止当前聊天的运行及待交付输入 |
 | `/answer <请求ID> <回答>` | 回答指定追问 |
-| `/outputs`、`/retry-output <ID>` | 查看未确认送达的回复，明确补发 |
+| `/outputs`、`/retry-output <ID>` | 查看未确认送达的回复；明确补发 |
 
-群内新建、恢复和停止限维护者；私聊本人也可管理自己的会话。`/stop` 不会撤销已经发生的外部操作，也不会复活旧监控；需要旧上下文时显式 `/resume`。
+群内管理操作限维护者，私聊本人也可管理自己的会话。`/stop` 不能撤销已发生的外部操作；恢复历史不会重新启动已经结束的后台进程。
 
-## 项目配置
+模型回复跟随当前请求的语言；内置命令和审批提示目前主要为中文。时间解释跟随服务运行环境，可通过启动前设置 `TZ` 统一时区。
 
-```json
-{
-  "id": "project",
-  "maintainers": ["ou_maintainer"],
-  "seedDir": "C:/work/project-source",
-  "permissionMode": "acceptEdits",
-  "allowedTools": ["Bash(npm test *)"],
-  "actions": []
-}
-```
+## 按场景配置
 
-`seedDir` 可选，只在聊天工作区首次建立时复制干净源码并创建独立 Git baseline；后续消息不重复复制，也不覆盖现有修改。项目依赖可在原生工作区正常安装、复用系统工具和包缓存，不再要求离线镜像。
+`projects` 是资源与权限配置单元，不要求一定有代码项目。`seedDir`、`trustedConfigDir` 和外部 `actions` 都可按需配置。
 
-`allowedTools` 使用 CC 原生规则，不是另一个命令分类器。预授权前确认该项目及脚本可信。Jenkins、GitLab MR、飞书文档与多维表格可通过已有可信 CLI 或[受控项目操作](docs/project-actions.md)接入；写操作逐次审批，凭据不默认放进 agent 环境。
+| 场景 | 配置重点 |
+|---|---|
+| 个人助手 | 仅开启自己的私聊，不必配置源码或外部操作 |
+| 资料整理 | 提供获准使用的资料目录或附件；按需接入文档服务 |
+| 协作开发 | 配置干净的源码目录、可信项目技能和原生工具规则 |
+| 业务查询与操作 | 配置固定资源范围的可信执行器；外部写操作逐次审批 |
 
-## 部署与信任范围
+默认使用原生 `acceptEdits`，常规文件编辑不逐次询问；需要更多确认时可使用 `default`。预授权工具由 `allowedTools` 配置，不默认开放任意 shell。[权限与信任范围](SECURITY.md)
 
-Linux 常驻服务和 Windows 工作机使用同一运行方式。建议团队服务使用独立、非管理员的系统账户，不继承你的个人登录态。
+Jenkins、GitLab、飞书文档和多维表格只是[可选操作示例](docs/project-actions.md)，不是运行依赖，也不代表任何特定部署环境。
 
-不同会话的目录和路由是**逻辑分离，不是 OS 沙箱**。允许执行代码后，它具有该服务账户的系统权限；同一账户的进程不能承诺彼此保密。此版用于同一信任范围的项目组，不宣称能承载相互不信任的租户。[权限说明](SECURITY.md)
+## 运行边界与验证
 
-## 验证
+原生进程使用服务账户的系统权限。不同聊天的目录和路由是逻辑分离，不是相互不信任租户之间的安全沙箱。个人部署和共享部署都应按实际需要授予文件、网络和外部 API 权限。
 
 ```sh
 npm run check
 ```
 
-包含类型检查、单元／交互回放、构建，以及真实 CC 进程对本地模型 fixture 的测试。CI 在 Windows／Linux、Node 22.16／24 上运行，不需要容器或真实密钥。
+测试包括类型检查、交互回放、构建，以及真实 CC 进程配合本地模拟模型的测试。实际飞书应用、所选模型和外部服务仍需分别验证；自动化测试不代表所有部署已通过验收。[验证清单](docs/validation.md)
 
-真实飞书和公司 DeepSeek 网关仍需使用你的测试环境联调；本地模型 fixture 不代表真实模型性能或企业 API 验收。[验证清单](docs/validation.md)
-
-[架构](docs/architecture.md) · [部署](docs/deployment.md) · [项目操作](docs/project-actions.md) · [开发](CONTRIBUTING.md)
+[架构](docs/architecture.md) · [部署](docs/deployment.md) · [使用场景](docs/usage.md) · [开发](CONTRIBUTING.md) · [公开发布检查](docs/publication.md)
