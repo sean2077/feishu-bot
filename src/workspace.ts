@@ -20,7 +20,12 @@ async function seedTree(source: string, target: string, limit: { files: number; 
     }
 }
 export async function prepareWorkspace(config: Config, room: Room, _session: Session, project: Project): Promise<Workspace> {
-    const root = join(config.dataDir, 'rooms', hash(room.key).slice(0, 32));
+    const requestedRoot = join(config.dataDir, 'rooms', hash(room.key).slice(0, 32));
+    await mkdir(requestedRoot, { recursive: true, mode: 0o700 });
+    // Use the actual directory spelling for both native cwd and tool paths. Windows
+    // temporary directories can contain 8.3 aliases which native permission checks
+    // intentionally treat as suspicious. Resolve the alias; never bypass the check.
+    const root = await realpath(requestedRoot);
     const work = join(root, 'workspace'), home = join(root, 'home'), inbound = join(root, 'inbound');
     for (const p of [root, work, home, inbound]) await mkdir(p, { recursive: true, mode: 0o700 });
     const marker = join(root, 'seeded');

@@ -161,3 +161,19 @@ test('header diagnostics reveal variable names but not sensitive values', async 
         assert.equal(deploymentChecks(config).find(c => c.name === 'model endpoint headers')!.ok, false);
     });
 });
+
+
+test('malformed configuration reports a location without echoing raw credential-bearing content', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'feishu-json-'));
+    try {
+        await writeFile(join(dir, 'config.json'), '{"model":{"token":"private-fixture-value-not-for-output"},BROKEN}');
+        const result = cli(dir, ['doctor']);
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /Invalid JSON/);
+        assert.match(result.stderr, /line \d+, column \d+|position \d+/);
+        assert.match(result.stderr, /quotes, commas/);
+        assert.ok(!result.stderr.includes('private-fixture-value-not-for-output'));
+        assert.ok(!result.stderr.includes('BROKEN'));
+        assert.deepEqual(await readdir(dir), ['config.json']);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+});

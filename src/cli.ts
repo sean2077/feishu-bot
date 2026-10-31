@@ -27,6 +27,13 @@ async function main(): Promise<void> {
     }
     const config = await loadConfig(configPath).catch(error => {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`Missing ${configPath}. Run npm run init first.`);
+        if (error instanceof SyntaxError) {
+            // JSON parser errors may echo credential-bearing source snippets.
+            const location = /line (\d+) column (\d+)/.exec(error.message);
+            const position = /position (\d+)/.exec(error.message);
+            const where = location ? ` at line ${location[1]}, column ${location[2]}` : position ? ` at position ${position[1]}` : '';
+            throw new Error(`Invalid JSON in ${configPath}${where}. Check quotes, commas and escaped backslashes. Configuration content is not printed.`);
+        }
         throw error;
     });
     secrets = secretsFor(config);
