@@ -174,10 +174,10 @@ export class Outbox {
         try { await this.transport.update(target, card); }
         catch { this.store.audit(room.key, 'delivery_notice_pending', { id: row.id }); }
     }
-    /** Prune only confirmed exports. Unknown uploads retain their bytes for explicit recovery. */
+    /** Prune terminal exports only. Unknown uploads retain their bytes for explicit recovery. */
     async pruneCompletedExports(now: number, exportsDir: string): Promise<void> {
         const root = resolve(exportsDir);
-        const rows = this.store.db.prepare("SELECT id,file_path FROM outbox WHERE state='done' AND file_path IS NOT NULL AND at<? ORDER BY at LIMIT 100")
+        const rows = this.store.db.prepare("SELECT id,file_path FROM outbox WHERE state IN ('done','cancelled') AND file_path IS NOT NULL AND at<? ORDER BY at LIMIT 100")
             .all(now - 7 * 86400000);
         for (const row of rows) {
             const id = String(row.id), storedPath = String(row.file_path), path = resolve(storedPath);
@@ -191,7 +191,7 @@ export class Outbox {
                 if ((error as NodeJS.ErrnoException).code !== 'ENOENT') continue;
             }
             // Keep a row if removal fails; never discard the only pointer to retained bytes.
-            this.store.db.prepare("UPDATE outbox SET file_path=NULL WHERE id=? AND state='done' AND file_path=?")
+            this.store.db.prepare("UPDATE outbox SET file_path=NULL WHERE id=? AND state IN ('done','cancelled') AND file_path=?")
                 .run(id, storedPath);
         }
     }
