@@ -34,7 +34,7 @@ async function killWindowsOrphans(rootPid: number, lifetime: ProcessLifetime): P
         '        $id = [int]$item.ProcessId; $parent = [int]$item.ParentProcessId',
         '        if ($id -eq $rootId -or $depth.ContainsKey($id) -or -not $depth.ContainsKey($parent) -or $null -eq $item.CreationDate) { continue }',
         '        $created = $item.CreationDate.ToUniversalTime()',
-        '        if ($created -lt $birth[$parent] -or $created -lt $startedAt -or $created -gt $exitedAt) { continue }',
+        '        if ($created -lt $birth[$parent] -or $created -lt $startedAt -or ($parent -eq $rootId -and $created -gt $exitedAt)) { continue }',
         '        $depth[$id] = $depth[$parent] + 1; $birth[$id] = $created',
         '        $matches += $item; $changed = $true',
         '    }',
