@@ -17,6 +17,7 @@ const emit = (event: WorkerEvent) => process.stdout.write(JSON.stringify(event) 
 const requests = new Map<string, { resolve: (value: Args) => void }>();
 let inputs: AsyncQueue<SDKUserMessage> | undefined;
 let currentQuery: ReturnType<typeof query> | undefined;
+let queryAbort: AbortController | undefined;
 let actionRelay: { close: () => void } | undefined;
 let stopped = false, initialized = false;
 // Match the native process clock; operators may set TZ before starting the service.
@@ -61,6 +62,7 @@ async function start(init: Init): Promise<void> {
     if (!init.model.url) throw new Error('missing model endpoint');
     inputs = new AsyncQueue<SDKUserMessage>(init.queueLimit);
     const controller = new AbortController();
+    queryAbort = controller;
     const gateway = createSdkMcpServer({ name: 'gateway', version: '0.1.0', tools: [
         ...(init.actions.length ? [tool('project_action', `Execute a configured project operation. Operations and exact string parameters: ${JSON.stringify(init.actions)}. The host checks scope and approvals.`,
             { action: z.string(), parameters: z.record(z.string(), z.string()).default({}) },
@@ -76,6 +78,9 @@ async function start(init: Init): Promise<void> {
     ] });
     // No unused listener or operation catalogue when the project has no external actions.
     const actions = init.actions.length ? await startActionRelay(init.actions.map(a => a.id), (name, input) => ask('action', name, input)) : undefined;
+    // A stop frame can arrive while the action relay is still binding its socket.
+    // Do not start Claude (or leave the late relay open) after that stop.
+    if (stopped) { actions?.close(); return; }
     actionRelay = actions;
     const options: Options = {
         cwd: init.workDir, resume: init.ccId, abortController: controller, includePartialMessages: true,
@@ -169,14 +174,17 @@ async function start(init: Init): Promise<void> {
 async function stop(): Promise<void> {
     if (stopped) return;
     stopped = true; inputs?.discard();
+    queryAbort?.abort();
+    actionRelay?.close();
     for (const r of requests.values()) r.resolve({ approved: false, error: 'stopped' });
     requests.clear();
     try { await currentQuery?.interrupt(); } catch { /* parent enforces shutdown deadline */ }
-    currentQuery?.close(); actionRelay?.close();
+    currentQuery?.close();
     process.exitCode ??= 0; process.stdin.destroy();
 }
 const parser = new JsonLines(frame => {
     if (frame.type === 'init') void start(frame as unknown as Init).catch(error => {
+        if (stopped) return; // Cancellation during native startup is not a worker failure.
         process.stderr.write(String(error instanceof Error ? error.message : error).slice(0, 4000) + '\n');
         emit({ type: 'error', message: 'Claude worker failed; inspect redacted worker logs' }); process.exitCode = 1; void stop();
     });
