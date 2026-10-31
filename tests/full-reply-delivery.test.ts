@@ -198,6 +198,7 @@ test('agent file upload failure survives restart and blocks Done until an explic
         assert.equal(f.reactions.includes('done'), false);
         assert.match(JSON.stringify(f.cards.at(-1)), /未标记完成/);
         assert.equal(f.outbox.pending(f.room.key).find(x => x.id === id)!.stage, 'file');
+        assert.deepEqual(f.outbox.retryable(f.room.key), [], 'unresolved file must not cause repeated card updates');
 
         second = new Store(f.path);
         second.recover();
@@ -214,6 +215,7 @@ test('agent file upload failure survives restart and blocks Done until an explic
         assert.equal(await outbox.deliver(id, { ...f.room, key: 'other' }, true), false);
         assert.equal(await outbox.deliver(id, f.room), false);
         assert.equal(await outbox.deliver(id, f.room, true), true);
+        assert.deepEqual(outbox.retryable(f.room.key), [String(reply.id)], 'final card may finish after file confirmation');
         assert.equal(await outbox.deliver(String(reply.id), f.room), true);
         await receipts.drain();
         assert.equal(uploads, 1);
