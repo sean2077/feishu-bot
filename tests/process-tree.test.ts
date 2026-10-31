@@ -163,7 +163,7 @@ test('cancelled action reclaims a surviving child after its launcher exits', { t
         "const dir = process.argv[2];",
         "fs.writeFileSync(path.join(dir, 'root.pid'), String(process.pid));",
         "spawn(process.execPath, [path.join(dir, 'ticker.cjs'), dir], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });",
-        "const timer = setInterval(() => { if (fs.existsSync(path.join(dir, 'child.beat'))) { clearInterval(timer); process.exit(0); } }, 20);"
+        "const timer = setInterval(() => { if (fs.existsSync(path.join(dir, 'child.beat'))) { clearInterval(timer); fs.writeFileSync(path.join(dir, 'root.exiting'), 'yes'); process.exit(0); } }, 20);"
     ].join('\n'));
     const controller = new AbortController();
     const execution = runCommand(process.execPath, [launcher, dir], { signal: controller.signal, timeoutMs: 20000 });
@@ -172,17 +172,22 @@ test('cancelled action reclaims a surviving child after its launcher exits', { t
     try {
         await eventually(async () => {
             try {
-                const [rootText, childText] = await Promise.all([
-                    readFile(join(dir, 'root.pid'), 'utf8'), readFile(join(dir, 'child.pid'), 'utf8')
+                const [rootText, childText, exiting] = await Promise.all([
+                    readFile(join(dir, 'root.pid'), 'utf8'), readFile(join(dir, 'child.pid'), 'utf8'),
+                    readFile(join(dir, 'root.exiting'), 'utf8')
                 ]);
                 childPid = Number(childText);
                 const rootPid = Number(rootText);
-                return rootPid > 0 && childPid > 0 && !(await live(rootPid)) && await live(childPid);
+                // A Windows handle retained for stdout can keep kill(pid, 0) positive
+                // even after the launcher has called process.exit().
+                return rootPid > 0 && childPid > 0 && exiting === 'yes' &&
+                    (process.platform === 'win32' || !(await live(rootPid))) && await live(childPid);
             } catch (error) {
                 if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
                 throw error;
             }
         }, 'Action launcher did not exit with a live descendant');
+        await delay(250); // Allow the root exit to settle on Windows before cancellation.
         const first = await readFile(join(dir, 'child.beat'), 'utf8');
         await delay(150);
         assert.notEqual(await readFile(join(dir, 'child.beat'), 'utf8'), first, 'Child was not actually running');
