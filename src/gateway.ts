@@ -445,9 +445,20 @@ export class Gateway {
             await writeFile(snapshot, bytes, { mode: 0o600 });
             if (slot.abort.signal.aborted)
                 throw new Error('operation cancelled');
-            const id = await this.transport.file(slot.room, snapshot, basename(String(event.input.name ?? basename(path))));
-            this.store.recordOutput(id, slot.room.key, slot.session.id);
-            return { ok: true, messageId: id };
+            const name = basename(String(event.input.name ?? basename(path)));
+            const origins = [...slot.deliveries.values()].map(d => d.message);
+            // Snapshot first, then persist the upload intent before touching the external API.
+            // The outbox preserves unknown outcomes for explicit, scope-checked recovery.
+            const id = this.outbox.saveFile(current, slot.session.id, snapshot, name, origins, slot.anchor?.message.id);
+            if (slot.abort.signal.aborted) {
+                this.store.db.prepare("UPDATE outbox SET state='cancelled' WHERE id=?").run(id);
+                throw new Error('operation cancelled');
+            }
+            const sent = await this.outbox.deliver(id, current);
+            if (!sent) return { ok: false, deliveryId: id,
+                error: 'File not confirmed delivered. Check /outputs; an explicit /retry-output may be required.' };
+            const row = this.store.db.prepare('SELECT file_target FROM outbox WHERE id=?').get(id);
+            return { ok: true, deliveryId: id, messageId: String(row?.file_target ?? '') };
         }
         const questions = event.kind === 'question' ? event.input.questions as Question[] : undefined;
         return this.approvals.request(slot.room, slot.session.id, event.name, event.input, `工具：${event.name}\n参数：\`${redact(JSON.stringify(event.input), this.secrets).slice(0, 5000)}\``, slot.abort.signal, questions);

@@ -171,6 +171,106 @@ test('schema upgrade preserves prior completed deliveries without replaying them
         store = new Store(path); store.recover();
         const row = store.db.prepare('SELECT * FROM outbox').get()!;
         assert.equal(row.state, 'done'); assert.equal(row.file_state, 'none'); assert.equal(row.text, 'answer');
-        assert.equal(store.db.prepare('PRAGMA user_version').get()!.user_version, 3);
+        assert.equal(store.db.prepare('PRAGMA user_version').get()!.user_version, 4);
+        assert.equal(row.kind, 'reply');
     } finally { store?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('agent file upload failure survives restart and blocks Done until an explicit scoped retry', async () => {
+    const f = await fixture();
+    let second: Store | undefined, receipts: Receipts | undefined;
+    try {
+        const source = join(f.dir, 'agent-report.txt');
+        await writeFile(source, 'snapshot content');
+        const id = f.outbox.saveFile(f.room, f.session.id, source, 'report.txt', [f.message], f.message.id);
+        f.transport.file = async () => { throw new Error('possibly accepted'); };
+        assert.equal(await f.outbox.deliver(id, f.room), false);
+        const failed = f.store.db.prepare('SELECT kind,state,file_state,file_path FROM outbox WHERE id=?').get(id)!;
+        assert.equal(failed.kind, 'file'); assert.equal(failed.state, 'uncertain'); assert.equal(failed.file_state, 'uncertain');
+        assert.equal(await readFile(String(failed.file_path), 'utf8'), 'snapshot content');
+        assert.deepEqual(f.outbox.retryable(f.room.key), []);
+        await f.render().finish('report follows', true, f.dir, [f.message]);
+        await f.receipts.drain();
+        const reply = f.store.db.prepare("SELECT id,state,target FROM outbox WHERE kind='reply'").get()!;
+        assert.equal(reply.state, 'pending');
+        assert.equal(reply.target, 'card');
+        assert.equal(f.creates(), 1);
+        assert.equal(f.reactions.includes('done'), false);
+        assert.match(JSON.stringify(f.cards.at(-1)), /未标记完成/);
+        assert.equal(f.outbox.pending(f.room.key).find(x => x.id === id)!.stage, 'file');
+        assert.deepEqual(f.outbox.retryable(f.room.key), [], 'unresolved file must not cause repeated card updates');
+
+        second = new Store(f.path);
+        second.recover();
+        receipts = new Receipts(second, f.transport);
+        const outbox = new Outbox(second, f.transport, receipts);
+        let uploads = 0;
+        f.transport.file = async (room, path, name) => {
+            assert.equal(room.key, f.room.key);
+            assert.equal(name, 'report.txt');
+            assert.equal(await readFile(path, 'utf8'), 'snapshot content');
+            uploads++;
+            return 'delivered-report';
+        };
+        assert.equal(await outbox.deliver(id, { ...f.room, key: 'other' }, true), false);
+        assert.equal(await outbox.deliver(id, f.room), false);
+        assert.equal(await outbox.deliver(id, f.room, true), true);
+        assert.deepEqual(outbox.retryable(f.room.key), [String(reply.id)], 'final card may finish after file confirmation');
+        assert.equal(await outbox.deliver(String(reply.id), f.room), true);
+        await receipts.drain();
+        assert.equal(uploads, 1);
+        assert.equal(f.creates(), 1, 'reply is updated rather than recreated after recovery');
+        assert.equal(second.db.prepare("SELECT state FROM outbox WHERE id=?").get(id)!.state, 'done');
+        assert.equal(second.db.prepare("SELECT state FROM outbox WHERE id=?").get(reply.id)!.state, 'done');
+        assert.ok(f.reactions.includes('done'));
+    } finally { await receipts?.drain(); second?.close(); await f.cleanup(); }
+});
+
+test('agent file failure before upload is retryable without marking an unknown external write', async () => {
+    const f = await fixture();
+    try {
+        const missing = join(f.dir, 'not-yet-created.txt');
+        const id = f.outbox.saveFile(f.room, f.session.id, missing, 'report.txt', [f.message], f.message.id);
+        let uploads = 0;
+        f.transport.file = async (_room, path) => { uploads++; assert.equal(await readFile(path, 'utf8'), 'later'); return 'uploaded'; };
+        assert.equal(await f.outbox.deliver(id, f.room), false);
+        assert.equal(f.store.db.prepare('SELECT state,file_state FROM outbox WHERE id=?').get(id)!.state, 'pending');
+        assert.equal(f.store.db.prepare('SELECT file_state FROM outbox WHERE id=?').get(id)!.file_state, 'pending');
+        assert.deepEqual(f.outbox.retryable(f.room.key), [id]);
+        await writeFile(missing, 'later');
+        assert.equal(await f.outbox.deliver(id, f.room), true);
+        assert.equal(uploads, 1);
+        assert.equal(f.outbox.pending(f.room.key).length, 0);
+    } finally { await f.cleanup(); }
+});
+
+test('an agent file with a persisted upload receipt is finalized without a second upload', async () => {
+    const f = await fixture();
+    try {
+        const snapshot = join(f.dir, 'sent-file.txt');
+        await writeFile(snapshot, 'already sent');
+        const id = f.outbox.saveFile(f.room, f.session.id, snapshot, 'sent.txt', [f.message], f.message.id);
+        f.store.db.prepare("UPDATE outbox SET state='sending',file_state='done',file_target='confirmed-file' WHERE id=?").run(id);
+        f.store.recover();
+        assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(id)!.state, 'pending');
+        assert.deepEqual(f.outbox.retryable(f.room.key), [id], 'recorded provider ID is safe to reconcile automatically');
+        f.transport.file = async () => { throw new Error('must not upload again'); };
+        assert.equal(await f.outbox.deliver(id, f.room), true);
+        assert.equal(f.store.isOutput(f.room.key, 'confirmed-file'), true);
+    } finally { await f.cleanup(); }
+});
+
+test('agent file sends obey current sender authorization before making external writes', async () => {
+    const f = await fixture();
+    try {
+        const source = join(f.dir, 'report.txt');
+        await writeFile(source, 'private');
+        const id = f.outbox.saveFile(f.room, f.session.id, source, 'report.txt', [f.message], f.message.id);
+        let calls = 0;
+        const outbox = new Outbox(f.store, f.transport, f.receipts, () => false);
+        f.transport.file = async () => { calls++; return 'sent'; };
+        assert.equal(await outbox.deliver(id, f.room), false);
+        assert.equal(calls, 0);
+        assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(id)!.state, 'cancelled');
+    } finally { await f.cleanup(); }
 });

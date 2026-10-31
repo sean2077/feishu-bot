@@ -15,7 +15,12 @@ async function live(pid: number): Promise<boolean> {
             const status = await readFile(`/proc/${pid}/stat`, 'utf8');
             // A killed orphan can remain a zombie until the container's init reaps it.
             return !['Z', 'X'].includes(status.slice(status.lastIndexOf(')') + 2, status.lastIndexOf(')') + 3));
-        } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
+        } catch (error) {
+            // Between kill(pid, 0) and reading /proc, the process may exit.
+            // Both errors confirm the child is no longer live; neither weakens the PID check.
+            if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return false;
+            throw error;
+        }
     }
     return true;
 }
