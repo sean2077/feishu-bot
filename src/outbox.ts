@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, realpath, stat, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { inside } from './util.ts';
 import type { Room, Transport, Origin } from './types.ts';
 import { Store } from './store.ts';
 import { displayCard } from './approvals.ts';
@@ -172,6 +173,27 @@ export class Outbox {
             content: '主动发送的文件尚未确认送达；本轮未标记完成。可用 /outputs 查看待交付记录，必要时由维护者明确补发。' }] };
         try { await this.transport.update(target, card); }
         catch { this.store.audit(room.key, 'delivery_notice_pending', { id: row.id }); }
+    }
+    /** Prune only confirmed exports. Unknown uploads retain their bytes for explicit recovery. */
+    async pruneCompletedExports(now: number, exportsDir: string): Promise<void> {
+        const root = resolve(exportsDir);
+        const rows = this.store.db.prepare("SELECT id,file_path FROM outbox WHERE state='done' AND file_path IS NOT NULL AND at<? ORDER BY at LIMIT 100")
+            .all(now - 7 * 86400000);
+        for (const row of rows) {
+            const id = String(row.id), storedPath = String(row.file_path), path = resolve(storedPath);
+            if (path === root || !inside(root, path)) continue;
+            try {
+                // A replaced parent directory must not redirect cleanup outside managed exports.
+                const [physicalRoot, parent] = await Promise.all([realpath(root), realpath(dirname(path))]);
+                if (!inside(physicalRoot, parent)) continue;
+                await unlink(path);
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'ENOENT') continue;
+            }
+            // Keep a row if removal fails; never discard the only pointer to retained bytes.
+            this.store.db.prepare("UPDATE outbox SET file_path=NULL WHERE id=? AND state='done' AND file_path=?")
+                .run(id, storedPath);
+        }
     }
     retryable(room: string): string[] {
         // Waiting for an agent file is not a transport failure. Do not rewrite two cards
