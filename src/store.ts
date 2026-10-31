@@ -22,7 +22,12 @@ export class Store {
         this.addColumn('receipts', 'sender', 'TEXT');
         this.addColumn('outbox', 'card', 'TEXT');
         this.addColumn('outbox', 'origins', "TEXT NOT NULL DEFAULT '[]'");
-        this.db.exec('PRAGMA user_version=2');
+        this.addColumn('outbox', 'file_name', 'TEXT');
+        this.addColumn('outbox', 'file_path', 'TEXT');
+        this.addColumn('outbox', 'file_target', 'TEXT');
+        this.addColumn('outbox', 'file_state', "TEXT NOT NULL DEFAULT 'none'");
+        this.addColumn('outbox', 'delivery_error', 'TEXT');
+        this.db.exec('PRAGMA user_version=3');
     }
     private addColumn(table: string, column: string, declaration: string): void {
         if (!this.db.prepare(`PRAGMA table_info(${table})`).all().some(r => r.name === column))
@@ -66,7 +71,7 @@ export class Store {
     recover(): {
         rooms: string[];
         requests: number;
-    } { return this.transaction(() => { const rooms = this.db.prepare("SELECT DISTINCT room FROM inbox WHERE status IN ('sent','consumed')").all().map(r => r.room as string); this.db.exec("UPDATE inbox SET status='uncertain' WHERE status IN ('sent','consumed'); UPDATE action_runs SET state='uncertain' WHERE state='running'; UPDATE outbox SET state=CASE WHEN target IS NULL THEN 'uncertain' ELSE 'pending' END WHERE state IN ('sending','preparing');"); const requests = this.db.prepare("UPDATE requests SET state='expired' WHERE state='pending'").run().changes as number; return { rooms, requests }; }); }
+    } { return this.transaction(() => { const rooms = this.db.prepare("SELECT DISTINCT room FROM inbox WHERE status IN ('sent','consumed')").all().map(r => r.room as string); this.db.exec("UPDATE inbox SET status='uncertain' WHERE status IN ('sent','consumed'); UPDATE action_runs SET state='uncertain' WHERE state='running'; UPDATE outbox SET state=CASE WHEN target IS NULL OR file_state='sending' THEN 'uncertain' ELSE 'pending' END, file_state=CASE WHEN file_state='sending' THEN 'uncertain' ELSE file_state END WHERE state IN ('sending','preparing');"); const requests = this.db.prepare("UPDATE requests SET state='expired' WHERE state='pending'").run().changes as number; return { rooms, requests }; }); }
     rememberContext(room: string, messages: Message[]): void {
         const insert = this.db.prepare('INSERT OR REPLACE INTO context_refs VALUES(?,?,?,?)');
         for (const m of messages) insert.run(room, m.id, JSON.stringify({ ...m, text: '' }), Date.now());

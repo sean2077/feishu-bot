@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Delivery, Origin, Room, Transport } from './types.ts';
 import { Store } from './store.ts';
@@ -92,7 +90,8 @@ export class Render {
         const body = answer.length > 24000 ? answer.slice(0, 23800) + '\n\n（完整答案另附文件。）' : answer;
         const card = replyCard(title ?? (success ? '回复' : '执行失败'), body, thinking, true);
         // Persist before awaiting slow preview I/O. Recovery will never lose the final answer or blindly recreate an uncertain preview.
-        const id = this.outbox.save(this.room, this.session, answer, success, this.messageId, this.replyTo, this.threadId, card, origins);
+        const file = answer.length > 24000 ? { name: 'reply.md', directory: join(dataDir, 'exports', hash(this.room.key).slice(0, 32)) } : undefined;
+        const id = this.outbox.save(this.room, this.session, answer, success, this.messageId, this.replyTo, this.threadId, card, origins, file);
         this.finalId = id;
         this.store.db.prepare("UPDATE outbox SET state='preparing' WHERE id=?").run(id);
         await this.tail;
@@ -104,12 +103,5 @@ export class Render {
         const changed = this.store.db.prepare("UPDATE outbox SET target=?,state=? WHERE id=? AND state='preparing'").run(this.messageId ?? null, state, id).changes;
         if (!changed) return;
         await this.outbox.deliver(id, this.room);
-        if (answer.length > 24000 && !this.signal?.aborted) {
-            const dir = join(dataDir, 'exports', hash(this.room.key).slice(0, 32));
-            await mkdir(dir, { recursive: true, mode: 0o700 });
-            const path = join(dir, `${randomUUID()}.md`);
-            await writeFile(path, answer, { mode: 0o600 });
-            await this.transport.file(this.room, path, 'reply.md').catch(() => {});
-        }
     }
 }

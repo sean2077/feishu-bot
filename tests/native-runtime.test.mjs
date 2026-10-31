@@ -82,7 +82,8 @@ for (const permissionMode of ['default', 'acceptEdits']) {
             }, w);
             await worker.send(first); await done;
             if (failure) throw failure;
-            assert.equal(permissionCount, permissionMode === 'default' ? 1 : 0);
+            assert.equal(permissionCount, permissionMode === 'default' ? 1 : 0,
+                JSON.stringify({ platform: process.platform, requestedRoot: root, workspace: w.work, permissionRequests: events.filter(e => e.type === 'request') }));
             assert.equal(resultCount, 2);
             assert.equal(new Set(events.filter(e => e.type === 'ready').map(e => e.ccId)).size, 1);
             assert.equal(logs.filter(e => e.name === 'worker_ready').length, 1, 'warm turn must not start a new process');
