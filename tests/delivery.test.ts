@@ -161,3 +161,30 @@ test('ambiguous preview creation is not retried or duplicated by final delivery'
         assert.equal(f.transport.sent.filter(s => s.card).length, 1);
     } finally { await f.close(); }
 });
+
+test('agent send_file request snapshots bytes and prevents a false completed turn on upload failure', async () => {
+    const f = await fixture();
+    try {
+        await f.gateway.message(message());
+        await until(() => f.workers[0]?.sent.length === 1);
+        const worker = f.workers[0]!;
+        const workspace = await prepareWorkspace(f.config, worker.room, worker.session, f.config.projects[0]!);
+        const source = join(workspace.work, 'report.txt');
+        await writeFile(source, 'original report');
+        f.transport.file = async () => { throw new Error('ambiguous file upload'); };
+        worker.emit({ type: 'request', id: 'file-1', kind: 'send_file', name: 'send_file', input: { path: source, name: 'report.txt' } });
+        await until(() => worker.responses.length === 1);
+        const result = worker.responses[0]!.value;
+        assert.equal(result.ok, false);
+        const id = result.deliveryId as string;
+        assert.ok(id, 'failed upload must return a durable recovery ID');
+        const file = f.store.db.prepare('SELECT kind,state,file_state,file_path FROM outbox WHERE id=?').get(id)!;
+        assert.equal(file.kind, 'file'); assert.equal(file.state, 'uncertain'); assert.equal(file.file_state, 'uncertain');
+        await writeFile(source, 'changed later');
+        assert.equal(await readFile(file.file_path as string, 'utf8'), 'original report', 'retry uses the snapshot, not mutable workspace bytes');
+        worker.emit({ type: 'result', success: true, text: 'The report is ready.', uuids: [worker.sent[0]!.uuid] });
+        await until(() => !!f.store.db.prepare("SELECT id FROM outbox WHERE kind='reply' AND state='pending' AND target IS NOT NULL").get());
+        assert.ok(!f.transport.receiptStates.some(r => r.state === 'done'));
+        assert.equal(f.gateway.outbox.pending(worker.room.key).find(r => r.id === id)?.stage, 'file');
+    } finally { await f.close(); }
+});
