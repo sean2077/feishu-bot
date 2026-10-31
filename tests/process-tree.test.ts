@@ -162,7 +162,7 @@ test('cancelled action reclaims a surviving child after its launcher exits', { t
         "const { spawn } = require('node:child_process');",
         "const dir = process.argv[2];",
         "fs.writeFileSync(path.join(dir, 'root.pid'), String(process.pid));",
-        "spawn(process.execPath, [path.join(dir, 'ticker.cjs'), dir], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });",
+        "spawn(process.execPath, [path.join(dir, 'ticker.cjs'), dir], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true, detached: process.platform === 'win32' });",
         "const timer = setInterval(() => { if (fs.existsSync(path.join(dir, 'child.beat'))) { clearInterval(timer); fs.writeFileSync(path.join(dir, 'root.exiting'), 'yes'); process.exit(0); } }, 20);"
     ].join('\n'));
     const controller = new AbortController();
