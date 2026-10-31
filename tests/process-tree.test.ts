@@ -155,7 +155,7 @@ test('cancelled action reclaims a surviving child after its launcher exits', { t
         "let n = 0;",
         "setInterval(() => fs.writeFileSync(path.join(dir, 'child.beat'), String(++n)), 30);",
         "setTimeout(() => process.exit(0), 23000).unref();"
-    ].join('\\n'));
+    ].join('\n'));
     await writeFile(launcher, [
         "const fs = require('node:fs');",
         "const path = require('node:path');",
@@ -164,7 +164,7 @@ test('cancelled action reclaims a surviving child after its launcher exits', { t
         "fs.writeFileSync(path.join(dir, 'root.pid'), String(process.pid));",
         "spawn(process.execPath, [path.join(dir, 'ticker.cjs'), dir], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });",
         "const timer = setInterval(() => { if (fs.existsSync(path.join(dir, 'child.beat'))) { clearInterval(timer); process.exit(0); } }, 20);"
-    ].join('\\n'));
+    ].join('\n'));
     const controller = new AbortController();
     const execution = runCommand(process.execPath, [launcher, dir], { signal: controller.signal, timeoutMs: 20000 });
     void execution.catch(() => {}); // The test checks its outcome after the root has exited.
