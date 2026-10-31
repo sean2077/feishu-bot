@@ -1,7 +1,7 @@
 name: Verify gateway
 on:
   push:
-    branches: [main, feat/native-feishu-gateway]
+    branches: [main]
   pull_request:
 permissions:
   contents: read

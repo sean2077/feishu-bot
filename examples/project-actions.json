@@ -1,0 +1,176 @@
+[
+  {
+    "executable": "/usr/bin/node",
+    "args": [
+      "/opt/feishu-bot/examples/actions/project-operations.mjs",
+      "jenkins-status"
+    ],
+    "env": {
+      "JENKINS_USER": "BOT_JENKINS_USER",
+      "JENKINS_TOKEN": "BOT_JENKINS_TOKEN"
+    },
+    "vars": {
+      "JENKINS_URL": "https://jenkins.example",
+      "JENKINS_JOB": "team/project"
+    },
+    "readOnly": true,
+    "timeoutMs": 60000,
+    "parameters": {},
+    "id": "jenkins-status",
+    "description": "读取指定 Jenkins 项目的最近构建状态"
+  },
+  {
+    "executable": "/usr/bin/node",
+    "args": [
+      "/opt/feishu-bot/examples/actions/project-operations.mjs",
+      "jenkins-build",
+      "{{revision}}"
+    ],
+    "env": {
+      "JENKINS_USER": "BOT_JENKINS_USER",
+      "JENKINS_TOKEN": "BOT_JENKINS_TOKEN"
+    },
+    "vars": {
+      "JENKINS_URL": "https://jenkins.example",
+      "JENKINS_JOB": "team/project"
+    },
+    "readOnly": false,
+    "timeoutMs": 60000,
+    "parameters": {
+      "revision": {
+        "pattern": "[A-Za-z0-9][A-Za-z0-9_./-]{0,99}",
+        "maxLength": 100
+      }
+    },
+    "id": "jenkins-build",
+    "description": "以指定 revision 触发该项目构建"
+  },
+  {
+    "executable": "/usr/bin/node",
+    "args": [
+      "/opt/feishu-bot/examples/actions/project-operations.mjs",
+      "gitlab-publish",
+      "{{patch}}",
+      "{{title}}"
+    ],
+    "env": {
+      "GITLAB_TOKEN": "BOT_GITLAB_TOKEN"
+    },
+    "vars": {
+      "GITLAB_URL": "https://gitlab.example",
+      "GITLAB_REPO_URL": "https://gitlab.example/team/project.git",
+      "GITLAB_PROJECT_ID": "123",
+      "GITLAB_BASE_BRANCH": "main"
+    },
+    "readOnly": false,
+    "timeoutMs": 300000,
+    "parameters": {
+      "patch": {
+        "workspaceFile": true,
+        "maxLength": 1000
+      },
+      "title": {
+        "maxLength": 200
+      }
+    },
+    "id": "gitlab-publish",
+    "description": "发布已批准补丁到新分支并创建 MR，不合并"
+  },
+  {
+    "executable": "/usr/bin/node",
+    "args": [
+      "/opt/feishu-bot/examples/actions/project-operations.mjs",
+      "feishu-doc-read"
+    ],
+    "env": {
+      "FEISHU_ACTION_APP_SECRET": "BOT_FEISHU_ACTION_SECRET"
+    },
+    "vars": {
+      "FEISHU_ACTION_APP_ID": "cli_project_actions",
+      "FEISHU_DOCUMENT_ID": "doc_example",
+      "FEISHU_DOCUMENT_ROOT_BLOCK": "doc_example"
+    },
+    "readOnly": true,
+    "timeoutMs": 60000,
+    "parameters": {},
+    "id": "feishu-doc-read",
+    "description": "读取项目指定飞书文档"
+  },
+  {
+    "executable": "/usr/bin/node",
+    "args": [
+      "/opt/feishu-bot/examples/actions/project-operations.mjs",
+      "feishu-doc-append",
+      "{{text}}"
+    ],
+    "env": {
+      "FEISHU_ACTION_APP_SECRET": "BOT_FEISHU_ACTION_SECRET"
+    },
+    "vars": {
+      "FEISHU_ACTION_APP_ID": "cli_project_actions",
+      "FEISHU_DOCUMENT_ID": "doc_example",
+      "FEISHU_DOCUMENT_ROOT_BLOCK": "doc_example"
+    },
+    "readOnly": false,
+    "timeoutMs": 60000,
+    "parameters": {
+      "text": {
+        "maxLength": 10000
+      }
+    },
+    "id": "feishu-doc-append",
+    "description": "在指定项目文档末尾添加文字"
+  },
+  {
+    "executable": "/usr/bin/node",
+    "args": [
+      "/opt/feishu-bot/examples/actions/project-operations.mjs",
+      "feishu-table-list"
+    ],
+    "env": {
+      "FEISHU_ACTION_APP_SECRET": "BOT_FEISHU_ACTION_SECRET"
+    },
+    "vars": {
+      "FEISHU_ACTION_APP_ID": "cli_project_actions",
+      "FEISHU_BASE_TOKEN": "base_example",
+      "FEISHU_TABLE_ID": "tbl_example",
+      "FEISHU_WRITABLE_FIELDS": "状态,备注"
+    },
+    "readOnly": true,
+    "timeoutMs": 60000,
+    "parameters": {},
+    "id": "feishu-table-list",
+    "description": "读取指定多维表格第一页，最多 50 条"
+  },
+  {
+    "executable": "/usr/bin/node",
+    "args": [
+      "/opt/feishu-bot/examples/actions/project-operations.mjs",
+      "feishu-table-update",
+      "{{record}}",
+      "{{fields}}"
+    ],
+    "env": {
+      "FEISHU_ACTION_APP_SECRET": "BOT_FEISHU_ACTION_SECRET"
+    },
+    "vars": {
+      "FEISHU_ACTION_APP_ID": "cli_project_actions",
+      "FEISHU_BASE_TOKEN": "base_example",
+      "FEISHU_TABLE_ID": "tbl_example",
+      "FEISHU_WRITABLE_FIELDS": "状态,备注"
+    },
+    "readOnly": false,
+    "timeoutMs": 60000,
+    "parameters": {
+      "record": {
+        "pattern": "rec[A-Za-z0-9]+",
+        "maxLength": 100
+      },
+      "fields": {
+        "maxLength": 10000
+      }
+    },
+    "id": "feishu-table-update",
+    "description": "更新指定表格中的获准字段"
+  }
+]
