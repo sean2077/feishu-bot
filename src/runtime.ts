@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { Config, Room, Session, Worker, WorkerEvent, WorkerFactory, Workspace } from './types.ts';
 import { cleanEnv } from './actions.ts';
 import { modelHeaders } from './config.ts';
-import { JsonLines, killTree } from './process.ts';
+import { JsonLines, killTree, trackProcessTree } from './process.ts';
 import { prepareWorkspace } from './workspace.ts';
 import { hash, redact, Serial } from './util.ts';
 
@@ -26,12 +26,15 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
         if (!token) throw new Error(`missing model credential ${config.model.tokenEnv}`);
         const headers = modelHeaders(config);
         const w = prepared ?? await prepareWorkspace(config, room, session, project);
-        const startedAt = performance.now();
+        const startedAt = performance.now(), bornAt = Date.now();
         const child = spawn(process.execPath, [fileURLToPath(new URL('./worker.js', import.meta.url))], {
             cwd: w.work, env: nativeEnv(w), stdio: ['pipe', 'pipe', 'pipe'], shell: false,
             windowsHide: true, detached: process.platform !== 'win32'
         });
+        trackProcessTree(child, bornAt);
         let stopped = false, exited = false, reportedReady = false;
+        let stopTask: Promise<void> | undefined;
+        let unexpectedCleanup: Promise<void> | undefined;
         const serial = new Serial();
         const write = async (value: object) => serial.run('stdin', async () => {
             if (stopped || exited) throw new Error('worker unavailable');
@@ -56,7 +59,20 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
             room: hash(room.key).slice(0, 12), text: redact(chunk, secrets.concat(token, ...Object.values(headers))).slice(0, 4000)
         }));
         child.on('error', error => onEvent({ type: 'error', message: redact(error.message, secrets) }));
-        child.on('close', code => { exited = true; onEvent({ type: 'exit', code }); });
+        child.on('exit', () => {
+            if (stopTask) return;
+            // Cleanup before reporting an unexpected exit, so native descendants
+            // cannot race the next resumed conversation.
+            unexpectedCleanup = killTree(child).catch(error => log('worker_descendant_cleanup_failed', {
+                room: hash(room.key).slice(0, 12), error: redact(String(error), secrets)
+            }));
+        });
+        child.on('close', code => {
+            exited = true;
+            void (unexpectedCleanup ?? Promise.resolve()).then(() => onEvent({ type: 'exit', code })).catch(error => log('worker_exit_event_failed', {
+                room: hash(room.key).slice(0, 12), error: redact(String(error), secrets)
+            }));
+        });
         try {
             await write({
                 type: 'init', sessionId: session.id, ccId: session.ccId, workDir: w.work, homeDir: w.home, attachmentDir: w.inbound,
@@ -69,11 +85,14 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
         return {
             send: delivery => write({ type: 'input', delivery }),
             respond: (id, value) => { void write({ type: 'response', id, value }).catch(() => {}); },
-            stop: async () => {
-                if (stopped) return;
-                try { await Promise.race([write({ type: 'stop' }), delay(200)]); } catch { /* process already gone */ }
-                stopped = true;
-                await killTree(child);
+            stop: () => {
+                if (!stopTask) stopTask = (async () => {
+                    try { await Promise.race([write({ type: 'stop' }), delay(200)]); } catch { /* process already gone */ }
+                    stopped = true;
+                    try { await killTree(child); }
+                    finally { await unexpectedCleanup; }
+                })();
+                return stopTask;
             }
         };
     };

@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
-import { killTree } from '../src/process.ts';
+import { killTree, trackProcessTree } from '../src/process.ts';
 
 async function live(pid: number): Promise<boolean> {
     try { process.kill(pid, 0); }
@@ -79,6 +79,62 @@ if (level < 2) spawn(process.execPath, [__filename, dir, String(level + 1)], {st
         // Only test-owned recorded PIDs, never a process name or broad system filter.
         await killTree(parent, 100).catch(() => {});
         for (const pid of pids) if (await live(pid)) try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
+        await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+});
+
+// Parent exit must not leave an unowned native CLI process tree running.
+test('native process-tree stop reaps live descendants after their root exited', { timeout: 40000 }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'feishu-orphan-tree-'));
+    const script = join(dir, 'orphan.cjs');
+    await writeFile(script, [
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const { spawn } = require('node:child_process');",
+        "const [dir, text] = process.argv.slice(2);",
+        "const level = Number(text);",
+        "fs.writeFileSync(path.join(dir, level + '.json'), JSON.stringify({ pid: process.pid, ppid: process.ppid }));",
+        "let beat = 0; fs.writeFileSync(path.join(dir, level + '.beat'), String(beat));",
+        "setInterval(() => fs.writeFileSync(path.join(dir, level + '.beat'), String(++beat)), 30);",
+        "setTimeout(() => process.exit(0), 23000).unref();",
+        "if (level < 2) spawn(process.execPath, [__filename, dir, String(level + 1)], { stdio: 'ignore', windowsHide: true, detached: process.platform === 'win32' });",
+        "if (level === 0) { const wait = setInterval(() => { if (fs.existsSync(path.join(dir, '2.json'))) { clearInterval(wait); process.exit(0); } }, 20); }"
+    ].join('\n'));
+    const bornAt = Date.now();
+    const parent = spawn(process.execPath, [script, dir, '0'], {
+        stdio: 'ignore', detached: process.platform !== 'win32', windowsHide: true
+    });
+    trackProcessTree(parent, bornAt);
+    const pids: number[] = [];
+    const closed = new Promise<void>((resolve, reject) => { parent.once('error', reject); parent.once('close', () => resolve()); });
+    try {
+        await closed;
+        const records = await Promise.all([0, 1, 2].map(i => readFile(join(dir, `${i}.json`), 'utf8').then(JSON.parse)));
+        assert.equal(records[0].pid, parent.pid);
+        assert.equal(records[1].ppid, parent.pid);
+        assert.equal(records[2].ppid, records[1].pid);
+        pids.push(...records.map(r => Number(r.pid)));
+        assert.equal(new Set(pids).size, 3);
+        assert.ok(!(await live(pids[0]!)), 'root has exited before cleanup');
+        await eventually(async () => {
+            try { await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`)))); return true; }
+            catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false; throw e; }
+        }, 'Descendant heartbeats were not established');
+        const preLive = await Promise.all(pids.slice(1).map(live));
+        const initialBeats = await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`), 'utf8')));
+        await delay(180);
+        const activeBeats = await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`), 'utf8')));
+        assert.ok(preLive.every(Boolean) && activeBeats.every((beat, i) => beat !== initialBeats[i]),
+            JSON.stringify({ preLive, initialBeats, activeBeats, pids }));
+        await killTree(parent, 100);
+        await eventually(async () => (await Promise.all(pids.slice(1).map(live))).every(value => !value),
+            'Orphaned native descendants survived after the root exited');
+        const beats = await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`), 'utf8')));
+        await delay(120);
+        assert.deepEqual(await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`), 'utf8'))), beats);
+    } finally {
+        await killTree(parent, 100).catch(() => {});
+        for (const pid of pids) if (await live(pid)) try { process.kill(pid, 'SIGKILL'); } catch { /* exited */ }
         await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
 });
