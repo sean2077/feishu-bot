@@ -173,7 +173,11 @@ export class Outbox {
         try { await this.transport.update(target, card); }
         catch { this.store.audit(room.key, 'delivery_notice_pending', { id: row.id }); }
     }
-    retryable(room: string): string[] { return this.store.db.prepare("SELECT id FROM outbox WHERE room=? AND state='pending' AND file_state!='uncertain' AND (target IS NOT NULL OR (kind='file' AND file_state='pending')) ORDER BY at LIMIT 10").all(room).map(r => String(r.id)); }
+    retryable(room: string): string[] {
+        // Waiting for an agent file is not a transport failure. Do not rewrite two cards
+        // on every sweep; the final reply becomes retryable once its file barrier clears.
+        return this.store.db.prepare("SELECT o.id FROM outbox o WHERE o.room=? AND o.state='pending' AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR (o.kind='file' AND o.file_state='pending')) AND (o.kind='file' OR NOT EXISTS (SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session AND f.kind='file' AND f.state NOT IN ('done','cancelled'))) ORDER BY o.at LIMIT 10").all(room).map(r => String(r.id));
+    }
     pending(room: string): { id: string; state: string; stage: string; detail?: string }[] {
         return this.store.db.prepare("SELECT id,state,file_state,delivery_error FROM outbox WHERE room=? AND state NOT IN ('done','cancelled') ORDER BY at DESC LIMIT 20").all(room)
             .map(r => ({ id: String(r.id), state: String(r.state), stage: r.file_state !== 'none' && r.file_state !== 'done' ? 'file' : 'reply', ...(r.delivery_error ? { detail: String(r.delivery_error) } : {}) }));
