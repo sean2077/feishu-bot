@@ -123,7 +123,7 @@ export class Outbox {
                     this.store.recordOutput(fileTarget, room.key, row.session);
                 }
                 if (!this.sending(id, room)) return false;
-                if (this.unfinishedFiles(room.key, row.session)) {
+                if (row.success && this.unfinishedFiles(room.key, row.session)) {
                     this.store.db.prepare("UPDATE outbox SET state='pending',delivery_error=? WHERE id=? AND state='sending'").run(
                         'An agent file has not been confirmed delivered; the reply is not complete.', id);
                     if (target) await this.pendingAttachmentNotice(row, room, target);
