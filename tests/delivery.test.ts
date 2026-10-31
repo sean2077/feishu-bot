@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFile, mkdir, readFile, symlink } from 'node:fs/promises';
+import { writeFile, mkdir, readFile, readdir, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Outbox } from '../src/outbox.ts';
 import { ActionBroker } from '../src/actions.ts';
 import { startActionRelay } from '../src/action-relay.ts';
 import { prepareWorkspace } from '../src/workspace.ts';
 import { route } from '../src/gateway.ts';
+import { hash } from '../src/util.ts';
 import { fixture, message, until } from './helpers.ts';
 test('failed create is uncertain and requires explicit scoped retry', async () => {
     const f = await fixture();
@@ -198,24 +199,51 @@ test('retention removes completed export snapshots but preserves uncertain files
         const completedPath = join(dir, 'delivered.txt');
         const uncertainPath = join(dir, 'unconfirmed.txt');
         const unrelatedPath = join(f.config.dataDir, 'other-file.txt');
+        const abandonedPath = join(dir, 'abandoned.txt');
         await writeFile(completedPath, 'already delivered');
         await writeFile(uncertainPath, 'may still require manual retry');
         await writeFile(unrelatedPath, 'never delete outside exports');
+        await writeFile(abandonedPath, 'explicitly cancelled and no longer retryable');
         const doneId = f.gateway.outbox.saveFile(room, session.id, completedPath, 'delivered.txt');
         const pendingId = f.gateway.outbox.saveFile(room, session.id, uncertainPath, 'unconfirmed.txt');
         const unrelatedId = f.gateway.outbox.saveFile(room, session.id, unrelatedPath, 'other-file.txt');
+        const abandonedId = f.gateway.outbox.saveFile(room, session.id, abandonedPath, 'abandoned.txt');
         assert.equal(await f.gateway.outbox.deliver(doneId, room), true);
         assert.equal(await f.gateway.outbox.deliver(unrelatedId, room), true);
         f.store.db.prepare("UPDATE outbox SET state='uncertain',file_state='uncertain' WHERE id=?").run(pendingId);
+        f.store.db.prepare("UPDATE outbox SET state='cancelled' WHERE id=?").run(abandonedId);
         const now = Date.now();
-        f.store.db.prepare('UPDATE outbox SET at=? WHERE id IN (?,?,?)').run(now - 8 * 86400000, doneId, pendingId, unrelatedId);
+        f.store.db.prepare('UPDATE outbox SET at=? WHERE id IN (?,?,?,?)').run(now - 8 * 86400000, doneId, pendingId, unrelatedId, abandonedId);
         await f.gateway.sweep(now);
         await assert.rejects(readFile(completedPath), { code: 'ENOENT' });
         assert.equal(f.store.db.prepare('SELECT id FROM outbox WHERE id=?').get(doneId), undefined);
+        await assert.rejects(readFile(abandonedPath), { code: 'ENOENT' });
+        assert.equal(f.store.db.prepare('SELECT id FROM outbox WHERE id=?').get(abandonedId), undefined);
         assert.equal(await readFile(uncertainPath, 'utf8'), 'may still require manual retry');
         assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(pendingId)?.state, 'uncertain');
         assert.equal(await readFile(unrelatedPath, 'utf8'), 'never delete outside exports');
         assert.ok(f.store.db.prepare('SELECT id FROM outbox WHERE id=?').get(unrelatedId),
             'An unexpected snapshot path must retain its record for investigation');
+    } finally { await f.close(); }
+});
+
+test('a failed agent file outbox insert leaves no untracked local snapshot', async () => {
+    const f = await fixture();
+    try {
+        await f.gateway.message(message());
+        await until(() => f.workers[0]?.sent.length === 1);
+        const w = f.workers[0]!;
+        const workspace = await prepareWorkspace(f.config, w.room, w.session, f.config.projects[0]!);
+        const source = join(workspace.work, 'report.txt');
+        await writeFile(source, 'file prepared but not persisted');
+        f.gateway.outbox.saveFile = () => { throw new Error('fixture database insert failure'); };
+        w.emit({ type: 'request', id: 'file-storage-failure', kind: 'send_file', name: 'send_file',
+            input: { path: source, name: 'report.txt' } });
+        await until(() => w.responses.length === 1);
+        assert.equal(w.responses[0]!.value.ok, false);
+        assert.match(String(w.responses[0]!.value.error), /fixture database insert failure/);
+        assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM outbox').get()!.n, 0);
+        const dir = join(f.config.dataDir, 'exports', hash(w.room.key).slice(0, 32));
+        assert.deepEqual(await readdir(dir), [], 'a failed local save must not leak untracked bytes');
     } finally { await f.close(); }
 });

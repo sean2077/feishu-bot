@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile, stat } from 'node:fs/promises';
+import { mkdir, writeFile, stat, unlink } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import type { Args, Config, Delivery, Message, Room, Session, Transport, Worker, WorkerEvent, WorkerFactory, Origin } from './types.ts';
 import { Store } from './store.ts';
@@ -442,23 +442,35 @@ export class Gateway {
             const dir = join(this.config.dataDir, 'exports', hash(slot.room.key).slice(0, 32));
             await mkdir(dir, { recursive: true, mode: 0o700 });
             const snapshot = join(dir, randomUUID());
-            await writeFile(snapshot, bytes, { mode: 0o600 });
-            if (slot.abort.signal.aborted)
-                throw new Error('operation cancelled');
-            const name = basename(String(event.input.name ?? basename(path)));
-            const origins = [...slot.deliveries.values()].map(d => d.message);
-            // Snapshot first, then persist the upload intent before touching the external API.
-            // The outbox preserves unknown outcomes for explicit, scope-checked recovery.
-            const id = this.outbox.saveFile(current, slot.session.id, snapshot, name, origins, slot.anchor?.message.id);
-            if (slot.abort.signal.aborted) {
-                this.store.db.prepare("UPDATE outbox SET state='cancelled' WHERE id=?").run(id);
-                throw new Error('operation cancelled');
+            let recorded = false;
+            try {
+                await writeFile(snapshot, bytes, { mode: 0o600 });
+                if (slot.abort.signal.aborted)
+                    throw new Error('operation cancelled');
+                const name = basename(String(event.input.name ?? basename(path)));
+                const origins = [...slot.deliveries.values()].map(d => d.message);
+                // Snapshot first, then persist the upload intent before touching the external API.
+                // The outbox preserves unknown outcomes for explicit, scope-checked recovery.
+                const id = this.outbox.saveFile(current, slot.session.id, snapshot, name, origins, slot.anchor?.message.id);
+                recorded = true;
+                if (slot.abort.signal.aborted) {
+                    this.store.db.prepare("UPDATE outbox SET state='cancelled' WHERE id=?").run(id);
+                    throw new Error('operation cancelled');
+                }
+                const sent = await this.outbox.deliver(id, current);
+                if (!sent) return { ok: false, deliveryId: id,
+                    error: 'File not confirmed delivered. Check /outputs; an explicit /retry-output may be required.' };
+                const row = this.store.db.prepare('SELECT file_target FROM outbox WHERE id=?').get(id);
+                return { ok: true, deliveryId: id, messageId: String(row?.file_target ?? '') };
+            } finally {
+                // A failed local snapshot or database insert must not leave untracked bytes.
+                // Once recorded, only the durable outbox owns cleanup and retry decisions.
+                if (!recorded)
+                    await unlink(snapshot).catch(error => {
+                        if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+                            this.store.audit(slot.room.key, 'untracked_export_cleanup_failed', {});
+                    });
             }
-            const sent = await this.outbox.deliver(id, current);
-            if (!sent) return { ok: false, deliveryId: id,
-                error: 'File not confirmed delivered. Check /outputs; an explicit /retry-output may be required.' };
-            const row = this.store.db.prepare('SELECT file_target FROM outbox WHERE id=?').get(id);
-            return { ok: true, deliveryId: id, messageId: String(row?.file_target ?? '') };
         }
         const questions = event.kind === 'question' ? event.input.questions as Question[] : undefined;
         return this.approvals.request(slot.room, slot.session.id, event.name, event.input, `工具：${event.name}\n参数：\`${redact(JSON.stringify(event.input), this.secrets).slice(0, 5000)}\``, slot.abort.signal, questions);
