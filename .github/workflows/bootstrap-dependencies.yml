@@ -1,0 +1,23 @@
+name: Bootstrap locked dependencies
+on:
+  push:
+    branches: [feat/native-feishu-gateway]
+    paths: [package.json, .github/workflows/bootstrap-dependencies.yml]
+permissions:
+  contents: read
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Pack dependency snapshot for offline validation
+        run: tar -czf dependencies.tgz package-lock.json node_modules
+      - uses: actions/upload-artifact@v4
+        with:
+          name: locked-dependencies
+          path: dependencies.tgz
+          retention-days: 1
