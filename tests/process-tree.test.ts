@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
-import { killTree } from '../src/process.ts';
+import { killTree, trackProcessTree } from '../src/process.ts';
 
 async function live(pid: number): Promise<boolean> {
     try { process.kill(pid, 0); }
@@ -100,9 +100,11 @@ test('native process-tree stop reaps live descendants after their root exited', 
         "if (level < 2) spawn(process.execPath, [__filename, dir, String(level + 1)], { stdio: 'ignore', windowsHide: true, detached: process.platform === 'win32' });",
         "if (level === 0) { const wait = setInterval(() => { if (fs.existsSync(path.join(dir, '2.json'))) { clearInterval(wait); process.exit(0); } }, 20); }"
     ].join('\n'));
+    const bornAt = Date.now();
     const parent = spawn(process.execPath, [script, dir, '0'], {
         stdio: 'ignore', detached: process.platform !== 'win32', windowsHide: true
     });
+    trackProcessTree(parent, bornAt);
     const pids: number[] = [];
     const closed = new Promise<void>((resolve, reject) => { parent.once('error', reject); parent.once('close', () => resolve()); });
     try {
