@@ -1,18 +1,16 @@
 #!/usr/bin/env node
-import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
-import { join, resolve, dirname } from 'node:path';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, modelHeaders, secretsFor } from './config.ts';
 import { lockDataDir, redact, errorText } from './util.ts';
-import { runCommand } from './actions.ts';
+import { parseCli } from './cli-options.ts';
+import { deploymentChecks, runDoctor } from './doctor.ts';
 import { Store } from './store.ts';
-const args = process.argv.slice(2);
-const command = args[0] ?? 'help';
-const option = (name: string, fallback: string) => { const i = args.indexOf(name); return i < 0 ? fallback : (args[i + 1] ?? fallback); };
-const configPath = resolve(option('--config', 'config.json'));
 let secrets: string[] = [];
 async function main(): Promise<void> {
-    if (command === 'help' || command === '--help') {
+    const { command, configPath, probe } = parseCli(process.argv.slice(2));
+    if (command === 'help') {
         console.log('feishu-bot init [--config path]\nfeishu-bot doctor [--config path] [--probe]\nfeishu-bot run [--config path]\n\nLinux / Windows: run one native service. Claude sessions start on demand and stay warm between messages.');
         return;
     }
@@ -34,47 +32,13 @@ async function main(): Promise<void> {
     secrets = secretsFor(config);
     const log = (event: string, detail: object = {}) => process.stderr.write(redact(JSON.stringify({ at: new Date().toISOString(), event, ...detail }), secrets) + '\n');
     if (command === 'doctor') {
-        const checks: { name: string; ok: boolean; detail?: string }[] = [];
-        checks.push({ name: 'Node >=22.16', ok: Number(process.versions.node.split('.')[0]) > 22 || (Number(process.versions.node.split('.')[0]) === 22 && Number(process.versions.node.split('.')[1]) >= 16), detail: process.versions.node });
-        for (const name of [config.appSecretEnv, config.model.tokenEnv]) checks.push({ name: `credential ${name}`, ok: !!process.env[name] });
-        try { modelHeaders(config); checks.push({ name: 'model endpoint headers', ok: true }); }
-        catch (error) { checks.push({ name: 'model endpoint headers', ok: false, detail: errorText(error) }); }
-        try { const git = await runCommand('git', ['--version']); checks.push({ name: 'Git', ok: git.code === 0, detail: git.output.trim() }); }
-        catch { checks.push({ name: 'Git', ok: false, detail: 'Install Git; on Windows install Git for Windows.' }); }
-        if (process.platform === 'win32' && process.env.CLAUDE_CODE_GIT_BASH_PATH) {
-            try { checks.push({ name: 'configured Git Bash', ok: (await stat(process.env.CLAUDE_CODE_GIT_BASH_PATH)).isFile() }); }
-            catch { checks.push({ name: 'configured Git Bash', ok: false }); }
-        }
-        await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
-        try { const probe = new Store(join(config.dataDir, 'doctor.sqlite')); probe.close(); checks.push({ name: 'SQLite', ok: true }); }
-        catch { checks.push({ name: 'SQLite', ok: false }); }
-        for (const project of config.projects) {
-            for (const [name, path] of [['seedDir', project.seedDir], ['trustedConfigDir', project.trustedConfigDir]] as const) if (path) {
-                try { checks.push({ name: `${project.id} ${name}`, ok: (await stat(path)).isDirectory() }); }
-                catch { checks.push({ name: `${project.id} ${name}`, ok: false }); }
-            }
-            for (const action of project.actions) {
-                try { checks.push({ name: `action ${project.id}/${action.id}`, ok: (await stat(action.executable)).isFile() }); }
-                catch { checks.push({ name: `action ${project.id}/${action.id}`, ok: false }); }
-                for (const env of Object.values(action.env)) checks.push({ name: `action credential ${env}`, ok: !!process.env[env] });
-            }
-        }
-        if (args.includes('--probe')) {
-            try {
-                const result = await fetch(config.model.baseUrl + '/v1/messages', {
-                    method: 'POST', headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', authorization: `Bearer ${process.env[config.model.tokenEnv] ?? ''}`, ...modelHeaders(config) },
-                    body: JSON.stringify({ model: config.model.model, max_tokens: 16, messages: [{ role: 'user', content: 'Reply OK.' }] }), signal: AbortSignal.timeout(30000), redirect: 'manual'
-                });
-                checks.push({ name: 'model endpoint basic probe (not full harness acceptance)', ok: result.ok, detail: `HTTP ${result.status}` });
-                await result.body?.cancel();
-            } catch { checks.push({ name: 'model endpoint basic probe', ok: false }); }
-        }
-        console.log(JSON.stringify({ platform: process.platform, runtime: 'native', checks }, null, 2));
-        if (checks.some(c => !c.ok)) process.exitCode = 1;
+        const report = await runDoctor(config, probe);
+        console.log(JSON.stringify(report, null, 2));
+        if (!report.ready) process.exitCode = 1;
         return;
     }
-    if (command !== 'run') throw new Error('Unknown command; use --help');
-    if (!process.env[config.model.tokenEnv]) throw new Error(`Missing model credential ${config.model.tokenEnv}`);
+    const failures = deploymentChecks(config).filter(check => !check.ok);
+    if (failures.length) throw new Error('Startup configuration is incomplete. Run npm run doctor.\n' + failures.map(check => `${check.name}: ${check.detail}`).join('\n'));
     modelHeaders(config);
     const unlock = await lockDataDir(config.dataDir);
     let store: Store | undefined;
@@ -85,7 +49,7 @@ async function main(): Promise<void> {
         if (closed) return;
         closed = true; log('shutdown');
         try { await channel?.disconnect().catch(() => {}); await gateway?.close(); }
-        finally { store?.close(); await unlock(); }
+        finally { try { store?.close(); } finally { await unlock(); } }
     };
     try {
         store = new Store(join(config.dataDir, 'gateway.sqlite'));
