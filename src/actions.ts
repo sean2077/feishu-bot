@@ -6,7 +6,7 @@ import type { ActionSpec, Args, Project, Room } from './types.ts';
 import { Store } from './store.ts';
 import { Approvals } from './approvals.ts';
 import { hash, redact, readBoundedFile } from './util.ts';
-import { killTree } from './process.ts';
+import { killTree, trackProcessTree } from './process.ts';
 export function actionArguments(spec: ActionSpec, input: Args, snapshots: Record<string, string> = {}): string[] {
     for (const name of Object.keys(input))
         if (!(name in spec.parameters))
@@ -44,7 +44,9 @@ export async function runCommand(executable: string, args: string[], options: {
     if (options.signal?.aborted)
         throw new Error('operation cancelled');
     return new Promise((resolve, reject) => {
+        const bornAt = Date.now();
         const child = spawn(executable, args, { cwd: options.cwd, env: options.env ?? cleanEnv(), shell: false, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+        trackProcessTree(child, bornAt);
         const chunks: Buffer[] = [];
         let bytes = 0, reason = '', finished = false;
         let fallback: NodeJS.Timeout | undefined;
