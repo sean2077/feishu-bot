@@ -101,7 +101,7 @@ export class Store {
         // Retain tombstones for 30 days to suppress platform retries after restarts.
         this.db.prepare("DELETE FROM inbox WHERE status IN ('done','cancelled','uncertain') AND at<?").run(now - 30 * 86400000);
         this.db.prepare('DELETE FROM outputs WHERE at<?').run(now - 30 * 86400000);
-        this.db.prepare("DELETE FROM outbox WHERE state='done' AND at<?").run(now - 7 * 86400000);
+        this.db.prepare("DELETE FROM outbox WHERE state='done' AND file_path IS NULL AND at<?").run(now - 7 * 86400000);
     }
     close(): void { this.db.close(); }
 }

@@ -557,6 +557,7 @@ export class Gateway {
     async sweep(now = Date.now()): Promise<void> {
         if (this.closing)
             return;
+        await this.outbox.pruneCompletedExports(now, join(this.config.dataDir, 'exports'));
         this.store.trim(now, this.config.limits.backgroundMs);
         this.receipts.retry();
         for (const room of this.rooms.values())
