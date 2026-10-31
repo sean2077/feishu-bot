@@ -96,7 +96,11 @@ export class Outbox {
                     const saved = this.store.db.prepare("UPDATE outbox SET file_target=?,file_state='done' WHERE id=? AND state='sending'").run(fileTarget, id).changes;
                     if (!saved || !this.sending(id, room)) return false;
                     this.store.recordOutput(fileTarget, room.key, row.session);
-                } else if (!row.fileTarget) throw new Error('Missing recorded file receipt');
+                } else {
+                    if (!row.fileTarget) throw new Error('Missing recorded file receipt');
+                    // A crash may occur after persisting the provider ID but before indexing it.
+                    this.store.recordOutput(row.fileTarget, room.key, row.session);
+                }
             } else {
                 const text = row.text.length > 24000 ? row.text.slice(0, 23800) + '\n\n（完整答案另附文件。）' : row.text;
                 const card = row.card ?? displayCard(row.success ? '回复' : '执行失败', text || '本轮已结束。');
