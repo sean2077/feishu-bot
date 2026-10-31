@@ -3,19 +3,18 @@
   "appId": "cli_test_app",
   "appSecretEnv": "FEISHU_APP_SECRET",
   "dataDir": "./state",
-  "runtime": { "mode": "local", "maxWorkers": 4, "idleMs": 0 },
+  "runtime": { "maxWorkers": 4, "idleMs": 900000 },
   "model": {
     "baseUrl": "https://your-company-gateway.example/anthropic",
     "tokenEnv": "COMPANY_MODEL_TOKEN",
-    "model": "your-company-deepseek-model-id",
-    "smallModel": "your-company-deepseek-model-id"
+    "model": "your-company-deepseek-model-id"
   },
   "projects": [{
     "id": "project", "maintainers": ["ou_maintainer"],
-    "autoApproveWorkspace": false,
+    "permissionMode": "acceptEdits",
+    "allowedTools": [],
     "actions": []
   }],
   "groups": [{ "chatId": "oc_test_group", "projectId": "project" }],
-  "dms": [{ "userId": "ou_maintainer", "projectId": "project" }],
-  "limits": { "backgroundMessages": 30, "backgroundMs": 900000, "attachmentBytes": 20971520 }
+  "dms": [{ "userId": "ou_maintainer", "projectId": "project" }]
 }

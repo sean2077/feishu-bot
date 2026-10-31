@@ -1,72 +1,84 @@
 # feishu-bot
 
-把 Claude Code 接到项目组的飞书群和私聊。多人可以在处理过程中继续补充消息；不同群、每个私聊分别保留自己的会话和工作区。
+项目组的飞书机器人，直接运行 Claude Code。支持 Linux 和 Windows，不需要 Docker。
 
-网关只负责交付、身份、审批与运行托管。任务理解、工具执行、并行子代理、压缩和后台监控仍交给 Claude Code。模型通过公司提供的 Anthropic Messages 兼容入口调用。
-
-## 能做什么
-
-- 群内 @ 或回复机器人触发处理；其他获准接收的群消息仅作为有限、增量背景，不自动启动模型。
-- 普通消息直接进入持续开放的 CC 输入流，不等待整个上一轮结束，也不额外做意图分类。
-- 保留发送者、引用、话题和附件；同一原生结果可以确认多条输入，不按“一条输入一个结果”计数。
-- 同群共享主会话；群与私聊分别隔离历史、记忆、工作区、附件和审批。
-- 流式回复、提问卡片、一次性审批、状态查询、会话恢复、停止和结果补发。
-- Linux 使用无网络的隔离 worker 容器；公司模型密钥和业务写凭据留在宿主。
-- Windows 原生可开发和测验。它不是生产容器隔离的替代品。
+一个常驻服务接收飞书消息；各群和私聊的 CC 会话按需启动并复用。网关负责身份、消息交付、审批和状态，任务理解、工具使用、子代理、压缩和监控交给 CC。
 
 ## 开始使用
 
-要求 Node.js **22.16+**，推荐 Node.js 24；Git；生产环境另需 Linux 和 Docker。CC 运行时由锁定的官方 Agent SDK 提供，无需继承个人 Claude 登录。
+安装 Node.js 22.16+（推荐 24）和 Git。Windows 安装 Git for Windows。
 
 ```sh
 npm ci --ignore-scripts
-npm run check
-node dist/cli.js init
+npm run init
 ```
 
-编辑生成的 `config.json`，填写测试飞书应用、群／用户 ID、维护者和公司模型入口。模板默认是本地测试模式。密钥通过环境变量提供，不写进仓库：
+`init` 会构建程序并生成 `config.json`，不会覆盖已有配置。填写飞书 app、允许的群／私聊、维护者，以及公司模型网关地址和模型 ID。`baseUrl` 与你在 Claude Code 中使用的 `ANTHROPIC_BASE_URL` 相同，不添加本地模型转换服务。
+
+设置密钥后运行。Windows PowerShell：
 
 ```powershell
-# Windows PowerShell；使用独立的测试飞书应用。
 $env:FEISHU_APP_SECRET = "测试应用密钥"
-$env:COMPANY_MODEL_TOKEN = "公司测试网关凭据"
-node dist/cli.js doctor
-node dist/cli.js run
+$env:COMPANY_MODEL_TOKEN = "公司网关凭据"
+npm run doctor
+npm start
 ```
 
-Linux 使用相同 CLI；生产部署见 [部署说明](docs/deployment.md)。`doctor --probe` 会发起一次极小的模型请求，有 token 开销，默认不会执行。
+Linux 使用对应的 `export` 设置环境变量，执行同样命令。首次先用独立测试飞书应用；测试与生产不要复用同一个 app 的长连接。[飞书配置与后台部署](docs/deployment.md)
 
-## 聊天方式
+## 日常使用
 
-正常说话即可，例如“@机器人 帮忙看这个构建失败”，处理中其他人仍可补充“只在 Windows 出现”。群背景不构成授权，权限决定不交给模型。
+群里 @ 机器人或回复它的消息即可。处理中有人继续 @，新消息直接送入当前 CC 输入流，不等待整项任务完成；不需要学习 queue／steer 等输入模式。
+
+未 @ 的获准群消息只作为有限的增量背景，不启动模型。每条消息保留作者、引用和附件；同群成员共享主会话，不同群和私聊分别管理会话、目录和原生记忆。
+
+- **少冷启动**：服务启动和普通群闲聊不启动 CC。首次任务启动，后续消息复用进程和上下文。
+- **不让空闲群占满资源**：默认真正空闲 15 分钟后只回收进程，保留历史；容量满时优先释放空闲进程。监控、子代理、执行中的操作和审批不会被当成空闲。
+- **少打断**：默认使用 CC 的 `acceptEdits`，文件编辑不逐次审批。项目的常用测试命令可通过 `allowedTools` 预授权；其余权限请求仍发给维护者。没有默认全权限模式。
+
+### 少量管理命令
 
 | 命令 | 作用 |
 |---|---|
-| `/status` | 当前运行、后台活动、待交付输入和审批数 |
-| `/sessions` | 只列本聊天的历史会话 |
-| `/new` | 停止当前运行后新建本聊天会话 |
-| `/resume <ID>` | 选择本聊天的历史会话，下条消息恢复上下文 |
-| `/stop` | 停止本聊天 worker、后台进程、审批和待交付输入 |
-| `/answer <请求ID> <回答>` | 回答指定追问；不会把普通消息误当作审批 |
-| `/outputs` | 查看未确认送达的最终回复 |
-| `/retry-output <ID>` | 人工确认补发结果不明确的回复，可能出现重复消息 |
+| `/status` | 当前会话、后台活动、输入与审批状态 |
+| `/sessions`、`/resume <ID>` | 查看和恢复本聊天的历史会话 |
+| `/new`、`/stop` | 新会话；停止当前聊天运行及待交付输入 |
+| `/answer <请求ID> <回答>` | 回答指定追问 |
+| `/outputs`、`/retry-output <ID>` | 查看未确认送达的回复，明确补发 |
 
-群内新建、恢复和停止限维护者；私聊本人也可以管理自己的会话。敏感操作仍只由维护者批准。非维护者私聊发起敏感操作时，维护者收到**操作摘要**审批卡，不接收私聊历史。
+群内新建、恢复和停止限维护者；私聊本人也可管理自己的会话。`/stop` 不会撤销已经发生的外部操作，也不会复活旧监控；需要旧上下文时显式 `/resume`。
 
-`/stop` 不承诺撤销已经发出的外部操作。下一条普通消息使用新会话；需要之前的上下文时显式 `/resume`。进程回收和新建会话是两回事；默认不因闲置换会话。
+## 项目配置
 
-## 项目能力
+```json
+{
+  "id": "project",
+  "maintainers": ["ou_maintainer"],
+  "seedDir": "C:/work/project-source",
+  "permissionMode": "acceptEdits",
+  "allowedTools": ["Bash(npm test *)"],
+  "actions": []
+}
+```
 
-预先授权的代码阅读、本地编辑与测试由 CC 在工作区完成。高权限远端操作使用固定、受控的宿主操作；不把发布凭据交给可执行任意代码的 worker。
+`seedDir` 可选，只在聊天工作区首次建立时复制干净源码并创建独立 Git baseline；后续消息不重复复制，也不覆盖现有修改。项目依赖可在原生工作区正常安装、复用系统工具和包缓存，不再要求离线镜像。
 
-[项目操作说明](docs/project-actions.md) 附有 Jenkins 查询／构建、GitLab 提交 MR、飞书文档和多维表格示例。已有可信 CLI 可直接接入，无需重写业务系统。原生 Bash／Monitor 也可以调用这些**同一套**受控操作，网关不增加 cron。
+`allowedTools` 使用 CC 原生规则，不是另一个命令分类器。预授权前确认该项目及脚本可信。Jenkins、GitLab MR、飞书文档与多维表格可通过已有可信 CLI 或[受控项目操作](docs/project-actions.md)接入；写操作逐次审批，凭据不默认放进 agent 环境。
 
-## 运行与验证边界
+## 部署与信任范围
 
-`npm run check` 包含类型检查、回放／安全测试、构建，以及**真实 CC 二进制＋本地模拟模型服务**测试。CI 在 Linux、Windows 和两个 Node 版本上运行，并另做 Linux Docker 边界验证。
+Linux 常驻服务和 Windows 工作机使用同一运行方式。建议团队服务使用独立、非管理员的系统账户，不继承你的个人登录态。
 
-这些测试不等于真实飞书租户或公司 DeepSeek 网关验收。接入前请按 [验收清单](docs/validation.md) 做双账号、双群和私聊联调。模型能否正确理解并行任务、图片及复杂工具调用，也需要实际模型验证。
+不同会话的目录和路由是**逻辑分离，不是 OS 沙箱**。允许执行代码后，它具有该服务账户的系统权限；同一账户的进程不能承诺彼此保密。此版用于同一信任范围的项目组，不宣称能承载相互不信任的租户。[权限说明](SECURITY.md)
 
-## 文档
+## 验证
 
-[架构与原生能力边界](docs/architecture.md) · [部署](docs/deployment.md) · [权限与隔离](SECURITY.md) · [项目操作](docs/project-actions.md) · [验收](docs/validation.md) · [开发](CONTRIBUTING.md)
+```sh
+npm run check
+```
+
+包含类型检查、单元／交互回放、构建，以及真实 CC 进程对本地模型 fixture 的测试。CI 在 Windows／Linux、Node 22.16／24 上运行，不需要容器或真实密钥。
+
+真实飞书和公司 DeepSeek 网关仍需使用你的测试环境联调；本地模型 fixture 不代表真实模型性能或企业 API 验收。[验证清单](docs/validation.md)
+
+[架构](docs/architecture.md) · [部署](docs/deployment.md) · [项目操作](docs/project-actions.md) · [开发](CONTRIBUTING.md)

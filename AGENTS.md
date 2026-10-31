@@ -1,7 +1,8 @@
 # feishu-bot
 
-- Keep Feishu and Claude Code as the only channel/runtime. Preserve native streaming input, compaction and background work.
-- The gateway owns delivery, identity, approvals and isolation, not planning or cron.
-- Validate with `npm run check`; Linux Docker has a separate smoke test. Never describe fake providers or Linux CI as live Feishu/company-gateway/Windows desktop acceptance.
-- Never put service credentials in a production worker, run untrusted checkout hooks on the host, or replay uncertain external writes automatically.
-- Preserve chat ownership on every session, callback, attachment and output path.
+- Feishu + Claude Code only. Keep native streaming input, compaction and background work; no planner or business cron.
+- Linux / Windows run the same native service. No container backend, image preparation or per-chat model proxy.
+- Start sessions on demand, reuse hot processes, reclaim only confirmed idle processes without discarding history. Never evict background work, monitors, approvals or unconfirmed inputs.
+- Use native permission modes and rules; preserve scoped maintainer approvals. Do not call same-account folders a security sandbox.
+- Validate with `npm run check`. Record live Feishu/company model acceptance separately from fixtures and Windows CI.
+- Preserve chat ownership on session, callback, attachment and output paths. Never blindly replay uncertain external writes.

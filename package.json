@@ -4,16 +4,13 @@
   "description": "A Feishu team gateway for native Claude Code sessions",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=22.16.0"
-  },
-  "bin": {
-    "feishu-bot": "dist/cli.js"
-  },
+  "engines": { "node": ">=22.16.0" },
+  "bin": { "feishu-bot": "dist/cli.js" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "init": "npm run build && node dist/cli.js init",
     "start": "node dist/cli.js run",
     "doctor": "node dist/cli.js doctor",
     "check": "npm run typecheck && npm test && npm run build && npm run test:native",
@@ -24,8 +21,5 @@
     "@larksuite/channel": "0.7.1",
     "zod": "4.1.12"
   },
-  "devDependencies": {
-    "@types/node": "22.15.30",
-    "typescript": "5.9.3"
-  }
+  "devDependencies": { "@types/node": "22.15.30", "typescript": "5.9.3" }
 }
