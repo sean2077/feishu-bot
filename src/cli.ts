@@ -24,7 +24,7 @@ async function main(): Promise<void> {
             if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`${configPath} already exists; it was not overwritten.`);
             throw error;
         }
-        console.log(`Created ${configPath}. Fill in app/chat/member IDs and company model settings, then run npm run doctor and npm start.`);
+        console.log(`Created ${configPath}. Fill in app/chat/member IDs and model endpoint settings, then run npm run doctor and npm start.`);
         return;
     }
     const config = await loadConfig(configPath).catch(error => {
@@ -37,8 +37,8 @@ async function main(): Promise<void> {
         const checks: { name: string; ok: boolean; detail?: string }[] = [];
         checks.push({ name: 'Node >=22.16', ok: Number(process.versions.node.split('.')[0]) > 22 || (Number(process.versions.node.split('.')[0]) === 22 && Number(process.versions.node.split('.')[1]) >= 16), detail: process.versions.node });
         for (const name of [config.appSecretEnv, config.model.tokenEnv]) checks.push({ name: `credential ${name}`, ok: !!process.env[name] });
-        try { modelHeaders(config); checks.push({ name: 'company gateway headers', ok: true }); }
-        catch (error) { checks.push({ name: 'company gateway headers', ok: false, detail: errorText(error) }); }
+        try { modelHeaders(config); checks.push({ name: 'model endpoint headers', ok: true }); }
+        catch (error) { checks.push({ name: 'model endpoint headers', ok: false, detail: errorText(error) }); }
         try { const git = await runCommand('git', ['--version']); checks.push({ name: 'Git', ok: git.code === 0, detail: git.output.trim() }); }
         catch { checks.push({ name: 'Git', ok: false, detail: 'Install Git; on Windows install Git for Windows.' }); }
         if (process.platform === 'win32' && process.env.CLAUDE_CODE_GIT_BASH_PATH) {
@@ -65,16 +65,16 @@ async function main(): Promise<void> {
                     method: 'POST', headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', authorization: `Bearer ${process.env[config.model.tokenEnv] ?? ''}`, ...modelHeaders(config) },
                     body: JSON.stringify({ model: config.model.model, max_tokens: 16, messages: [{ role: 'user', content: 'Reply OK.' }] }), signal: AbortSignal.timeout(30000), redirect: 'manual'
                 });
-                checks.push({ name: 'company gateway basic probe (not full harness acceptance)', ok: result.ok, detail: `HTTP ${result.status}` });
+                checks.push({ name: 'model endpoint basic probe (not full harness acceptance)', ok: result.ok, detail: `HTTP ${result.status}` });
                 await result.body?.cancel();
-            } catch { checks.push({ name: 'company gateway basic probe', ok: false }); }
+            } catch { checks.push({ name: 'model endpoint basic probe', ok: false }); }
         }
         console.log(JSON.stringify({ platform: process.platform, runtime: 'native', checks }, null, 2));
         if (checks.some(c => !c.ok)) process.exitCode = 1;
         return;
     }
     if (command !== 'run') throw new Error('Unknown command; use --help');
-    if (!process.env[config.model.tokenEnv]) throw new Error(`Missing company model credential ${config.model.tokenEnv}`);
+    if (!process.env[config.model.tokenEnv]) throw new Error(`Missing model credential ${config.model.tokenEnv}`);
     modelHeaders(config);
     const unlock = await lockDataDir(config.dataDir);
     let store: Store | undefined;

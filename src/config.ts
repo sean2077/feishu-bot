@@ -80,7 +80,7 @@ export function parseConfig(value: unknown, baseDir = process.cwd()): Config {
     if (r.mode !== undefined && r.mode !== 'local') throw new Error('Container runtime removed. Remove runtime.mode/image/memory/cpus and run the service directly.');
     keys(r, ['mode', 'maxWorkers', 'idleMs'], 'runtime');
     const m = obj(c.model, 'model');
-    if (m.maxConcurrent !== undefined) throw new Error('model.maxConcurrent was removed with the proxy. Configure model request quotas in the company gateway; runtime.maxWorkers limits live sessions.');
+    if (m.maxConcurrent !== undefined) throw new Error('model.maxConcurrent was removed with the proxy. Configure model request quotas in the configured model service; runtime.maxWorkers limits live sessions.');
     keys(m, ['baseUrl', 'tokenEnv', 'model', 'smallModel', 'extraHeaders', 'allowHttp'], 'model');
     const baseUrl = new URL(text(m.baseUrl, 'model.baseUrl'));
     const allowHttp = boolean(m.allowHttp, 'allowHttp', false);
@@ -129,7 +129,7 @@ export function parseConfig(value: unknown, baseDir = process.cwd()): Config {
         appSecretEnv: identifier(c.appSecretEnv ?? 'FEISHU_APP_SECRET', 'appSecretEnv'), dataDir: resolve(baseDir, text(c.dataDir, 'dataDir', 'state')),
         runtime: { maxWorkers: integer(r.maxWorkers, 'maxWorkers', 8, 1, 128), idleMs: integer(r.idleMs, 'idleMs', 900000, 0, 86400000) },
         model: {
-            baseUrl: baseUrl.toString().replace(/\/$/, '').replace(/\/v1$/, ''), tokenEnv: identifier(m.tokenEnv ?? 'COMPANY_MODEL_TOKEN', 'tokenEnv'),
+            baseUrl: baseUrl.toString().replace(/\/$/, '').replace(/\/v1$/, ''), tokenEnv: identifier(m.tokenEnv ?? 'MODEL_AUTH_TOKEN', 'tokenEnv'),
             model: text(m.model, 'model.model'), smallModel: text(m.smallModel, 'smallModel', text(m.model, 'model.model')), extraHeaders, allowHttp
         },
         projects, groups, dms,
@@ -145,7 +145,7 @@ export function parseConfig(value: unknown, baseDir = process.cwd()): Config {
 export async function loadConfig(path: string): Promise<Config> {
     return parseConfig(JSON.parse(await readFile(path, 'utf8')), dirname(resolve(path)));
 }
-/** Native SDK headers; never proxy or translate the company's model protocol. */
+/** Native SDK headers; never proxy or translate the configured model protocol. */
 export function modelHeaders(config: Config): Record<string, string> {
     return Object.fromEntries(Object.entries(config.model.extraHeaders).map(([name, source]) => {
         const value = source.startsWith('env:') ? process.env[source.slice(4)] : source;

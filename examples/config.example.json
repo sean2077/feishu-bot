@@ -1,20 +1,37 @@
 {
-  "tenantId": "your-company-tenant",
-  "appId": "cli_test_app",
+  "tenantId": "tenant_example",
+  "appId": "cli_example_app",
   "appSecretEnv": "FEISHU_APP_SECRET",
   "dataDir": "./state",
-  "runtime": { "maxWorkers": 4, "idleMs": 900000 },
-  "model": {
-    "baseUrl": "https://your-company-gateway.example/anthropic",
-    "tokenEnv": "COMPANY_MODEL_TOKEN",
-    "model": "your-company-deepseek-model-id"
+  "runtime": {
+    "maxWorkers": 4
   },
-  "projects": [{
-    "id": "project", "maintainers": ["ou_maintainer"],
-    "permissionMode": "acceptEdits",
-    "allowedTools": [],
-    "actions": []
-  }],
-  "groups": [{ "chatId": "oc_test_group", "projectId": "project" }],
-  "dms": [{ "userId": "ou_maintainer", "projectId": "project" }]
+  "model": {
+    "baseUrl": "https://model.example/anthropic",
+    "tokenEnv": "MODEL_AUTH_TOKEN",
+    "model": "your-model-id",
+    "smallModel": "your-model-id"
+  },
+  "projects": [
+    {
+      "id": "assistant",
+      "maintainers": [
+        "ou_example_owner"
+      ],
+      "permissionMode": "acceptEdits",
+      "actions": []
+    }
+  ],
+  "groups": [
+    {
+      "chatId": "oc_example_group",
+      "projectId": "assistant"
+    }
+  ],
+  "dms": [
+    {
+      "userId": "ou_example_owner",
+      "projectId": "assistant"
+    }
+  ]
 }
