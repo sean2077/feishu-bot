@@ -1,10 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile, stat } from 'node:fs/promises';
 import { join, basename } from 'node:path';
-import type { Args, Config, Delivery, Message, Room, Session, Transport, Worker, WorkerEvent, WorkerFactory } from './types.ts';
+import type { Args, Config, Delivery, Message, Room, Session, Transport, Worker, WorkerEvent, WorkerFactory, Origin } from './types.ts';
 import { Store } from './store.ts';
-import { Outbox } from './outbox.ts';
-import { Approvals, displayCard, type Question } from './approvals.ts';
+import { Outbox, type Outgoing } from './outbox.ts';
+import { Render } from './render.ts';
+import { Receipts } from './receipts.ts';
+import { ChatHistory } from './history.ts';
+import { route, roomFromKey, authorizedAuthor, readable, triggers } from './policy.ts';
+export { route } from './policy.ts';
+import { Approvals, type Question } from './approvals.ts';
 import { ActionBroker } from './actions.ts';
 import { hash, redact, safeFile, readBoundedFile, Serial, errorText } from './util.ts';
 import { prepareWorkspace, translateWorkerFile, type Workspace } from './workspace.ts';
@@ -21,105 +26,11 @@ interface Slot {
     workspace?: Workspace;
     deliveries: Map<string, Delivery>;
     anchor?: Delivery;
-    render?: Render;
+    renders: Map<string, Render>;
+    replyAnchors: Map<string, Delivery>;
+    compacting?: string;
     requests: Set<string>;
     activeRequests: number;
-}
-/** A coalescing display sink; API latency never blocks the native event reader. */
-class Render {
-    private text = '';
-    private messageId?: string;
-    private createUncertain = false;
-    private timer?: ReturnType<typeof setTimeout>;
-    private closed = false;
-    private tail = Promise.resolve();
-    private failures = 0;
-    private last = '';
-    readonly room: Room;
-    readonly session: string;
-    readonly transport: Transport;
-    readonly store: Store;
-    readonly replyTo?: string;
-    readonly threadId?: string;
-    readonly interval: number;
-    constructor(room: Room, session: string, transport: Transport, store: Store, interval: number, anchor?: Delivery) { this.room = room; this.session = session; this.transport = transport; this.store = store; this.interval = interval; this.replyTo = anchor?.message.id; this.threadId = anchor?.message.threadId; }
-    update(text: string, partial: boolean): void {
-        if (this.closed)
-            return;
-        if (partial)
-            this.text = (this.text + text).slice(-60000);
-        else if (!this.text.endsWith(text))
-            this.text = text.slice(-60000);
-        if (!this.timer) {
-            this.timer = setTimeout(() => { this.timer = undefined; this.flush(false); }, this.interval);
-            this.timer.unref();
-        }
-    }
-    async cancel(title = '已停止'): Promise<void> { this.closed = true; if (this.timer)
-        clearTimeout(this.timer); await this.tail; if (this.messageId)
-        await this.transport.update(this.messageId, displayCard(title, '以下是中断前输出，不代表任务完成。\n\n' + this.text.slice(0, 24000))).catch(() => { }); }
-    private flush(final: boolean, success = true): void {
-        this.tail = this.tail.then(async () => {
-            const text = this.text || (!success ? '本轮执行失败，请检查状态。' : '已完成。');
-            if ((!this.messageId && this.createUncertain) || (!final && text === this.last))
-                return;
-            const content = text.length > 24000 ? text.slice(0, 24000) + '\n\n（长回复将另附完整文件。）' : text;
-            const card = displayCard(final ? (success ? '回复' : '执行失败') : '处理中', content);
-            try {
-                if (this.messageId)
-                    await this.transport.update(this.messageId, card);
-                else {
-                    this.messageId = await this.transport.card(this.room, card, this.replyTo, this.threadId);
-                    this.store.recordOutput(this.messageId, this.room.key, this.session);
-                }
-                this.last = text;
-            }
-            catch {
-                this.failures++;
-                if (!this.messageId) this.createUncertain = true;
-                if (final) {
-                    const id = await this.transport.send(this.room, content, this.replyTo, this.threadId);
-                    this.store.recordOutput(id, this.room.key, this.session);
-                }
-                else if (this.failures > 2)
-                    this.last = text;
-            }
-        }).catch(() => { this.store.audit(this.room.key, 'output_delivery_failed', { session: this.session }); });
-    }
-    async finish(text: string, success: boolean, dataDir: string): Promise<void> {
-        if (this.closed)
-            return;
-        this.closed = true;
-        if (this.timer)
-            clearTimeout(this.timer);
-        if (text)
-            this.text = text.slice(0, 500000);
-        await this.tail;
-        const outbox = new Outbox(this.store, this.transport);
-        const output = outbox.save(this.room, this.session, this.text, success, this.messageId, this.replyTo, this.threadId);
-        if (this.createUncertain && !this.messageId) this.store.db.prepare("UPDATE outbox SET state='uncertain' WHERE id=?").run(output);
-        await outbox.deliver(output, this.room);
-        if (this.text.length > 24000) {
-            const dir = join(dataDir, 'exports', hash(this.room.key).slice(0, 32));
-            await mkdir(dir, { recursive: true, mode: 0o700 });
-            const path = join(dir, `${randomUUID()}.md`);
-            await writeFile(path, this.text, { mode: 0o600 });
-            await this.transport.file(this.room, path, 'reply.md').catch(() => { });
-        }
-    }
-}
-export function route(config: Config, message: Message): Room | undefined {
-    if (message.senderIsBot || !message.senderId || !message.chatId || !message.id)
-        return;
-    const binding = message.chatType === 'group' ? config.groups.find(g => g.chatId === message.chatId) : config.dms.find(d => d.userId === message.senderId);
-    if (!binding)
-        return;
-    const project = config.projects.find(p => p.id === binding.projectId)!;
-    const members = 'members' in binding ? binding.members : undefined;
-    if (members && !members.includes(message.senderId) && !project.maintainers.includes(message.senderId))
-        return;
-    return { key: JSON.stringify([config.tenantId, config.appId, project.id, message.chatType, message.chatId, message.chatType === 'p2p' ? message.senderId : null]),
-        chatId: message.chatId, projectId: project.id, maintainers: project.maintainers, members, dmUser: message.chatType === 'p2p' ? message.senderId : undefined };
 }
 export class Gateway {
     readonly config: Config;
@@ -127,6 +38,9 @@ export class Gateway {
     readonly transport: Transport;
     readonly approvals: Approvals;
     readonly broker: ActionBroker;
+    readonly receipts: Receipts;
+    readonly outbox: Outbox;
+    readonly history: ChatHistory;
     private factory: WorkerFactory;
     private slots = new Map<string, Slot>();
     private rooms = new Map<string, Room>();
@@ -146,40 +60,74 @@ export class Gateway {
         this.transport = transport;
         this.factory = factory;
         this.secrets = secrets;
-        this.approvals = new Approvals(store, transport, config.limits.approvalMs);
+        this.receipts = new Receipts(store, transport, (key, sender) => {
+            const room = roomFromKey(this.config, key);
+            return !!room && authorizedAuthor(room, sender);
+        });
+        this.outbox = new Outbox(store, transport, this.receipts, (row, room) => this.outputAllowed(row, room));
+        this.history = new ChatHistory(config, store, transport);
+        this.approvals = new Approvals(store, transport, config.limits.approvalMs, key => roomFromKey(config, key));
         this.broker = new ActionBroker(store, this.approvals, secrets, join(config.dataDir, 'action-inputs'));
         this.housekeeping = setInterval(() => { if (!this.closing)
             void this.track(this.sweep()).catch(() => { }); }, 30000);
         this.housekeeping.unref();
     }
+    private outputAllowed(row: Outgoing, room: Room): boolean {
+        const current = roomFromKey(this.config, room.key);
+        if (!current) return false;
+        if (row.origins.length) return row.origins.every(o => authorizedAuthor(current, o.senderId));
+        if (!row.replyTo) return true; // Unattributed native background output stays in the bound room.
+        const source = this.store.contextMessage(room.key, row.replyTo);
+        return !!source && readable(current, source);
+    }
+    private sanitize(room: Room, delivery: Delivery): boolean {
+        const current = route(this.config, delivery.message);
+        if (!current || current.key !== room.key || !triggers(delivery.message)) return false;
+        if (delivery.command && (delivery.command.name !== 'compact' ||
+            !/^\/compact(?:\s|$)/.test(delivery.message.text.trim()) ||
+            !current.maintainers.includes(delivery.message.senderId) && current.dmUser !== delivery.message.senderId)) return false;
+        delivery.background = this.config.limits.backgroundMessages > 0
+            ? delivery.background.filter(m => readable(current, m)).slice(-this.config.limits.backgroundMessages) : [];
+        delivery.quote = undefined;
+        delivery.attachments = [];
+        return true;
+    }
     async recover(): Promise<void> {
         const recovered = this.store.recover();
-        for (const roomKey of [...new Set([...recovered.rooms, ...this.store.pendingRooms(), ...this.store.db.prepare("SELECT DISTINCT room FROM outbox WHERE state!='done'").all().map(r => r.room as string)])]) {
-            // Re-derive ownership from current policy, never trust a persisted room's old ACL.
-            const row = this.store.db.prepare("SELECT message FROM inbox WHERE room=? AND message!='{}' ORDER BY at DESC LIMIT 1").get(roomKey);
-            if (!row)
-                continue;
-            const room = route(this.config, JSON.parse(row.message as string));
-            if (!room || room.key !== roomKey)
-                continue;
-            this.rooms.set(room.key, room);
-            if (recovered.rooms.includes(roomKey))
-                await this.notice(room, '上次运行中断：已交给 CC 的输入和结果未知的外部操作不会自动重放。会话历史可恢复，请核实后再继续。');
-            this.kick(room);
+        if (this.config.limits.backgroundMessages === 0) this.store.db.exec("DELETE FROM inbox WHERE status='background'");
+        const keys = new Set([...recovered.rooms, ...this.store.pendingRooms(),
+            ...this.store.db.prepare("SELECT DISTINCT room FROM outbox WHERE state NOT IN ('done','cancelled')").all().map(r => String(r.room))]);
+        for (const key of keys) {
+            const room = roomFromKey(this.config, key);
+            for (const delivery of this.store.pending(key)) {
+                if (!room || !this.sanitize(room, delivery)) {
+                    this.store.discardInput(key, delivery.message.id);
+                    this.receipts.settle(key, delivery.sessionId, [delivery.message], false);
+                } else this.store.queue(delivery);
+            }
+            if (!room) continue;
+            this.rooms.set(key, room);
+            if (recovered.rooms.includes(key)) {
+                const hasAuthorizedUncertain = this.store.db.prepare("SELECT message FROM inbox WHERE room=? AND status='uncertain' AND message!='{}'").all(key)
+                    .some(r => { try { return route(this.config, JSON.parse(String(r.message)))?.key === key; } catch { return false; } });
+                if (hasAuthorizedUncertain) await this.notice(room, '上次运行中断。将继续原会话；未确认完成的输入与外部操作不会自动重放，请先核实结果。');
+            }
         }
+        this.receipts.recover();
+        for (const room of this.rooms.values()) this.kick(room);
     }
     async message(original: Message): Promise<void> {
         if (this.closing)
             return;
         const room = route(this.config, original);
-        if (!room)
+        if (!room || (!triggers(original) && this.config.limits.backgroundMessages === 0))
             return;
         await this.inputSerial.run(room.key, async () => {
             if (this.store.seen(room.key, original.id))
                 return;
-            const message = { ...original, text: original.text.slice(0, this.config.limits.textChars), resources: original.resources.slice(0, 12) };
+            const message = { ...original, text: original.text.trim().slice(0, this.config.limits.textChars), resources: original.resources.slice(0, 12) };
             this.rooms.set(room.key, room);
-            const triggered = message.chatType === 'p2p' || message.mentioned || !!(message.replyTo && this.store.isOutput(room.key, message.replyTo));
+            const triggered = triggers(message);
             if (!triggered) {
                 if (this.config.limits.backgroundMessages > 0) {
                     this.store.insert(room.key, message);
@@ -205,7 +153,14 @@ export class Gateway {
                 await this.notice(room, '本群待交付输入已达上限，请查看 /status 或联系维护者。', message);
                 return;
             }
-            const session = this.store.session(room.key), background = this.store.background(room.key, now, this.config.limits.backgroundMs, this.config.limits.backgroundMessages);
+            const compactMatch = /^\/compact(?:\s+([\s\S]*))?$/.exec(message.text);
+            if (compactMatch && !room.maintainers.includes(message.senderId) && room.dmUser !== message.senderId) {
+                this.store.insert(room.key, message, 'cancelled');
+                await this.notice(room, '整理共享会话需要维护者操作。', message);
+                return;
+            }
+            const session = this.store.session(room.key), background = compactMatch ? [] : this.store.background(room.key, now, this.config.limits.backgroundMs, this.config.limits.backgroundMessages)
+                .filter(m => readable(room, m));
             let contextChars = 0;
             for (let i = background.length - 1; i >= 0; i--) {
                 contextChars += background[i]!.text.length;
@@ -214,9 +169,12 @@ export class Gateway {
                     break;
                 }
             }
-            const delivery: Delivery = { uuid: randomUUID(), roomKey: room.key, sessionId: session.id, message, background, attachments: [] };
+            const delivery: Delivery = { uuid: randomUUID(), roomKey: room.key, sessionId: session.id, message, background, attachments: [],
+                command: compactMatch ? { name: 'compact', instructions: (compactMatch[1] ?? '').slice(0, 4000) } : undefined };
             this.store.transaction(() => { this.store.insert(room.key, message, 'queued'); this.store.queue(delivery); this.store.consumeBackground(room.key, background.map(m => m.id)); });
-            void this.transport.receipt(message.id).catch(() => { });
+            this.receipts.accept(room, session.id, message);
+            if (compactMatch && (this.slots.get(room.key)?.busy || this.store.countPending(room.key) > 1))
+                await this.notice(room, '已接收 /compact，将在当前工作轮次结束后整理上下文；期间仍可处理审批。', message);
             this.kick(room);
         });
     }
@@ -227,7 +185,12 @@ export class Gateway {
     private async dispatch(room: Room): Promise<void> {
         if (this.closing)
             return;
-        const pending = this.store.pending(room.key);
+        const pending = this.store.pending(room.key).filter(delivery => {
+            if (this.sanitize(room, delivery)) { this.store.queue(delivery); return true; }
+            this.store.discardInput(room.key, delivery.message.id);
+            this.receipts.settle(room.key, delivery.sessionId, [delivery.message], false);
+            return false;
+        });
         if (!pending.length)
             return;
         let slot = this.slots.get(room.key);
@@ -246,7 +209,7 @@ export class Gateway {
                 const session = this.store.session(room.key);
                 const created: Slot = { room, session, abort: new AbortController(), live: true, busy: false,
                     background: -1, pinned: false, lastActivity: Date.now(), deliveries: new Map(),
-                    requests: new Set(), activeRequests: 0 };
+                    requests: new Set(), activeRequests: 0, renders: new Map(), replyAnchors: new Map() };
                 this.slots.set(room.key, created);
                 return created;
             });
@@ -254,7 +217,7 @@ export class Gateway {
                 if (this.closing || !this.store.pending(room.key).length) return;
                 if (!this.waitingNotified.has(room.key)) {
                     this.waitingNotified.add(room.key);
-                    await this.notice(room, '当前会话都在工作或监控，输入已保存。有空闲进程时会自动处理；不会中止其他人的任务。');
+                    await this.notice(room, '当前会话都在工作或监控，输入已保存。有空闲进程时会自动处理；不会中止其他人的任务。', pending[0]?.message);
                 }
                 return;
             }
@@ -280,14 +243,17 @@ export class Gateway {
                 return;
             if (delivery.sessionId !== slot.session.id) {
                 this.store.mark(delivery.uuid, 'cancelled');
+                this.receipts.settle(room.key, delivery.sessionId, [delivery.message], false);
                 continue;
             }
+            if (slot.compacting) return;
+            if (delivery.command && (slot.busy || slot.deliveries.size > 0 || slot.activeRequests > 0 || this.approvals.size(slot.session.id))) return;
             try {
-                if (delivery.message.replyTo) {
-                    const quoted = await this.transport.fetch(delivery.message.replyTo).catch(() => undefined);
-                    if (quoted?.chatId === room.chatId) {
+                if (delivery.message.replyTo && !delivery.command) {
+                    const quoted = await this.transport.fetch(delivery.message.replyTo, room).catch(() => undefined);
+                    if (quoted && readable(room, quoted)) {
                         delivery.quote = { ...quoted, text: quoted.text.slice(0, this.config.limits.textChars), resources: quoted.resources.slice(0, 12) };
-                        this.store.insert(room.key, delivery.quote, 'context');
+                        this.store.rememberContext(room.key, [delivery.quote]);
                     }
                 }
                 const w = slot.workspace!;
@@ -303,18 +269,41 @@ export class Gateway {
                 if (!slot.live || slot.abort.signal.aborted)
                     return;
                 slot.deliveries.set(delivery.uuid, delivery);
+                slot.replyAnchors.set(delivery.uuid, { ...delivery, message: { ...delivery.message, text: '', resources: [] }, background: [], quote: undefined, attachments: [] });
+                if (slot.replyAnchors.size > 10000) slot.replyAnchors.delete(slot.replyAnchors.keys().next().value!);
                 slot.anchor ??= delivery;
+                if (delivery.command) slot.compacting = delivery.uuid;
+                this.receipts.accept(room, slot.session.id, delivery.message);
                 slot.busy = true;
                 slot.lastActivity = Date.now();
                 // Mark before writing: a crash after an ambiguous write must not replay an external action.
                 this.store.mark(delivery.uuid, 'sent');
                 await slot.worker!.send(delivery);
+                if (delivery.command) return; // A persisted barrier: later inputs wait for its native result.
             }
             catch (e) {
+                this.receipts.settle(room.key, delivery.sessionId, [delivery.message], false);
                 this.store.mark(delivery.uuid, 'uncertain');
                 await this.notice(room, `本条交付未确认，不会自动重放：${redact(errorText(e), this.secrets)}`, delivery.message);
+                if (slot.deliveries.has(delivery.uuid)) {
+                    this.event(slot, { type: 'exit', code: null });
+                    await slot.worker?.stop();
+                    return;
+                }
             }
         }
+    }
+    private renderFor(slot: Slot, uuid?: string): Render {
+        const human = !!uuid && slot.deliveries.has(uuid);
+        const anchor = human ? slot.anchor ?? slot.deliveries.get(uuid!) : uuid ? slot.replyAnchors.get(uuid) : undefined;
+        const key = human ? 'human' : 'background:' + (uuid ?? 'unknown');
+        let render = slot.renders.get(key);
+        if (!render) {
+            render = new Render(slot.room, slot.session.id, this.transport, this.store, this.outbox,
+                this.config.limits.updateMs, anchor, slot.abort.signal, text => redact(text, this.secrets));
+            slot.renders.set(key, render);
+        }
+        return render;
     }
     private event(slot: Slot, event: WorkerEvent): void {
         if (!slot.live)
@@ -324,6 +313,10 @@ export class Gateway {
             case 'ready':
                 if (!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(event.ccId))
                     break;
+                if (slot.session.ccId && slot.session.ccId !== event.ccId) {
+                    void this.track(this.stopRoom(slot.room)).then(() => this.notice(slot.room, '原会话恢复返回了不同 ID，已停止，未重置历史。请检查原生会话文件。'));
+                    break;
+                }
                 this.store.setCc(slot.session.id, event.ccId);
                 slot.session.ccId = event.ccId;
                 break;
@@ -344,23 +337,37 @@ export class Gateway {
                 this.kickWaiting();
                 break;
             case 'text':
-                slot.render ??= new Render(slot.room, slot.session.id, this.transport, this.store, this.config.limits.updateMs, slot.anchor);
-                slot.render.update(redact(event.text, this.secrets), event.partial);
+            case 'thinking':
+                this.renderFor(slot, event.turnId).update(redact(event.text, this.secrets), event.partial, event.type, event.blockId);
                 break;
+            case 'compaction': {
+                const id = slot.compacting ?? slot.anchor?.uuid;
+                this.renderFor(slot, id).setStatus(event.phase === 'start' ? '正在整理原生上下文' : '上下文已整理');
+                break;
+            }
             case 'result': {
-                const finished = event.uuids?.length ? event.uuids : (event.uuid ? [event.uuid] : []);
-                for (const id of finished)
-                    if (slot.deliveries.has(id)) {
-                        this.store.mark(id, 'done');
-                        slot.deliveries.delete(id);
-                    }
-                // Retain unknown deliveries; a background notification must not settle another human turn.
+                const finished = (event.uuids?.length ? event.uuids : event.uuid ? [event.uuid] : []).filter(id => slot.deliveries.has(id));
+                const anchor = finished.length ? slot.deliveries.get(finished[0]!) : event.replyToUuid ? slot.replyAnchors.get(event.replyToUuid) : undefined;
+                const origins: Origin[] = finished.length ? finished.map(id => slot.deliveries.get(id)!.message) : anchor ? [anchor.message] : [];
+                const key = finished.length ? 'human' : 'background:' + (event.replyToUuid ?? 'unknown');
+                const unbound = !slot.renders.has(key) ? slot.renders.get('background:unknown') : undefined;
+                const render = unbound ?? this.renderFor(slot, finished[0] ?? event.replyToUuid);
+                if (unbound) { unbound.bindOrigin(anchor); slot.renders.delete('background:unknown'); }
+                slot.renders.delete(key);
+                for (const id of finished) { this.store.mark(id, 'done'); slot.deliveries.delete(id); }
+                if (slot.compacting && finished.includes(slot.compacting)) slot.compacting = undefined;
                 slot.busy = slot.deliveries.size > 0;
-                const render = slot.render ?? new Render(slot.room, slot.session.id, this.transport, this.store, this.config.limits.updateMs, slot.anchor);
-                slot.render = undefined;
                 slot.anchor = slot.deliveries.values().next().value;
-                void this.track(render.finish(redact(event.text, this.secrets), event.success, this.config.dataDir)).catch(() => { });
-                this.store.audit(slot.room.key, 'turn_result', { session: slot.session.id, success: event.success, usage: event.usage ?? {} });
+                // Clear the transient marker now; Done is applied only after durable output delivery.
+                this.receipts.settle(slot.room.key, slot.session.id, origins, false);
+                const compactText = event.compact === 'compacted' ? '上下文已由 Claude Code 原生压缩，会话保持不变。'
+                    : event.compact === 'not_needed' ? '原生压缩未执行（例如历史不足），会话保持不变。'
+                    : event.compact === 'failed' ? '原生压缩失败，未新建或重置会话。' : undefined;
+                const text = compactText ? compactText + (event.text ? '\n\n' + event.text : '') : event.text;
+                slot.activeRequests++; // Do not evict the process while its final card is still being saved.
+                void this.track(render.finish(redact(text, this.secrets), event.success, this.config.dataDir, origins,
+                    event.compact ? '上下文整理' : undefined)).catch(() => {}).finally(() => { slot.activeRequests--; this.kickWaiting(); });
+                this.store.audit(slot.room.key, 'turn_result', { session: slot.session.id, success: event.success, compact: event.compact, usage: event.usage ?? {} });
                 this.kickWaiting();
                 break;
             }
@@ -379,14 +386,14 @@ export class Gateway {
                 }
                 break;
             case 'error':
-                void this.notice(slot.room, redact(event.message, this.secrets));
+                void this.notice(slot.room, redact(event.message, this.secrets), slot.anchor?.message);
                 break;
             case 'exit': {
                 slot.live = false;
                 slot.abort.abort();
                 this.approvals.cancelSession(slot.session.id);
-                if (slot.render)
-                    void this.track(slot.render.cancel('执行中断'));
+                this.receipts.cancelSession(slot.session.id);
+                for (const render of slot.renders.values()) void this.track(render.cancel('执行中断'));
                 this.store.db.prepare("UPDATE inbox SET status='uncertain' WHERE session=? AND status IN ('sent','consumed')").run(slot.session.id);
                 if (this.slots.get(slot.room.key) === slot)
                     this.slots.delete(slot.room.key);
@@ -401,17 +408,18 @@ export class Gateway {
     private async request(slot: Slot, event: Extract<WorkerEvent, {
         type: 'request';
     }>): Promise<Args> {
+        const current = roomFromKey(this.config, slot.room.key);
+        if (!current || slot.abort.signal.aborted) throw new Error('Conversation is no longer authorized');
         const project = this.config.projects.find(p => p.id === slot.room.projectId)!;
+        if (event.kind === 'history') return this.history.read(current, slot.session.id, event.input, slot.abort.signal);
         if (event.kind === 'action') {
             const w = slot.workspace!;
             return this.broker.execute(slot.room, slot.session.id, project, event.name, event.input, slot.abort.signal, w.work, path => translateWorkerFile(this.config, w, path));
         }
         if (event.kind === 'attachment') {
             const id = String(event.input.messageId ?? ''), key = String(event.input.key ?? '');
-            const stored = this.store.db.prepare('SELECT message FROM inbox WHERE room=? AND id=?').get(slot.room.key, id);
-            if (!stored)
-                throw new Error('attachment message is not in this conversation');
-            const message = JSON.parse(stored.message as string) as Message;
+            const message = this.store.contextMessage(slot.room.key, id);
+            if (!message || !readable(current, message)) throw new Error('attachment message is not authorized in this conversation');
             const resource = message.resources?.find(r => r.key === key);
             if (!resource)
                 throw new Error('unknown attachment');
@@ -448,16 +456,17 @@ export class Gateway {
         const [command, ...parts] = message.text.trim().split(/\s+/), arg = parts.join(' ');
         const maintainer = room.maintainers.includes(message.senderId);
         if (command === '/help') {
-            await this.notice(room, '直接 @ 或回复机器人即可续话。/status 状态；/sessions 本聊天历史；/new 新会话；/resume 会话ID 恢复；/stop 停止本聊天全部运行；/answer 请求ID 回答。新建、恢复与停止限维护者（私聊本人也可管理会话）。', message);
+            await this.notice(room, '群里请明确 @ 机器人；私聊直接发送。/status 状态；/sessions 本聊天历史；/compact 原生压缩；/new 新会话；/resume 会话ID 恢复；/stop 停止本聊天全部运行；/answer 请求ID 回答。新建、恢复与停止限维护者（私聊本人也可管理会话）。', message);
             return;
         }
         if (command === '/status') {
             const slot = this.slots.get(room.key);
-            await this.notice(room, JSON.stringify({ project: room.projectId, session: slot?.session.id, state: slot ? (slot.busy ? 'working' : 'connected') : 'offline', background: slot?.background ?? 0, monitorPinned: slot?.pinned ?? false, pendingOrUnconfirmed: this.store.countPending(room.key), approvals: slot ? this.approvals.size(slot.session.id) : 0 }, null, 2), message);
+            const saved = slot?.session ?? this.store.listSessions(room.key).find(s => s.state === 'open');
+            await this.notice(room, JSON.stringify({ project: room.projectId, session: saved?.id, nativeSessionId: saved?.ccId, state: slot ? (slot.busy ? 'working' : 'connected') : saved ? 'suspended' : 'not_started', background: slot?.background ?? 0, monitorPinned: slot?.pinned ?? false, pendingOrUnconfirmed: this.store.countPending(room.key), approvals: slot ? this.approvals.size(slot.session.id) : 0 }, null, 2), message);
             return;
         }
         if (command === '/outputs') {
-            await this.notice(room, JSON.stringify(new Outbox(this.store, this.transport).pending(room.key), null, 2), message);
+            await this.notice(room, JSON.stringify(this.outbox.pending(room.key), null, 2), message);
             return;
         }
         if (command === '/retry-output') {
@@ -465,7 +474,7 @@ export class Gateway {
                 await this.notice(room, '需要维护者批准补发。', message);
                 return;
             }
-            const ok = await new Outbox(this.store, this.transport).deliver(arg, room, true);
+            const ok = await this.outbox.deliver(arg, room, true);
             await this.notice(room, ok ? '已补发。此前结果不明确时可能出现重复消息。' : '未补发：记录不存在、已发送或渠道仍不可用。', message);
             return;
         }
@@ -496,33 +505,32 @@ export class Gateway {
         if (command === '/stop' || command === '/new') {
             await this.stopRoom(room);
             if (command === '/new') {
+                this.store.db.prepare("DELETE FROM inbox WHERE room=? AND status='background'").run(room.key);
                 this.store.newSession(room.key);
                 await this.notice(room, '已新建本聊天会话。', message);
             }
             else
-                await this.notice(room, '已停止本聊天运行、后台进程和待交付输入。历史保留；下条消息使用新会话，需要旧上下文时显式 /resume。', message);
+                await this.notice(room, '已停止本聊天运行、后台进程和待交付输入。上下文和会话 ID 保留，下条消息继续原会话；只有 /new 新建会话。', message);
         }
     }
     private async stopRoom(room: Room): Promise<void> {
         const slot = this.slots.get(room.key);
-        if (slot) {
-            slot.live = false;
-            slot.abort.abort();
-            this.approvals.cancelSession(slot.session.id);
-            this.store.stopSession(slot.session.id);
-            await slot.render?.cancel();
+        const session = slot?.session ?? this.store.listSessions(room.key).find(s => s.state === 'open');
+        if (session) {
+            this.approvals.cancelSession(session.id);
+            this.receipts.cancelSession(session.id);
+            this.store.stopSession(session.id); // Cancel execution inputs, retain the active session ID.
+            this.store.db.prepare("UPDATE outbox SET state='cancelled' WHERE session=? AND state IN ('pending','uncertain','sending','preparing')").run(session.id);
+        }
+        if (slot) { slot.live = false; slot.abort.abort(); }
+        // Wait for a startup/download already in progress before another process can resume the same transcript.
+        await this.dispatchSerial.run(room.key, async () => {
+            if (!slot) return;
             await slot.worker?.stop();
-            this.slots.delete(room.key);
-        }
-        else {
-            const active = this.store.listSessions(room.key).find(s => s.state === 'open');
-            if (active)
-                this.store.stopSession(active.id);
-        }
-        if (!this.closing)
-            for (const other of this.rooms.values())
-                if (other.key !== room.key)
-                    this.kick(other);
+            await Promise.allSettled([...slot.renders.values()].map(r => r.cancel()));
+            if (this.slots.get(room.key) === slot) this.slots.delete(room.key);
+        });
+        this.kickWaiting();
     }
     private async notice(room: Room, text: string, message?: Message): Promise<void> {
         try {
@@ -539,10 +547,10 @@ export class Gateway {
         if (this.closing)
             return;
         this.store.trim(now, this.config.limits.backgroundMs);
-        const outbox = new Outbox(this.store, this.transport);
+        this.receipts.retry();
         for (const room of this.rooms.values())
-            for (const id of outbox.retryable(room.key))
-                await outbox.deliver(id, room);
+            for (const id of this.outbox.retryable(room.key))
+                await this.outbox.deliver(id, room);
         for (const [key, values] of this.rates) {
             const alive = values.filter(t => t > now - 60000);
             if (alive.length)
@@ -584,11 +592,12 @@ export class Gateway {
         this.closing = true;
         clearInterval(this.housekeeping);
         this.approvals.close();
-        await Promise.allSettled([...this.slots.values()].map(async (slot) => { slot.live = false; slot.abort.abort(); await slot.render?.cancel(); await slot.worker?.stop(); }));
+        await Promise.allSettled([...this.slots.values()].map(async (slot) => { slot.live = false; slot.abort.abort(); this.receipts.cancelSession(slot.session.id); await slot.worker?.stop(); await Promise.allSettled([...slot.renders.values()].map(r => r.cancel())); }));
         await this.inputSerial.drain();
         await this.dispatchSerial.drain();
         await this.poolSerial.drain();
         await Promise.allSettled([...this.tasks]);
+        await this.receipts.drain();
         this.slots.clear();
     }
 }

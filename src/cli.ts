@@ -98,12 +98,17 @@ async function main(): Promise<void> {
         process.once('SIGINT', () => void shutdown());
         process.once('SIGTERM', () => void shutdown());
         channel.on('message', async message => { try { await gateway!.message(normalize(message)); } catch (e) { log('inbound_failed', { error: errorText(e) }); } });
-        channel.on('cardAction', async event => ({ toast: { type: 'info', content: await gateway!.approvals.click(event.chatId, event.operator.openId, event.action.value, event.messageId) } }));
+        channel.on('cardAction', async event => {
+            if (!event.messageId) return {};
+            const content = await gateway!.approvals.click(event.chatId, event.operator.openId, event.action.value, event.messageId);
+            return content ? { toast: { type: 'info' as const, content } } : {};
+        });
         channel.on('error', error => log('feishu_error', { code: error.code }));
         channel.on('reconnecting', () => log('feishu_reconnecting'));
         channel.on('reconnected', () => log('feishu_reconnected'));
-        await channel.connect();
+        // Recover persisted state before the event source can deliver new input.
         await gateway.recover();
+        await channel.connect();
         log('ready', { mode: 'native', groups: config.groups.length, dms: config.dms.length });
     } catch (error) { await shutdown(); throw error; }
 }

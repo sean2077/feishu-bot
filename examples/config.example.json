@@ -3,35 +3,24 @@
   "appId": "cli_example_app",
   "appSecretEnv": "FEISHU_APP_SECRET",
   "dataDir": "./state",
-  "runtime": {
-    "maxWorkers": 4
-  },
+  "runtime": { "maxWorkers": 4 },
   "model": {
     "baseUrl": "https://model.example/anthropic",
     "tokenEnv": "MODEL_AUTH_TOKEN",
     "model": "your-model-id",
     "smallModel": "your-model-id"
   },
-  "projects": [
-    {
-      "id": "assistant",
-      "maintainers": [
-        "ou_example_owner"
-      ],
-      "permissionMode": "acceptEdits",
-      "actions": []
-    }
-  ],
-  "groups": [
-    {
-      "chatId": "oc_example_group",
-      "projectId": "assistant"
-    }
-  ],
-  "dms": [
-    {
-      "userId": "ou_example_owner",
-      "projectId": "assistant"
-    }
-  ]
+  "projects": [{
+    "id": "assistant",
+    "maintainers": ["ou_example_owner"],
+    "permissionMode": "acceptEdits",
+    "actions": []
+  }],
+  "groups": [{
+    "chatId": "oc_example_group",
+    "projectId": "assistant",
+    "members": ["ou_example_member"]
+  }],
+  "dms": [{ "userId": "ou_example_owner", "projectId": "assistant" }],
+  "limits": { "backgroundMessages": 0 }
 }

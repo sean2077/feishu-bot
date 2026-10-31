@@ -21,6 +21,7 @@ test('same-group participants share a session, other groups and DMs do not', asy
 test('unmentioned context does not wake CC; authors and incremental context are preserved', async () => {
     const f = await fixture();
     try {
+        f.config.limits.backgroundMessages = 30; // Explicit opt-in only.
         const background = message({ senderId: 'bob', text: 'Only Windows fails', mentioned: false });
         await f.gateway.message(background);
         assert.equal(f.workers.length, 0);
@@ -102,6 +103,8 @@ test('quoted content is scoped to current chat and arbitrary replies do not trig
         const room = f.workers[0]!.room;
         f.store.recordOutput('our-reply', room.key, f.workers[0]!.sent[0]!.sessionId);
         await f.gateway.message(message({ replyTo: 'our-reply', mentioned: false }));
+        assert.equal(f.workers[0]!.sent.length, 1);
+        await f.gateway.message(message({ replyTo: 'our-reply', mentioned: true }));
         await until(() => f.workers[0]!.sent.length === 2);
     }
     finally {
@@ -120,7 +123,7 @@ test('permission wait does not block new input; only a maintainer can decide', a
         await f.gateway.message(message({ senderId: 'bob', text: 'extra detail' }));
         await until(() => w.sent.length === 2);
         assert.match(await f.gateway.approvals.click('group1', 'bob', { request: id, decision: 'allow' }), /维护者/);
-        assert.match(await f.gateway.approvals.click('group2', 'admin', { request: id, decision: 'allow' }), /当前聊天/);
+        assert.equal(await f.gateway.approvals.click('group2', 'admin', { request: id, decision: 'allow' }), '');
         assert.equal(w.responses.length, 0);
         assert.equal(await f.gateway.approvals.click('group1', 'admin', { request: id, decision: 'allow' }), '已批准一次');
         await until(() => w.responses.length === 1);
@@ -149,7 +152,7 @@ test('stop cancels approvals and queued inputs; old worker output is ignored', a
         assert.equal(f.transport.sent.length, n);
         await f.gateway.message(message({ text: 'start new' }));
         await until(() => f.workers[1]?.sent.length === 1);
-        assert.notEqual(f.workers[1]!.sent[0]!.sessionId, oldSession);
+        assert.equal(f.workers[1]!.sent[0]!.sessionId, oldSession);
     }
     finally {
         await f.close();
@@ -245,8 +248,8 @@ test('private member operation reaches maintainer DM without routing private his
         const card = f.transport.sent.find(s => s.room.chatId === 'admin' && s.card);
         const id = f.store.db.prepare("SELECT id FROM requests WHERE state='pending'").get().id;
         assert.ok(!JSON.stringify(card.card).includes('private context'));
-        assert.match(await f.gateway.approvals.click('admin-dm', 'admin', { request: id, decision: 'allow' }, 'copied-card'), /无权/);
-        assert.match(await f.gateway.approvals.click('dm-alice', 'alice', { request: id, decision: 'allow' }, card.id), /无权/);
+        assert.equal(await f.gateway.approvals.click('admin-dm', 'admin', { request: id, decision: 'allow' }, 'copied-card'), '');
+        assert.equal(await f.gateway.approvals.click('dm-alice', 'alice', { request: id, decision: 'allow' }, card.id), '');
         assert.equal(await f.gateway.approvals.click('admin-dm', 'admin', { request: id, decision: 'allow' }, card.id), '已批准一次');
         await until(() => w.responses.length === 1);
         assert.equal(w.responses[0].value.approved, true);

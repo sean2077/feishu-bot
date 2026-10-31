@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { hash } from './util.ts';
 import type { Args, Room, Transport } from './types.ts';
 import { Store } from './store.ts';
+import { authorizedAuthor } from './policy.ts';
 export interface Question {
     question: string;
     header?: string;
@@ -41,7 +42,8 @@ export class Approvals {
     readonly store: Store;
     readonly transport: Transport;
     readonly ttl: number;
-    constructor(store: Store, transport: Transport, ttl: number) { this.store = store; this.transport = transport; this.ttl = ttl; }
+    readonly resolveRoom?: (key: string) => Room | undefined;
+    constructor(store: Store, transport: Transport, ttl: number, resolveRoom?: (key: string) => Room | undefined) { this.store = store; this.transport = transport; this.ttl = ttl; this.resolveRoom = resolveRoom; }
     async request(room: Room, session: string, name: string, input: Args, summary: string, signal?: AbortSignal, questions?: Question[]): Promise<Outcome> {
         if (signal?.aborted)
             return { approved: false, reason: 'cancelled' };
@@ -93,28 +95,34 @@ export class Approvals {
     }
     async click(chatId: string, operator: string, value: unknown, messageId?: string): Promise<string> {
         if (!value || typeof value !== 'object')
-            return '无效操作';
+            return '';
         const v = value as Args;
         const id = typeof v.request === 'string' ? v.request : '';
         const p = this.pending.get(id);
-        if (!p || p.expires <= Date.now())
-            return '请求已结束或过期';
+        if (!p) {
+            const prior = this.store.db.prepare('SELECT room FROM requests WHERE id=?').get(id);
+            const room = prior && this.resolveRoom?.(String(prior.room));
+            return room && room.chatId === chatId && authorizedAuthor(room, operator) ? '请求已结束或过期' : '';
+        }
+        const current = this.resolveRoom ? this.resolveRoom(p.room.key) : p.room;
+        if (!current) return '';
+        p.room = current;
         if (p.forwarded) {
             // A forwarded copy has a different message ID. The callback must name the
             // original card delivered to this exact maintainer, never a caller-supplied chat.
             if (!messageId || p.cards.get(messageId) !== operator)
-                return '无权操作此审批卡片';
+                return '';
         }
         else {
             if (p.room.chatId !== chatId)
-                return '请求不属于当前聊天';
+                return '';
             if (messageId && !p.cards.has(messageId))
-                return '无效审批卡片';
+                return '';
             if (p.room.dmUser && p.room.dmUser !== operator)
-                return '无权操作此私聊';
-            if (p.room.members && !p.room.members.includes(operator) && !p.room.maintainers.includes(operator))
-                return '无权操作';
+                return '';
+            if (!authorizedAuthor(p.room, operator)) return '';
         }
+        if (p.expires <= Date.now()) return '请求已结束或过期';
         if (p.kind === 'permission' && !p.room.maintainers.includes(operator))
             return '仅维护者可以审批';
         if (v.decision === 'deny') {
@@ -157,8 +165,8 @@ export class Approvals {
         const p = this.pending.get(id);
         if (!p || p.kind !== 'question' || p.room.key !== room.key || p.expires <= Date.now())
             return '问题不存在或已过期';
-        if (p.room.dmUser && operator !== p.room.dmUser)
-            return '无权回答';
+        const current = this.resolveRoom ? this.resolveRoom(p.room.key) : p.room;
+        if (!current || !authorizedAuthor(current, operator)) return '';
         if (!text.trim())
             return '回答不能为空';
         if (p.questions.length !== 1) {
