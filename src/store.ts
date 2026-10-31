@@ -27,7 +27,8 @@ export class Store {
         this.addColumn('outbox', 'file_target', 'TEXT');
         this.addColumn('outbox', 'file_state', "TEXT NOT NULL DEFAULT 'none'");
         this.addColumn('outbox', 'delivery_error', 'TEXT');
-        this.db.exec('PRAGMA user_version=3');
+        this.addColumn('outbox', 'kind', "TEXT NOT NULL DEFAULT 'reply'");
+        this.db.exec('PRAGMA user_version=4');
     }
     private addColumn(table: string, column: string, declaration: string): void {
         if (!this.db.prepare(`PRAGMA table_info(${table})`).all().some(r => r.name === column))
