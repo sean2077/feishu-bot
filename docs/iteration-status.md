@@ -6,6 +6,7 @@
 |---|---|---|
 | 首次启动诊断 | 已修复 | 模板、无聊天绑定和不完整参数被拒绝；数据目录错误聚合，临时探针清理，配置错误不回显原文。 |
 | 超长答案完整交付 | 已修复 | 文件与卡片共同持久化；文件未送达不标 Done；重启可补发，不重做模型或业务动作。 |
+| 已完成导出文件清理 | 已修复（平台 CI 已验证） | 完成超过 7 天的回复与主动文件快照在现有 housekeeping 中限量清理；只有确认送达且路径处于受管 exports 内才删除文件。清理失败保留数据库关联，未确认文件与受管目录外文件不删除。历史上已失去数据库关联的旧文件不盲删。 |
 | Agent 主动文件交付 | 已修复（平台 CI 已验证） | `send_file` 创建有归属的持久文件交付记录；未知上传结果只允许明确补发，待交付文件阻止同原生会话的完成表情。文件快照不依赖原工作区后续改动。 |
 | Windows 异常父进程退出 | 已修复（平台 CI 已验证） | Windows 上 detached 子孙在根进程退出后存活，旧清理路径遗漏；现在按原根进程的创建/退出时间、Win32_Process 父子关系及实际创建时间定位并终止存活后代，异常退出完成清理后再释放会话。中间祖先也已退出的断链情形不能靠单次快照可靠追溯。 |
 | 启动期间停止竞态 | 已修复（平台 CI 已验证） | stop 与异步 action relay 初始化重叠时不再启动 CC 或遗留监听；Feishu 连接成功晚于 shutdown 时会再次断开，不误报 ready；启动恢复完成前不关闭数据库。真实飞书连接尚未联调。 |
@@ -23,6 +24,8 @@ PR #6 的真实代码提交 `a3fd618` 已通过[四组 CI](https://github.com/se
 PR #7 的源码提交 `54270a9` 已通过[四组 CI](https://github.com/sean2077/feishu-bot/actions/runs/41233582219)：Ubuntu/Windows × Node.js 22.16/24。Ubuntu 每组 106 项核心回归通过；Windows 每组 105 项通过、1 项既有 POSIX 专用跳过；每组 6 项真实进程 fixture 通过。新增验证异步原生初始化中止与延迟连接取消。Feishu WebSocket 仍使用可控替身。
 
 PR #8 的回归用例先在 [Windows Node 22/24 CI](https://github.com/sean2077/feishu-bot/actions/runs/41238135618) 实际复现遗漏（Linux 两组成功、Windows 两组失败）；修复后在 [四组 CI](https://github.com/sean2077/feishu-bot/actions/runs/41238302626) 全部通过。Ubuntu 每组 107 项核心测试；Windows 每组 106 项通过、1 项既有 POSIX 跳过。Windows 孤儿树使用真实三代 Node 进程与持续心跳验证，非真实模型／飞书联调。
+
+PR #9 的实际修复提交 `d33ed4d` 已通过[四组 CI](https://github.com/sean2077/feishu-bot/actions/runs/41242799686)：Ubuntu/Windows × Node.js 22.16/24，Ubuntu 每组 108 项核心通过，Windows 107 项通过、1 项既有 POSIX 专用跳过；每组另有 6 项原生进程 fixture 通过。回归确认过期且已送达的导出快照会随数据库记录一并清理，未确认文件继续保留、受管目录之外的文件不触碰。没有真实飞书文件服务联调或历史孤立文件全盘扫描。
 
 ## 下一轮优先核查
 
