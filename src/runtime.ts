@@ -69,7 +69,9 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
         });
         child.on('close', code => {
             exited = true;
-            void (unexpectedCleanup ?? Promise.resolve()).then(() => onEvent({ type: 'exit', code }));
+            void (unexpectedCleanup ?? Promise.resolve()).then(() => onEvent({ type: 'exit', code })).catch(error => log('worker_exit_event_failed', {
+                room: hash(room.key).slice(0, 12), error: redact(String(error), secrets)
+            }));
         });
         try {
             await write({
@@ -87,7 +89,8 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
                 if (!stopTask) stopTask = (async () => {
                     try { await Promise.race([write({ type: 'stop' }), delay(200)]); } catch { /* process already gone */ }
                     stopped = true;
-                    await killTree(child);
+                    try { await killTree(child); }
+                    finally { await unexpectedCleanup; }
                 })();
                 return stopTask;
             }
