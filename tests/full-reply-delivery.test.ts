@@ -252,9 +252,10 @@ test('an agent file with a persisted upload receipt is finalized without a secon
         const id = f.outbox.saveFile(f.room, f.session.id, snapshot, 'sent.txt', [f.message], f.message.id);
         f.store.db.prepare("UPDATE outbox SET state='sending',file_state='done',file_target='confirmed-file' WHERE id=?").run(id);
         f.store.recover();
-        assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(id)!.state, 'uncertain');
+        assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(id)!.state, 'pending');
+        assert.deepEqual(f.outbox.retryable(f.room.key), [id], 'recorded provider ID is safe to reconcile automatically');
         f.transport.file = async () => { throw new Error('must not upload again'); };
-        assert.equal(await f.outbox.deliver(id, f.room, true), true);
+        assert.equal(await f.outbox.deliver(id, f.room), true);
         assert.equal(f.store.isOutput(f.room.key, 'confirmed-file'), true);
     } finally { await f.cleanup(); }
 });
