@@ -186,7 +186,13 @@ test('cancelled action reclaims a surviving child after its launcher exits', { t
                 if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
                 throw error;
             }
-        }, 'Action launcher did not exit with a live descendant');
+        }, 'Action launcher did not exit with a live descendant').catch(async error => {
+            const paths = ['root.pid', 'child.pid', 'child.beat', 'root.exiting'];
+            const files = Object.fromEntries(await Promise.all(paths.map(async name => [name,
+                await readFile(join(dir, name), 'utf8').catch(e => String((e as NodeJS.ErrnoException).code ?? e))
+            ])));
+            throw new Error(String(error) + ': ' + JSON.stringify(files));
+        });
         await delay(250); // Allow the root exit to settle on Windows before cancellation.
         const first = await readFile(join(dir, 'child.beat'), 'utf8');
         await delay(150);
