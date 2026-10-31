@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, modelHeaders, secretsFor } from './config.ts';
 import { lockDataDir, redact, errorText } from './util.ts';
 import { parseCli } from './cli-options.ts';
+import { connectBeforeStop } from './connect.ts';
 import { deploymentChecks, runDoctor } from './doctor.ts';
 import { Store } from './store.ts';
 let secrets: string[] = [];
@@ -52,11 +53,22 @@ async function main(): Promise<void> {
     let gateway: import('./gateway.ts').Gateway | undefined;
     let channel: ReturnType<typeof import('./feishu.ts').feishuTransport>['channel'] | undefined;
     let closed = false;
-    const shutdown = async () => {
-        if (closed) return;
-        closed = true; log('shutdown');
-        try { await channel?.disconnect().catch(() => {}); await gateway?.close(); }
-        finally { try { store?.close(); } finally { await unlock(); } }
+    let recovering: Promise<void> | undefined;
+    let shutdownTask: Promise<void> | undefined;
+    const stopping = new AbortController();
+    const shutdown = (): Promise<void> => {
+        if (shutdownTask) return shutdownTask;
+        closed = true; stopping.abort();
+        shutdownTask = (async () => {
+            log('shutdown');
+            try {
+                await channel?.disconnect().catch(() => {});
+                // Never close SQLite while startup recovery is still using it.
+                await recovering?.catch(() => {});
+                await gateway?.close();
+            } finally { try { store?.close(); } finally { await unlock(); } }
+        })();
+        return shutdownTask;
     };
     try {
         store = new Store(join(config.dataDir, 'gateway.sqlite'));
@@ -66,11 +78,15 @@ async function main(): Promise<void> {
         const connected = feishuTransport(config, log);
         channel = connected.channel;
         gateway = new Gateway(config, store, connected.transport, runtimeFactory(config, secrets, log), secrets);
-        process.once('SIGINT', () => void shutdown());
-        process.once('SIGTERM', () => void shutdown());
-        channel.on('message', async message => { try { await gateway!.message(normalize(message)); } catch (e) { log('inbound_failed', { error: errorText(e) }); } });
+        const onSignal = () => { void shutdown().catch(error => {
+            log('shutdown_failed', { error: errorText(error) }); process.exitCode = 1;
+        }); };
+        process.once('SIGINT', onSignal);
+        process.once('SIGTERM', onSignal);
+        channel.on('message', async message => { if (closed) return;
+            try { await gateway!.message(normalize(message)); } catch (e) { log('inbound_failed', { error: errorText(e) }); } });
         channel.on('cardAction', async event => {
-            if (!event.messageId) return {};
+            if (closed || !event.messageId) return {};
             const content = await gateway!.approvals.click(event.chatId, event.operator.openId, event.action.value, event.messageId);
             return content ? { toast: { type: 'info' as const, content } } : {};
         });
@@ -78,9 +94,14 @@ async function main(): Promise<void> {
         channel.on('reconnecting', () => log('feishu_reconnecting'));
         channel.on('reconnected', () => log('feishu_reconnected'));
         // Recover persisted state before the event source can deliver new input.
-        await gateway.recover();
-        await channel.connect();
-        log('ready', { mode: 'native', groups: config.groups.length, dms: config.dms.length });
-    } catch (error) { await shutdown(); throw error; }
+        recovering = gateway.recover();
+        await recovering;
+        if (!closed && await connectBeforeStop(channel, stopping.signal) && !closed)
+            log('ready', { mode: 'native', groups: config.groups.length, dms: config.dms.length });
+    } catch (error) {
+        const interrupted = closed;
+        await shutdown();
+        if (!interrupted) throw error;
+    }
 }
 main().catch(error => { console.error(redact(errorText(error), secrets)); process.exitCode = 1; });
