@@ -97,7 +97,7 @@ test('native process-tree stop reaps live descendants after their root exited', 
         "let beat = 0; fs.writeFileSync(path.join(dir, level + '.beat'), String(beat));",
         "setInterval(() => fs.writeFileSync(path.join(dir, level + '.beat'), String(++beat)), 30);",
         "setTimeout(() => process.exit(0), 23000).unref();",
-        "if (level < 2) spawn(process.execPath, [__filename, dir, String(level + 1)], { stdio: 'ignore', windowsHide: true, detached: true });",
+        "if (level < 2) spawn(process.execPath, [__filename, dir, String(level + 1)], { stdio: 'ignore', windowsHide: true, detached: process.platform === 'win32' });",
         "if (level === 0) { const wait = setInterval(() => { if (fs.existsSync(path.join(dir, '2.json'))) { clearInterval(wait); process.exit(0); } }, 20); }"
     ].join('\n'));
     const parent = spawn(process.execPath, [script, dir, '0'], {
