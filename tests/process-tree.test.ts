@@ -114,11 +114,16 @@ test('native process-tree stop reaps live descendants after their root exited', 
         pids.push(...records.map(r => Number(r.pid)));
         assert.equal(new Set(pids).size, 3);
         assert.ok(!(await live(pids[0]!)), 'root has exited before cleanup');
-        assert.ok((await Promise.all(pids.slice(1).map(live))).every(Boolean), 'descendants remain live before cleanup');
         await eventually(async () => {
             try { await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`)))); return true; }
             catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false; throw e; }
         }, 'Descendant heartbeats were not established');
+        const preLive = await Promise.all(pids.slice(1).map(live));
+        const initialBeats = await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`), 'utf8')));
+        await delay(180);
+        const activeBeats = await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`), 'utf8')));
+        assert.ok(preLive.every(Boolean) && activeBeats.every((beat, i) => beat !== initialBeats[i]),
+            JSON.stringify({ preLive, initialBeats, activeBeats, pids }));
         await killTree(parent, 100);
         await eventually(async () => (await Promise.all(pids.slice(1).map(live))).every(value => !value),
             'Orphaned native descendants survived after the root exited');
