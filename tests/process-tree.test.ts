@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { killTree, trackProcessTree } from '../src/process.ts';
+import { runCommand } from '../src/actions.ts';
 
 async function live(pid: number): Promise<boolean> {
     try { process.kill(pid, 0); }
@@ -135,6 +136,66 @@ test('native process-tree stop reaps live descendants after their root exited', 
     } finally {
         await killTree(parent, 100).catch(() => {});
         for (const pid of pids) if (await live(pid)) try { process.kill(pid, 'SIGKILL'); } catch { /* exited */ }
+        await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+});
+
+ 
+// An external project action can outlive its original launcher while retaining its
+// stdout pipe. Cancellation must still reclaim that process, not just the exited root.
+test('cancelled action reclaims a surviving child after its launcher exits', { timeout: 40000 }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'feishu-action-orphan-'));
+    const launcher = join(dir, 'launcher.cjs');
+    const ticker = join(dir, 'ticker.cjs');
+    await writeFile(ticker, [
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const dir = process.argv[2];",
+        "fs.writeFileSync(path.join(dir, 'child.pid'), String(process.pid));",
+        "let n = 0;",
+        "setInterval(() => fs.writeFileSync(path.join(dir, 'child.beat'), String(++n)), 30);",
+        "setTimeout(() => process.exit(0), 23000).unref();"
+    ].join('\\n'));
+    await writeFile(launcher, [
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const { spawn } = require('node:child_process');",
+        "const dir = process.argv[2];",
+        "fs.writeFileSync(path.join(dir, 'root.pid'), String(process.pid));",
+        "spawn(process.execPath, [path.join(dir, 'ticker.cjs'), dir], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });",
+        "const timer = setInterval(() => { if (fs.existsSync(path.join(dir, 'child.beat'))) { clearInterval(timer); process.exit(0); } }, 20);"
+    ].join('\\n'));
+    const controller = new AbortController();
+    const execution = runCommand(process.execPath, [launcher, dir], { signal: controller.signal, timeoutMs: 20000 });
+    void execution.catch(() => {}); // The test checks its outcome after the root has exited.
+    let childPid = 0;
+    try {
+        await eventually(async () => {
+            try {
+                const [rootText, childText] = await Promise.all([
+                    readFile(join(dir, 'root.pid'), 'utf8'), readFile(join(dir, 'child.pid'), 'utf8')
+                ]);
+                childPid = Number(childText);
+                const rootPid = Number(rootText);
+                return rootPid > 0 && childPid > 0 && !(await live(rootPid)) && await live(childPid);
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+                throw error;
+            }
+        }, 'Action launcher did not exit with a live descendant');
+        const first = await readFile(join(dir, 'child.beat'), 'utf8');
+        await delay(150);
+        assert.notEqual(await readFile(join(dir, 'child.beat'), 'utf8'), first, 'Child was not actually running');
+        controller.abort();
+        await assert.rejects(execution, /operation cancelled/);
+        await eventually(async () => !(await live(childPid)), 'Cancelled action left its descendant running');
+        const stoppedBeat = await readFile(join(dir, 'child.beat'), 'utf8');
+        await delay(120);
+        assert.equal(await readFile(join(dir, 'child.beat'), 'utf8'), stoppedBeat);
+    } finally {
+        controller.abort();
+        await execution.catch(() => {});
+        if (childPid && await live(childPid)) try { process.kill(childPid, 'SIGKILL'); } catch { /* test-owned process exited */ }
         await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
 });
