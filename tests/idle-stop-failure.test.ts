@@ -46,7 +46,7 @@ test('failed idle stop retains capacity and refuses a second native session owne
         assert.equal(f.store.session(first.room.key).id, sessionId, 'failed stop cannot rotate a live transcript');
         assert.match(f.transport.sent.at(-1)?.text ?? '', /未确认退出/);
     } finally {
-        await gateway.close();
+        await assert.rejects(gateway.close(), /termination unconfirmed/i);
         f.store.close();
         await rm(f.dir, { recursive: true, force: true });
     }

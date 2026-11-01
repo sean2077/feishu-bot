@@ -186,7 +186,12 @@ export class Gateway {
     private trimBackground(room: string): void {
         this.store.db.prepare("DELETE FROM inbox WHERE room=? AND status='background' AND id NOT IN (SELECT id FROM inbox WHERE room=? AND status='background' ORDER BY at DESC,id DESC LIMIT ?)").run(room, room, this.config.limits.backgroundMessages);
     }
-    private kick(room: Room): void { void this.dispatchSerial.run(room.key, () => this.dispatch(room)).catch(e => { this.store.audit(room.key, 'dispatch_failed', { error: redact(errorText(e), this.secrets) }); void this.notice(room, '输入已保存，但运行启动或交付失败；请查看服务诊断。'); }); }
+    private kick(room: Room): void {
+        void this.dispatchSerial.run(room.key, () => this.dispatch(room)).catch(e => {
+            this.store.audit(room.key, 'dispatch_failed', { error: redact(errorText(e), this.secrets) });
+            if (!this.closing) void this.track(this.notice(room, '输入已保存，但运行启动或交付失败；请查看服务诊断。'));
+        });
+    }
     private async dispatch(room: Room): Promise<void> {
         if (this.closing)
             return;
@@ -239,7 +244,13 @@ export class Gateway {
                 throw e;
             }
             if (!slot.live || this.closing) {
-                await slot.worker.stop();
+                try { await slot.worker.stop(); slot.stopUnconfirmed = false; }
+                catch (error) {
+                    // close() also waits for dispatch: retain a late startup's
+                    // failed termination instead of hiding it in Serial.drain().
+                    slot.stopUnconfirmed = true;
+                    throw error;
+                }
                 return;
             }
         }
@@ -659,12 +670,33 @@ export class Gateway {
         this.closing = true;
         clearInterval(this.housekeeping);
         this.approvals.close();
-        await Promise.allSettled([...this.slots.values()].map(async (slot) => { slot.live = false; slot.abort.abort(); this.receipts.cancelSession(slot.session.id); await slot.worker?.stop(); await Promise.allSettled([...slot.renders.values()].map(r => r.cancel())); }));
+        await Promise.allSettled([...this.slots.values()].map(async (slot) => {
+            slot.live = false;
+            slot.abort.abort();
+            this.receipts.cancelSession(slot.session.id);
+            try {
+                if (slot.worker) {
+                    await slot.worker.stop();
+                    slot.stopUnconfirmed = false;
+                }
+            } catch (error) {
+                slot.stopUnconfirmed = true;
+                this.store.audit(slot.room.key, 'worker_stop_unconfirmed', {
+                    session: slot.session.id, error: redact(errorText(error), this.secrets)
+                });
+            } finally {
+                await Promise.allSettled([...slot.renders.values()].map(r => r.cancel()));
+            }
+        }));
         await this.inputSerial.drain();
         await this.dispatchSerial.drain();
         await this.poolSerial.drain();
         await Promise.allSettled([...this.tasks]);
         await this.receipts.drain();
-        this.slots.clear();
+        // Include workers which finished initializing after shutdown began.
+        // Keep failed slots reserved; the CLI must not treat this as a clean exit.
+        for (const [key, slot] of this.slots) if (!slot.stopUnconfirmed) this.slots.delete(key);
+        if (this.slots.size)
+            throw new Error(`Native worker termination unconfirmed (${this.slots.size}). Verify remaining native processes before restarting.`);
     }
 }
