@@ -43,19 +43,24 @@ export class Receipts {
                 }
                 const desired = row.desired as ReceiptState;
                 const applied = row.applied as ReceiptApplied | undefined;
+                // Finish removing OnIt before recording any attempt to add Done.
+                // Otherwise a failed or stale OnIt lookup could leave a durable
+                // attempt:done even though the Done API was never called.
+                const next: ReceiptState = desired === 'done' &&
+                    (applied === 'processing' || applied === 'attempt:processing') ? 'clear' : desired;
                 // Persist the uncertain add BEFORE calling Feishu. A restart or
                 // lost response must reconcile the owned reaction, not create it again.
-                if (desired === 'processing' || desired === 'done') {
-                    const attempt = `attempt:${desired}`;
+                if (next === 'processing' || next === 'done') {
+                    const attempt = `attempt:${next}`;
                     if (applied !== attempt)
                         this.store.db.prepare('UPDATE receipts SET applied=? WHERE id=?').run(attempt, id);
                 }
-                try { await this.transport.receipt(id, desired, applied); }
+                try { await this.transport.receipt(id, next, applied); }
                 catch {
                     this.store.audit(String(row.room), 'receipt_retry_pending', { messageId: id });
                     return;
                 }
-                this.store.db.prepare('UPDATE receipts SET applied=? WHERE id=?').run(desired, id);
+                this.store.db.prepare('UPDATE receipts SET applied=? WHERE id=?').run(next, id);
                 // Re-read: completion/cancellation may have arrived during an add request.
             }
         }).catch(() => {});
