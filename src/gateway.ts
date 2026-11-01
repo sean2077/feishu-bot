@@ -393,18 +393,28 @@ export class Gateway {
                 void this.notice(slot.room, redact(event.message, this.secrets), slot.anchor?.message);
                 break;
             case 'exit': {
+                // Planned stop, idle reclamation and shutdown mark the slot non-live
+                // before terminating the child, so only genuine unexpected exits arrive here.
+                const interrupted = slot.deliveries.size > 0 || slot.background > 0 || slot.pinned;
+                const pendingApproval = this.approvals.size(slot.session.id) > 0;
                 slot.live = false;
                 slot.abort.abort();
                 this.approvals.cancelSession(slot.session.id);
                 this.receipts.cancelSession(slot.session.id);
                 for (const render of slot.renders.values()) void this.track(render.cancel('执行中断'));
-                this.store.db.prepare("UPDATE inbox SET status='uncertain' WHERE session=? AND status IN ('sent','consumed')").run(slot.session.id);
+                const uncertain = this.store.db.prepare("UPDATE inbox SET status='uncertain' WHERE session=? AND status IN ('sent','consumed')").run(slot.session.id).changes;
                 if (this.slots.get(slot.room.key) === slot)
                     this.slots.delete(slot.room.key);
-                if (!this.closing)
+                if (!this.closing) {
+                    if (interrupted || pendingApproval || uncertain) {
+                        const current = roomFromKey(this.config, slot.room.key);
+                        if (current) void this.track(this.notice(current,
+                            '原生工作进程意外退出。当前审批／追问已取消；未确认的输入与外部操作不会自动重放。请先核实结果。会话记录仍保留，可以继续原会话。'));
+                    }
                     for (const room of this.rooms.values())
                         if (room.key !== slot.room.key)
                             this.kick(room);
+                }
                 break;
             }
         }

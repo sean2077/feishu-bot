@@ -158,6 +158,45 @@ test('stop cancels approvals and queued inputs; old worker output is ignored', a
         await f.close();
     }
 });
+test('unexpected native exit reports interrupted approvals without replay or session reset', async () => {
+    const f = await fixture();
+    try {
+        const first = message();
+        await f.gateway.message(first);
+        await until(() => f.workers[0]?.sent.length === 1);
+        const old = f.workers[0]!;
+        const originalSession = old.session.id;
+        const originalUuid = old.sent[0]!.uuid;
+        old.emit({ type: 'request', kind: 'permission', id: 'tool-crash', name: 'Bash', input: { command: 'echo fixture' } });
+        await until(() => !!f.store.db.prepare("SELECT id FROM requests WHERE state='pending'").get());
+        const requestId = String(f.store.db.prepare("SELECT id FROM requests WHERE state='pending'").get()!.id);
+        await until(() => f.transport.sent.some(s => s.card !== undefined));
+
+        // Simulate a native child process failure while the service itself remains running.
+        old.emit({ type: 'exit', code: 1 });
+        assert.equal(f.store.db.prepare('SELECT status FROM inbox WHERE uuid=?').get(originalUuid)!.status, 'uncertain');
+        assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM requests WHERE state='pending'").get()!.n, 0);
+        await until(() => f.transport.sent.some(s => s.text?.includes('原生工作进程意外退出')));
+        const warnings = () => f.transport.sent.filter(s => s.text?.includes('原生工作进程意外退出'));
+        assert.equal(warnings().length, 1, 'one notice for an interrupted native process');
+        assert.equal(warnings()[0]!.room.key, old.room.key);
+        assert.match(warnings()[0]!.text!, /审批|追问/);
+        assert.match(warnings()[0]!.text!, /不.*自动重放/);
+        assert.match(await f.gateway.approvals.click(old.room.chatId, 'admin', { request: requestId, decision: 'allow' }), /过期|结束/);
+
+        old.emit({ type: 'exit', code: 1 });
+        old.emit({ type: 'result', text: 'obsolete success', success: true, uuid: originalUuid });
+        await f.gateway.receipts.drain();
+        assert.equal(warnings().length, 1, 'duplicate exit must not duplicate the alert');
+        assert.equal(f.transport.receiptStates.some(r => r.id === first.id && r.state === 'done'), false);
+        await f.gateway.message(message({ text: 'continue after crash' }));
+        await until(() => f.workers[1]?.sent.length === 1);
+        assert.equal(f.workers[1]!.session.id, originalSession, 'only /new rotates the session');
+        assert.notEqual(f.workers[1]!.sent[0]!.uuid, originalUuid, 'uncertain work must not replay');
+    }
+    finally { await f.close(); }
+});
+
 test('a foreign session ID cannot interrupt or replace the current conversation', async () => {
     const f = await fixture();
     try {
