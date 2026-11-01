@@ -341,3 +341,41 @@ test('restart combines uncertain-input and expired-approval warnings in a single
     }
     finally { await f.close(); }
 });
+
+
+test('failed restart warning stays recoverable without replaying an uncertain create', async () => {
+    const f = await fixture();
+    try {
+        const room = route(f.config, message())!;
+        const session = f.store.session(room.key);
+        const requestId = randomUUID();
+        f.store.db.prepare("INSERT INTO requests(id,room,session,kind,digest,state,expires) VALUES(?,?,?,?,?,'pending',?)")
+            .run(requestId, room.key, session.id, 'permission', 'fixture-digest', Date.now() + 60000);
+        let creates = 0;
+        f.transport.send = async () => { creates++; throw new Error('fixture: response lost after remote create'); };
+        const originalCard = f.transport.card.bind(f.transport);
+        f.transport.card = async () => { creates++; throw new Error('fixture: response lost after remote create'); };
+
+        await f.gateway.recover();
+        assert.equal(f.store.db.prepare('SELECT state FROM requests WHERE id=?').get(requestId)?.state, 'expired');
+        const rows = f.store.db.prepare('SELECT id,room,session,state,text FROM outbox WHERE room=?').all(room.key);
+        assert.equal(rows.length, 1, 'a failed recovery notification must have a durable delivery record');
+        const row = rows[0]!;
+        assert.equal(row.session, session.id, 'recovery must not rotate or create a session');
+        assert.equal(row.state, 'uncertain', 'an ambiguous external create must not be blindly retried');
+        assert.match(String(row.text), /审批|追问/);
+        assert.equal(creates, 1);
+
+        await f.gateway.recover();
+        await f.gateway.sweep();
+        assert.equal(creates, 1, 'restart and housekeeping must not repeat an unknown external write');
+        assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM outbox WHERE room=?').get(room.key)?.n, 1);
+        f.transport.card = originalCard;
+        assert.equal(await f.gateway.outbox.deliver(String(row.id), route(f.config, message({ chatId: 'group2' }))!, true), false);
+        assert.equal(await f.gateway.outbox.deliver(String(row.id), room, true), true, 'an authorized explicit retry may deliver the warning');
+        assert.equal(await f.gateway.outbox.deliver(String(row.id), room, true), false);
+        assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(row.id)?.state, 'done');
+        assert.equal(f.transport.sent.filter(s => s.card !== undefined).length, 1);
+        assert.equal(f.workers.length, 0, 'recovery must never re-execute a pending approval');
+    } finally { await f.close(); }
+});
