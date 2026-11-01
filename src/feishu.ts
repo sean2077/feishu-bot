@@ -159,7 +159,9 @@ export function reactionHandler(channel: LarkChannel, appId: string): (id: strin
             processingIds.delete(id);
         } else if (previouslyApplied !== 'done') {
             // Recover a processing emoji after restart or an ambiguous add.
-            await removeOwned(id, 'OnIt');
+            // An accepted-but-unacknowledged OnIt may not yet be visible.
+            // Keep its durable attempt pending until its own reaction is found.
+            await removeOwned(id, 'OnIt', previouslyApplied === 'attempt:processing');
         }
         if (state === 'clear' && (previouslyApplied === 'done' || previouslyApplied === 'attempt:done')) {
             // Done may have been accepted while the durable desired state was
