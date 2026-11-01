@@ -61,12 +61,21 @@ async function main(): Promise<void> {
         closed = true; stopping.abort();
         shutdownTask = (async () => {
             log('shutdown');
+            let terminationConfirmed = false;
             try {
                 await channel?.disconnect().catch(() => {});
                 // Never close SQLite while startup recovery is still using it.
                 await recovering?.catch(() => {});
                 await gateway?.close();
-            } finally { try { store?.close(); } finally { await unlock(); } }
+                terminationConfirmed = true;
+            } finally {
+                try { store?.close(); }
+                finally {
+                    // A dead service PID does not prove its native descendants exited.
+                    // Retain the existing lock for explicit investigation after a failed stop.
+                    if (terminationConfirmed) await unlock();
+                }
+            }
         })();
         return shutdownTask;
     };
