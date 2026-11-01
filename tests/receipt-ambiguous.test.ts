@@ -324,3 +324,51 @@ test('a failed OnIt removal cannot poison the next Done creation attempt', async
         assert.equal(api.foreign.size, 2);
     } finally { await f.close(); }
 });
+
+test('restart retains a confirmed OnIt until its temporarily invisible reaction can be removed', async () => {
+    const f = await fixture();
+    // Unlike an ambiguous add, the OnIt API returned successfully, and the
+    // applied='processing' record was committed before this restart.
+    const api = ambiguousChannel('Done');
+    const receipts = new Receipts(f.store, {
+        receipt: reactionHandler(api.channel as never, 'cli_fixture')
+    } as never);
+    try {
+        const input = message(), room = route(f.config, input)!, session = f.store.session(room.key);
+        receipts.accept(room, session.id, input);
+        await receipts.drain();
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied,
+            'processing', 'the original OnIt add returned a confirmed reaction ID');
+        assert.equal([...api.own.values()].filter(emoji => emoji === 'OnIt').length, 1);
+
+        const originalList = api.channel.rawClient.im.v1.messageReaction.list;
+        let invisibleReads = 1;
+        api.channel.rawClient.im.v1.messageReaction.list = async request => {
+            const response = await originalList(request);
+            if (request.params.reaction_type === 'OnIt' && invisibleReads-- > 0)
+                return { ...response, data: { ...response.data, items: response.data.items.filter(item =>
+                    item.operator.operator_id !== 'cli_fixture') } };
+            return response;
+        };
+
+        const restarted = new Receipts(f.store, {
+            receipt: reactionHandler(api.channel as never, 'cli_fixture')
+        } as never);
+        restarted.recover();
+        await restarted.drain();
+
+        const pending = f.store.db.prepare('SELECT desired,applied FROM receipts WHERE id=?').get(input.id);
+        assert.equal(pending?.desired, 'clear', 'an interrupted turn must not be left working');
+        assert.equal(pending?.applied, 'processing',
+            'one stale list must not falsely confirm removal of an already acknowledged OnIt');
+        assert.equal([...api.own.values()].filter(emoji => emoji === 'OnIt').length, 1);
+
+        restarted.retry();
+        await restarted.drain();
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied, 'clear');
+        assert.equal([...api.own.values()].filter(emoji => emoji === 'OnIt').length, 0);
+        assert.equal(api.adds.filter(emoji => emoji === 'OnIt').length, 1, 'no duplicate reaction writes');
+        assert.equal(api.foreign.get('foreign-onit'), 'OnIt', 'other applications remain untouched');
+        assert.ok(!api.removals.includes('foreign-onit'));
+    } finally { await f.close(); }
+});
