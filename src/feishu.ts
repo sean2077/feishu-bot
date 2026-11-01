@@ -141,6 +141,9 @@ export function reactionHandler(channel: LarkChannel, appId: string): (id: strin
                     processingIds.set(id, alreadyOwned);
                     return;
                 }
+                // An empty listing is not proof that an ambiguous write failed:
+                // the write may have succeeded before the read became visible.
+                throw new Error('OnIt reaction creation remains unconfirmed');
             }
             processingIds.set(id, await channel.addReaction(id, 'OnIt'));
             return;
@@ -160,8 +163,12 @@ export function reactionHandler(channel: LarkChannel, appId: string): (id: strin
             await removeOwned(id, 'Done');
         }
         if (state === 'done') {
-            if (previouslyApplied === 'attempt:done' && (await ownedIds(id, 'Done')).length)
-                return; // Accepted remotely even though the earlier response was lost.
+            if (previouslyApplied === 'attempt:done') {
+                if ((await ownedIds(id, 'Done')).length)
+                    return; // Accepted remotely even though the earlier response was lost.
+                // Never repeat an external write while its previous outcome is unknown.
+                throw new Error('Done reaction creation remains unconfirmed');
+            }
             await channel.addReaction(id, 'Done');
         }
     };
