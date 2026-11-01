@@ -310,15 +310,15 @@ test('restart expires stranded approvals and notifies only the authorized conver
 
         await f.gateway.recover();
         assert.equal(f.store.db.prepare("SELECT state FROM requests WHERE id=?").get(requestId)!.state, 'expired');
-        const notices = f.transport.sent.filter(s => s.text?.includes('审批'));
+        const notices = f.transport.sent.filter(s => JSON.stringify(s.card ?? {}).includes('审批'));
         assert.equal(notices.length, 1, 'a stranded approval gets an operator-facing recovery notice');
         assert.equal(notices[0]!.room.key, room.key);
-        assert.match(notices[0]!.text!, /失效|过期/);
+        assert.match(JSON.stringify(notices[0]!.card), /失效|过期/);
         assert.equal(f.transport.sent.some(s => s.room.key === 'unconfigured-room'), false);
         assert.equal(f.workers.length, 0, 'recovery must not replay the original native operation');
 
         await f.gateway.recover();
-        assert.equal(f.transport.sent.filter(s => s.text?.includes('审批')).length, 1, 'only newly expired approvals are reported');
+        assert.equal(f.transport.sent.filter(s => JSON.stringify(s.card ?? {}).includes('审批')).length, 1, 'only newly expired approvals are reported');
         assert.match(await f.gateway.approvals.click(room.chatId, 'admin', { request: requestId, decision: 'allow' }), /过期|结束/);
     }
     finally { await f.close(); }
@@ -333,11 +333,49 @@ test('restart combines uncertain-input and expired-approval warnings in a single
         f.store.db.prepare("INSERT INTO requests(id,room,session,kind,digest,state,expires) VALUES(?,?,?,?,?,'pending',?)")
             .run(randomUUID(), room.key, session.id, 'question', 'fixture-digest', Date.now() + 60000);
         await f.gateway.recover();
-        const notices = f.transport.sent.filter(s => s.room.key === room.key && s.text);
+        const notices = f.transport.sent.filter(s => s.room.key === room.key && s.card);
         assert.equal(notices.length, 1);
-        assert.match(notices[0]!.text!, /未确认完成/);
-        assert.match(notices[0]!.text!, /审批|追问/);
+        assert.match(JSON.stringify(notices[0]!.card), /未确认完成/);
+        assert.match(JSON.stringify(notices[0]!.card), /审批|追问/);
         assert.equal(f.workers.length, 0);
     }
     finally { await f.close(); }
+});
+
+
+test('failed restart warning stays recoverable without replaying an uncertain create', async () => {
+    const f = await fixture();
+    try {
+        const room = route(f.config, message())!;
+        const session = f.store.session(room.key);
+        const requestId = randomUUID();
+        f.store.db.prepare("INSERT INTO requests(id,room,session,kind,digest,state,expires) VALUES(?,?,?,?,?,'pending',?)")
+            .run(requestId, room.key, session.id, 'permission', 'fixture-digest', Date.now() + 60000);
+        let creates = 0;
+        f.transport.send = async () => { creates++; throw new Error('fixture: response lost after remote create'); };
+        const originalCard = f.transport.card.bind(f.transport);
+        f.transport.card = async () => { creates++; throw new Error('fixture: response lost after remote create'); };
+
+        await f.gateway.recover();
+        assert.equal(f.store.db.prepare('SELECT state FROM requests WHERE id=?').get(requestId)?.state, 'expired');
+        const rows = f.store.db.prepare('SELECT id,room,session,state,text FROM outbox WHERE room=?').all(room.key);
+        assert.equal(rows.length, 1, 'a failed recovery notification must have a durable delivery record');
+        const row = rows[0]!;
+        assert.equal(row.session, session.id, 'recovery must not rotate or create a session');
+        assert.equal(row.state, 'uncertain', 'an ambiguous external create must not be blindly retried');
+        assert.match(String(row.text), /审批|追问/);
+        assert.equal(creates, 1);
+
+        await f.gateway.recover();
+        await f.gateway.sweep();
+        assert.equal(creates, 1, 'restart and housekeeping must not repeat an unknown external write');
+        assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM outbox WHERE room=?').get(room.key)?.n, 1);
+        f.transport.card = originalCard;
+        assert.equal(await f.gateway.outbox.deliver(String(row.id), route(f.config, message({ chatId: 'group2' }))!, true), false);
+        assert.equal(await f.gateway.outbox.deliver(String(row.id), room, true), true, 'an authorized explicit retry may deliver the warning');
+        assert.equal(await f.gateway.outbox.deliver(String(row.id), room, true), false);
+        assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(row.id)?.state, 'done');
+        assert.equal(f.transport.sent.filter(s => s.card !== undefined).length, 1);
+        assert.equal(f.workers.length, 0, 'recovery must never re-execute a pending approval');
+    } finally { await f.close(); }
 });
