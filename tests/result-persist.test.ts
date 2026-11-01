@@ -89,3 +89,50 @@ test('failure completing the input rolls back the already-staged final outbox ro
         await f.close();
     }
 });
+
+test('shutdown after final persistence preserves an in-flight preview result for recovery', async () => {
+    const f = await fixture();
+    let releasePreview: (() => void) | undefined;
+    let previewStarted = false;
+    let creates = 0;
+    const preview = new Promise<string>(resolve => { releasePreview = () => resolve('preview-card'); });
+    f.transport.card = async () => { creates++; previewStarted = true; return preview; };
+    try {
+        const input = message();
+        await f.gateway.message(input);
+        await until(() => f.workers[0]?.sent.length === 1);
+        const worker = f.workers[0]!;
+        const uuid = worker.sent[0]!.uuid;
+        worker.emit({ type: 'consumed', uuid });
+        worker.emit({ type: 'text', turnId: uuid, text: 'partial preview', partial: false });
+        await until(() => previewStarted);
+        worker.emit({ type: 'result', uuid, success: true, text: 'durable final answer' });
+        assert.equal(f.store.db.prepare('SELECT status FROM inbox WHERE id=?').get(input.id)?.status, 'done');
+        assert.equal(f.store.db.prepare("SELECT state FROM outbox WHERE kind='reply'").get()?.state, 'preparing');
+
+        // Service shutdown aborts the preview renderer while it is waiting for
+        // a Feishu create response. The final answer has already committed.
+        const closing = f.gateway.close();
+        releasePreview!();
+        await closing;
+        const row = f.store.db.prepare("SELECT id,state,target,text FROM outbox WHERE kind='reply'").get()!;
+        assert.equal(row.text, 'durable final answer');
+        assert.equal(row.state, 'pending', 'shutdown must not discard a committed final answer');
+        assert.equal(row.target, 'preview-card', 'the known remote ID must survive shutdown');
+        assert.equal(creates, 1);
+
+        const restarted = new Gateway(f.config, f.store, f.transport, f.factory);
+        try {
+            await restarted.recover();
+            await restarted.sweep();
+            assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(row.id)?.state, 'done');
+            assert.equal(creates, 1, 'recovery must update the known card instead of creating another');
+            assert.ok(f.transport.updates.some(update => update.id === 'preview-card'));
+        } finally {
+            await restarted.close();
+        }
+    } finally {
+        releasePreview?.();
+        await f.close();
+    }
+});
