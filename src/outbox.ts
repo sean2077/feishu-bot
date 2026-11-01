@@ -28,6 +28,7 @@ export class Outbox {
     readonly store: Store;
     readonly transport: Transport;
     private active = new Set<string>();
+    private retryAfter = new Map<string, { at: number; id: string }>();
     readonly receipts?: Receipts;
     readonly allowed?: (row: Outgoing, room: Room) => boolean;
     constructor(store: Store, transport: Transport, receipts?: Receipts, allowed?: (row: Outgoing, room: Room) => boolean) { this.store = store; this.transport = transport; this.receipts = receipts; this.allowed = allowed; }
@@ -196,9 +197,23 @@ export class Outbox {
         }
     }
     retryable(room: string): string[] {
-        // Waiting for an agent file is not a transport failure. Do not rewrite two cards
-        // on every sweep; the final reply becomes retryable once its file barrier clears.
-        return this.store.db.prepare("SELECT o.id FROM outbox o WHERE o.room=? AND o.state='pending' AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR (o.kind='file' AND o.file_state IN ('pending','done'))) AND (o.kind='file' OR NOT EXISTS (SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session AND f.kind='file' AND f.state NOT IN ('done','cancelled'))) ORDER BY o.at LIMIT 10").all(room).map(r => String(r.id));
+        // A permanently failing oldest batch must not block newer known-ID
+        // updates. Keep a separate bounded cursor per conversation and wrap.
+        // Unknown external creates/uploads remain excluded from auto-retry.
+        const eligible = "SELECT o.id,o.at FROM outbox o WHERE o.room=? AND o.state='pending' " +
+            "AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR (o.kind='file' AND o.file_state IN ('pending','done'))) " +
+            "AND (o.kind='file' OR NOT EXISTS (SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session " +
+            "AND f.kind='file' AND f.state NOT IN ('done','cancelled')))";
+        const after = this.retryAfter.get(room);
+        let rows = after ? this.store.db.prepare(eligible +
+            ' AND (o.at>? OR (o.at=? AND o.id>?)) ORDER BY o.at,o.id LIMIT 10')
+            .all(room, after.at, after.at, after.id) : [];
+        if (!rows.length)
+            rows = this.store.db.prepare(eligible + ' ORDER BY o.at,o.id LIMIT 10').all(room);
+        const last = rows.at(-1);
+        if (last) this.retryAfter.set(room, { at: Number(last.at), id: String(last.id) });
+        else this.retryAfter.delete(room);
+        return rows.map(r => String(r.id));
     }
     pending(room: string): { id: string; state: string; stage: string; detail?: string }[] {
         return this.store.db.prepare("SELECT id,state,file_state,delivery_error FROM outbox WHERE room=? AND state NOT IN ('done','cancelled') ORDER BY at DESC LIMIT 20").all(room)
