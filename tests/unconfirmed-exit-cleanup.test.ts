@@ -61,12 +61,12 @@ test('worker initialization failure with unconfirmed cleanup does not free capac
     try {
         await gateway.message(message());
         await until(() => attempts === 1);
-        const roomKey = f.config.groups[0]!.chatId;
+        const sessionBefore = f.store.db.prepare("SELECT id FROM sessions WHERE state='open'").get()?.id;
         await gateway.message(message({ senderId: 'admin', text: '/status' }));
         assert.match(f.transport.sent.at(-1)?.text ?? '', /termination_unconfirmed/);
         await gateway.message(message({ senderId: 'admin', text: '/new' }));
-        const open = f.store.db.prepare("SELECT count(*) AS n FROM sessions WHERE state='open'").get()!.n as number;
-        assert.equal(open, 1, 'no replacement session can be created after unconfirmed startup cleanup');
+        assert.equal(f.store.db.prepare("SELECT id FROM sessions WHERE state='open'").get()?.id, sessionBefore,
+            'no replacement session can be created after unconfirmed startup cleanup');
         await gateway.message(message({ chatId: 'group2' }));
         await until(() => attempts > 1 || f.transport.sent.some(s => s.text?.includes('输入已保存')));
         assert.equal(attempts, 1, 'other rooms cannot reuse capacity while a child might survive');
