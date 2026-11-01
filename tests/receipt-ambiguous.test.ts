@@ -7,7 +7,7 @@ import { fixture, message } from './helpers.ts';
 
 // The remote API commits a reaction, but the response is lost. A retry must
 // inspect this application's reactions before issuing another external write.
-function ambiguousChannel(failEmoji: 'OnIt' | 'Done') {
+function ambiguousChannel(failEmoji: 'OnIt' | 'Done', beforeAdd?: (emoji: string) => void) {
     const own = new Map<string, string>();
     const foreign = new Map<string, string>([['foreign-onit', 'OnIt'], ['foreign-done', 'Done']]);
     const adds: string[] = [], lookups: string[] = [], removals: string[] = [];
@@ -15,6 +15,7 @@ function ambiguousChannel(failEmoji: 'OnIt' | 'Done') {
     const channel = {
         botIdentity: { openId: 'ou_fixture_bot' },
         addReaction: async (_id: string, emoji: string) => {
+            beforeAdd?.(emoji);
             adds.push(emoji);
             const reactionId = `own-${emoji}-${adds.length}`;
             own.set(reactionId, emoji);
@@ -47,7 +48,10 @@ function ambiguousChannel(failEmoji: 'OnIt' | 'Done') {
 
 test('ambiguous OnIt add is reconciled rather than duplicated on retry', async () => {
     const f = await fixture();
-    const api = ambiguousChannel('OnIt');
+    const api = ambiguousChannel('OnIt', () => {
+        assert.equal(f.store.db.prepare("SELECT applied FROM receipts WHERE desired='processing'").get()?.applied,
+            'attempt:processing', 'persist the attempt before the external call');
+    });
     const receipts = new Receipts(f.store, { receipt: reactionHandler(api.channel as never, 'cli_fixture') } as never);
     try {
         const input = message(), room = route(f.config, input)!, session = f.store.session(room.key);
@@ -66,7 +70,11 @@ test('ambiguous OnIt add is reconciled rather than duplicated on retry', async (
 
 test('ambiguous Done add is reconciled across restart, and later clear removes only own reaction', async () => {
     const f = await fixture();
-    const api = ambiguousChannel('Done');
+    const api = ambiguousChannel('Done', emoji => {
+        const row = f.store.db.prepare('SELECT applied FROM receipts WHERE desired=?').get(emoji === 'Done' ? 'done' : 'processing');
+        assert.equal(row?.applied, emoji === 'Done' ? 'attempt:done' : 'attempt:processing',
+            'persist the attempt before the external call');
+    });
     const transport = { receipt: reactionHandler(api.channel as never, 'cli_fixture') } as never;
     const receipts = new Receipts(f.store, transport);
     try {
