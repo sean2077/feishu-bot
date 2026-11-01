@@ -89,7 +89,10 @@ if (level < 2) spawn(process.execPath, [__filename, dir, String(level + 1)], {st
 
 // Parent exit must not leave an unowned native CLI process tree running.
 test('native process-tree stop reaps live descendants after their root exited', { timeout: 40000 }, async () => {
+    const phaseStart = performance.now();
+    const mark = (phase: string) => { if (process.platform === 'win32') console.error(`orphan_test phase=${phase} elapsed_ms=${Math.round(performance.now() - phaseStart)}`); };
     const dir = await mkdtemp(join(tmpdir(), 'feishu-orphan-tree-'));
+    mark('directory');
     const script = join(dir, 'orphan.cjs');
     await writeFile(script, [
         "const fs = require('node:fs');",
@@ -113,6 +116,7 @@ test('native process-tree stop reaps live descendants after their root exited', 
     const closed = new Promise<void>((resolve, reject) => { parent.once('error', reject); parent.once('close', () => resolve()); });
     try {
         await closed;
+        mark('root-close');
         const records = await Promise.all([0, 1, 2].map(i => readFile(join(dir, `${i}.json`), 'utf8').then(JSON.parse)));
         assert.equal(records[0].pid, parent.pid);
         assert.equal(records[1].ppid, parent.pid);
@@ -120,6 +124,7 @@ test('native process-tree stop reaps live descendants after their root exited', 
         pids.push(...records.map(r => Number(r.pid)));
         assert.equal(new Set(pids).size, 3);
         assert.ok(!(await live(pids[0]!)), 'root has exited before cleanup');
+        mark('tree-verified');
         await eventually(async () => {
             try { await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`)))); return true; }
             catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false; throw e; }
@@ -130,16 +135,22 @@ test('native process-tree stop reaps live descendants after their root exited', 
         const activeBeats = await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`), 'utf8')));
         assert.ok(preLive.every(Boolean) && activeBeats.every((beat, i) => beat !== initialBeats[i]),
             JSON.stringify({ preLive, initialBeats, activeBeats, pids }));
+        mark('before-kill');
         await killTree(parent, 100);
+        mark('after-kill');
         await eventually(async () => (await Promise.all(pids.slice(1).map(live))).every(value => !value),
             'Orphaned native descendants survived after the root exited');
+        mark('descendants-gone');
         const beats = await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`), 'utf8')));
         await delay(120);
         assert.deepEqual(await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`), 'utf8'))), beats);
     } finally {
+        mark('finally-start');
         await killTree(parent, 100).catch(() => {});
+        mark('finally-kill-returned');
         for (const pid of pids) if (await live(pid)) try { process.kill(pid, 'SIGKILL'); } catch { /* exited */ }
         await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        mark('finally-finished');
     }
 });
 
