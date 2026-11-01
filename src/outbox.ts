@@ -8,7 +8,7 @@ import { displayCard } from './approvals.ts';
 import type { Receipts } from './receipts.ts';
 export interface Outgoing {
     id: string;
-    kind: 'reply' | 'file';
+    kind: 'reply' | 'file' | 'recovery';
     room: string;
     session: string;
     text: string;
@@ -40,6 +40,12 @@ export class Outbox {
             card ? JSON.stringify(card) : null, JSON.stringify(origins), file?.name ?? null, file ? join(file.directory, `${id}.md`) : null, file ? 'pending' : 'none');
         return id;
     }
+    /** The caller must record this inside the same transaction as recovery state changes. */
+    saveRecovery(room: Room, session: string, text: string, card: object): string {
+        const id = this.save(room, session, text, false, undefined, undefined, undefined, card);
+        this.store.db.prepare("UPDATE outbox SET kind='recovery' WHERE id=?").run(id);
+        return id;
+    }
     /** A file created by the agent is a first-class durable output, not a best-effort side effect. */
     saveFile(room: Room, session: string, path: string, name: string, origins: Origin[] = [], replyTo?: string): string {
         const id = randomUUID();
@@ -56,7 +62,7 @@ export class Outbox {
     private get(id: string): Outgoing | undefined {
         const r = this.store.db.prepare('SELECT * FROM outbox WHERE id=?').get(id);
         if (!r) return undefined;
-        return { id: String(r.id), kind: r.kind === 'file' ? 'file' : 'reply', room: String(r.room), session: String(r.session), text: String(r.text),
+        return { id: String(r.id), kind: r.kind === 'file' ? 'file' : r.kind === 'recovery' ? 'recovery' : 'reply', room: String(r.room), session: String(r.session), text: String(r.text),
             card: r.card ? JSON.parse(String(r.card)) : undefined, origins: JSON.parse(String(r.origins ?? '[]')),
             target: r.target as string | undefined, replyTo: r.reply_to as string | undefined, threadId: r.thread_id as string | undefined,
             success: !!r.success, state: String(r.state), fileName: r.file_name as string | undefined,
@@ -201,8 +207,8 @@ export class Outbox {
         // updates. Keep a separate bounded cursor per conversation and wrap.
         // Unknown external creates/uploads remain excluded from auto-retry.
         const eligible = "SELECT o.id,o.at FROM outbox o WHERE o.room=? AND o.state='pending' " +
-            "AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR (o.kind='file' AND o.file_state IN ('pending','done'))) " +
-            "AND (o.kind='file' OR NOT EXISTS (SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session " +
+            "AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR o.kind='recovery' OR (o.kind='file' AND o.file_state IN ('pending','done'))) " +
+            "AND (o.kind IN ('file','recovery') OR NOT EXISTS (SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session " +
             "AND f.kind='file' AND f.state NOT IN ('done','cancelled')))";
         const after = this.retryAfter.get(room);
         let rows = after ? this.store.db.prepare(eligible +

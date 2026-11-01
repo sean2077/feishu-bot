@@ -94,7 +94,30 @@ export class Gateway {
         return true;
     }
     async recover(): Promise<void> {
-        const recovered = this.store.recover();
+        const recovered = this.store.recover(state => {
+            // A crash must not commit expired requests without also recording
+            // the warning needed to explain why those requests are unusable.
+            for (const key of new Set([...state.rooms, ...state.requestRooms])) {
+                const room = roomFromKey(this.config, key);
+                if (!room) continue;
+                const warnings: string[] = [];
+                if (state.rooms.includes(key)) {
+                    const hasAuthorizedUncertain = this.store.db.prepare("SELECT message FROM inbox WHERE room=? AND status='uncertain' AND message!='{}'").all(key)
+                        .some(r => { try { return route(this.config, JSON.parse(String(r.message)))?.key === key; } catch { return false; } });
+                    if (hasAuthorizedUncertain) warnings.push('上次运行中断。将继续原会话；未确认完成的输入与外部操作不会自动重放，请先核实结果。');
+                }
+                if (state.requestRooms.includes(key))
+                    warnings.push('上次未完成的审批／追问已失效，旧卡片不能继续授权操作。若外部操作结果未知，请先核实，勿直接重做。');
+                if (!warnings.length) continue;
+                const text = warnings.join('\n\n');
+                const sessions = this.store.listSessions(key);
+                const session = sessions.find(item => item.state === 'open') ?? sessions[0];
+                if (!session) this.store.audit(key, 'recovery_notice_unbound', {});
+                // An inconsistent database must not manufacture a new native
+                // session or fall back to an untracked external message.
+                this.outbox.saveRecovery(room, session?.id ?? '', text, displayCard('恢复提醒', text));
+            }
+        });
         if (this.config.limits.backgroundMessages === 0) this.store.db.exec("DELETE FROM inbox WHERE status='background'");
         const keys = new Set([...recovered.rooms, ...recovered.requestRooms, ...this.store.pendingRooms(),
             ...this.store.db.prepare("SELECT DISTINCT room FROM outbox WHERE state NOT IN ('done','cancelled')").all().map(r => String(r.room))]);
@@ -108,36 +131,18 @@ export class Gateway {
             }
             if (!room) continue;
             this.rooms.set(key, room);
-            const warnings: string[] = [];
-            if (recovered.rooms.includes(key)) {
-                const hasAuthorizedUncertain = this.store.db.prepare("SELECT message FROM inbox WHERE room=? AND status='uncertain' AND message!='{}'").all(key)
-                    .some(r => { try { return route(this.config, JSON.parse(String(r.message)))?.key === key; } catch { return false; } });
-                if (hasAuthorizedUncertain) warnings.push('上次运行中断。将继续原会话；未确认完成的输入与外部操作不会自动重放，请先核实结果。');
-            }
-            if (recovered.requestRooms.includes(key))
-                warnings.push('上次未完成的审批／追问已失效，旧卡片不能继续授权操作。若外部操作结果未知，请先核实，勿直接重做。');
-            if (warnings.length) {
-                const text = warnings.join('\n\n');
-                // Recovery has already expired the original requests. An
-                // unconfirmed Feishu create must not make this warning vanish:
-                // save it before sending, then require explicit scoped retry
-                // if the external result is unknown.
-                const sessions = this.store.listSessions(key);
-                const session = sessions.find(item => item.state === 'open') ?? sessions[0];
-                if (session) {
-                    const id = this.outbox.save(room, session.id, text, false, undefined, undefined, undefined,
-                        displayCard('恢复提醒', text));
-                    await this.outbox.deliver(id, room);
-                } else {
-                    // An inconsistent DB without a session must not silently
-                    // suppress the warning or manufacture a new CC session.
-                    this.store.audit(key, 'recovery_notice_unbound', {});
-                    await this.notice(room, text);
-                }
-            }
         }
         this.receipts.recover();
-        for (const room of this.rooms.values()) this.kick(room);
+        for (const room of this.rooms.values()) {
+            // These persisted notices never began an external create. A
+            // previous crash before deliver() is safe to recover automatically;
+            // sending/unknown results are excluded and require explicit retry.
+            const unsent = this.store.db.prepare(
+                "SELECT id FROM outbox WHERE room=? AND kind='recovery' AND state='pending' AND target IS NULL ORDER BY at,id LIMIT 10"
+            ).all(room.key);
+            for (const row of unsent) await this.outbox.deliver(String(row.id), room);
+            this.kick(room);
+        }
     }
     async message(original: Message): Promise<void> {
         if (this.closing)

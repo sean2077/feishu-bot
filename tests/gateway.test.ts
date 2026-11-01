@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { route } from '../src/gateway.ts';
+import { Gateway, route } from '../src/gateway.ts';
 import { fixture, message, until } from './helpers.ts';
 test('same-group participants share a session, other groups and DMs do not', async () => {
     const f = await fixture();
@@ -378,4 +378,68 @@ test('failed restart warning stays recoverable without replaying an uncertain cr
         assert.equal(f.transport.sent.filter(s => s.card !== undefined).length, 1);
         assert.equal(f.workers.length, 0, 'recovery must never re-execute a pending approval');
     } finally { await f.close(); }
+});
+
+test('recovery notice persistence and expiry share one transaction', async () => {
+    const x = await fixture();
+    const save = x.gateway.outbox.save.bind(x.gateway.outbox);
+    try {
+        const room = route(x.config, message())!, session = x.store.session(room.key), id = randomUUID();
+        x.store.db.prepare("INSERT INTO requests(id,room,session,kind,digest,state,expires) VALUES(?,?,?,?,?,'pending',?)")
+            .run(id, room.key, session.id, 'permission', 'fixture', Date.now() + 60000);
+        x.gateway.outbox.save = () => { throw new Error('fixture: failed to persist notice'); };
+        await assert.rejects(x.gateway.recover(), /failed to persist notice/);
+        assert.equal(x.store.db.prepare('SELECT state FROM requests WHERE id=?').get(id)?.state, 'pending',
+            'recovery must not commit an expired approval without its durable notification');
+        assert.equal(x.store.db.prepare('SELECT count(*) AS n FROM outbox WHERE room=?').get(room.key)?.n, 0);
+        x.gateway.outbox.save = save;
+        await x.gateway.recover();
+        assert.equal(x.store.db.prepare('SELECT state FROM requests WHERE id=?').get(id)?.state, 'expired');
+        assert.equal(x.transport.sent.filter(s => s.room.key === room.key && s.card).length, 1);
+    } finally { x.gateway.outbox.save = save; await x.close(); }
+});
+
+test('recovery retries a durable notice that has never started external delivery', async () => {
+    const x = await fixture();
+    const deliver = x.gateway.outbox.deliver.bind(x.gateway.outbox);
+    try {
+        const room = route(x.config, message())!, session = x.store.session(room.key), id = randomUUID();
+        x.store.db.prepare("INSERT INTO requests(id,room,session,kind,digest,state,expires) VALUES(?,?,?,?,?,'pending',?)")
+            .run(id, room.key, session.id, 'question', 'fixture', Date.now() + 60000);
+        x.gateway.outbox.deliver = async () => { throw new Error('fixture: crashed before send'); };
+        await assert.rejects(x.gateway.recover(), /crashed before send/);
+        const rows = x.store.db.prepare('SELECT id,state,target FROM outbox WHERE room=?').all(room.key);
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0]?.state, 'pending');
+        assert.equal(rows[0]?.target, null);
+        assert.equal(x.transport.sent.length, 0);
+        x.gateway.outbox.deliver = deliver;
+        const restarted = new Gateway(x.config, x.store, x.transport, x.factory);
+        try {
+            await restarted.recover();
+            assert.equal(x.transport.sent.filter(s => s.room.key === room.key && s.card).length, 1);
+            assert.equal(x.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(rows[0]?.id)?.state, 'done');
+            await restarted.recover();
+            assert.equal(x.transport.sent.filter(s => s.room.key === room.key && s.card).length, 1);
+            assert.equal(x.workers.length, 0);
+        } finally { await restarted.close(); }
+    } finally { x.gateway.outbox.deliver = deliver; await x.close(); }
+});
+
+test('recovery persists an authorized warning even without a valid native session row', async () => {
+    const x = await fixture();
+    try {
+        const room = route(x.config, message())!;
+        const id = randomUUID();
+        x.store.db.prepare("INSERT INTO requests(id,room,session,kind,digest,state,expires) VALUES(?,?,?,?,?,'pending',?)")
+            .run(id, room.key, 'missing-session', 'permission', 'fixture', Date.now() + 60000);
+        await x.gateway.recover();
+        const rows = x.store.db.prepare('SELECT session,kind,state FROM outbox WHERE room=?').all(room.key);
+        assert.deepEqual(rows.map(r => ({ session: r.session, kind: r.kind, state: r.state })),
+            [{ session: '', kind: 'recovery', state: 'done' }]);
+        assert.equal(x.store.listSessions(room.key).length, 0, 'inconsistent recovery must not create a new CC session');
+        assert.equal(x.transport.sent.filter(s => s.room.key === room.key && s.card).length, 1);
+        await x.gateway.recover();
+        assert.equal(x.transport.sent.filter(s => s.room.key === room.key && s.card).length, 1);
+    } finally { await x.close(); }
 });
