@@ -237,3 +237,90 @@ test('restart keeps an uncertain OnIt cleanup pending until its reaction is visi
         assert.ok(!api.removals.includes('foreign-onit'));
     } finally { await f.close(); }
 });
+
+
+test('a stale OnIt lookup cannot erase its pending add before Done is attempted', async () => {
+    const f = await fixture();
+    const api = ambiguousChannel('OnIt');
+    const receipts = new Receipts(f.store, {
+        receipt: reactionHandler(api.channel as never, 'cli_fixture')
+    } as never);
+    try {
+        const input = message(), room = route(f.config, input)!, session = f.store.session(room.key);
+        receipts.accept(room, session.id, input);
+        await receipts.drain();
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied,
+            'attempt:processing');
+        assert.equal(api.adds.filter(e => e === 'OnIt').length, 1);
+
+        const originalList = api.channel.rawClient.im.v1.messageReaction.list;
+        let invisible = true;
+        api.channel.rawClient.im.v1.messageReaction.list = async request => {
+            const result = await originalList(request);
+            if (request.params.reaction_type === 'OnIt' && invisible) {
+                invisible = false;
+                return { ...result, data: { ...result.data, items: result.data.items.filter(item =>
+                    item.operator.operator_id !== 'cli_fixture') } };
+            }
+            return result;
+        };
+
+        receipts.settle(room.key, session.id, [input], true);
+        await receipts.drain();
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied,
+            'attempt:processing', 'the unconfirmed OnIt must survive a stale list, not turn into a fake Done attempt');
+        assert.equal(api.adds.filter(e => e === 'Done').length, 0, 'Done is not added until OnIt is reconciled');
+
+        receipts.retry();
+        await receipts.drain();
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied, 'done');
+        assert.equal(api.adds.filter(e => e === 'OnIt').length, 1, 'never duplicate an uncertain external add');
+        assert.equal(api.adds.filter(e => e === 'Done').length, 1, 'issue the first Done add only after cleanup');
+        assert.deepEqual([...api.own.values()], ['Done']);
+        assert.equal(api.foreign.size, 2, 'foreign application reactions are untouched');
+    } finally { await f.close(); }
+});
+
+test('a failed OnIt removal cannot poison the next Done creation attempt', async () => {
+    const f = await fixture();
+    const api = ambiguousChannel('Done');
+    const originalRemove = api.channel.removeReaction;
+    let failRemoval = true;
+    api.channel.removeReaction = async (id, reactionId) => {
+        if (reactionId.startsWith('own-OnIt') && failRemoval) {
+            failRemoval = false;
+            throw new Error('fixture: remote OnIt removal unavailable');
+        }
+        return originalRemove(id, reactionId);
+    };
+    const receipts = new Receipts(f.store, {
+        receipt: reactionHandler(api.channel as never, 'cli_fixture')
+    } as never);
+    try {
+        const input = message(), room = route(f.config, input)!, session = f.store.session(room.key);
+        receipts.accept(room, session.id, input);
+        await receipts.drain();
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied, 'processing');
+        receipts.settle(room.key, session.id, [input], true);
+        await receipts.drain();
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied, 'processing',
+            'a cleanup failure is not evidence that a Done add was attempted');
+        assert.equal(api.adds.filter(e => e === 'Done').length, 0);
+
+        receipts.retry();
+        await receipts.drain();
+        assert.equal(api.adds.filter(e => e === 'Done').length, 1);
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied,
+            'attempt:done', 'the actual Done add lost its response and must not be repeated');
+
+        const resumed = new Receipts(f.store, {
+            receipt: reactionHandler(api.channel as never, 'cli_fixture')
+        } as never);
+        resumed.retry();
+        await resumed.drain();
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied, 'done');
+        assert.equal(api.adds.filter(e => e === 'Done').length, 1);
+        assert.deepEqual([...api.own.values()], ['Done']);
+        assert.equal(api.foreign.size, 2);
+    } finally { await f.close(); }
+});
