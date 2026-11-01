@@ -106,9 +106,29 @@ export async function normalizeHistoryItem(item: ApiItem, room: Room, botOpenId?
 }
 
 /** Remove only this application's reaction; never the first arbitrary app reaction. */
-export function reactionHandler(channel: LarkChannel, appId: string): (id: string, state?: ReceiptState) => Promise<void> {
+export function reactionHandler(channel: LarkChannel, appId: string): (id: string, state?: ReceiptState, previouslyApplied?: ReceiptState) => Promise<void> {
     const processingIds = new Map<string, string>();
-    return async (id, state = 'processing') => {
+    const removeOwned = async (id: string, emoji: 'OnIt' | 'Done'): Promise<void> => {
+        // The app must remove by reaction_id, never by emoji alone: other
+        // applications and human participants may have the same reaction.
+        let pageToken: string | undefined;
+        for (let page = 0; page < 10; page++) {
+            const response = await channel.rawClient.im.v1.messageReaction.list({ path: { message_id: id }, params: {
+                reaction_type: emoji, page_size: 50, page_token: pageToken
+            } });
+            if (response.code !== undefined && response.code !== 0) throw new Error(`Reaction API error ${response.code}`);
+            for (const item of response.data?.items ?? []) {
+                const operator = item.operator;
+                if (item.reaction_id && operator?.operator_type === 'app' &&
+                    (operator.operator_id === appId || !!channel.botIdentity?.openId && operator.operator_id === channel.botIdentity.openId))
+                    await channel.removeReaction(id, item.reaction_id);
+            }
+            if (!response.data?.has_more) break;
+            pageToken = response.data.page_token;
+            if (!pageToken || page === 9) throw new Error('Reaction cleanup page limit');
+        }
+    };
+    return async (id, state = 'processing', previouslyApplied) => {
         if (state === 'processing') {
             processingIds.set(id, await channel.addReaction(id, 'OnIt'));
             return;
@@ -117,24 +137,15 @@ export function reactionHandler(channel: LarkChannel, appId: string): (id: strin
         if (known) {
             await channel.removeReaction(id, known);
             processingIds.delete(id);
-        } else {
-            // Needed after a restart or an ambiguous add. API IDs, not emoji text, establish ownership.
-            let pageToken: string | undefined;
-            for (let page = 0; page < 10; page++) {
-                const response = await channel.rawClient.im.v1.messageReaction.list({ path: { message_id: id }, params: {
-                    reaction_type: 'OnIt', page_size: 50, page_token: pageToken
-                } });
-                if (response.code !== undefined && response.code !== 0) throw new Error(`Reaction API error ${response.code}`);
-                for (const item of response.data?.items ?? []) {
-                    const operator = item.operator;
-                    if (item.reaction_id && operator?.operator_type === 'app' &&
-                        (operator.operator_id === appId || !!channel.botIdentity?.openId && operator.operator_id === channel.botIdentity.openId))
-                        await channel.removeReaction(id, item.reaction_id);
-                }
-                if (!response.data?.has_more) break;
-                pageToken = response.data.page_token;
-                if (!pageToken || page === 9) throw new Error('Reaction cleanup page limit');
-            }
+        } else if (previouslyApplied !== 'done') {
+            // Recover a processing emoji after restart or an ambiguous add.
+            await removeOwned(id, 'OnIt');
+        }
+        if (state === 'clear' && previouslyApplied === 'done') {
+            // Done may have been accepted while the durable desired state was
+            // changing to clear. Reconcile only this application's completed
+            // reaction; an in-flight Done is serialized before this call.
+            await removeOwned(id, 'Done');
         }
         if (state === 'done') await channel.addReaction(id, 'Done');
     };

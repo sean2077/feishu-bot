@@ -20,10 +20,13 @@
 | 服务关闭失败与数据锁 | 已修复（故障注入与平台 CI 已验证） | 活跃或初始化中的 Worker 停止失败，在其余清理收尾后明确报错；CLI 设置非零退出码并保留原数据锁，不允许第二实例直接接管。正常关闭仍释放锁。未改变原生进程终止算法，不能据此保证全部后代已退出。 |
 | 异常退出后代清理失败 | 已修复（故障注入与跨平台 CI 已验证） | `killTree()` 失败不再发可安全重用的普通退出事件；保留会话进程名额、取消旧审批、把未确认输入标记为 uncertain，并禁止替代 Worker 和会话切换。初始化失败且未取得 Worker 句柄也保持锁定。真实 CIM 失败、断链后代和 Windows 11 本机仍待验证。 |
 | 项目操作停止失败未被上报 | 已修复（故障注入与平台 CI 已验证） | 项目操作取消、超时或输出超限时，只有 `killTree()` 确认完成且子进程输出关闭才报告常规终止；清理报错或 5 秒收尾期限仍未确认时改报 `process termination unconfirmed`。`action_runs` 保持 `uncertain` 并有独立审计；不会自动重试外部操作。真实 Windows CIM 与断链归属仍待验证。 |
+| 已确认 Done 的回执回滚 | 已修复（模拟飞书 API 与跨平台 CI） | 旧清除路径只清理 OnIt；当原 Done API 已确认但目标回执随后转 clear 时，按本应用归属查找并删除 Done reaction_id，其他应用不受影响。普通处理路径不增加 API 查询；不覆盖结果未知的远端写入、真实飞书服务或重启期间的异常。 |
 | 旧 CI 启动前失败 | 原因尚未证实 | 历史运行没有 runner/步骤；注释读取受工具限制。新运行已分配 runner，不通过猜测或重跑旧任务推断原因。 |
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #22 针对已确认 Done 与后续 clear 的表情回执竞态：仅加回归的提交 `30ea80d` 在[四组修复前 CI 41284302810](https://github.com/sean2077/feishu-bot/actions/runs/41284302810) 全部实败，SQLite 的 desired/applied 最终均为 clear，但替身 Feishu 通道仍保留本应用 Done。修复提交 `3623cf0` 的[四组 CI 41284472226](https://github.com/sean2077/feishu-bot/actions/runs/41284472226) 全部通过。修复只在上一回执状态为 done、又需清除时查询本应用 Done reaction_id；其他应用同 emoji 不清理，日常成功/取消不新增接口查询。最终 PR 与合入后 CI 需独立核验。此次使用真实 SQLite／回执串行代码与 Feishu API 替身，不是实时飞书联调；网络结果未知或跨进程中断仍需实际验收。
 
 PR #21 针对 `runCommand()` 吞掉项目操作终止失败建立故障注入回归。[修复前 CI 41275807289](https://github.com/sean2077/feishu-bot/actions/runs/41275807289) 四组均失败：核心测试全部正常，新测试中真实 Node 子进程触发停止，模拟 `killTree()` 拒绝，原逻辑却报告普通取消。修复提交 `95e78db` 保留实际清理 Promise 的结论并等待其完成；5 秒既有收尾期限未确认时保守报错，`ActionBroker` 记录不含原始异常的审计。扩充同一测试验证数据库 `action_runs=uncertain`。代码版本 [CI 41276009831](https://github.com/sean2077/feishu-bot/actions/runs/41276009831) 已通过 Ubuntu／Windows × Node 22.16／24 四组完整检查（Ubuntu 118 核心，Windows 117 通过＋1 既有 POSIX 跳过；各组 12 项原生套件）。测试替换进程清理模块，不能声称真实 CIM、模型或飞书联调；性能未测量。最终提交和合入后 CI 须独立核验。
 
