@@ -5,6 +5,7 @@ import { Serial } from './util.ts';
 /** Durable desired state plus per-message serialization closes late-reaction races. */
 export class Receipts {
     private serial = new Serial();
+    private retryAfter?: { at: number; id: string };
     readonly store: Store;
     readonly transport: Transport;
     readonly allowed?: (room: string, sender: string) => boolean;
@@ -30,7 +31,20 @@ export class Receipts {
         this.retry();
     }
     retry(): void {
-        for (const row of this.store.db.prepare('SELECT id FROM receipts WHERE applied IS NULL OR desired!=applied ORDER BY at LIMIT 50').all()) this.kick(String(row.id));
+        // A permanently uncertain oldest batch must not starve newer reactions
+        // after restart. Continue from the last scanned (at,id) key and wrap.
+        const after = this.retryAfter;
+        let rows = after ? this.store.db.prepare(
+            'SELECT id,at FROM receipts WHERE (applied IS NULL OR desired!=applied) ' +
+            'AND (at>? OR (at=? AND id>?)) ORDER BY at,id LIMIT 50'
+        ).all(after.at, after.at, after.id) : [];
+        if (!rows.length)
+            rows = this.store.db.prepare(
+                'SELECT id,at FROM receipts WHERE applied IS NULL OR desired!=applied ORDER BY at,id LIMIT 50'
+            ).all();
+        const last = rows.at(-1);
+        this.retryAfter = last ? { at: Number(last.at), id: String(last.id) } : undefined;
+        for (const row of rows) this.kick(String(row.id));
     }
     private kick(id: string): void {
         void this.serial.run(id, async () => {
