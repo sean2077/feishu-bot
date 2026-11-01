@@ -4,6 +4,7 @@
 
 | 项目 | 当前结果 | 证据 / 下一步 |
 |---|---|---|
+| 服务关闭时最终答案已持久化但预览仍在创建 | 已修复（真实 SQLite／模拟飞书预览竞态／跨平台 CI） | 原生结果与输入 `done` 已事务提交，正常关闭发生在预览创建响应前时，旧逻辑却将最终 Outbox `preparing` 改成 `cancelled`，重启后永久丢失回复。现等待预览结论后保留结果：有已知卡片 ID 则 `pending`，可安全更新；创建结果未知则 `uncertain`，不自动重做。显式 `/stop` 对待处理输出的取消保持有效；真实飞书待验收。 |
 | 持久化最终回复在首次卡片创建前崩溃 | 已修复（真实 SQLite／模拟飞书／跨平台 CI） | 最终回复已以 `pending` 且 `target=NULL` 持久化，但在 `deliver()` 抢占 `sending` 前崩溃时，原本的定期重试永不选取该行，造成答案滞留。现仅对尚未开始外部写入的 `pending` 回复允许自动创建；任何已进入 `sending` 且结果未知的创建在恢复时仍保持 `uncertain`，不自动重放。按原聊天授权重新检查、保留附件交付屏障、每轮 10 条限制及游标轮转。真实飞书创建结果仍需联调。 |
 | 远端卡片已创建但回执 ID 落库失败时的重复创建 | 已修复（真实 SQLite 故障注入／模拟飞书／跨平台 CI） | 远端 `card()` 返回 ID 后，SQLite 保存 `outbox.target` 失败时，旧逻辑按局部变量判断为 `pending`，持久记录仍无 target，自动重试会再创建卡片。现按数据库读出的原 target 判断：未知创建保持 `uncertain`，不自动重发；已知 target 的卡片更新仍可安全重试。真实飞书与实际磁盘故障未验收。 |
 | 原生结果保存失败却提前确认输入完成 | 已修复（真实 SQLite／故障注入／跨平台 CI） | `result` 原先先将 inbox 标记 `done`，再尝试持久化最终回复；落库失败会丢失结果且重启无法告警。现最终 Outbox 记录与原输入的 `done` 更新在同一 SQLite 事务提交；任一步失败均保留原 `sent`／`consumed` 状态供重启恢复警告，运行中尽力告知，不重放原生任务或结果未知的 Feishu 写入。真实模型、飞书和磁盘故障仍待联调。 |
@@ -39,6 +40,8 @@
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #40 对服务正常关闭与并发预览创建建立故障复现：仅新增首个回归的 `304d510` 在 [CI 41360951492](https://github.com/sean2077/feishu-bot/actions/runs/41360951492) 的 Ubuntu／Windows × Node.js 22.16／24 四组均实际失败（答案已持久化、输入已是 `done`，但输出被误改为 `cancelled`）。修复 `d126eba` 后，如果预览返回已知卡片 ID，保留 `pending` 供重启后安全更新；如果创建响应丢失，保留 `uncertain`，不得自动再次创建。补充两种竞态回归后的 [CI 41361124877](https://github.com/sean2077/feishu-bot/actions/runs/41361124877) 四组完整通过（Node22 每组 145 项核心通过＋1 项平台条件跳过，各 12 项原生子进程测试通过）。仅使用真实 SQLite／Gateway、模拟 Worker 与飞书传输；不声称真实飞书或模型服务联调。最终文档提交和合入 main 后的 CI 独立核验。
 
 PR #39 复现最终回复已写入 Outbox，但尚未进入首次飞书创建就异常退出的窗口。仅新增回归的 `7abf5a9` 在 [CI 41356054006](https://github.com/sean2077/feishu-bot/actions/runs/41356054006) 的 Ubuntu Node.js 22.16／24 两组实际失败（期望 `done`，实际永久 `pending`）；Windows 两组被修复提交触发的后续 CI 取消，**不宣称红阶段 Windows 已复现**。最小代码修复 `7446695` 只允许已持久化 `pending`、尚未 claim 首次外部创建的普通回复进入现有自动重试；[CI 41356145010](https://github.com/sean2077/feishu-bot/actions/runs/41356145010) 的 Ubuntu／Windows × Node.js 22.16／24 四组完整检查全部成功。新增回归通过重新构造恢复／定期 sweep 验证首次创建、ID 持久化、不重复创建以及 `uncertain` 保持人工确认。使用真实 SQLite 与模拟飞书传输，不代表真实飞书的一致性或 exactly-once 交付；最终文档版和合并后 main CI 分别核验。
 
