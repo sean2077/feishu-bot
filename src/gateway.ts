@@ -131,7 +131,6 @@ export class Gateway {
             }
             if (!room) continue;
             this.rooms.set(key, room);
-
         }
         this.receipts.recover();
         for (const room of this.rooms.values()) {
