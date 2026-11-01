@@ -162,7 +162,10 @@ export function reactionHandler(channel: LarkChannel, appId: string): (id: strin
             // before the first Done write. Recover other states after restart.
             // An accepted-but-unacknowledged OnIt may not yet be visible.
             // Keep its durable attempt pending until its own reaction is found.
-            await removeOwned(id, 'OnIt', previouslyApplied === 'attempt:processing');
+            // A confirmed OnIt can outlive this process: after restart its
+            // reaction ID is no longer in memory. A stale empty list cannot
+            // confirm removal, even if the original add returned successfully.
+            await removeOwned(id, 'OnIt', previouslyApplied === 'attempt:processing' || previouslyApplied === 'processing');
         }
         if (state === 'clear' && (previouslyApplied === 'done' || previouslyApplied === 'attempt:done')) {
             // Done may have been accepted while the durable desired state was

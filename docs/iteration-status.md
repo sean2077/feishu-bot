@@ -24,12 +24,15 @@
 | 已确认 Done 的回执回滚 | 已修复（模拟飞书 API 与跨平台 CI） | 旧清除路径只清理 OnIt；当原 Done API 已确认但目标回执随后转 clear 时，按本应用归属查找并删除 Done reaction_id，其他应用不受影响。普通处理路径不增加 API 查询；真实飞书服务仍待验收。 |
 | 结果未知的表情创建与恢复 | 已修复（模拟 API 与跨平台 CI） | 添加 OnIt／Done 前持久登记未确认尝试；响应丢失或重启后查询本应用的 reaction_id，存在时采纳，暂不可见时保持 `attempt:*` 并继续查询，绝不因一次空列表重做未知写入；后续 clear 可移除已找到的本应用 Done。成功路径不额外查询。真实 Feishu 一致性、未知写入的清理以及长期悬置状态仍待验收。 |
 | 重启后未知 OnIt 的清理 | 已修复（真实 SQLite／模拟飞书／跨平台 CI） | `Receipts.recover()` 不再清除 `attempt:processing` 证据；恢复后第一次查询尚不可见时保持待确认，再由已有重试找到并删除本应用的 OnIt，不重复创建或触碰其他应用表情。真实 Feishu 列表可见性、长期悬置仍需联调。 |
+| 重启后已确认 OnIt 的清理 | 已修复（模拟飞书列表延迟与跨平台 CI） | `applied=processing` 的 OnIt 已获 API 确认但服务重启丢失内存 reaction_id 后，首次远端列表为空不再当作已清除；保留原回执，等待既有重试观察并删除本应用的表情。其他应用不受影响。真实飞书可见性及长期悬置待测。 |
 | 处理中表情转完成时的清理阶段 | 已修复（故障注入与平台 CI 已验证） | `desired=done` 但旧 `OnIt` 仍为 `processing`／`attempt:processing` 时，先确认清理原表情，再持久登记真正的 `attempt:done` 并创建 Done；暂不可见或清理失败不能伪装成已经尝试 Done。外部未知写依旧不可盲重试，真实飞书可见性仍待验收。 |
 | 未确认 Done 的撤销与可见性延迟 | 已修复（模拟列表延迟与跨平台 CI） | `attempt:done` 后转 clear 时，若首次列表未看到本应用 Done，不再错误记为 clear；保留待确认状态，后续既有 retry／重启可找到并删除自己的表情，不重复写入、不删除其他应用。真正长期不可见或远端删除结果未知时仍可能悬置，真实飞书待验证。 |
 | 旧 CI 启动前失败 | 原因尚未证实 | 历史运行没有 runner/步骤；注释读取受工具限制。新运行已分配 runner，不通过猜测或重跑旧任务推断原因。 |
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #30 区分 `attempt:processing`（写入结果未知）与 `processing`（原添加 API 已返回成功）在重启时的不同边界。仅加测试提交 `53ca391` 的 [CI 41312073363](https://github.com/sean2077/feishu-bot/actions/runs/41312073363) 四组 Ubuntu／Windows × Node.js 22.16／24 均实败：真实 SQLite 中 `applied=processing` 的已确认 OnIt，在重启后首次列表暂不可见时被错误改为 `clear`，远端表情仍存在。最小修复提交 `d9e2906` 将冷启动时已确认或未确认的 OnIt 一并要求观察到本应用的 reaction_id 才能确认删除；原有内存 reaction_id 路径不变。[修复代码 CI 41312242417](https://github.com/sean2077/feishu-bot/actions/runs/41312242417) 四组完整通过。最终文档头和合入 main 的 CI 仍须独立核验。本项使用真实回执处理与 SQLite、模拟飞书列表延迟，不代表真实服务联调，远端表情若已被其他操作移除则可能保守地继续待确认。
 
 PR #28 针对 `OnIt`→`Done` 状态转换阶段混淆建立两项回归：仅新增测试的提交 `96d1e46` 在 [CI 41309942960](https://github.com/sean2077/feishu-bot/actions/runs/41309942960) 的 Ubuntu／Windows × Node.js 22.16／24 四组均实败；第一次远端 OnIt 已接受但列表暂不可见，第二次已确认 OnIt 删除失败，旧代码都错误把 `applied` 提前记成 `attempt:done`，导致后续不敢创建实际未尝试的 Done。源码修复 `e3e2fc4`／`29d397a` 将清理 OnIt 与新增 Done 分为现有串行队列里的两个持久状态阶段，并避免确认清除后的重复 OnIt 查询。代码版 [CI 41310093827](https://github.com/sean2077/feishu-bot/actions/runs/41310093827) Ubuntu 两组和 Windows Node 22 通过，Windows Node 24 因未改动的 PowerShell/CIM 15 秒超时失败；两个新增回归在该 Windows 作业中均已通过。合并 PR #29 的 Windows 测试调度（不覆盖彼此改动）后，组合版 [CI 41310956718](https://github.com/sean2077/feishu-bot/actions/runs/41310956718) 四组完整成功。最终文档头与合入 main 的 CI 仍需独立核验。新增用例使用真实 SQLite／回执串行代码及模拟飞书响应丢失、列表延迟和删除故障，不代表真实 Feishu 联调。
 
