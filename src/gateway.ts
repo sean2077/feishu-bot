@@ -444,29 +444,34 @@ export class Gateway {
                 if (cleanupFailed) slot.stopUnconfirmed = true;
                 const interrupted = slot.deliveries.size > 0 || slot.background > 0 || slot.pinned;
                 const pendingApproval = this.approvals.size(slot.session.id) > 0;
+                const current = !this.closing ? roomFromKey(this.config, slot.room.key) : undefined;
                 slot.live = false;
-                slot.abort.abort();
-                this.approvals.cancelSession(slot.session.id);
-                this.receipts.cancelSession(slot.session.id);
-                for (const render of slot.renders.values()) void this.track(render.cancel('执行中断'));
-                const uncertain = this.store.db.prepare("UPDATE inbox SET status='uncertain' WHERE session=? AND status IN ('sent','consumed')").run(slot.session.id).changes;
-                if (cleanupFailed)
-                    this.store.audit(slot.room.key, 'worker_descendants_unconfirmed', { session: slot.session.id });
-                else if (this.slots.get(slot.room.key) === slot)
-                    this.slots.delete(slot.room.key);
-                if (!this.closing) {
-                    const current = roomFromKey(this.config, slot.room.key);
-                    if (cleanupFailed) {
-                        if (current) void this.track(this.notice(current,
-                            '原生进程异常退出，但后代清理未确认。本聊天已暂停；不会启动替代进程或重放未确认操作。请维护者核实进程状态。'));
-                    } else if (interrupted || pendingApproval || uncertain) {
-                        if (current) void this.track(this.notice(current,
-                            '原生工作进程意外退出。当前审批／追问已取消；未确认的输入与外部操作不会自动重放。请先核实结果。会话记录仍保留，可以继续原会话。'));
+                let noticeId: string | undefined;
+                // If the warning cannot be persisted, roll back the input and
+                // approval state so a later restart can still report the exit.
+                this.store.transaction(() => {
+                    slot.abort.abort();
+                    this.approvals.cancelSession(slot.session.id);
+                    this.receipts.cancelSession(slot.session.id);
+                    const uncertain = this.store.db.prepare("UPDATE inbox SET status='uncertain' WHERE session=? AND status IN ('sent','consumed')").run(slot.session.id).changes;
+                    if (cleanupFailed)
+                        this.store.audit(slot.room.key, 'worker_descendants_unconfirmed', { session: slot.session.id });
+                    if (current && (cleanupFailed || interrupted || pendingApproval || uncertain)) {
+                        const text = cleanupFailed
+                            ? '原生进程异常退出，但后代清理未确认。本聊天已暂停；不会启动替代进程或重放未确认操作。请维护者核实进程状态。'
+                            : '原生工作进程意外退出。当前审批／追问已取消；未确认的输入与外部操作不会自动重放。请先核实结果。会话记录仍保留，可以继续原会话。';
+                        noticeId = this.outbox.saveRecovery(current, slot.session.id, text, displayCard('工作中断', text));
                     }
-                    if (!cleanupFailed) for (const room of this.rooms.values())
+                });
+                for (const render of slot.renders.values()) void this.track(render.cancel('执行中断'));
+                if (!cleanupFailed && this.slots.get(slot.room.key) === slot)
+                    this.slots.delete(slot.room.key);
+                if (current && noticeId)
+                    void this.track(this.outbox.deliver(noticeId, current)).catch(() => {});
+                if (!this.closing && !cleanupFailed)
+                    for (const room of this.rooms.values())
                         if (room.key !== slot.room.key)
                             this.kick(room);
-                }
                 break;
             }
         }
