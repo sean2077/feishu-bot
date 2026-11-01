@@ -24,7 +24,9 @@ export class Receipts {
         for (const row of this.store.db.prepare("SELECT id FROM receipts WHERE session=? AND desired='clear'").all(session)) this.kick(String(row.id));
     }
     recover(): void {
-        this.store.db.prepare("UPDATE receipts SET desired='clear',applied=NULL WHERE desired='processing'").run();
+        // Preserve a pending external-add attempt: resetting applied to NULL would
+        // lose the evidence needed to reconcile an OnIt accepted before restart.
+        this.store.db.prepare("UPDATE receipts SET desired='clear' WHERE desired='processing'").run();
         this.retry();
     }
     retry(): void {
