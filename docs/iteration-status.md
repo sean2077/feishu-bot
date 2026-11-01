@@ -23,11 +23,14 @@
 | 项目操作停止失败未被上报 | 已修复（故障注入与平台 CI 已验证） | 项目操作取消、超时或输出超限时，只有 `killTree()` 确认完成且子进程输出关闭才报告常规终止；清理报错或 5 秒收尾期限仍未确认时改报 `process termination unconfirmed`。`action_runs` 保持 `uncertain` 并有独立审计；不会自动重试外部操作。真实 Windows CIM 与断链归属仍待验证。 |
 | 已确认 Done 的回执回滚 | 已修复（模拟飞书 API 与跨平台 CI） | 旧清除路径只清理 OnIt；当原 Done API 已确认但目标回执随后转 clear 时，按本应用归属查找并删除 Done reaction_id，其他应用不受影响。普通处理路径不增加 API 查询；真实飞书服务仍待验收。 |
 | 结果未知的表情创建与恢复 | 已修复（模拟 API 与跨平台 CI） | 添加 OnIt／Done 前持久登记未确认尝试；响应丢失或重启后查询本应用的 reaction_id，存在时采纳，暂不可见时保持 `attempt:*` 并继续查询，绝不因一次空列表重做未知写入；后续 clear 可移除已找到的本应用 Done。成功路径不额外查询。真实 Feishu 一致性、未知写入的清理以及长期悬置状态仍待验收。 |
+| 重启后未知 OnIt 的清理 | 已修复（真实 SQLite／模拟飞书／跨平台 CI） | `Receipts.recover()` 不再清除 `attempt:processing` 证据；恢复后第一次查询尚不可见时保持待确认，再由已有重试找到并删除本应用的 OnIt，不重复创建或触碰其他应用表情。真实 Feishu 列表可见性、长期悬置仍需联调。 |
 | 未确认 Done 的撤销与可见性延迟 | 已修复（模拟列表延迟与跨平台 CI） | `attempt:done` 后转 clear 时，若首次列表未看到本应用 Done，不再错误记为 clear；保留待确认状态，后续既有 retry／重启可找到并删除自己的表情，不重复写入、不删除其他应用。真正长期不可见或远端删除结果未知时仍可能悬置，真实飞书待验证。 |
 | 旧 CI 启动前失败 | 原因尚未证实 | 历史运行没有 runner/步骤；注释读取受工具限制。新运行已分配 runner，不通过猜测或重跑旧任务推断原因。 |
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #27 对进程重启期间 OnIt 已远端接受但响应丢失、恢复时列表暂不可见的边界建立回归。仅新增测试的提交 `15c7e10` 在 [CI 41305411580](https://github.com/sean2077/feishu-bot/actions/runs/41305411580) 四组 Ubuntu／Windows × Node 22.16／24 中均实败，SQLite `applied` 被过早记为 `clear`（应为 `attempt:processing`），导致迟到的 OnIt 不能再清除。修复提交 `a3c1fc9`／`5d43e94` 的 [CI 41305612009](https://github.com/sean2077/feishu-bot/actions/runs/41305612009) 四组完整通过（每组 125 项核心通过＋1 项平台跳过，12 项子进程套件通过）：仅保留恢复前未知尝试并要求观察本应用 OnIt 后才确认删除，使用既有重试，无新后台调度、外部写重试或权限变更。最终文档提交与合并后 main CI 单独核验。此测试使用真实状态库、模拟飞书 API 的可见性延迟，不代表实际飞书联调。
 
 PR #26 对结果未知的 Done 在撤销时暂不可见建立回归：仅新增测试的提交 `6ccf3d8` 在 [CI 41300826620](https://github.com/sean2077/feishu-bot/actions/runs/41300826620) 四组均发生新增断言失败：SQLite 的 `applied` 被过早设为 `clear`（预期仍为 `attempt:done`），后续没有再次删除可能迟到的 Done；Windows Node 22.16 同轮还独立触发未改动的 PowerShell/CIM 进程树用例超时，不能归因本项。修复提交 `f4d19de` 的 [CI 41300963923](https://github.com/sean2077/feishu-bot/actions/runs/41300963923) 已通过 Ubuntu／Windows × Node 22.16／24 四组完整回归：只对 `attempt:done` 的清除要求先观察到本应用的 Done，首次查不到则保留待确认并由既有 retry 继续，不重写未知外部操作；已有确认 Done 清除路径不变。真实飞书列表可见性、长期悬置和远端删除结果未知仍待验收；最终文档提交与 main push CI 独立核验。
 
