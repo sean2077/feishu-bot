@@ -383,7 +383,7 @@ test('receipt recovery retries beyond the oldest 50 permanently uncertain reacti
         // still be reached by the bounded housekeeping retry after restart.
         for (let i = 0; i < 55; i++) {
             insert.run(`pending-${String(i).padStart(3, '0')}`,
-                room.key, session.id, 'clear', 'attempt:processing', i, 'alice');
+                room.key, session.id, 'clear', 'attempt:processing', 100, 'alice');
         }
         const laterId = 'pending-later';
         insert.run(laterId, room.key, session.id, 'clear', 'attempt:processing', 100, 'alice');
