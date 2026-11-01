@@ -101,13 +101,12 @@ export class Render {
         });
         this.finalId = id;
         await this.tail;
-        if (this.signal?.aborted) {
-            this.store.db.prepare("UPDATE outbox SET state='cancelled' WHERE id=? AND state='preparing'").run(id);
-            return;
-        }
+        // The final answer was committed together with its input's done state.
+        // Shutdown only stops this in-memory attempt; the persisted reply must
+        // remain recoverable. An explicit /stop can still cancel the row.
         const state = this.createUncertain && !this.messageId ? 'uncertain' : 'pending';
         const changed = this.store.db.prepare("UPDATE outbox SET target=?,state=? WHERE id=? AND state='preparing'").run(this.messageId ?? null, state, id).changes;
-        if (!changed) return;
+        if (!changed || this.signal?.aborted) return;
         await this.outbox.deliver(id, this.room);
     }
 }
