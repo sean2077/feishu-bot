@@ -209,7 +209,10 @@ export class Outbox {
         // updates. Keep a separate bounded cursor per conversation and wrap.
         // Unknown external creates/uploads remain excluded from auto-retry.
         const eligible = "SELECT o.id,o.at FROM outbox o WHERE o.room=? AND o.state='pending' " +
-            "AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR o.kind='recovery' OR (o.kind='file' AND o.file_state IN ('pending','done'))) " +
+            // A pending target-less reply has never claimed its first create. The claim
+        // switches to 'sending' BEFORE the external call; recovery turns an
+        // interrupted unknown create into 'uncertain' instead of retrying it.
+        "AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR o.kind IN ('reply','recovery') OR (o.kind='file' AND o.file_state IN ('pending','done'))) " +
             "AND (o.kind IN ('file','recovery') OR NOT EXISTS (SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session " +
             "AND f.kind='file' AND f.state NOT IN ('done','cancelled')))";
         const after = this.retryAfter.get(room);
