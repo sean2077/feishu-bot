@@ -372,3 +372,38 @@ test('restart retains a confirmed OnIt until its temporarily invisible reaction 
         assert.ok(!api.removals.includes('foreign-onit'));
     } finally { await f.close(); }
 });
+
+test('receipt recovery retries beyond the oldest 50 permanently uncertain reactions', async () => {
+    const f = await fixture();
+    try {
+        const room = route(f.config, message())!, session = f.store.session(room.key);
+        const insert = f.store.db.prepare(
+            'INSERT INTO receipts(id,room,session,desired,applied,at,sender) VALUES(?,?,?,?,?,?,?)');
+        // Each old ambiguous write remains unresolved. Newer receipts must
+        // still be reached by the bounded housekeeping retry after restart.
+        for (let i = 0; i < 55; i++) {
+            insert.run(`pending-${String(i).padStart(3, '0')}`,
+                room.key, session.id, 'clear', 'attempt:processing', i, 'alice');
+        }
+        const laterId = 'pending-later';
+        insert.run(laterId, room.key, session.id, 'clear', 'attempt:processing', 100, 'alice');
+        const attempts: string[] = [];
+        const recovered = new Receipts(f.store, {
+            receipt: async (id: string) => {
+                attempts.push(id);
+                if (id !== laterId) throw new Error('fixture: original reaction remains uncertain');
+            }
+        } as never);
+        recovered.retry();
+        await recovered.drain();
+        assert.equal(attempts.length, 50, 'one retry cycle stays bounded');
+        assert.ok(!attempts.includes(laterId), 'later record starts outside the first batch');
+
+        recovered.retry();
+        await recovered.drain();
+        assert.ok(attempts.includes(laterId), 'a second cycle must not repeat only the same oldest 50');
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(laterId)?.applied, 'clear');
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get('pending-000')?.applied,
+            'attempt:processing', 'older uncertain writes must not be replayed or declared complete');
+    } finally { await f.close(); }
+});
