@@ -64,3 +64,28 @@ test('a persisted final answer completes the input once without additional model
         await f.close();
     }
 });
+
+test('failure completing the input rolls back the already-staged final outbox row', async () => {
+    const f = await fixture();
+    const originalMark = f.store.mark.bind(f.store);
+    try {
+        const input = message();
+        await f.gateway.message(input);
+        await until(() => f.workers[0]?.sent.length === 1);
+        const worker = f.workers[0]!;
+        const uuid = worker.sent[0]!.uuid;
+        worker.emit({ type: 'consumed', uuid });
+        f.store.mark = (id, status) => {
+            if (status === 'done') throw new Error('fixture: cannot complete originating input');
+            return originalMark(id, status);
+        };
+        worker.emit({ type: 'result', uuid, success: true, text: 'staged but uncommitted' });
+        assert.equal(f.store.db.prepare('SELECT status FROM inbox WHERE id=?').get(input.id)?.status, 'consumed');
+        assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM outbox').get()?.n, 0,
+            'the answer row and input completion must commit or roll back together');
+        f.store.mark = originalMark;
+    } finally {
+        f.store.mark = originalMark;
+        await f.close();
+    }
+});
