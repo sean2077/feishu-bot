@@ -37,3 +37,38 @@ test('old retryable card failures do not starve later pending outputs', async ()
         await f.close();
     }
 });
+
+test('retry cursor advances through equal timestamps without retrying ambiguous creates', async () => {
+    const f = await fixture();
+    try {
+        const room = route(f.config, message())!;
+        const session = f.store.session(room.key);
+        const outbox = new Outbox(f.store, f.transport);
+        const targets = new Map<string, string>();
+        for (let i = 0; i < 12; i++) {
+            const target = 'known-' + i;
+            const id = outbox.save(room, session.id, 'answer', true, target);
+            f.store.db.prepare('UPDATE outbox SET at=? WHERE id=?').run(1000, id);
+            targets.set(id, target);
+        }
+        const order = [...targets.keys()].sort();
+        const later = new Set(order.slice(10).map(id => targets.get(id)!));
+        const attempted: string[] = [];
+        f.transport.update = async id => {
+            attempted.push(id);
+            if (!later.has(id)) throw new Error('fixture: old update failed');
+        };
+        const ambiguous = outbox.save(room, session.id, 'unknown create', true);
+        f.store.db.prepare("UPDATE outbox SET state='uncertain',at=? WHERE id=?").run(999, ambiguous);
+        for (let sweep = 0; sweep < 3; sweep++)
+            for (const id of outbox.retryable(room.key))
+                await outbox.deliver(id, room);
+        assert.deepEqual(attempted.filter(id => later.has(id)).sort(), [...later].sort());
+        for (const id of order.slice(10))
+            assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(id)?.state, 'done');
+        assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(ambiguous)?.state, 'uncertain');
+        assert.ok(!outbox.retryable(room.key).includes(ambiguous), 'unknown create is never automatically retried');
+    } finally {
+        await f.close();
+    }
+});
