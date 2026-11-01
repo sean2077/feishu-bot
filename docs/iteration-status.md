@@ -16,9 +16,11 @@
 | 意外重启的审批／追问回执 | 已修复（平台 CI 已验证） | 重启前仍为 pending 的请求在恢复时过期；如果没有挂起输入，原先不会提示。新增按当前聊天授权范围的一次性告知，并与同房间未确认输入合并，不恢复旧审批或重新执行外部操作。 |
 | 运行中原生 worker 意外退出告知 | 已修复（平台 CI 已验证） | 原生进程异常退出且仍有未完成输入、审批或后台活动时，在当前授权聊天告知一次；审批取消、输入转 uncertain、执行结果不重放，不改变原会话。正常停止和闲置回收不额外提醒。 |
 | 旧 CI 启动前失败 | 原因尚未证实 | 历史运行没有 runner/步骤；注释读取受工具限制。新运行已分配 runner，不通过猜测或重跑旧任务推断原因。 |
-| Windows 孤儿进程清理偶发超时 | 仍待解决（已定量拆分） | [PR #14 实验 CI](https://github.com/sean2077/feishu-bot/actions/runs/41260554823) 测得首次清理 10.9–12.34 秒，WMI 脚本内部仅 0.87–1.55 秒；其余耗时在已测脚本段之外，尚不能归因具体启动阶段。Get-WmiObject 替代未证明收益，PR #14 已关闭不合并。原 main 的 Windows Node 22 超时失败仍是历史事实。 |
+| Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #18 针对 Windows PowerShell/CIM 15 秒超时做了三组受控 CI 对照（均未改变 PID、心跳或进程归属断言，也未增加超时）：[默认测试并行 CI 41267952734](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 的首次 PowerShell 进程从 Node 启动到脚本首行耗时 Node 22.16 为 11.07 秒、Node 24 为 10.95 秒；脚本内 CIM 查询分别约 1.61 和 0.68 秒，结束到子进程关闭约 20 毫秒。[并行度 1 CI 41268146872](https://github.com/sean2077/feishu-bot/actions/runs/41268146872) 的对应启动前耗时约 1.83 和 2.38 秒，但 Ubuntu 核心套件耗时从原 5–6 秒增至约 12–13 秒。[并行度 2 CI 41268313285](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 的对应启动前耗时约 4.19 和 3.42 秒；Ubuntu 核心约 7 秒；四组检查成功。各组使用不同托管 runner，样本不足以推断失败率或实际部署性能，仅支持将测试调度竞争作为主要可疑因素。实验性的源码计时已从交付补丁撤回，最终仅保留测试文件并行度上限 2；最终补丁仍需独立 CI 核验。
 
 PR #16 的测试先在 [Ubuntu Node.js 22.16／24 修复前 CI](https://github.com/sean2077/feishu-bot/actions/runs/41260827490) 复现原生进程意外退出时没有同群通知（Windows 修复前作业因后续提交取消）。修复后的 [PR CI](https://github.com/sean2077/feishu-bot/actions/runs/41260891662) 四组通过：Ubuntu 各 113 核心测试，Windows 各 112 通过＋1 既有 POSIX 专用跳过，每组另外 6 项真实 CC 进程 fixture。新增用例核对意外退出通知仅一次、旧审批不可再批准、未确认输入不重放、同一会话可续接且无虚假 Done。飞书传输仍为模拟，实际服务通知可达性待联调。
 
