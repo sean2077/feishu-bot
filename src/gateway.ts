@@ -31,6 +31,7 @@ interface Slot {
     compacting?: string;
     requests: Set<string>;
     activeRequests: number;
+    stopUnconfirmed?: boolean;
 }
 export class Gateway {
     readonly config: Config;
@@ -208,7 +209,7 @@ export class Gateway {
                     const oldest = [...this.slots.values()].filter(s => this.reclaimable(s))
                         .sort((a, b) => a.lastActivity - b.lastActivity)[0];
                     if (!oldest) return undefined;
-                    await this.releaseIdle(oldest);
+                    if (!(await this.releaseIdle(oldest))) return undefined;
                 }
                 const session = this.store.session(room.key);
                 const created: Slot = { room, session, abort: new AbortController(), live: true, busy: false,
@@ -221,7 +222,7 @@ export class Gateway {
                 if (this.closing || !this.store.pending(room.key).length) return;
                 if (!this.waitingNotified.has(room.key)) {
                     this.waitingNotified.add(room.key);
-                    await this.notice(room, '当前会话都在工作或监控，输入已保存。有空闲进程时会自动处理；不会中止其他人的任务。', pending[0]?.message);
+                    await this.notice(room, '当前会话都在工作、监控或停止尚未确认，输入已保存。正常空闲后会自动处理；停止未确认时请维护者检查服务诊断。', pending[0]?.message);
                 }
                 return;
             }
@@ -241,6 +242,13 @@ export class Gateway {
                 await slot.worker.stop();
                 return;
             }
+        }
+        if (slot.stopUnconfirmed) {
+            if (!this.waitingNotified.has(room.key)) {
+                this.waitingNotified.add(room.key);
+                await this.notice(room, '原生进程尚未确认退出；本聊天输入已保存，不会启动可能重叠的新进程。请检查服务诊断。');
+            }
+            return;
         }
         for (const delivery of pending) {
             if (!slot.live || this.closing)
@@ -499,7 +507,7 @@ export class Gateway {
         if (command === '/status') {
             const slot = this.slots.get(room.key);
             const saved = slot?.session ?? this.store.listSessions(room.key).find(s => s.state === 'open');
-            await this.notice(room, JSON.stringify({ project: room.projectId, session: saved?.id, nativeSessionId: saved?.ccId, state: slot ? (slot.busy ? 'working' : 'connected') : saved ? 'suspended' : 'not_started', background: slot?.background ?? 0, monitorPinned: slot?.pinned ?? false, pendingOrUnconfirmed: this.store.countPending(room.key), approvals: slot ? this.approvals.size(slot.session.id) : 0 }, null, 2), message);
+            await this.notice(room, JSON.stringify({ project: room.projectId, session: saved?.id, nativeSessionId: saved?.ccId, state: slot?.stopUnconfirmed ? 'termination_unconfirmed' : slot ? (slot.busy ? 'working' : 'connected') : saved ? 'suspended' : 'not_started', background: slot?.background ?? 0, monitorPinned: slot?.pinned ?? false, pendingOrUnconfirmed: this.store.countPending(room.key), approvals: slot ? this.approvals.size(slot.session.id) : 0 }, null, 2), message);
             return;
         }
         if (command === '/outputs') {
@@ -528,19 +536,26 @@ export class Gateway {
             await this.notice(room, '此操作需要项目维护者。', message);
             return;
         }
+        const stopConfirmed = async (): Promise<boolean> => {
+            try { await this.stopRoom(room); return true; }
+            catch {
+                await this.notice(room, '原生进程停止失败，尚未确认退出。当前会话保留，不能启动替代进程或切换会话；请先检查服务诊断并核实进程。', message);
+                return false;
+            }
+        };
         if (command === '/resume') {
             // Validate ownership before touching the current running session.
             if (!this.store.listSessions(room.key).some(s => s.id === arg)) {
                 await this.notice(room, '只能恢复本聊天列出的会话。', message);
                 return;
             }
-            await this.stopRoom(room);
+            if (!(await stopConfirmed())) return;
             this.store.resume(room.key, arg);
             await this.notice(room, '已选择历史会话。下一条消息会恢复上下文；旧后台进程不会自动重启。', message);
             return;
         }
         if (command === '/stop' || command === '/new') {
-            await this.stopRoom(room);
+            if (!(await stopConfirmed())) return;
             if (command === '/new') {
                 this.store.db.prepare("DELETE FROM inbox WHERE room=? AND status='background'").run(room.key);
                 this.store.newSession(room.key);
@@ -563,8 +578,13 @@ export class Gateway {
         // Wait for a startup/download already in progress before another process can resume the same transcript.
         await this.dispatchSerial.run(room.key, async () => {
             if (!slot) return;
-            await slot.worker?.stop();
-            await Promise.allSettled([...slot.renders.values()].map(r => r.cancel()));
+            try { await slot.worker?.stop(); }
+            catch (error) {
+                slot.stopUnconfirmed = true;
+                this.store.audit(room.key, 'worker_stop_unconfirmed', { session: slot.session.id, error: redact(errorText(error), this.secrets) });
+                throw error;
+            }
+            finally { await Promise.allSettled([...slot.renders.values()].map(r => r.cancel())); }
             if (this.slots.get(room.key) === slot) this.slots.delete(room.key);
         });
         this.kickWaiting();
@@ -609,15 +629,24 @@ export class Gateway {
             slot.activeRequests === 0 && slot.deliveries.size === 0 &&
             !this.store.countPending(slot.room.key) && !this.approvals.size(slot.session.id);
     }
-    private async releaseIdle(slot: Slot): Promise<void> {
+    private async releaseIdle(slot: Slot): Promise<boolean> {
         slot.live = false;
         slot.abort.abort();
         try { await slot.worker!.stop(); }
-        finally {
-            if (this.slots.get(slot.room.key) === slot) this.slots.delete(slot.room.key);
+        catch (error) {
+            // An unconfirmed stop is still an occupied process slot. Releasing
+            // it could start another native worker against the same transcript.
+            slot.stopUnconfirmed = true;
+            this.store.audit(slot.room.key, 'idle_process_stop_unconfirmed', { session: slot.session.id, error: redact(errorText(error), this.secrets) });
+            const current = roomFromKey(this.config, slot.room.key);
+            if (current) void this.track(this.notice(current,
+                '闲置进程停止失败，尚未确认退出；已保留进程名额以避免并行执行。请检查服务诊断。')).catch(() => {});
+            return false;
         }
+        if (this.slots.get(slot.room.key) === slot) this.slots.delete(slot.room.key);
         this.store.audit(slot.room.key, 'idle_process_released', { session: slot.session.id });
         // Native session ID, memory and workspace survive process reclamation.
+        return true;
     }
     private kickWaiting(): void {
         if (this.closing) return;
