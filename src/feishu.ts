@@ -129,8 +129,13 @@ export function reactionHandler(channel: LarkChannel, appId: string): (id: strin
         }
         return ids;
     };
-    const removeOwned = async (id: string, emoji: 'OnIt' | 'Done'): Promise<void> => {
-        for (const reactionId of await ownedIds(id, emoji))
+    const removeOwned = async (id: string, emoji: 'OnIt' | 'Done', requireObserved = false): Promise<void> => {
+        const ids = await ownedIds(id, emoji);
+        // A missing read is not a confirmed removal of an ambiguous add:
+        // the remote write might only become visible on the next read.
+        if (requireObserved && !ids.length)
+            throw new Error(`${emoji} reaction removal remains unconfirmed`);
+        for (const reactionId of ids)
             await channel.removeReaction(id, reactionId);
     };
     return async (id, state = 'processing', previouslyApplied) => {
@@ -160,7 +165,7 @@ export function reactionHandler(channel: LarkChannel, appId: string): (id: strin
             // Done may have been accepted while the durable desired state was
             // changing to clear. Reconcile only this application's completed
             // reaction; an in-flight Done is serialized before this call.
-            await removeOwned(id, 'Done');
+            await removeOwned(id, 'Done', previouslyApplied === 'attempt:done');
         }
         if (state === 'done') {
             if (previouslyApplied === 'attempt:done') {
