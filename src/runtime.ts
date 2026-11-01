@@ -35,6 +35,13 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
         let stopped = false, exited = false, reportedReady = false;
         let stopTask: Promise<void> | undefined;
         let unexpectedCleanup: Promise<void> | undefined;
+        let unexpectedCleanupFailed = false;
+        const cleanupUnexpected = (): Promise<void> => unexpectedCleanup ??= killTree(child).catch(error => {
+            unexpectedCleanupFailed = true;
+            log('worker_descendant_cleanup_failed', {
+                room: hash(room.key).slice(0, 12), error: redact(String(error), secrets)
+            });
+        });
         const serial = new Serial();
         const write = async (value: object) => serial.run('stdin', async () => {
             if (stopped || exited) throw new Error('worker unavailable');
@@ -52,7 +59,10 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
         child.stdout.setEncoding('utf8');
         child.stdout.on('data', (chunk: string) => {
             try { parser.push(chunk); }
-            catch { onEvent({ type: 'error', message: 'worker protocol violation' }); void killTree(child); }
+            catch {
+                onEvent({ type: 'error', message: 'worker protocol violation' });
+                void cleanupUnexpected();
+            }
         });
         child.stderr.setEncoding('utf8');
         child.stderr.on('data', (chunk: string) => log('worker_stderr', {
@@ -61,15 +71,16 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
         child.on('error', error => onEvent({ type: 'error', message: redact(error.message, secrets) }));
         child.on('exit', () => {
             if (stopTask) return;
-            // Cleanup before reporting an unexpected exit, so native descendants
-            // cannot race the next resumed conversation.
-            unexpectedCleanup = killTree(child).catch(error => log('worker_descendant_cleanup_failed', {
-                room: hash(room.key).slice(0, 12), error: redact(String(error), secrets)
-            }));
+            // Do not report the room as reusable until descendant cleanup completes.
+            void cleanupUnexpected();
         });
         child.on('close', code => {
             exited = true;
-            void (unexpectedCleanup ?? Promise.resolve()).then(() => onEvent({ type: 'exit', code })).catch(error => log('worker_exit_event_failed', {
+            // 'close' can also follow a spawn error without an 'exit' event.
+            const cleanup = unexpectedCleanup ?? (stopTask ? Promise.resolve() : cleanupUnexpected());
+            void cleanup.then(() => onEvent({
+                type: 'exit', code, ...(unexpectedCleanupFailed ? { cleanupConfirmed: false } : {})
+            })).catch(error => log('worker_exit_event_failed', {
                 room: hash(room.key).slice(0, 12), error: redact(String(error), secrets)
             }));
         });
@@ -81,7 +92,12 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
                 actions: project.actions.map(a => ({ id: a.id, description: a.description, parameters: a.parameters, readOnly: a.readOnly })),
                 queueLimit: config.limits.inboxPerRoom
             });
-        } catch (error) { await killTree(child); throw error; }
+        } catch (error) {
+            await cleanupUnexpected();
+            if (unexpectedCleanupFailed)
+                onEvent({ type: 'exit', code: null, cleanupConfirmed: false });
+            throw error;
+        }
         return {
             send: delivery => write({ type: 'input', delivery }),
             respond: (id, value) => { void write({ type: 'response', id, value }).catch(() => {}); },
@@ -91,6 +107,8 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
                     stopped = true;
                     try { await killTree(child); }
                     finally { await unexpectedCleanup; }
+                    if (unexpectedCleanupFailed)
+                        throw new Error('Native worker descendant termination unconfirmed');
                 })();
                 return stopTask;
             }

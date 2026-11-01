@@ -239,7 +239,10 @@ export class Gateway {
                 slot.worker = await this.factory(room, session, event => this.event(captured, event), slot.workspace);
             }
             catch (e) {
-                this.slots.delete(room.key);
+                // A failed native initialization may have left unconfirmed
+                // descendants; preserve its reserved slot even without a Worker.
+                if (!slot.stopUnconfirmed && this.slots.get(room.key) === slot)
+                    this.slots.delete(room.key);
                 slot.live = false;
                 throw e;
             }
@@ -414,6 +417,8 @@ export class Gateway {
             case 'exit': {
                 // Planned stop, idle reclamation and shutdown mark the slot non-live
                 // before terminating the child, so only genuine unexpected exits arrive here.
+                const cleanupFailed = event.cleanupConfirmed === false;
+                if (cleanupFailed) slot.stopUnconfirmed = true;
                 const interrupted = slot.deliveries.size > 0 || slot.background > 0 || slot.pinned;
                 const pendingApproval = this.approvals.size(slot.session.id) > 0;
                 slot.live = false;
@@ -422,15 +427,20 @@ export class Gateway {
                 this.receipts.cancelSession(slot.session.id);
                 for (const render of slot.renders.values()) void this.track(render.cancel('执行中断'));
                 const uncertain = this.store.db.prepare("UPDATE inbox SET status='uncertain' WHERE session=? AND status IN ('sent','consumed')").run(slot.session.id).changes;
-                if (this.slots.get(slot.room.key) === slot)
+                if (cleanupFailed)
+                    this.store.audit(slot.room.key, 'worker_descendants_unconfirmed', { session: slot.session.id });
+                else if (this.slots.get(slot.room.key) === slot)
                     this.slots.delete(slot.room.key);
                 if (!this.closing) {
-                    if (interrupted || pendingApproval || uncertain) {
-                        const current = roomFromKey(this.config, slot.room.key);
+                    const current = roomFromKey(this.config, slot.room.key);
+                    if (cleanupFailed) {
+                        if (current) void this.track(this.notice(current,
+                            '原生进程异常退出，但后代清理未确认。本聊天已暂停；不会启动替代进程或重放未确认操作。请维护者核实进程状态。'));
+                    } else if (interrupted || pendingApproval || uncertain) {
                         if (current) void this.track(this.notice(current,
                             '原生工作进程意外退出。当前审批／追问已取消；未确认的输入与外部操作不会自动重放。请先核实结果。会话记录仍保留，可以继续原会话。'));
                     }
-                    for (const room of this.rooms.values())
+                    if (!cleanupFailed) for (const room of this.rooms.values())
                         if (room.key !== slot.room.key)
                             this.kick(room);
                 }
@@ -578,6 +588,8 @@ export class Gateway {
     }
     private async stopRoom(room: Room): Promise<void> {
         const slot = this.slots.get(room.key);
+        if (slot?.stopUnconfirmed && !slot.worker)
+            throw new Error('Native worker termination remains unconfirmed');
         const session = slot?.session ?? this.store.listSessions(room.key).find(s => s.state === 'open');
         if (session) {
             this.approvals.cancelSession(session.id);
