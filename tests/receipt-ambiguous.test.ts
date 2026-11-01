@@ -142,3 +142,50 @@ for (const emoji of ['OnIt', 'Done'] as const) {
         } finally { await f.close(); }
     });
 }
+
+test('clearing an ambiguous Done waits for the remotely accepted reaction to become visible', async () => {
+    const f = await fixture();
+    const api = ambiguousChannel('Done');
+    const transport = { receipt: reactionHandler(api.channel as never, 'cli_fixture') } as never;
+    const receipts = new Receipts(f.store, transport);
+    try {
+        const input = message(), room = route(f.config, input)!, session = f.store.session(room.key);
+        receipts.accept(room, session.id, input);
+        await receipts.drain();
+        receipts.settle(room.key, session.id, [input], true);
+        await receipts.drain();
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied,
+            'attempt:done', 'Done was accepted remotely but its response was lost');
+        assert.equal([...api.own.values()].filter(emoji => emoji === 'Done').length, 1);
+
+        const originalList = api.channel.rawClient.im.v1.messageReaction.list;
+        let invisibleReads = 1;
+        api.channel.rawClient.im.v1.messageReaction.list = async request => {
+            const response = await originalList(request);
+            if (request.params.reaction_type === 'Done' && invisibleReads-- > 0)
+                return { ...response, data: { ...response.data, items: response.data.items.filter(item =>
+                    item.operator.operator_id !== 'cli_fixture') } };
+            return response;
+        };
+
+        receipts.settle(room.key, session.id, [input], false);
+        await receipts.drain();
+        const pending = f.store.db.prepare('SELECT desired,applied FROM receipts WHERE id=?').get(input.id);
+        assert.equal(pending?.desired, 'clear');
+        assert.equal(pending?.applied, 'attempt:done',
+            'one temporarily empty list cannot prove an ambiguous Done has been removed');
+        assert.equal([...api.own.values()].filter(emoji => emoji === 'Done').length, 1);
+
+        // Recreate both the handler and queue: reconciliation must also work after restart.
+        const restarted = new Receipts(f.store, {
+            receipt: reactionHandler(api.channel as never, 'cli_fixture')
+        } as never);
+        restarted.recover();
+        await restarted.drain();
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied, 'clear');
+        assert.equal([...api.own.values()].filter(emoji => emoji === 'Done').length, 0);
+        assert.equal(api.adds.filter(emoji => emoji === 'Done').length, 1, 'never repeat the unknown write');
+        assert.equal(api.foreign.get('foreign-done'), 'Done', 'other app reactions must survive');
+        assert.ok(!api.removals.includes('foreign-done'));
+    } finally { await f.close(); }
+});
