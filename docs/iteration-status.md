@@ -4,6 +4,7 @@
 
 | 项目 | 当前结果 | 证据 / 下一步 |
 |---|---|---|
+| 原生结果保存失败却提前确认输入完成 | 已修复（真实 SQLite／故障注入／跨平台 CI） | `result` 原先先将 inbox 标记 `done`，再尝试持久化最终回复；落库失败会丢失结果且重启无法告警。现最终 Outbox 记录与原输入的 `done` 更新在同一 SQLite 事务提交；任一步失败均保留原 `sent`／`consumed` 状态供重启恢复警告，运行中尽力告知，不重放原生任务或结果未知的 Feishu 写入。真实模型、飞书和磁盘故障仍待联调。 |
 | 首次启动诊断 | 已修复 | 模板、无聊天绑定和不完整参数被拒绝；数据目录错误聚合，临时探针清理，配置错误不回显原文。 |
 | Windows 显式 Git Bash 路径误报 | 已修复（Windows 真实可执行文件与跨平台 CI） | `doctor` 原先只检查指定文件存在，可能把 `node.exe` 误判为 Git Bash。现要求 `bash.exe` 并实际执行 `--version`，拒绝不能启动或不返回 GNU bash 版本的路径；仅检查显式配置，不改写用户设置，也不代表真实 CC 工具联调。 |
 | 超长答案完整交付 | 已修复 | 文件与卡片共同持久化；文件未送达不标 Done；重启可补发，不重做模型或业务动作。 |
@@ -35,6 +36,8 @@
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #36 复现原生 `result` 在最终回复持久化之前将输入错误标为 `done` 的问题：仅增加回归的提交 `8a68885` 在 [CI 41340756346](https://github.com/sean2077/feishu-bot/actions/runs/41340756346) 的 Ubuntu Node.js 22.16／24 两组实败（预期 `consumed`、实际 `done`），Windows 因后续修复提交被取消，不声称红阶段 Windows 复现。修复将最终回复登记与完成输入纳入同一 SQLite 事务，故障注入覆盖 Outbox 保存失败、输入完成更新失败后的事务回滚，以及正常结果持久化；[CI 41340940995](https://github.com/sean2077/feishu-bot/actions/runs/41340940995) Ubuntu／Windows × Node.js 22.16／24 四组通过（Ubuntu Node22 核心 140 项通过、1 项平台跳过，原生子进程 12 项通过）。测试使用真实 SQLite／Gateway、模拟 Worker 与飞书，未验证真实服务或实际磁盘损坏；最终文档版及合并后 main CI 另行核验。
 
 PR #35 复现运行中原生 Worker 意外退出时一次性通知可能丢失的问题：仅加回归的 `15afc23` 在 [CI 41335539492](https://github.com/sean2077/feishu-bot/actions/runs/41335539492) 的 Ubuntu／Windows × Node.js 22.16／24 四组均实际失败（未知 Feishu 创建无持久 Outbox 记录；强制数据库写入失败时输入／审批状态未回滚）。修复把退出状态变更、审批取消及警告登记纳入同一 SQLite 事务，之后使用已有 Outbox 投递；未知外部写保持 `uncertain`，不自动重放。适配旧测试对新卡片形式的断言后，[代码与回归 CI 41335819721](https://github.com/sean2077/feishu-bot/actions/runs/41335819721) 四组完整通过；补验后代清理未确认仍有持久警告的 [CI 41336028703](https://github.com/sean2077/feishu-bot/actions/runs/41336028703) 也四组全部通过。新用例使用真实 Gateway／SQLite 与模拟 Worker 事件、飞书响应丢失，不代表真实 CC 崩溃或飞书联调；Windows CIM 生产超时及断链归属仍未修复。最终文档版和合入 main 的 CI 须独立核验。
 

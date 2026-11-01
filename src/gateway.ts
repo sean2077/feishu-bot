@@ -403,7 +403,7 @@ export class Gateway {
                 const render = unbound ?? this.renderFor(slot, finished[0] ?? event.replyToUuid);
                 if (unbound) { unbound.bindOrigin(anchor); slot.renders.delete('background:unknown'); }
                 slot.renders.delete(key);
-                for (const id of finished) { this.store.mark(id, 'done'); slot.deliveries.delete(id); }
+                for (const id of finished) slot.deliveries.delete(id);
                 if (slot.compacting && finished.includes(slot.compacting)) slot.compacting = undefined;
                 slot.busy = slot.deliveries.size > 0;
                 slot.anchor = slot.deliveries.values().next().value;
@@ -415,7 +415,17 @@ export class Gateway {
                 const text = compactText ? compactText + (event.text ? '\n\n' + event.text : '') : event.text;
                 slot.activeRequests++; // Do not evict the process while its final card is still being saved.
                 void this.track(render.finish(redact(text, this.secrets), event.success, this.config.dataDir, origins,
-                    event.compact ? '上下文整理' : undefined)).catch(() => {}).finally(() => { slot.activeRequests--; this.kickWaiting(); });
+                    event.compact ? '上下文整理' : undefined, () => {
+                        for (const id of finished) this.store.mark(id, 'done');
+                    })).catch(() => {
+                        // Do not acknowledge a result whose durable answer could
+                        // not be saved. Recovery must still see an unfinished input.
+                        try { this.store.audit(slot.room.key, 'final_reply_persistence_failed', { session: slot.session.id }); }
+                        catch { /* Local storage may itself be unavailable. */ }
+                        const current = !this.closing ? roomFromKey(this.config, slot.room.key) : undefined;
+                        if (current) void this.track(this.notice(current,
+                            '回复保存失败，本轮不标记完成；未确认输入不会自动重放。请检查服务诊断和磁盘状态。')).catch(() => {});
+                    }).finally(() => { slot.activeRequests--; this.kickWaiting(); });
                 this.store.audit(slot.room.key, 'turn_result', { session: slot.session.id, success: event.success, compact: event.compact, usage: event.usage ?? {} });
                 this.kickWaiting();
                 break;
