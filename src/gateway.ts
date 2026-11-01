@@ -222,7 +222,7 @@ export class Gateway {
                 if (this.closing || !this.store.pending(room.key).length) return;
                 if (!this.waitingNotified.has(room.key)) {
                     this.waitingNotified.add(room.key);
-                    await this.notice(room, '当前会话都在工作或监控，输入已保存。有空闲进程时会自动处理；不会中止其他人的任务。', pending[0]?.message);
+                    await this.notice(room, '当前会话都在工作、监控或停止尚未确认，输入已保存。正常空闲后会自动处理；停止未确认时请维护者检查服务诊断。', pending[0]?.message);
                 }
                 return;
             }
@@ -640,7 +640,7 @@ export class Gateway {
             this.store.audit(slot.room.key, 'idle_process_stop_unconfirmed', { session: slot.session.id, error: redact(errorText(error), this.secrets) });
             const current = roomFromKey(this.config, slot.room.key);
             if (current) void this.track(this.notice(current,
-                '闲置进程停止失败，尚未确认退出；已保留进程名额以避免并行执行。请检查服务诊断。'));
+                '闲置进程停止失败，尚未确认退出；已保留进程名额以避免并行执行。请检查服务诊断。')).catch(() => {});
             return false;
         }
         if (this.slots.get(slot.room.key) === slot) this.slots.delete(slot.room.key);
