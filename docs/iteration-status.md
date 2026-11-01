@@ -22,11 +22,13 @@
 | 异常退出后代清理失败 | 已修复（故障注入与跨平台 CI 已验证） | `killTree()` 失败不再发可安全重用的普通退出事件；保留会话进程名额、取消旧审批、把未确认输入标记为 uncertain，并禁止替代 Worker 和会话切换。初始化失败且未取得 Worker 句柄也保持锁定。真实 CIM 失败、断链后代和 Windows 11 本机仍待验证。 |
 | 项目操作停止失败未被上报 | 已修复（故障注入与平台 CI 已验证） | 项目操作取消、超时或输出超限时，只有 `killTree()` 确认完成且子进程输出关闭才报告常规终止；清理报错或 5 秒收尾期限仍未确认时改报 `process termination unconfirmed`。`action_runs` 保持 `uncertain` 并有独立审计；不会自动重试外部操作。真实 Windows CIM 与断链归属仍待验证。 |
 | 已确认 Done 的回执回滚 | 已修复（模拟飞书 API 与跨平台 CI） | 旧清除路径只清理 OnIt；当原 Done API 已确认但目标回执随后转 clear 时，按本应用归属查找并删除 Done reaction_id，其他应用不受影响。普通处理路径不增加 API 查询；真实飞书服务仍待验收。 |
-| 结果未知的表情创建与恢复 | 已修复（模拟 API 与跨平台 CI） | 添加 OnIt／Done 前持久登记未确认尝试；响应丢失或重启后先查询本应用的 reaction_id，存在时采纳，不盲增；后续 clear 可移除本应用 Done。成功路径不额外查询。远端列表的一致性及真实 Feishu 服务仍待联调。 |
+| 结果未知的表情创建与恢复 | 已修复（模拟 API 与跨平台 CI） | 添加 OnIt／Done 前持久登记未确认尝试；响应丢失或重启后查询本应用的 reaction_id，存在时采纳，暂不可见时保持 `attempt:*` 并继续查询，绝不因一次空列表重做未知写入；后续 clear 可移除已找到的本应用 Done。成功路径不额外查询。真实 Feishu 一致性、未知写入的清理以及长期悬置状态仍待验收。 |
 | 旧 CI 启动前失败 | 原因尚未证实 | 历史运行没有 runner/步骤；注释读取受工具限制。新运行已分配 runner，不通过猜测或重跑旧任务推断原因。 |
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #25 检查了表情创建结果未知且首次查询暂时不可见的边界：仅加回归的提交 `b13421d` 在[修复前 CI 41296518442](https://github.com/sean2077/feishu-bot/actions/runs/41296518442) 的 Ubuntu Node 22.16／24 中两项新增测试实败，均因额外调用一次 `addReaction`（预期 1 次，实际 2 次）；Windows red-phase 被后续提交取消，不声称已复现。修复提交 `cfe3665` 的[四组 CI 41296606553](https://github.com/sean2077/feishu-bot/actions/runs/41296606553) 全部通过。测试使用 SQLite／回执代码和模拟飞书响应丢失、列表延迟可见；未知写入若始终不可见会保留待确认状态，不自动重做，也不保证真实 API 的即时一致性。最终文档提交与 main CI 另行核验。
 
 PR #24 对首次 Windows 部署诊断的误判建立回归：测试专用提交 `5e8506e` 的[CI 41292169792](https://github.com/sean2077/feishu-bot/actions/runs/41292169792) 在 Windows Node.js 22.16／24 均因已有 `node.exe` 被误认 Git Bash 而实败；Ubuntu 两组正常通过，Windows 新测试之外的核心用例未发现回归。代码提交 `bb3dc50` 的[CI 41292422273](https://github.com/sean2077/feishu-bot/actions/runs/41292422273) 四组完整成功：Ubuntu 每组 121 通过＋1 Windows 专用跳过，Windows 每组 121 通过＋1 既有 POSIX 跳过；各组原生子进程套件 12 项通过。新增负例还覆盖仅命名为 `bash.exe` 的无效文件；有标准 Git Bash 安装路径时执行正例。未配置路径时维持原生可选行为，没有真实 Feishu／模型联调，不宣称解决 PowerShell/CIM 清理超时。最终文档版及合并后 CI 单独核验。
 
