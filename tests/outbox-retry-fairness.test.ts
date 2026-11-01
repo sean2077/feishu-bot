@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Outbox } from '../src/outbox.ts';
+import { Gateway } from '../src/gateway.ts';
 import { route } from '../src/policy.ts';
 import { fixture, message } from './helpers.ts';
 
@@ -85,17 +86,25 @@ test('a final reply committed before its first card create resumes safely after 
         const ambiguous = outbox.save(room, session.id, 'possibly created already', true);
         f.store.db.prepare("UPDATE outbox SET state='uncertain' WHERE id=?").run(ambiguous);
 
-        await f.gateway.recover();
-        assert.equal(f.transport.sent.length, 0, 'recovery must not blindly create unrelated cards');
-        await f.gateway.sweep();
-        const saved = f.store.db.prepare('SELECT state,target FROM outbox WHERE id=?').get(unsent);
-        assert.equal(saved?.state, 'done', 'a never-attempted final card must not be stranded');
-        assert.ok(saved?.target, 'remote message ID is persisted');
-        assert.equal(f.transport.sent.filter(row => row.card).length, 1);
-        assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(ambiguous)?.state, 'uncertain');
+        await f.gateway.close();
+        // Reconstruct the gateway/Outbox over the same SQLite database to
+        // exercise the actual startup recovery path, not only an in-memory retry.
+        const restarted = new Gateway(f.config, f.store, f.transport, f.factory);
+        try {
+            await restarted.recover();
+            assert.equal(f.transport.sent.length, 0, 'recovery must not blindly create unrelated cards');
+            await restarted.sweep();
+            const saved = f.store.db.prepare('SELECT state,target FROM outbox WHERE id=?').get(unsent);
+            assert.equal(saved?.state, 'done', 'a never-attempted final card must not be stranded');
+            assert.ok(saved?.target, 'remote message ID is persisted');
+            assert.equal(f.transport.sent.filter(row => row.card).length, 1);
+            assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(ambiguous)?.state, 'uncertain');
 
-        await f.gateway.sweep();
-        assert.equal(f.transport.sent.filter(row => row.card).length, 1, 'neither completed nor ambiguous cards are recreated');
+            await restarted.sweep();
+            assert.equal(f.transport.sent.filter(row => row.card).length, 1, 'neither completed nor ambiguous cards are recreated');
+        } finally {
+            await restarted.close();
+        }
     } finally {
         await f.close();
     }
