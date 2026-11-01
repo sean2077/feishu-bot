@@ -176,12 +176,15 @@ test('unexpected native exit reports interrupted approvals without replay or ses
         old.emit({ type: 'exit', code: 1 });
         assert.equal(f.store.db.prepare('SELECT status FROM inbox WHERE uuid=?').get(originalUuid)!.status, 'uncertain');
         assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM requests WHERE state='pending'").get()!.n, 0);
-        await until(() => f.transport.sent.some(s => s.text?.includes('原生工作进程意外退出')));
-        const warnings = () => f.transport.sent.filter(s => s.text?.includes('原生工作进程意外退出'));
+        const warnings = () => f.transport.sent.filter(s => s.card &&
+            JSON.stringify(s.card).includes('原生工作进程意外退出'));
+        await until(() => warnings().length === 1);
         assert.equal(warnings().length, 1, 'one notice for an interrupted native process');
         assert.equal(warnings()[0]!.room.key, old.room.key);
-        assert.match(warnings()[0]!.text!, /审批|追问/);
-        assert.match(warnings()[0]!.text!, /不.*自动重放/);
+        assert.match(JSON.stringify(warnings()[0]!.card), /审批|追问/);
+        assert.match(JSON.stringify(warnings()[0]!.card), /不.*自动重放/);
+        assert.equal(f.store.db.prepare("SELECT state FROM outbox WHERE kind='recovery' AND room=?").get(old.room.key)?.state, 'done',
+            'the delivered alert must also be durable');
         assert.match(await f.gateway.approvals.click(old.room.chatId, 'admin', { request: requestId, decision: 'allow' }), /过期|结束/);
 
         old.emit({ type: 'exit', code: 1 });
