@@ -36,6 +36,27 @@ test('action cancellation exposes unconfirmed descendant termination', { timeout
         controller.abort();
         await assert.rejects(running, /termination unconfirmed/i,
             'a cleanup failure cannot be reported as ordinary confirmed cancellation');
+
+        // The real action ledger must persist uncertainty, never a successful
+        // cancellation or completion, when external process cleanup is unknown.
+        const { ActionBroker } = await import(pathToFileURL(target).href);
+        const { Store } = await import(new URL('../dist/store.js', import.meta.url).href);
+        const store = new Store(join(dir, 'state.sqlite'));
+        try {
+            const spec = { id: 'fixture-action', description: 'local fixture', executable: process.execPath,
+                args: ['-e', 'setInterval(() => {}, 1000)'], parameters: {}, env: {},
+                vars: {}, readOnly: true, timeoutMs: 10000 };
+            const broker = new ActionBroker(store, {}, []);
+            const signal = new AbortController();
+            const action = broker.execute({ key: 'fixture-room', chatId: 'group1', projectId: 'fixture' },
+                'fixture-session', { id: 'fixture', actions: [spec] }, spec.id, {}, signal.signal);
+            void action.catch(() => {});
+            await delay(150);
+            signal.abort();
+            await assert.rejects(action, /termination unconfirmed/i);
+            assert.equal(store.db.prepare('SELECT state FROM action_runs').get()?.state, 'uncertain');
+            assert.equal(store.db.prepare("SELECT count(*) AS n FROM audit WHERE event='action_termination_unconfirmed'").get()?.n, 1);
+        } finally { store.close(); }
     } finally {
         await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
