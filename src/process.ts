@@ -25,7 +25,9 @@ async function killWindowsOrphans(rootPid: number, lifetime: ProcessLifetime): P
         '$rootId = ' + rootPid,
         "$startedAt = [datetime]::Parse('" + new Date(lifetime.startedAt).toISOString() + "', [cultureinfo]::InvariantCulture, [globalization.DateTimeStyles]::RoundtripKind)",
         "$exitedAt = ([datetime]::Parse('" + new Date(lifetime.exitedAt ?? Date.now()).toISOString() + "', [cultureinfo]::InvariantCulture, [globalization.DateTimeStyles]::RoundtripKind)).AddMilliseconds(500)",
-        '$all = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId,CreationDate)',
+        '$watch = [Diagnostics.Stopwatch]::StartNew()',
+        '$all = @(Get-WmiObject -Class Win32_Process -Property ProcessId,ParentProcessId,CreationDate)',
+        '[Console]::Error.WriteLine(("orphan_profile phase=query elapsed_ms={0}" -f $watch.ElapsedMilliseconds))',
         '$depth = @{}; $birth = @{}; $matches = @()',
         '$depth[$rootId] = 0; $birth[$rootId] = $startedAt',
         'do {',
@@ -33,25 +35,34 @@ async function killWindowsOrphans(rootPid: number, lifetime: ProcessLifetime): P
         '    foreach ($item in $all) {',
         '        $id = [int]$item.ProcessId; $parent = [int]$item.ParentProcessId',
         '        if ($id -eq $rootId -or $depth.ContainsKey($id) -or -not $depth.ContainsKey($parent) -or $null -eq $item.CreationDate) { continue }',
-        '        $created = $item.CreationDate.ToUniversalTime()',
+        '        $created = [System.Management.ManagementDateTimeConverter]::ToDateTime([string]$item.CreationDate).ToUniversalTime()',
         '        if ($created -lt $birth[$parent] -or $created -lt $startedAt -or ($parent -eq $rootId -and $created -gt $exitedAt)) { continue }',
         '        $depth[$id] = $depth[$parent] + 1; $birth[$id] = $created',
         '        $matches += $item; $changed = $true',
         '    }',
         '} while ($changed)',
+        '[Console]::Error.WriteLine(("orphan_profile phase=walk elapsed_ms={0}" -f $watch.ElapsedMilliseconds))',
         'foreach ($item in ($matches | Sort-Object -Property @{ Expression = { $depth[[int]$_.ProcessId] }; Descending = $true })) {',
         '    $native = Get-Process -Id ([int]$item.ProcessId) -ErrorAction SilentlyContinue',
         '    if ($null -eq $native) { continue }',
         '    try {',
-        '        if ([math]::Abs(($native.StartTime.ToUniversalTime() - $item.CreationDate.ToUniversalTime()).TotalMilliseconds) -gt 1000) { continue }',
+        '        if ([math]::Abs(($native.StartTime.ToUniversalTime() - $birth[[int]$item.ProcessId]).TotalMilliseconds) -gt 1000) { continue }',
         '        $native.Kill()',
         '        if (-not $native.WaitForExit(2000)) { throw "Worker descendant did not exit" }',
         '    } catch [System.InvalidOperationException] { }',
         '}',
+        '[Console]::Error.WriteLine(("orphan_profile phase=finish elapsed_ms={0}" -f $watch.ElapsedMilliseconds))',
     ].join('\n');
     const executable = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    await execFileAsync(executable, ['-NoProfile', '-NonInteractive', '-Command', script],
-        { windowsHide: true, timeout: 15000, maxBuffer: 64 * 1024 });
+    try {
+        const result = await execFileAsync(executable, ['-NoProfile', '-NonInteractive', '-Command', script],
+            { windowsHide: true, timeout: 15000, maxBuffer: 64 * 1024 });
+        if (process.env.FEISHU_PROCESS_PROFILE === '1' && result.stderr.trim()) console.error(result.stderr.trim());
+    } catch (error) {
+        if (process.env.FEISHU_PROCESS_PROFILE === '1' && error && typeof error === 'object' && 'stderr' in error)
+            console.error(String(error.stderr).trim());
+        throw error;
+    }
 }
 
 export async function killTree(child: ChildProcess, graceMs = 1500): Promise<void> {
