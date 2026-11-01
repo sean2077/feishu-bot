@@ -8,6 +8,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { killTree, trackProcessTree } from '../src/process.ts';
 import { runCommand } from '../src/actions.ts';
 
+// Diagnostic experiment is confined to this process-tree test process.
+if (process.platform === 'win32') process.env.FEISHU_PROCESS_PROFILE = '1';
+
 async function live(pid: number): Promise<boolean> {
     try { process.kill(pid, 0); }
     catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
