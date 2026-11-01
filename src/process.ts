@@ -20,12 +20,18 @@ export function trackProcessTree(child: ChildProcess, startedAt = Date.now()): v
  * Never terminate processes by executable name or an unverified PID alone.
  */
 async function killWindowsOrphans(rootPid: number, lifetime: ProcessLifetime): Promise<void> {
+    // Opt-in, test-only timeline: distinguish process launch and teardown from CIM work.
+    const tracing = process.env.FEISHU_PROCESS_PROFILE === '1';
     const script = [
         "$ErrorActionPreference = 'Stop'",
+        '$profile = ' + (tracing ? '$true' : '$false'),
+        '$watch = [Diagnostics.Stopwatch]::StartNew()',
+        'if ($profile) { [Console]::Error.WriteLine(("orphan_stage=entry utc_ms={0} script_ms={1}" -f [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(), $watch.ElapsedMilliseconds)) }',
         '$rootId = ' + rootPid,
         "$startedAt = [datetime]::Parse('" + new Date(lifetime.startedAt).toISOString() + "', [cultureinfo]::InvariantCulture, [globalization.DateTimeStyles]::RoundtripKind)",
         "$exitedAt = ([datetime]::Parse('" + new Date(lifetime.exitedAt ?? Date.now()).toISOString() + "', [cultureinfo]::InvariantCulture, [globalization.DateTimeStyles]::RoundtripKind)).AddMilliseconds(500)",
         '$all = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId,ParentProcessId,CreationDate)',
+        'if ($profile) { [Console]::Error.WriteLine(("orphan_stage=query utc_ms={0} script_ms={1}" -f [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(), $watch.ElapsedMilliseconds)) }',
         '$depth = @{}; $birth = @{}; $matches = @()',
         '$depth[$rootId] = 0; $birth[$rootId] = $startedAt',
         'do {',
@@ -39,6 +45,7 @@ async function killWindowsOrphans(rootPid: number, lifetime: ProcessLifetime): P
         '        $matches += $item; $changed = $true',
         '    }',
         '} while ($changed)',
+        'if ($profile) { [Console]::Error.WriteLine(("orphan_stage=walk utc_ms={0} script_ms={1}" -f [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(), $watch.ElapsedMilliseconds)) }',
         'foreach ($item in ($matches | Sort-Object -Property @{ Expression = { $depth[[int]$_.ProcessId] }; Descending = $true })) {',
         '    $native = Get-Process -Id ([int]$item.ProcessId) -ErrorAction SilentlyContinue',
         '    if ($null -eq $native) { continue }',
@@ -48,10 +55,21 @@ async function killWindowsOrphans(rootPid: number, lifetime: ProcessLifetime): P
         '        if (-not $native.WaitForExit(2000)) { throw "Worker descendant did not exit" }',
         '    } catch [System.InvalidOperationException] { }',
         '}',
+        'if ($profile) { [Console]::Error.WriteLine(("orphan_stage=finish utc_ms={0} script_ms={1}" -f [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(), $watch.ElapsedMilliseconds)) }',
     ].join('\n');
     const executable = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    await execFileAsync(executable, ['-NoProfile', '-NonInteractive', '-Command', script],
-        { windowsHide: true, timeout: 15000, maxBuffer: 64 * 1024 });
+    const startedUtcMs = Date.now();
+    try {
+        const { stderr } = await execFileAsync(executable, ['-NoProfile', '-NonInteractive', '-Command', script],
+            { windowsHide: true, timeout: 15000, maxBuffer: 64 * 1024 });
+        if (tracing) console.error(`orphan_host start_utc_ms=${startedUtcMs} end_utc_ms=${Date.now()} status=ok\n${stderr.trim()}`);
+    } catch (error) {
+        if (tracing) {
+            const detail = error as Error & { stderr?: string; signal?: string };
+            console.error(`orphan_host start_utc_ms=${startedUtcMs} end_utc_ms=${Date.now()} status=failed signal=${detail.signal ?? 'none'}\n${detail.stderr ?? ''}`);
+        }
+        throw error;
+    }
 }
 
 export async function killTree(child: ChildProcess, graceMs = 1500): Promise<void> {
