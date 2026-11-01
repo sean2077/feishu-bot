@@ -40,7 +40,7 @@ export class Receipts {
                     continue;
                 }
                 const desired = row.desired as ReceiptState;
-                try { await this.transport.receipt(id, desired); }
+                try { await this.transport.receipt(id, desired, row.applied ? row.applied as ReceiptState : undefined); }
                 catch {
                     this.store.audit(String(row.room), 'receipt_retry_pending', { messageId: id });
                     return;

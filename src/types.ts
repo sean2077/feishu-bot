@@ -62,7 +62,7 @@ export interface Transport {
     download(messageId: string, resource: Resource): Promise<Uint8Array>;
     fetch(messageId: string, room?: Room): Promise<Message | undefined>;
     history(room: Room, query: HistoryQuery): Promise<HistoryPage>;
-    receipt(messageId: string, state?: ReceiptState): Promise<void>;
+    receipt(messageId: string, state?: ReceiptState, previouslyApplied?: ReceiptState): Promise<void>;
     file(room: Room, path: string, name: string): Promise<string>;
 }
 export type WorkerEvent =
