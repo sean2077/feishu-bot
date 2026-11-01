@@ -145,7 +145,9 @@ export class Outbox {
             if (row.kind === 'reply') this.receipts?.settle(room.key, row.session, row.origins, row.success);
             return true;
         } catch {
-            const state = phase === 'file_send' || (phase === 'card' && !target) ? 'uncertain' : 'pending';
+            // Classify by the persisted target, not the local ID returned by a create.
+            // If recording that ID failed, the remote card may exist but a retry would create another.
+            const state = phase === 'file_send' || (phase === 'card' && !row.target) ? 'uncertain' : 'pending';
             const reason = phase === 'file_send' ? row.kind === 'file'
                 ? 'Agent file upload is unconfirmed; an explicit retry may duplicate a previously accepted file.'
                 : 'Full-answer file delivery is unconfirmed; explicit retry may duplicate a previously accepted message.'

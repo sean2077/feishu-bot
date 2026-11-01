@@ -30,6 +30,31 @@ test('failed create is uncertain and requires explicit scoped retry', async () =
         await f.close();
     }
 });
+test('a confirmed new card with an unpersisted target is never auto-created again', async () => {
+    const f = await fixture();
+    try {
+        const room = route(f.config, message())!, session = f.store.session(room.key);
+        const outbox = new Outbox(f.store, f.transport);
+        const id = outbox.save(room, session.id, 'durable answer', true);
+        // The remote create succeeds, but SQLite rejects recording its returned ID.
+        f.store.db.exec(`CREATE TRIGGER reject_card_target BEFORE UPDATE OF target ON outbox
+            WHEN OLD.target IS NULL AND NEW.target IS NOT NULL
+            BEGIN SELECT RAISE(ABORT, 'fixture: target write failed'); END`);
+        assert.equal(await outbox.deliver(id, room), false);
+        assert.equal(f.transport.sent.filter(item => item.card).length, 1);
+        const row = f.store.db.prepare('SELECT state,target FROM outbox WHERE id=?').get(id)!;
+        assert.equal(row.target, null);
+        assert.equal(row.state, 'uncertain', 'the accepted external create cannot be automatically repeated');
+        assert.deepEqual(outbox.retryable(room.key), []);
+        f.store.db.exec('DROP TRIGGER reject_card_target');
+
+        // A fresh Outbox instance must not blindly recreate the accepted card.
+        const restarted = new Outbox(f.store, f.transport);
+        assert.equal(await restarted.deliver(id, room), false);
+        assert.equal(f.transport.sent.filter(item => item.card).length, 1);
+    } finally { await f.close(); }
+});
+
 test('known-card updates are retried and concurrent outbox instances claim once', async () => {
     const f = await fixture();
     try {
