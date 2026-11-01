@@ -25,6 +25,7 @@
 | 服务关闭失败与数据锁 | 已修复（故障注入与平台 CI 已验证） | 活跃或初始化中的 Worker 停止失败，在其余清理收尾后明确报错；CLI 设置非零退出码并保留原数据锁，不允许第二实例直接接管。正常关闭仍释放锁。未改变原生进程终止算法，不能据此保证全部后代已退出。 |
 | 异常退出后代清理失败 | 已修复（故障注入与跨平台 CI 已验证） | `killTree()` 失败不再发可安全重用的普通退出事件；保留会话进程名额、取消旧审批、把未确认输入标记为 uncertain，并禁止替代 Worker 和会话切换。初始化失败且未取得 Worker 句柄也保持锁定。真实 CIM 失败、断链后代和 Windows 11 本机仍待验证。 |
 | 项目操作停止失败未被上报 | 已修复（故障注入与平台 CI 已验证） | 项目操作取消、超时或输出超限时，只有 `killTree()` 确认完成且子进程输出关闭才报告常规终止；清理报错或 5 秒收尾期限仍未确认时改报 `process termination unconfirmed`。`action_runs` 保持 `uncertain` 并有独立审计；不会自动重试外部操作。真实 Windows CIM 与断链归属仍待验证。 |
+| 重启后已确认 Done 的撤销与延迟可见性 | 已修复（真实 SQLite／模拟飞书列表延迟／跨平台 CI） | 原 `applied=done` 已获 API 确认，但重启丢失内存 reaction ID 后首次列表暂未显示本应用 Done，旧代码错误地写成 `clear`，导致稍后出现的表情无法删除。现必须观察并删除本应用表情才能记 `clear`；暂不可见时保留待重试状态，不重复添加或删除其他应用表情。真实飞书一致性与长期不可见情况仍待验收。 |
 | 已确认 Done 的回执回滚 | 已修复（模拟飞书 API 与跨平台 CI） | 旧清除路径只清理 OnIt；当原 Done API 已确认但目标回执随后转 clear 时，按本应用归属查找并删除 Done reaction_id，其他应用不受影响。普通处理路径不增加 API 查询；真实飞书服务仍待验收。 |
 | 结果未知的表情创建与恢复 | 已修复（模拟 API 与跨平台 CI） | 添加 OnIt／Done 前持久登记未确认尝试；响应丢失或重启后查询本应用的 reaction_id，存在时采纳，暂不可见时保持 `attempt:*` 并继续查询，绝不因一次空列表重做未知写入；后续 clear 可移除已找到的本应用 Done。成功路径不额外查询。真实 Feishu 一致性、未知写入的清理以及长期悬置状态仍待验收。 |
 | 重启后未知 OnIt 的清理 | 已修复（真实 SQLite／模拟飞书／跨平台 CI） | `Receipts.recover()` 不再清除 `attempt:processing` 证据；恢复后第一次查询尚不可见时保持待确认，再由已有重试找到并删除本应用的 OnIt，不重复创建或触碰其他应用表情。真实 Feishu 列表可见性、长期悬置仍需联调。 |
@@ -37,6 +38,8 @@
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #38 复现重启后已确认 Done 回滚时，单次空列表造成错误 `applied=clear` 的问题。仅加回归的 `35b1cde` 在 [CI 41351330568](https://github.com/sean2077/feishu-bot/actions/runs/41351330568) 的 Ubuntu／Windows × Node.js 22.16／24 四组均实败（期望保留 `done`，实际错误清除）；`76f457f` 仅收紧已确认 Done 的删除确认，[CI 41351478700](https://github.com/sean2077/feishu-bot/actions/runs/41351478700) 四组完整通过。回归覆盖重新构造 Handler 后一次空列表、再次查询删除自身 Done、保留其他应用 Done 及不重复添加；真实 SQLite 与模拟飞书列表，不代表真实飞书联调。最终文档版与合入 main 的 CI 另行核验。
 
 PR #37 复现卡片创建成功但新 target 持久化失败的重复写入风险：仅新增 SQLite 触发器故障注入回归的 `91039e3` 在 [CI 41346022872](https://github.com/sean2077/feishu-bot/actions/runs/41346022872) 的 Ubuntu／Windows × Node.js 22.16／24 四组实际失败（预期 `uncertain`，实际 `pending`）；传输替身已返回一个新卡片 ID，SQLite 拒绝写入 target。修复提交 `a965ce2` 改用原先持久化的 target 判断是否允许自动重试，[CI 41346174098](https://github.com/sean2077/feishu-bot/actions/runs/41346174098) 四组完整通过。回归还验证重新构造 Outbox 后不会盲增第二张卡片；已知 target 的更新继续按原路径重试。真实 SQLite／Outbox 与模拟飞书，不代表实际飞书一致性或真实磁盘故障；最终 PR 与合入 main 的 CI 单独核验。
 
