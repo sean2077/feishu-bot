@@ -50,9 +50,25 @@ export async function runCommand(executable: string, args: string[], options: {
         const chunks: Buffer[] = [];
         let bytes = 0, reason = '', finished = false;
         let fallback: NodeJS.Timeout | undefined;
-        const stop = (why: string) => { if (reason || finished)
-            return; reason = why; void killTree(child).catch(() => { }); fallback = setTimeout(() => { if (finished)
-            return; finished = true; child.stdout.destroy(); child.stderr.destroy(); cleanup(); reject(new Error(reason)); }, 5000); fallback.unref(); };
+        let termination: Promise<void> | undefined;
+        const unconfirmed = () => new Error(`${reason}; process termination unconfirmed`);
+        const stop = (why: string) => {
+            if (reason || finished) return;
+            reason = why;
+            termination = killTree(child);
+            // A child may close before the descendant cleanup promise settles.
+            // Do not discard that outcome or let it become an unhandled rejection.
+            void termination.catch(() => {});
+            fallback = setTimeout(() => {
+                if (finished) return;
+                finished = true;
+                child.stdout.destroy();
+                child.stderr.destroy();
+                cleanup();
+                reject(unconfirmed());
+            }, 5000);
+            fallback.unref();
+        };
         const collect = (chunk: Buffer) => { bytes += chunk.length; if (bytes > (options.maxBytes ?? 1024 * 1024)) {
             stop('output size limit');
             return;
@@ -66,11 +82,21 @@ export async function runCommand(executable: string, args: string[], options: {
         const cleanup = () => { clearTimeout(timer); clearTimeout(fallback); options.signal?.removeEventListener('abort', abort); };
         child.once('error', e => { if (finished)
             return; finished = true; cleanup(); reject(e); });
-        child.once('close', code => { if (finished)
-            return; finished = true; cleanup(); if (reason)
-            reject(new Error(reason));
-        else
-            resolve({ code: code ?? 1, output: Buffer.concat(chunks).toString('utf8') }); });
+        child.once('close', code => {
+            if (finished) return;
+            if (reason && termination) {
+                // The root's closed pipes do not prove descendants were cleaned.
+                // Resolve the command only after the actual termination result.
+                void termination.then(
+                    () => { if (finished) return; finished = true; cleanup(); reject(new Error(reason)); },
+                    () => { if (finished) return; finished = true; cleanup(); reject(unconfirmed()); }
+                );
+                return;
+            }
+            finished = true;
+            cleanup();
+            resolve({ code: code ?? 1, output: Buffer.concat(chunks).toString('utf8') });
+        });
     });
 }
 export class ActionBroker {
@@ -123,6 +149,8 @@ export class ActionBroker {
             }
             catch (e) {
                 this.store.db.prepare("UPDATE action_runs SET state='uncertain' WHERE id=?").run(run);
+                if (e instanceof Error && e.message.includes('process termination unconfirmed'))
+                    this.store.audit(room.key, 'action_termination_unconfirmed', { run, action: id });
                 throw e;
             }
         }
