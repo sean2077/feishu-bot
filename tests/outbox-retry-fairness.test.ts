@@ -72,3 +72,31 @@ test('retry cursor advances through equal timestamps without retrying ambiguous 
         await f.close();
     }
 });
+
+test('a final reply committed before its first card create resumes safely after a restart', async () => {
+    const f = await fixture();
+    try {
+        const room = route(f.config, message())!;
+        const session = f.store.session(room.key);
+        const outbox = new Outbox(f.store, f.transport);
+        // The model result is already durable. The process stops after saving
+        // the final reply but BEFORE deliver() marks its first external attempt.
+        const unsent = outbox.save(room, session.id, 'durable answer', true);
+        const ambiguous = outbox.save(room, session.id, 'possibly created already', true);
+        f.store.db.prepare("UPDATE outbox SET state='uncertain' WHERE id=?").run(ambiguous);
+
+        await f.gateway.recover();
+        assert.equal(f.transport.sent.length, 0, 'recovery must not blindly create unrelated cards');
+        await f.gateway.sweep();
+        const saved = f.store.db.prepare('SELECT state,target FROM outbox WHERE id=?').get(unsent);
+        assert.equal(saved?.state, 'done', 'a never-attempted final card must not be stranded');
+        assert.ok(saved?.target, 'remote message ID is persisted');
+        assert.equal(f.transport.sent.filter(row => row.card).length, 1);
+        assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(ambiguous)?.state, 'uncertain');
+
+        await f.gateway.sweep();
+        assert.equal(f.transport.sent.filter(row => row.card).length, 1, 'neither completed nor ambiguous cards are recreated');
+    } finally {
+        await f.close();
+    }
+});
