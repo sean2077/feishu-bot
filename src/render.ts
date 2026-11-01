@@ -82,7 +82,7 @@ export class Render {
         if (this.messageId) await this.transport.update(this.messageId,
             replyCard(title, '以下为中断前输出，不代表任务完成。\n\n' + this.content('text'), this.content('thinking'), true)).catch(() => {});
     }
-    async finish(text: string, success: boolean, dataDir: string, origins: Origin[], title?: string): Promise<void> {
+    async finish(text: string, success: boolean, dataDir: string, origins: Origin[], title?: string, onPersisted?: () => void): Promise<void> {
         if (this.closed) return;
         this.closed = true; clearTimeout(this.timer);
         const answer = this.redactText(text || this.content('text'));
@@ -91,9 +91,15 @@ export class Render {
         const card = replyCard(title ?? (success ? '回复' : '执行失败'), body, thinking, true);
         // Persist before awaiting slow preview I/O. Recovery will never lose the final answer or blindly recreate an uncertain preview.
         const file = answer.length > 24000 ? { name: 'reply.md', directory: join(dataDir, 'exports', hash(this.room.key).slice(0, 32)) } : undefined;
-        const id = this.outbox.save(this.room, this.session, answer, success, this.messageId, this.replyTo, this.threadId, card, origins, file);
+        // The final answer and its originating input's completion are one
+        // durable transition. A failed insert must leave the input recoverable.
+        const id = this.store.transaction(() => {
+            const saved = this.outbox.save(this.room, this.session, answer, success, this.messageId, this.replyTo, this.threadId, card, origins, file);
+            this.store.db.prepare("UPDATE outbox SET state='preparing' WHERE id=?").run(saved);
+            onPersisted?.();
+            return saved;
+        });
         this.finalId = id;
-        this.store.db.prepare("UPDATE outbox SET state='preparing' WHERE id=?").run(id);
         await this.tail;
         if (this.signal?.aborted) {
             this.store.db.prepare("UPDATE outbox SET state='cancelled' WHERE id=? AND state='preparing'").run(id);
