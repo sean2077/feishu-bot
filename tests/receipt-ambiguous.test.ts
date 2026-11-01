@@ -99,3 +99,46 @@ test('ambiguous Done add is reconciled across restart, and later clear removes o
         assert.equal(api.foreign.size, 2);
     } finally { await f.close(); }
 });
+
+
+// A successful remote write may not be visible in the immediately following
+// reaction-list response. An empty read is not proof that the write failed.
+for (const emoji of ['OnIt', 'Done'] as const) {
+    test(`ambiguous ${emoji} remains pending until the owned reaction becomes visible`, async () => {
+        const f = await fixture();
+        const api = ambiguousChannel(emoji);
+        const originalList = api.channel.rawClient.im.v1.messageReaction.list;
+        let invisibleReads = 1;
+        api.channel.rawClient.im.v1.messageReaction.list = async request => {
+            const response = await originalList(request);
+            if (request.params.reaction_type === emoji && invisibleReads-- > 0)
+                return { ...response, data: { ...response.data, items: response.data.items.filter(item =>
+                    item.operator.operator_id !== 'cli_fixture') } };
+            return response;
+        };
+        const receipts = new Receipts(f.store, { receipt: reactionHandler(api.channel as never, 'cli_fixture') } as never);
+        try {
+            const input = message(), room = route(f.config, input)!, session = f.store.session(room.key);
+            receipts.accept(room, session.id, input);
+            await receipts.drain();
+            if (emoji === 'Done') {
+                receipts.settle(room.key, session.id, [input], true);
+                await receipts.drain();
+            }
+            assert.equal(api.adds.filter(e => e === emoji).length, 1);
+            receipts.retry();
+            await receipts.drain();
+            assert.equal(api.adds.filter(e => e === emoji).length, 1,
+                'an empty listing immediately after an ambiguous write must not trigger another add');
+            assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied,
+                emoji === 'Done' ? 'attempt:done' : 'attempt:processing',
+                'keep the uncertain receipt retryable without pretending it was confirmed');
+            receipts.retry();
+            await receipts.drain();
+            assert.equal(api.adds.filter(e => e === emoji).length, 1);
+            assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied,
+                emoji === 'Done' ? 'done' : 'processing');
+            assert.equal(api.foreign.size, 2, 'never modify foreign application reactions');
+        } finally { await f.close(); }
+    });
+}
