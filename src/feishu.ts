@@ -171,7 +171,9 @@ export function reactionHandler(channel: LarkChannel, appId: string): (id: strin
             // Done may have been accepted while the durable desired state was
             // changing to clear. Reconcile only this application's completed
             // reaction; an in-flight Done is serialized before this call.
-            await removeOwned(id, 'Done', previouslyApplied === 'attempt:done');
+            // A confirmed Done can also be temporarily absent from a list after restart.
+            // Do not persist clear until the application's reaction is observed and removed.
+            await removeOwned(id, 'Done', true);
         }
         if (state === 'done') {
             if (previouslyApplied === 'attempt:done') {
