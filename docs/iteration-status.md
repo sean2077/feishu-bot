@@ -16,19 +16,29 @@
 | 意外重启的审批／追问回执 | 已修复（平台 CI 已验证） | 重启前仍为 pending 的请求在恢复时过期；如果没有挂起输入，原先不会提示。新增按当前聊天授权范围的一次性告知，并与同房间未确认输入合并，不恢复旧审批或重新执行外部操作。 |
 | 运行中原生 worker 意外退出告知 | 已修复（平台 CI 已验证） | 原生进程异常退出且仍有未完成输入、审批或后台活动时，在当前授权聊天告知一次；审批取消、输入转 uncertain、执行结果不重放，不改变原会话。正常停止和闲置回收不额外提醒。 |
 | 空闲停止失败时的会话与进程名额 | 已修复（模拟停止失败与平台 CI） | `stop()` 抛错时不再释放未确认退出的 Worker 名额；后续聊天不能偷偷启动第二原生进程，`/status` 显示 `termination_unconfirmed`，`/new` 和 `/resume` 不再在失败时切换历史。真实 Windows CIM 超时下仍待验证；整体服务关闭的错误上报需单独核查。 |
+| 关闭时等待原生控制回复 | 已修复（故障注入与平台 CI 已验证） | 完全关闭不再等待 `interrupt()` 回执才调用 `close()`；主机输入 EOF 或重复 stop 时直接清理传输，保留取消待批请求、关闭 relay 与会话 ID 的既有行为。注入 SDK 不响应的用例不是实际 CC 故障复现。 |
 | 旧 CI 启动前失败 | 原因尚未证实 | 历史运行没有 runner/步骤；注释读取受工具限制。新运行已分配 runner，不通过猜测或重跑旧任务推断原因。 |
-| Windows 孤儿进程清理偶发超时 | 仍待解决（已定量拆分） | [PR #14 实验 CI](https://github.com/sean2077/feishu-bot/actions/runs/41260554823) 测得首次清理 10.9–12.34 秒，WMI 脚本内部仅 0.87–1.55 秒；其余耗时在已测脚本段之外，尚不能归因具体启动阶段。Get-WmiObject 替代未证明收益，PR #14 已关闭不合并。原 main 的 Windows Node 22 超时失败仍是历史事实。 |
+| Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
 
-PR #17 针对空闲容量回收的停止失败建立了模拟 Worker 验收。仅添加测试的提交 `8a0c68e` 在[修复前 CI](https://github.com/sean2077/feishu-bot/actions/runs/41264338648) 的 Ubuntu Node 24 中实际出现两个 Worker（预期仅一个）；修复提交 `1c81f21` 的[四组完整 CI](https://github.com/sean2077/feishu-bot/actions/runs/41264429007) 已通过 Ubuntu/Windows × Node.js 22.16/24：Ubuntu 每组 114 项核心测试，Windows 每组 113 项通过加 1 项既有 POSIX 跳过；各组另有 6 项真实 CC 进程 fixture。新增测试使用模拟 `stop()` 失败，不是 Windows 孤儿进程清理超时的真实复现；没有测量性能收益。PR 最终文档和提示文字修订的 CI 仍需独立核验。
+PR #17 针对空闲容量回收的停止失败建立了模拟 Worker 验收。仅添加测试的提交 `8a0c68e` 在[修复前 CI](https://github.com/sean2077/feishu-bot/actions/runs/41264338648) 的 Ubuntu Node 24 中实际出现两个 Worker（预期仅一个）；修复提交 `1c81f21` 的[四组完整 CI](https://github.com/sean2077/feishu-bot/actions/runs/41264429007) 已通过 Ubuntu/Windows × Node.js 22.16/24：Ubuntu 每组 114 项核心测试，Windows 每组 113 项通过加 1 项既有 POSIX 跳过；各组另有 6 项真实 CC 进程 fixture。新增测试使用模拟 `stop()` 失败，不是 Windows 孤儿进程清理超时的真实复现；没有测量性能收益。PR 最终文字提交的 [CI 41264617483](https://github.com/sean2077/feishu-bot/actions/runs/41264617483) Windows Node 22.16 遇到既有 PowerShell 启动超时，其他三组通过；在 #18 调整测试调度后重新进行组合回归。
 
+PR #18 针对 Windows PowerShell/CIM 15 秒超时做了三组受控 CI 对照（均未改变 PID、心跳或进程归属断言，也未增加超时）：[默认测试并行 CI 41267952734](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 的首次 PowerShell 进程从 Node 启动到脚本首行耗时 Node 22.16 为 11.07 秒、Node 24 为 10.95 秒；脚本内 CIM 查询分别约 1.61 和 0.68 秒，结束到子进程关闭约 20 毫秒。[并行度 1 CI 41268146872](https://github.com/sean2077/feishu-bot/actions/runs/41268146872) 的对应启动前耗时约 1.83 和 2.38 秒，但 Ubuntu 核心套件耗时从原 5–6 秒增至约 12–13 秒。[并行度 2 CI 41268313285](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 的对应启动前耗时约 4.19 和 3.42 秒；Ubuntu 核心约 7 秒；四组检查成功。各组使用不同托管 runner，样本不足以推断失败率或实际部署性能，仅支持将测试调度竞争作为主要可疑因素。实验性的源码计时已从交付补丁撤回，最终仅保留测试文件并行度上限 2；最终补丁仍需独立 CI 核验。
+
+PR #15 的测试专用提交 `0392949` 在[修复前 CI](https://github.com/sean2077/feishu-bot/actions/runs/41260809778) 的 Ubuntu 与 Windows Node 24 日志中，均实际出现两项新增用例超时：主机输入 EOF、重复 stop 指令无法完成 worker 退出；既有核心回归与 6 项原生进程 fixture 通过。测试运行真实的已构建 worker 子进程，只替换 SDK 边界，注入永不返回的 `interrupt()`，并预先建立模拟后台心跳与待批权限请求。
+
+修复提交 `7e91361` 的[四组完整 CI](https://github.com/sean2077/feishu-bot/actions/runs/41260963509) 已通过 Ubuntu/Windows × Node 22.16/24：Ubuntu 每组 112 项核心回归；Windows 每组 111 项通过、1 项既有 POSIX 专用跳过；各组原生测试共 8 项（6 项既有 fixture + 2 项 SDK 故障注入）。新增断言要求正常退出、`close()` 恰好一次、权限被拒绝、心跳停止、不伪造成功或故障事件，不靠父进程强杀通过验收。没有增加等待超时、依赖或常驻进程。真实 CC 的恢复／压缩等既有 fixture 使用模拟模型，新增两项更不能称为真实模型／飞书联调；本轮没有新的本地完整回归或性能收益结论。
 
 PR #16 的测试先在 [Ubuntu Node.js 22.16／24 修复前 CI](https://github.com/sean2077/feishu-bot/actions/runs/41260827490) 复现原生进程意外退出时没有同群通知（Windows 修复前作业因后续提交取消）。修复后的 [PR CI](https://github.com/sean2077/feishu-bot/actions/runs/41260891662) 四组通过：Ubuntu 各 113 核心测试，Windows 各 112 通过＋1 既有 POSIX 专用跳过，每组另外 6 项真实 CC 进程 fixture。新增用例核对意外退出通知仅一次、旧审批不可再批准、未确认输入不重放、同一会话可续接且无虚假 Done。飞书传输仍为模拟，实际服务通知可达性待联调。
 
+PR #16 在 PR #15 验证期间合入 main；两项源码没有重叠，状态文档合并保留双方记录。以上各自 CI 不能替代组合版本的最终 PR／main CI。
+
+## 既往验证
+
 PR #12 已用[修复前 CI](https://github.com/sean2077/feishu-bot/actions/runs/41256047020) 的 Ubuntu Node 22.16/24 验证新增两项恢复回归会失败：请求独立过期时缺少通知，以及有未确认输入时警告缺少审批／追问信息。Windows 两组因后续修复提交触发自动取消，不能声称修复前 Windows 已复现。修复后的 [PR CI](https://github.com/sean2077/feishu-bot/actions/runs/41256182969) 四组已通过：Ubuntu × Node 22.16/24 各 112 项核心回归，Windows 各 111 项通过 + 1 项既有 POSIX 专用跳过，各组另有 6 项真实 CC 进程 fixture。Windows Node 24 首轮在未改动的进程树清理测试中 PowerShell CIM 查询超过 15 秒被终止，定向重跑该失败作业一次通过；该偶发超时未被归因为本次代码，也未放宽测试。本项仅验证数据库恢复和模拟消息通知，不代表真实飞书卡片更新或原生后台任务重启验收。
 
-本地 Linux / Node.js 22.16：完整 `npm run check` 通过，97 项核心回归及 5 项真实 Claude Code 进程测试。模型响应与飞书传输使用测试替身，不代表真实服务验收。
+PR #5 阶段的历史本地验证（Linux / Node.js 22.16）：完整 `npm run check` 通过，97 项核心回归及 5 项真实 Claude Code 进程测试。模型响应与飞书传输使用测试替身，不代表真实服务验收，也不是本轮验证。
 
 PR #5 初次 CI（`f1b6bf9`）的 Windows 原生 acceptEdits 用例失败；修正后的源码提交 `ed74711` 已通过[四组 CI](https://github.com/sean2077/feishu-bot/actions/runs/41222283705)：Ubuntu/Windows × Node.js 22.16/24。Ubuntu 每组 97 项核心回归通过；Windows 每组 96 项通过，1 项 POSIX 专用用例按条件跳过；四组各有 5 项真实 CC 测试通过。Windows runner 是 Windows Server 2025，不代替特定桌面设备验收。后续版本仍应查看其自己的运行结果。
 
@@ -46,8 +56,8 @@ PR #11 的代码提交 `a794a35` 已通过[四组 CI](https://github.com/sean207
 
 ## 下一轮优先核查
 
-1. 分阶段测量 Windows PowerShell/CIM 启动、脚本进入、查询、终止和测试收尾，定位已有 15 秒超时。先前 PR #13/#14 的替换方案没有证明收益；父进程中间祖先已消失时仍不能盲猜进程归属。
-2. 核查整体服务关闭时 `Gateway.close()` 对 `stop()` 失败的错误上报；当前 PR #17 仅保护运行中资源池与会话切换，不保证服务自身退出后不存在未确认孤儿进程。然后对新增主动文件投递进行真实飞书上传／断线／重启后的人工补发验收；模拟测试只能证明持久状态机与授权检查。未确认文件会保守地阻止同会话后续输出标 Done，直到处理成功或明确停止；评估实际使用中是否需要更精准的原生任务归属。
+1. Windows 清理链路分开记录进程启动、发现、查询、终止和测试收尾的耗时，继续核查既有超时；PR #13／#14 未证明查询替换的端到端收益，不重复合入。原生 worker 与项目操作的可追溯后代已覆盖，一次性快照仍不能安全归属中间祖先已消失的断链进程；运行中断通知已由 PR #16 覆盖，后续聚焦真实后台任务异常与恢复验收。 整体服务关闭时对未确认停止的错误上报仍需核查，PR #17 只阻止运行中容量误释放。
+2. 对新增主动文件投递进行真实飞书上传／断线／重启后的人工补发验收；模拟测试只能证明持久状态机与授权检查。未确认文件会保守地阻止同会话后续输出标 Done，直到处理成功或明确停止；评估实际使用中是否需要更精准的原生任务归属。
 3. 建立可重复的资源基线，区分冷启动、热续轮、闲置占用和推理成本。已有 fixture 耗时不是实时模型或飞书延迟基准。
 
 ## 真实环境待验证

@@ -178,7 +178,9 @@ async function stop(): Promise<void> {
     actionRelay?.close();
     for (const r of requests.values()) r.resolve({ approved: false, error: 'stopped' });
     requests.clear();
-    try { await currentQuery?.interrupt(); } catch { /* parent enforces shutdown deadline */ }
+    // Full shutdown must not wait for an interrupt control reply: the native
+    // process may be unresponsive and, on stdin EOF, the host may already be gone.
+    // Query.close() terminates the transport without that request/response round trip.
     currentQuery?.close();
     process.exitCode ??= 0; process.stdin.destroy();
 }
