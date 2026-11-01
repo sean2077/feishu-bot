@@ -50,6 +50,8 @@ export interface Config {
     };
 }
 export type ReceiptState = 'processing' | 'done' | 'clear';
+/** A persisted external-add attempt is not proof of a successful reaction. */
+export type ReceiptApplied = ReceiptState | 'attempt:processing' | 'attempt:done';
 export interface HistoryQuery {
     limit: number; startTime?: number; endTime?: number; pageToken?: string; threadId?: string;
 }
@@ -62,7 +64,7 @@ export interface Transport {
     download(messageId: string, resource: Resource): Promise<Uint8Array>;
     fetch(messageId: string, room?: Room): Promise<Message | undefined>;
     history(room: Room, query: HistoryQuery): Promise<HistoryPage>;
-    receipt(messageId: string, state?: ReceiptState, previouslyApplied?: ReceiptState): Promise<void>;
+    receipt(messageId: string, state?: ReceiptState, previouslyApplied?: ReceiptApplied): Promise<void>;
     file(room: Room, path: string, name: string): Promise<string>;
 }
 export type WorkerEvent =

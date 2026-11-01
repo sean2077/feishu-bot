@@ -1,7 +1,7 @@
 import { createLarkChannel, normalize as normalizeEvent, type LarkChannel, type NormalizedMessage, type RawMessageEvent } from '@larksuite/channel';
 import { readFile, stat } from 'node:fs/promises';
 import { readable } from './policy.ts';
-import type { Config, Message, Resource, Transport, Room, ReceiptState } from './types.ts';
+import type { Config, Message, Resource, Transport, Room, ReceiptState, ReceiptApplied } from './types.ts';
 export function normalize(msg: NormalizedMessage): Message {
     return { id: msg.messageId, chatId: msg.chatId, chatType: msg.chatType, senderId: msg.senderId, senderName: msg.senderName,
         senderIsBot: msg.senderType !== 'user', text: msg.rawContentType === 'merge_forward' ? '[合并转发未自动展开；可按需读取当前聊天的原始消息。]' : msg.content, time: msg.createTime,
@@ -106,11 +106,11 @@ export async function normalizeHistoryItem(item: ApiItem, room: Room, botOpenId?
 }
 
 /** Remove only this application's reaction; never the first arbitrary app reaction. */
-export function reactionHandler(channel: LarkChannel, appId: string): (id: string, state?: ReceiptState, previouslyApplied?: ReceiptState) => Promise<void> {
+export function reactionHandler(channel: LarkChannel, appId: string): (id: string, state?: ReceiptState, previouslyApplied?: ReceiptApplied) => Promise<void> {
     const processingIds = new Map<string, string>();
-    const removeOwned = async (id: string, emoji: 'OnIt' | 'Done'): Promise<void> => {
-        // The app must remove by reaction_id, never by emoji alone: other
-        // applications and human participants may have the same reaction.
+    const ownedIds = async (id: string, emoji: 'OnIt' | 'Done'): Promise<string[]> => {
+        const ids: string[] = [];
+        // Scan only the chosen message and emoji; never delete another actor's reaction.
         let pageToken: string | undefined;
         for (let page = 0; page < 10; page++) {
             const response = await channel.rawClient.im.v1.messageReaction.list({ path: { message_id: id }, params: {
@@ -121,15 +121,27 @@ export function reactionHandler(channel: LarkChannel, appId: string): (id: strin
                 const operator = item.operator;
                 if (item.reaction_id && operator?.operator_type === 'app' &&
                     (operator.operator_id === appId || !!channel.botIdentity?.openId && operator.operator_id === channel.botIdentity.openId))
-                    await channel.removeReaction(id, item.reaction_id);
+                    ids.push(item.reaction_id);
             }
-            if (!response.data?.has_more) break;
+            if (!response.data?.has_more) return ids;
             pageToken = response.data.page_token;
             if (!pageToken || page === 9) throw new Error('Reaction cleanup page limit');
         }
+        return ids;
+    };
+    const removeOwned = async (id: string, emoji: 'OnIt' | 'Done'): Promise<void> => {
+        for (const reactionId of await ownedIds(id, emoji))
+            await channel.removeReaction(id, reactionId);
     };
     return async (id, state = 'processing', previouslyApplied) => {
         if (state === 'processing') {
+            if (previouslyApplied === 'attempt:processing') {
+                const alreadyOwned = (await ownedIds(id, 'OnIt'))[0];
+                if (alreadyOwned) {
+                    processingIds.set(id, alreadyOwned);
+                    return;
+                }
+            }
             processingIds.set(id, await channel.addReaction(id, 'OnIt'));
             return;
         }
@@ -141,12 +153,16 @@ export function reactionHandler(channel: LarkChannel, appId: string): (id: strin
             // Recover a processing emoji after restart or an ambiguous add.
             await removeOwned(id, 'OnIt');
         }
-        if (state === 'clear' && previouslyApplied === 'done') {
+        if (state === 'clear' && (previouslyApplied === 'done' || previouslyApplied === 'attempt:done')) {
             // Done may have been accepted while the durable desired state was
             // changing to clear. Reconcile only this application's completed
             // reaction; an in-flight Done is serialized before this call.
             await removeOwned(id, 'Done');
         }
-        if (state === 'done') await channel.addReaction(id, 'Done');
+        if (state === 'done') {
+            if (previouslyApplied === 'attempt:done' && (await ownedIds(id, 'Done')).length)
+                return; // Accepted remotely even though the earlier response was lost.
+            await channel.addReaction(id, 'Done');
+        }
     };
 }

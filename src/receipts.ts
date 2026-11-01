@@ -1,4 +1,4 @@
-import type { Message, Origin, ReceiptState, Room, Transport } from './types.ts';
+import type { Message, Origin, ReceiptState, ReceiptApplied, Room, Transport } from './types.ts';
 import { Store } from './store.ts';
 import { Serial } from './util.ts';
 
@@ -40,7 +40,15 @@ export class Receipts {
                     continue;
                 }
                 const desired = row.desired as ReceiptState;
-                try { await this.transport.receipt(id, desired, row.applied ? row.applied as ReceiptState : undefined); }
+                const applied = row.applied as ReceiptApplied | undefined;
+                // Persist the uncertain add BEFORE calling Feishu. A restart or
+                // lost response must reconcile the owned reaction, not create it again.
+                if (desired === 'processing' || desired === 'done') {
+                    const attempt = `attempt:${desired}`;
+                    if (applied !== attempt)
+                        this.store.db.prepare('UPDATE receipts SET applied=? WHERE id=?').run(attempt, id);
+                }
+                try { await this.transport.receipt(id, desired, applied); }
                 catch {
                     this.store.audit(String(row.room), 'receipt_retry_pending', { messageId: id });
                     return;
