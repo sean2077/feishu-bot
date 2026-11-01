@@ -189,3 +189,51 @@ test('clearing an ambiguous Done waits for the remotely accepted reaction to bec
         assert.ok(!api.removals.includes('foreign-done'));
     } finally { await f.close(); }
 });
+
+
+test('restart keeps an uncertain OnIt cleanup pending until its reaction is visible', async () => {
+    const f = await fixture();
+    const api = ambiguousChannel('OnIt');
+    const receipts = new Receipts(f.store, {
+        receipt: reactionHandler(api.channel as never, 'cli_fixture')
+    } as never);
+    try {
+        const input = message(), room = route(f.config, input)!, session = f.store.session(room.key);
+        receipts.accept(room, session.id, input);
+        await receipts.drain();
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied,
+            'attempt:processing', 'the remote OnIt add succeeded but its acknowledgement was lost');
+        assert.equal(api.adds.filter(e => e === 'OnIt').length, 1);
+
+        // The application restarts before a result is received. Its in-memory
+        // reaction id is gone, and the first Feishu list is temporarily stale.
+        const originalList = api.channel.rawClient.im.v1.messageReaction.list;
+        let invisibleReads = 1;
+        api.channel.rawClient.im.v1.messageReaction.list = async request => {
+            const response = await originalList(request);
+            if (request.params.reaction_type === 'OnIt' && invisibleReads-- > 0)
+                return { ...response, data: { ...response.data, items: response.data.items.filter(item =>
+                    item.operator.operator_id !== 'cli_fixture') } };
+            return response;
+        };
+        const restarted = new Receipts(f.store, {
+            receipt: reactionHandler(api.channel as never, 'cli_fixture')
+        } as never);
+        restarted.recover();
+        await restarted.drain();
+
+        const pending = f.store.db.prepare('SELECT desired,applied FROM receipts WHERE id=?').get(input.id);
+        assert.equal(pending?.desired, 'clear', 'an interrupted turn cannot remain marked processing');
+        assert.equal(pending?.applied, 'attempt:processing',
+            'an empty list cannot confirm removal of a possibly accepted OnIt');
+        assert.equal([...api.own.values()].filter(e => e === 'OnIt').length, 1);
+
+        restarted.retry();
+        await restarted.drain();
+        assert.equal(f.store.db.prepare('SELECT applied FROM receipts WHERE id=?').get(input.id)?.applied, 'clear');
+        assert.equal([...api.own.values()].filter(e => e === 'OnIt').length, 0);
+        assert.equal(api.adds.filter(e => e === 'OnIt').length, 1, 'never repeat an uncertain external add');
+        assert.equal(api.foreign.get('foreign-onit'), 'OnIt', 'other applications remain untouched');
+        assert.ok(!api.removals.includes('foreign-onit'));
+    } finally { await f.close(); }
+});
