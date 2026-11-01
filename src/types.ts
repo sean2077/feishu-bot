@@ -75,7 +75,7 @@ export type WorkerEvent =
     { type: 'activity'; tool?: string; background?: number; pinned?: boolean; state?: 'idle' | 'running' | 'requires_action' } |
     { type: 'request'; id: string; kind: 'permission' | 'question' | 'action' | 'send_file' | 'attachment' | 'history'; name: string; input: Args } |
     { type: 'error'; message: string } |
-    { type: 'exit'; code: number | null };
+    { type: 'exit'; code: number | null; cleanupConfirmed?: boolean };
 export interface Worker {
     send(delivery: Delivery): Promise<void>;
     respond(id: string, value: Args): void;
