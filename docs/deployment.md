@@ -83,7 +83,7 @@ sudo systemctl enable --now feishu-bot
 journalctl -u feishu-bot -f
 ```
 
-Windows 先以前台模式检查配置与网络。CC 找不到 Git Bash 时，再设置 `CLAUDE_CODE_GIT_BASH_PATH` 为实际路径；JSON 路径用正斜杠或转义反斜杠，工具经 PATH 查找。Ctrl+C 请求关闭本实例的会话进程树；停止失败会记录 `shutdown_failed`，不能据此认为所有派生进程均已退出。
+Windows 先以前台模式检查配置与网络。CC 找不到 Git Bash 时，可设置 `CLAUDE_CODE_GIT_BASH_PATH` 指向实际 `bash.exe`；`doctor` 会执行已配置的程序并检查版本，不能只凭文件存在判断就绪。未显式设置该路径时不强制要求 Git Bash，原生工具支持情况仍需实际验证。JSON 路径用正斜杠或转义反斜杠，工具经 PATH 查找。Ctrl+C 请求关闭本实例的会话进程树；停止失败会记录 `shutdown_failed`，不能据此认为所有派生进程均已退出。
 
 ## 容量与恢复
 

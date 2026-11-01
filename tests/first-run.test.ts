@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, readdir, rm, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, readdir, rm, mkdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -175,5 +175,34 @@ test('malformed configuration reports a location without echoing raw credential-
         assert.ok(!result.stderr.includes('private-fixture-value-not-for-output'));
         assert.ok(!result.stderr.includes('BROKEN'));
         assert.deepEqual(await readdir(dir), ['config.json']);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('Windows doctor rejects an existing executable that is not Git Bash', { skip: process.platform !== 'win32' }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'feishu-bash-doctor-'));
+    try {
+        await environment(async () => {
+            // node.exe exists and is executable, so a stat-only check produces
+            // a false "ready" for a setting that cannot launch Git Bash.
+            process.env.CLAUDE_CODE_GIT_BASH_PATH = process.execPath;
+            const report = await runDoctor(parseConfig(base(dir)));
+            const bash = report.checks.find(c => c.name === 'configured Git Bash');
+            assert.equal(bash?.ok, false, 'an existing non-Bash executable must fail the Git Bash check');
+            assert.equal(report.ready, false);
+            const pretender = join(dir, 'bash.exe');
+            await writeFile(pretender, 'not an executable');
+            process.env.CLAUDE_CODE_GIT_BASH_PATH = pretender;
+            const invalidShell = await runDoctor(parseConfig(base(dir)));
+            assert.equal(invalidShell.checks.find(c => c.name === 'configured Git Bash')?.ok, false,
+                'a non-executable file named bash.exe must not pass either');
+            const installedBash = join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'bin', 'bash.exe');
+            if ((await stat(installedBash).catch(() => undefined))?.isFile()) {
+                // Portable installations remain supported: the configured path
+                // is tested directly rather than assumed to be on PATH.
+                process.env.CLAUDE_CODE_GIT_BASH_PATH = installedBash;
+                const validShell = await runDoctor(parseConfig(base(dir)));
+                assert.equal(validShell.checks.find(c => c.name === 'configured Git Bash')?.ok, true);
+            }
+        });
     } finally { await rm(dir, { recursive: true, force: true }); }
 });

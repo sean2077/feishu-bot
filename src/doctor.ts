@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Config } from './types.ts';
 import { modelHeaders, secretsFor } from './config.ts';
@@ -69,7 +69,18 @@ export async function runDoctor(config: Config, probe = false): Promise<DoctorRe
     });
     if (process.platform === 'win32' && process.env.CLAUDE_CODE_GIT_BASH_PATH) {
         await check('configured Git Bash', async () => {
-            if (!(await stat(process.env.CLAUDE_CODE_GIT_BASH_PATH!)).isFile()) throw new Error('CLAUDE_CODE_GIT_BASH_PATH must point to bash.exe.');
+            const executable = process.env.CLAUDE_CODE_GIT_BASH_PATH!;
+            const invalid = 'CLAUDE_CODE_GIT_BASH_PATH must point to a working Git for Windows bash.exe.';
+            if (basename(executable).toLowerCase() !== 'bash.exe' ||
+                !(await stat(executable).then(s => s.isFile()).catch(() => false)))
+                throw new Error(invalid);
+            // A readable file (even node.exe renamed bash.exe) is not proof that
+            // Claude can start its configured shell. Do not echo the private path.
+            let result;
+            try { result = await runCommand(executable, ['--version'], { timeoutMs: 5000, maxBytes: 4096 }); }
+            catch { throw new Error(invalid); }
+            if (result.code !== 0 || !/GNU bash, version/i.test(result.output)) throw new Error(invalid);
+            return 'Configured Git Bash launches and reports its version.';
         });
     }
     await check('data directory / SQLite', async () => {
