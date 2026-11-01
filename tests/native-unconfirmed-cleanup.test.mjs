@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -64,7 +63,7 @@ test('runtime reports unexpected child cleanup failure and rejects later stop', 
         await assert.rejects(worker.stop(), /fixture descendant cleanup failure|termination unconfirmed/i,
             'subsequent stop cannot erase a previously unconfirmed cleanup');
     } finally {
-        await worker?.stop().catch(() => {});
+        if (worker) await worker.stop().catch(() => {});
         if (originalToken === undefined) delete process.env.NATIVE_CLEANUP_FIXTURE_TOKEN;
         else process.env.NATIVE_CLEANUP_FIXTURE_TOKEN = originalToken;
         await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
