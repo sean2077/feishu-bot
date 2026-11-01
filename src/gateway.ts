@@ -95,7 +95,7 @@ export class Gateway {
     async recover(): Promise<void> {
         const recovered = this.store.recover();
         if (this.config.limits.backgroundMessages === 0) this.store.db.exec("DELETE FROM inbox WHERE status='background'");
-        const keys = new Set([...recovered.rooms, ...this.store.pendingRooms(),
+        const keys = new Set([...recovered.rooms, ...recovered.requestRooms, ...this.store.pendingRooms(),
             ...this.store.db.prepare("SELECT DISTINCT room FROM outbox WHERE state NOT IN ('done','cancelled')").all().map(r => String(r.room))]);
         for (const key of keys) {
             const room = roomFromKey(this.config, key);
@@ -107,11 +107,15 @@ export class Gateway {
             }
             if (!room) continue;
             this.rooms.set(key, room);
+            const warnings: string[] = [];
             if (recovered.rooms.includes(key)) {
                 const hasAuthorizedUncertain = this.store.db.prepare("SELECT message FROM inbox WHERE room=? AND status='uncertain' AND message!='{}'").all(key)
                     .some(r => { try { return route(this.config, JSON.parse(String(r.message)))?.key === key; } catch { return false; } });
-                if (hasAuthorizedUncertain) await this.notice(room, '上次运行中断。将继续原会话；未确认完成的输入与外部操作不会自动重放，请先核实结果。');
+                if (hasAuthorizedUncertain) warnings.push('上次运行中断。将继续原会话；未确认完成的输入与外部操作不会自动重放，请先核实结果。');
             }
+            if (recovered.requestRooms.includes(key))
+                warnings.push('上次未完成的审批／追问已失效，旧卡片不能继续授权操作。若外部操作结果未知，请先核实，勿直接重做。');
+            if (warnings.length) await this.notice(room, warnings.join('\n\n'));
         }
         this.receipts.recover();
         for (const room of this.rooms.values()) this.kick(room);

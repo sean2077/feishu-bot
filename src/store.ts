@@ -71,8 +71,10 @@ export class Store {
     finishConsumed(session: string): void { this.db.prepare("UPDATE inbox SET status='done',payload=NULL WHERE session=? AND status='consumed'").run(session); }
     recover(): {
         rooms: string[];
+        requestRooms: string[];
         requests: number;
-    } { return this.transaction(() => { const rooms = this.db.prepare("SELECT DISTINCT room FROM inbox WHERE status IN ('sent','consumed')").all().map(r => r.room as string); this.db.exec("UPDATE inbox SET status='uncertain' WHERE status IN ('sent','consumed'); UPDATE action_runs SET state='uncertain' WHERE state='running'; UPDATE outbox SET state=CASE WHEN kind='file' AND file_state='done' AND file_target IS NOT NULL THEN 'pending' WHEN target IS NULL OR file_state='sending' THEN 'uncertain' ELSE 'pending' END, file_state=CASE WHEN file_state='sending' THEN 'uncertain' ELSE file_state END WHERE state IN ('sending','preparing');"); const requests = this.db.prepare("UPDATE requests SET state='expired' WHERE state='pending'").run().changes as number; return { rooms, requests }; }); }
+    } { return this.transaction(() => { const rooms = this.db.prepare("SELECT DISTINCT room FROM inbox WHERE status IN ('sent','consumed')").all().map(r => r.room as string);
+        const requestRooms = this.db.prepare("SELECT DISTINCT room FROM requests WHERE state='pending'").all().map(r => r.room as string); this.db.exec("UPDATE inbox SET status='uncertain' WHERE status IN ('sent','consumed'); UPDATE action_runs SET state='uncertain' WHERE state='running'; UPDATE outbox SET state=CASE WHEN kind='file' AND file_state='done' AND file_target IS NOT NULL THEN 'pending' WHEN target IS NULL OR file_state='sending' THEN 'uncertain' ELSE 'pending' END, file_state=CASE WHEN file_state='sending' THEN 'uncertain' ELSE file_state END WHERE state IN ('sending','preparing');"); const requests = this.db.prepare("UPDATE requests SET state='expired' WHERE state='pending'").run().changes as number; return { rooms, requestRooms, requests }; }); }
     rememberContext(room: string, messages: Message[]): void {
         const insert = this.db.prepare('INSERT OR REPLACE INTO context_refs VALUES(?,?,?,?)');
         for (const m of messages) insert.run(room, m.id, JSON.stringify({ ...m, text: '' }), Date.now());
