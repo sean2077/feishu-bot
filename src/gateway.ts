@@ -9,7 +9,7 @@ import { Receipts } from './receipts.ts';
 import { ChatHistory } from './history.ts';
 import { route, roomFromKey, authorizedAuthor, readable, triggers } from './policy.ts';
 export { route } from './policy.ts';
-import { Approvals, type Question } from './approvals.ts';
+import { Approvals, displayCard, type Question } from './approvals.ts';
 import { ActionBroker } from './actions.ts';
 import { hash, redact, safeFile, readBoundedFile, Serial, errorText } from './util.ts';
 import { prepareWorkspace, translateWorkerFile, type Workspace } from './workspace.ts';
@@ -116,7 +116,25 @@ export class Gateway {
             }
             if (recovered.requestRooms.includes(key))
                 warnings.push('上次未完成的审批／追问已失效，旧卡片不能继续授权操作。若外部操作结果未知，请先核实，勿直接重做。');
-            if (warnings.length) await this.notice(room, warnings.join('\n\n'));
+            if (warnings.length) {
+                const text = warnings.join('\n\n');
+                // Recovery has already expired the original requests. An
+                // unconfirmed Feishu create must not make this warning vanish:
+                // save it before sending, then require explicit scoped retry
+                // if the external result is unknown.
+                const sessions = this.store.listSessions(key);
+                const session = sessions.find(item => item.state === 'open') ?? sessions[0];
+                if (session) {
+                    const id = this.outbox.save(room, session.id, text, false, undefined, undefined, undefined,
+                        displayCard('恢复提醒', text));
+                    await this.outbox.deliver(id, room);
+                } else {
+                    // An inconsistent DB without a session must not silently
+                    // suppress the warning or manufacture a new CC session.
+                    this.store.audit(key, 'recovery_notice_unbound', {});
+                    await this.notice(room, text);
+                }
+            }
         }
         this.receipts.recover();
         for (const room of this.rooms.values()) this.kick(room);
