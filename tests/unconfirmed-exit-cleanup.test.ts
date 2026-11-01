@@ -40,6 +40,9 @@ test('failed cleanup after an unexpected exit reserves the original session owne
         await gateway.message(message({ senderId: 'admin', text: '/new' }));
         assert.equal(f.store.session(first.room.key).id, sessionId, 'a failed stop must not rotate an unconfirmed transcript');
         await assert.rejects(gateway.close(), /termination unconfirmed/i);
+        const alert = f.store.db.prepare("SELECT state,text FROM outbox WHERE room=? AND kind='recovery'").get(first.room.key);
+        assert.equal(alert?.state, 'done', 'unconfirmed descendant cleanup must leave a durable warning');
+        assert.match(String(alert?.text), /后代清理未确认/);
     } finally {
         await gateway.close().catch(() => {});
         f.store.close();
