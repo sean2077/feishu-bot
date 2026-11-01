@@ -15,16 +15,25 @@
 | Windows 原生权限与停止 | 已验证 | 工作区路径规范化后，原有 acceptEdits 无额外审批断言通过；三代真实进程的 PID 退出与心跳停止也已在 Windows CI 通过。未放宽权限。 |
 | 意外重启的审批／追问回执 | 已修复（平台 CI 已验证） | 重启前仍为 pending 的请求在恢复时过期；如果没有挂起输入，原先不会提示。新增按当前聊天授权范围的一次性告知，并与同房间未确认输入合并，不恢复旧审批或重新执行外部操作。 |
 | 运行中原生 worker 意外退出告知 | 已修复（平台 CI 已验证） | 原生进程异常退出且仍有未完成输入、审批或后台活动时，在当前授权聊天告知一次；审批取消、输入转 uncertain、执行结果不重放，不改变原会话。正常停止和闲置回收不额外提醒。 |
-| 空闲停止失败时的会话与进程名额 | 已修复（模拟停止失败与平台 CI） | `stop()` 抛错时不再释放未确认退出的 Worker 名额；后续聊天不能偷偷启动第二原生进程，`/status` 显示 `termination_unconfirmed`，`/new` 和 `/resume` 不再在失败时切换历史。真实 Windows CIM 超时下仍待验证；整体服务关闭的错误上报需单独核查。 |
+| 空闲停止失败时的会话与进程名额 | 已修复（模拟停止失败与平台 CI） | `stop()` 抛错时不再释放未确认退出的 Worker 名额；后续聊天不能偷偷启动第二原生进程，`/status` 显示 `termination_unconfirmed`，`/new` 和 `/resume` 不再在失败时切换历史。真实 Windows CIM 超时下仍待验证；整体服务关闭的错误上报见 PR #19。 |
 | 关闭时等待原生控制回复 | 已修复（故障注入与平台 CI 已验证） | 完全关闭不再等待 `interrupt()` 回执才调用 `close()`；主机输入 EOF 或重复 stop 时直接清理传输，保留取消待批请求、关闭 relay 与会话 ID 的既有行为。注入 SDK 不响应的用例不是实际 CC 故障复现。 |
+| 服务关闭失败与数据锁 | 已修复（故障注入与平台 CI 已验证） | 活跃或初始化中的 Worker 停止失败，在其余清理收尾后明确报错；CLI 设置非零退出码并保留原数据锁，不允许第二实例直接接管。正常关闭仍释放锁。未改变原生进程终止算法，不能据此保证全部后代已退出。 |
 | 旧 CI 启动前失败 | 原因尚未证实 | 历史运行没有 runner/步骤；注释读取受工具限制。新运行已分配 runner，不通过猜测或重跑旧任务推断原因。 |
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
 
+PR #19 的测试专用提交 `63f9a68` 在 [CI 41269346907](https://github.com/sean2077/feishu-bot/actions/runs/41269346907) 四组失败；已核对 Ubuntu 与 Windows Node 24 日志，活跃和初始化中 Worker 的停止失败均被 `Gateway.close()` 吞掉，两项新增用例实际报 `Missing expected rejection`。此时构建／原生套件未执行，不能算 CLI 数据锁复现。
+
+先修复 Gateway 的提交 `13982e6` 在 [CI 41269693348](https://github.com/sean2077/feishu-bot/actions/runs/41269693348) 继续定位 CLI 边界：已核对 Ubuntu 与 Windows Node 24 日志，核心回归通过，正常关闭用例和既有原生／SDK 用例通过，但失败关闭后的 `gateway.lock` 被错误删除，新增 CLI 用例实际报 ENOENT。补齐锁释放条件的提交 `6bf46fb` 已通过 [CI 41269842428](https://github.com/sean2077/feishu-bot/actions/runs/41269842428) 的 Ubuntu/Windows × Node.js 22.16/24 四组完整检查，无重跑、超时增加或断言削弱。最终文档版本的 PR／main CI 单独在 [PR #19](https://github.com/sean2077/feishu-bot/pull/19) 核验记录。
+
+新增验收覆盖另一 Worker 仍获清理、待批取消、会话 ID 保留、无虚假 Done、日志脱敏、锁保留及第二次启动被拒绝；正常关闭仍自动解锁。Gateway／SQLite／构建后 CLI 为真实代码，Worker 与飞书为显式替身，CLI 通过 Node 信号事件触发关闭，不是实际系统信号、真实 CC 故障或飞书联调。既有 6 项 SDK/CC fixture 与 2 项 SDK 故障注入继续保留，本轮再增加 2 项 CLI 边界 fixture；不把这 10 项全部称为真实 CC 测试。本轮未进行新的本地完整回归、真实部署或性能测量。
+
+## 近期验证
+
 PR #17 针对空闲容量回收的停止失败建立了模拟 Worker 验收。仅添加测试的提交 `8a0c68e` 在[修复前 CI](https://github.com/sean2077/feishu-bot/actions/runs/41264338648) 的 Ubuntu Node 24 中实际出现两个 Worker（预期仅一个）；修复提交 `1c81f21` 的[四组完整 CI](https://github.com/sean2077/feishu-bot/actions/runs/41264429007) 已通过 Ubuntu/Windows × Node.js 22.16/24：Ubuntu 每组 114 项核心测试，Windows 每组 113 项通过加 1 项既有 POSIX 跳过；各组另有 6 项真实 CC 进程 fixture。新增测试使用模拟 `stop()` 失败，不是 Windows 孤儿进程清理超时的真实复现；没有测量性能收益。PR 最终文字提交的 [CI 41264617483](https://github.com/sean2077/feishu-bot/actions/runs/41264617483) Windows Node 22.16 遇到既有 PowerShell 启动超时，其他三组通过；在 #18 调整测试调度后重新进行组合回归。
 
-PR #18 针对 Windows PowerShell/CIM 15 秒超时做了三组受控 CI 对照（均未改变 PID、心跳或进程归属断言，也未增加超时）：[默认测试并行 CI 41267952734](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 的首次 PowerShell 进程从 Node 启动到脚本首行耗时 Node 22.16 为 11.07 秒、Node 24 为 10.95 秒；脚本内 CIM 查询分别约 1.61 和 0.68 秒，结束到子进程关闭约 20 毫秒。[并行度 1 CI 41268146872](https://github.com/sean2077/feishu-bot/actions/runs/41268146872) 的对应启动前耗时约 1.83 和 2.38 秒，但 Ubuntu 核心套件耗时从原 5–6 秒增至约 12–13 秒。[并行度 2 CI 41268313285](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 的对应启动前耗时约 4.19 和 3.42 秒；Ubuntu 核心约 7 秒；四组检查成功。各组使用不同托管 runner，样本不足以推断失败率或实际部署性能，仅支持将测试调度竞争作为主要可疑因素。实验性的源码计时已从交付补丁撤回，最终仅保留测试文件并行度上限 2；最终补丁仍需独立 CI 核验。
+PR #18 针对 Windows PowerShell/CIM 15 秒超时做了三组受控 CI 对照（均未改变 PID、心跳或进程归属断言，也未增加超时）：[默认测试并行 CI 41267952734](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 的首次 PowerShell 进程从 Node 启动到脚本首行耗时 Node 22.16 为 11.07 秒、Node 24 为 10.95 秒；脚本内 CIM 查询分别约 1.61 和 0.68 秒，结束到子进程关闭约 20 毫秒。[并行度 1 CI 41268146872](https://github.com/sean2077/feishu-bot/actions/runs/41268146872) 的对应启动前耗时约 1.83 和 2.38 秒，但 Ubuntu 核心套件耗时从原 5–6 秒增至约 12–13 秒。[并行度 2 CI 41268313285](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 的对应启动前耗时约 4.19 和 3.42 秒；Ubuntu 核心约 7 秒；四组检查成功。各组使用不同托管 runner，样本不足以推断失败率或实际部署性能，仅支持将测试调度竞争作为主要可疑因素。实验性的源码计时已从交付补丁撤回，最终仅保留测试文件并行度上限 2；合入后的 [main CI 41268691852](https://github.com/sean2077/feishu-bot/actions/runs/41268691852) 已通过，仍不代表生产路径修复。
 
 PR #15 的测试专用提交 `0392949` 在[修复前 CI](https://github.com/sean2077/feishu-bot/actions/runs/41260809778) 的 Ubuntu 与 Windows Node 24 日志中，均实际出现两项新增用例超时：主机输入 EOF、重复 stop 指令无法完成 worker 退出；既有核心回归与 6 项原生进程 fixture 通过。测试运行真实的已构建 worker 子进程，只替换 SDK 边界，注入永不返回的 `interrupt()`，并预先建立模拟后台心跳与待批权限请求。
 
@@ -56,7 +65,7 @@ PR #11 的代码提交 `a794a35` 已通过[四组 CI](https://github.com/sean207
 
 ## 下一轮优先核查
 
-1. Windows 清理链路分开记录进程启动、发现、查询、终止和测试收尾的耗时，继续核查既有超时；PR #13／#14 未证明查询替换的端到端收益，不重复合入。原生 worker 与项目操作的可追溯后代已覆盖，一次性快照仍不能安全归属中间祖先已消失的断链进程；运行中断通知已由 PR #16 覆盖，后续聚焦真实后台任务异常与恢复验收。 整体服务关闭时对未确认停止的错误上报仍需核查，PR #17 只阻止运行中容量误释放。
+1. Windows 生产负载下的清理可靠性、原生运行时异常清理失败到网关退出事件的传播，以及初始化失败的进程归属。PR #18 已定位 CI 冷启动阶段，不能用测试调度改善替代生产修复；一次性快照仍不能安全归属中间祖先已消失的断链进程。PR #17／#19 已分别覆盖运行中容量和服务关闭的停止错误，不重复开发。
 2. 对新增主动文件投递进行真实飞书上传／断线／重启后的人工补发验收；模拟测试只能证明持久状态机与授权检查。未确认文件会保守地阻止同会话后续输出标 Done，直到处理成功或明确停止；评估实际使用中是否需要更精准的原生任务归属。
 3. 建立可重复的资源基线，区分冷启动、热续轮、闲置占用和推理成本。已有 fixture 耗时不是实时模型或飞书延迟基准。
 
