@@ -28,7 +28,7 @@ interface Pending {
     cards: Map<string, string | undefined>;
     forwarded: boolean;
     questions: Question[];
-    selected: Map<number, Set<number>>;
+    selected: Map<string, Map<number, Set<number>>>;
     resolve: (value: Outcome) => void;
     timer: ReturnType<typeof setTimeout>;
     detach: () => void;
@@ -89,7 +89,7 @@ export class Approvals {
                 button('批准一次', { request: id, decision: 'allow' }, 'primary'), button('拒绝', { request: id, decision: 'deny' }, 'danger')
             ]);
         const buttons: object[] = [];
-        p.questions.forEach((q, qi) => q.options.forEach((o, oi) => buttons.push(button(`${qi + 1}. ${p.selected.get(qi)?.has(oi) ? '✓ ' : ''}${o.label}`, { request: id, question: qi, option: oi }))));
+        p.questions.forEach((q, qi) => q.options.forEach((o, oi) => buttons.push(button(`${qi + 1}. ${o.label}`, { request: id, question: qi, option: oi }))));
         buttons.push(button('提交选择', { request: id, decision: 'submit' }, 'primary'), button('取消', { request: id, decision: 'deny' }));
         return displayCard('需要补充信息', p.questions.map((q, i) => `${i + 1}. ${q.question}`).join('\n\n') + `\n\n可多题选择后提交。自由回答：\`/answer ${id} 你的回答\`。`, buttons);
     }
@@ -138,7 +138,7 @@ export class Approvals {
         if (v.decision === 'submit') {
             const answers: Record<string, string> = {};
             for (let qi = 0; qi < p.questions.length; qi++) {
-                const q = p.questions[qi]!, selected = p.selected.get(qi);
+                const q = p.questions[qi]!, selected = p.selected.get(operator)?.get(qi);
                 if (!selected?.size)
                     return '请回答所有问题';
                 answers[q.question] = [...selected].map(i => q.options[i]!.label).join(', ');
@@ -149,17 +149,20 @@ export class Approvals {
         const qi = Number(v.question), oi = Number(v.option), q = p.questions[qi];
         if (!Number.isInteger(qi) || !Number.isInteger(oi) || !q?.options[oi])
             return '无效选项';
-        const selected = p.selected.get(qi) ?? new Set<number>();
+        const choices = p.selected.get(operator) ?? new Map<number, Set<number>>();
+        const selected = choices.get(qi) ?? new Set<number>();
         if (!q.multiSelect)
             selected.clear();
         if (selected.has(oi))
             selected.delete(oi);
         else
             selected.add(oi);
-        p.selected.set(qi, selected);
-        if (p.messageId)
-            void this.transport.update(p.messageId, this.render(id, p)).catch(() => { });
-        return '选择已记录';
+        // Do not render one member's choices onto a card shared by the group.
+        // Card-action toasts confirm the current operator's private selection.
+        choices.set(qi, selected);
+        p.selected.set(operator, choices);
+        const labels = [...selected].map(i => q.options[i]!.label).join(', ') || '未选择';
+        return `已记录你的选择：${q.question.slice(0, 50)} → ${labels.slice(0, 80)}`;
     }
     answer(room: Room, operator: string, id: string, text: string): string {
         const p = this.pending.get(id);
