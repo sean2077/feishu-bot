@@ -61,7 +61,7 @@ export interface Transport {
     send(room: Room, text: string, replyTo?: string, threadId?: string): Promise<string>;
     card(room: Room, card: object, replyTo?: string, threadId?: string): Promise<string>;
     update(messageId: string, card: object): Promise<void>;
-    download(messageId: string, resource: Resource): Promise<Uint8Array>;
+    download(messageId: string, resource: Resource, signal?: AbortSignal): Promise<Uint8Array>;
     fetch(messageId: string, room?: Room): Promise<Message | undefined>;
     history(room: Room, query: HistoryQuery): Promise<HistoryPage>;
     receipt(messageId: string, state?: ReceiptState, previouslyApplied?: ReceiptApplied): Promise<void>;
