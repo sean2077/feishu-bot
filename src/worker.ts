@@ -20,9 +20,9 @@ let currentQuery: ReturnType<typeof query> | undefined;
 let queryAbort: AbortController | undefined;
 let actionRelay: { close: () => void } | undefined;
 let stopped = false, initialized = false;
-// Match the native process clock; operators may set TZ before starting the service.
 const timezone = new Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 const knownInputs = new Set<string>();
+const modelsInTurn = new Set<string>();
 const output = new NativeOutput(emit);
 let compact: { uuid: string; ran: boolean } | undefined;
 const queuedBeforeInit: Delivery[] = [];
@@ -44,7 +44,6 @@ function input(delivery: Delivery): void {
     }
     const content = (d: Delivery) => ({ trigger: d.message, background: d.background, quote: d.quote, attachments: d.attachments });
     // One native input, with every original image's UUID, author, message and file provenance.
-    // The gateway retains the lead-to-original mapping for consumed/result/Done attribution.
     const envelope = delivery.batchInputs
         ? { timezone, imageBatch: delivery.batchInputs.map(d => ({ uuid: d.uuid, ...content(d) })) }
         : { timezone, ...content(delivery) };
@@ -81,10 +80,7 @@ async function start(init: Init): Promise<void> {
         tool('send_file', 'Send a workspace file to this conversation only.',
             { path: z.string(), name: z.string().optional() }, async ({ path, name }) => ({ content: [{ type: 'text' as const, text: JSON.stringify(await ask('send_file', 'send_file', { path, name })) }] }))
     ] });
-    // No unused listener or operation catalogue when the project has no external actions.
     const actions = init.actions.length ? await startActionRelay(init.actions.map(a => a.id), (name, input) => ask('action', name, input)) : undefined;
-    // A stop frame can arrive while the action relay is still binding its socket.
-    // Do not start Claude (or leave the late relay open) after that stop.
     if (stopped) { actions?.close(); return; }
     actionRelay = actions;
     const options: Options = {
@@ -113,7 +109,6 @@ async function start(init: Init): Promise<void> {
             PreToolUse: [{ hooks: [async raw => {
                 if (raw.hook_event_name !== 'PreToolUse') return {};
                 emit({ type: 'activity', tool: raw.tool_name });
-                // Prevent accidental native file-tool scope mistakes. Shell access is NOT sandboxed.
                 const i = raw.tool_input as Args;
                 for (const key of ['file_path', 'notebook_path', ...(raw.tool_name === 'Grep' || raw.tool_name === 'Glob' ? ['path'] : [])]) {
                     if (typeof i[key] !== 'string') continue;
@@ -153,6 +148,15 @@ async function start(init: Init): Promise<void> {
             if (trigger === 'manual' && compact) compact.ran = true;
             emit({ type: 'compaction', phase: 'complete', trigger });
         }
+        // Model attribution comes from actual main-loop response metadata, not configuration
+        // aliases or cumulative modelUsage snapshots that can include subagents and prior turns.
+        if (!event.parent_tool_use_id) {
+            const stream = event.type === 'stream_event' ? event.event as Args | undefined : undefined;
+            const message = event.type === 'assistant' ? event.message as Args | undefined
+                : stream?.type === 'message_start' ? stream.message as Args | undefined : undefined;
+            if (typeof message?.model === 'string' && /^[a-zA-Z0-9_.:/-]{1,200}$/.test(message.model) && modelsInTurn.size < 32)
+                modelsInTurn.add(message.model);
+        }
         output.handle(event);
         const consumed = Array.isArray(event.user_message_uuids) ? event.user_message_uuids : (typeof event.user_message_uuid === 'string' ? [event.user_message_uuid] : []);
         for (const id of consumed) if (typeof id === 'string' && knownInputs.has(id)) emit({ type: 'consumed', uuid: id });
@@ -168,10 +172,13 @@ async function start(init: Init): Promise<void> {
             const uuid = isCompact ? compact!.uuid : typeof event.user_message_uuid === 'string' && knownInputs.has(event.user_message_uuid) ? event.user_message_uuid : undefined;
             const uuids = isCompact ? [compact!.uuid] : consumed.filter((id): id is string => typeof id === 'string' && knownInputs.has(id));
             emit({ type: 'result', text: typeof event.result === 'string' ? event.result : '', success, uuid, uuids,
+                resultId: typeof event.uuid === 'string' ? event.uuid : undefined,
+                models: modelsInTurn.size ? [...modelsInTurn] : undefined,
                 replyToUuid: output.origin(event), compact: isCompact ? (success ? compact!.ran ? 'compacted' : 'not_needed' : 'failed') : undefined,
                 usage: event.usage as Args | undefined });
             for (const id of uuids) knownInputs.delete(id);
             if (isCompact) compact = undefined;
+            modelsInTurn.clear();
             output.endTurn();
         }
     }
@@ -183,8 +190,6 @@ async function stop(): Promise<void> {
     actionRelay?.close();
     for (const r of requests.values()) r.resolve({ approved: false, error: 'stopped' });
     requests.clear();
-    // Full shutdown must not wait for an interrupt control reply: the native
-    // process may be unresponsive and, on stdin EOF, the host may already be gone.
     currentQuery?.close();
     process.exitCode ??= 0; process.stdin.destroy();
 }

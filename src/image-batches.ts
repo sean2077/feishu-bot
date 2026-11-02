@@ -10,14 +10,14 @@ function compatible(a: Delivery, b: Delivery): boolean {
     return a.roomKey === b.roomKey && a.sessionId === b.sessionId && a.message.senderId === b.message.senderId &&
         a.message.replyTo === b.message.replyTo && a.message.threadId === b.message.threadId;
 }
-/** Call inside the input transaction. Sealing never moves or replaces original rows. */
+/** Call inside the input transaction. Only inspect batch payloads, not unrelated queued work. */
 export function sealImageWindows(store: Store, room: string): boolean {
     let changed = false;
-    for (const delivery of store.pending(room)) {
+    const rows = store.db.prepare("SELECT payload FROM inbox WHERE room=? AND status='queued' AND payload IS NOT NULL AND json_valid(payload) AND json_type(payload,'$.imageBatch')='object'").all(room);
+    for (const row of rows) {
+        const delivery = JSON.parse(String(row.payload)) as Delivery;
         if (delivery.imageBatch && !delivery.imageBatch.closed) {
-            delivery.imageBatch.closed = true;
-            store.queue(delivery);
-            changed = true;
+            delivery.imageBatch.closed = true; store.queue(delivery); changed = true;
         }
     }
     return changed;

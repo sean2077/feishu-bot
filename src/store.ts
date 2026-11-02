@@ -18,6 +18,10 @@ export class Store {
       CREATE TABLE IF NOT EXISTS action_runs(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, action TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, desired TEXT NOT NULL, applied TEXT, at INTEGER NOT NULL, sender TEXT);
       CREATE TABLE IF NOT EXISTS context_refs(room TEXT NOT NULL, id TEXT NOT NULL, message TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(room,id));
+      CREATE TABLE IF NOT EXISTS usage_coverage(session TEXT PRIMARY KEY, room TEXT NOT NULL, started INTEGER NOT NULL, prior_unknown INTEGER NOT NULL, unidentified INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS usage_results(session TEXT NOT NULL, result_id TEXT NOT NULL, room TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL, success INTEGER NOT NULL, models TEXT NOT NULL,
+        input_tokens INTEGER, output_tokens INTEGER, cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER, PRIMARY KEY(session,result_id));
+      CREATE INDEX IF NOT EXISTS usage_room_session ON usage_results(room,session,at);
     `);
         this.addColumn('receipts', 'sender', 'TEXT');
         this.addColumn('outbox', 'card', 'TEXT');
@@ -28,7 +32,9 @@ export class Store {
         this.addColumn('outbox', 'file_state', "TEXT NOT NULL DEFAULT 'none'");
         this.addColumn('outbox', 'delivery_error', 'TEXT');
         this.addColumn('outbox', 'kind', "TEXT NOT NULL DEFAULT 'reply'");
-        this.db.exec('PRAGMA user_version=4');
+        // Old audits have no stable native result identity: do not backfill them as complete totals.
+        this.db.prepare('INSERT OR IGNORE INTO usage_coverage(session,room,started,prior_unknown) SELECT id,room,?,1 FROM sessions').run(Date.now());
+        this.db.exec('PRAGMA user_version=5');
     }
     private addColumn(table: string, column: string, declaration: string): void {
         if (!this.db.prepare(`PRAGMA table_info(${table})`).all().some(r => r.name === column))
@@ -48,7 +54,15 @@ export class Store {
         return row ? this.sessionRow(row) : this.newSession(room);
     }
     private sessionRow(r: Record<string, unknown>): Session { return { id: r.id as string, roomKey: r.room as string, ccId: r.cc as string | undefined, state: r.state as Session['state'], createdAt: r.created as number }; }
-    newSession(room: string): Session { return this.transaction(() => { this.db.prepare("UPDATE sessions SET state='archived' WHERE room=? AND state='open'").run(room); const id = randomUUID(), now = Date.now(); this.db.prepare('INSERT INTO sessions VALUES(?,?,NULL,?,?)').run(id, room, 'open', now); return { id, roomKey: room, state: 'open', createdAt: now }; }); }
+    newSession(room: string): Session {
+        return this.transaction(() => {
+            this.db.prepare("UPDATE sessions SET state='archived' WHERE room=? AND state='open'").run(room);
+            const id = randomUUID(), now = Date.now();
+            this.db.prepare('INSERT INTO sessions VALUES(?,?,NULL,?,?)').run(id, room, 'open', now);
+            this.db.prepare('INSERT INTO usage_coverage(session,room,started,prior_unknown) VALUES(?,?,?,0)').run(id, room, now);
+            return { id, roomKey: room, state: 'open', createdAt: now };
+        });
+    }
     listSessions(room: string): Session[] {
         // Keep the selected session visible to management, stop and recovery even
         // when it falls outside the latest 20 entries. At most 21 rows are returned.
@@ -57,8 +71,7 @@ export class Store {
     }
     resume(room: string, id: string): Session {
         const r = this.db.prepare('SELECT * FROM sessions WHERE room=? AND id=?').get(room, id);
-        if (!r)
-            throw new Error('会话不属于当前聊天');
+        if (!r) throw new Error('会话不属于当前聊天');
         return this.transaction(() => { this.db.prepare("UPDATE sessions SET state='archived' WHERE room=? AND state='open'").run(room); this.db.prepare("UPDATE sessions SET state='open' WHERE room=? AND id=?").run(room, id); return { ...this.sessionRow(r), state: 'open' }; });
     }
     setCc(id: string, cc: string): void { this.db.prepare('UPDATE sessions SET cc=? WHERE id=?').run(cc, id); }
@@ -66,20 +79,22 @@ export class Store {
     insert(room: string, message: Message, status = 'background'): boolean { return this.db.prepare('INSERT OR IGNORE INTO inbox(room,id,message,status,at) VALUES(?,?,?,?,?)').run(room, message.id, JSON.stringify(message), status, message.time).changes > 0; }
     seen(room: string, id: string): boolean { return !!this.db.prepare('SELECT 1 FROM inbox WHERE room=? AND id=?').get(room, id); }
     background(room: string, now: number, maxAge: number, count: number): Message[] { return this.db.prepare("SELECT message FROM inbox WHERE room=? AND status='background' AND at>=? ORDER BY at DESC,id DESC LIMIT ?").all(room, now - maxAge, count).reverse().map(r => JSON.parse(r.message as string) as Message); }
-    consumeBackground(room: string, ids: string[]): void { const s = this.db.prepare("UPDATE inbox SET status='context' WHERE room=? AND id=? AND status='background'"); for (const id of ids)
-        s.run(room, id); }
+    consumeBackground(room: string, ids: string[]): void { const s = this.db.prepare("UPDATE inbox SET status='context' WHERE room=? AND id=? AND status='background'"); for (const id of ids) s.run(room, id); }
     queue(delivery: Delivery): void { this.db.prepare("UPDATE inbox SET status='queued',uuid=?,session=?,payload=? WHERE room=? AND id=?").run(delivery.uuid, delivery.sessionId, JSON.stringify(delivery), delivery.roomKey, delivery.message.id); }
     pending(room: string): Delivery[] { return this.db.prepare("SELECT payload FROM inbox WHERE room=? AND status='queued' ORDER BY rowid").all(room).map(r => JSON.parse(r.payload as string) as Delivery); }
     pendingRooms(): string[] { return this.db.prepare("SELECT DISTINCT room FROM inbox WHERE status='queued'").all().map(r => r.room as string); }
     mark(uuid: string, status: 'sent' | 'consumed' | 'done' | 'uncertain' | 'cancelled'): void { this.db.prepare('UPDATE inbox SET status=? WHERE uuid=?').run(status, uuid); }
     countPending(room: string): number { return (this.db.prepare("SELECT count(*) AS n FROM inbox WHERE room=? AND status IN ('queued','sent','consumed')").get(room)!.n as number); }
     finishConsumed(session: string): void { this.db.prepare("UPDATE inbox SET status='done',payload=NULL WHERE session=? AND status='consumed'").run(session); }
-    recover(beforeCommit?: (state: { rooms: string[]; requestRooms: string[]; requests: number }) => void): {
-        rooms: string[];
-        requestRooms: string[];
-        requests: number;
-    } { return this.transaction(() => { const rooms = this.db.prepare("SELECT DISTINCT room FROM inbox WHERE status IN ('sent','consumed')").all().map(r => r.room as string);
-        const requestRooms = this.db.prepare("SELECT DISTINCT room FROM requests WHERE state='pending'").all().map(r => r.room as string); this.db.exec("UPDATE inbox SET status='uncertain' WHERE status IN ('sent','consumed'); UPDATE action_runs SET state='uncertain' WHERE state='running'; UPDATE outbox SET state=CASE WHEN kind='file' AND file_state='done' AND file_target IS NOT NULL THEN 'pending' WHEN kind='file' AND file_state='pending' THEN 'pending' WHEN target IS NULL OR file_state='sending' THEN 'uncertain' ELSE 'pending' END, file_state=CASE WHEN file_state='sending' THEN 'uncertain' ELSE file_state END WHERE state IN ('sending','preparing');"); const requests = this.db.prepare("UPDATE requests SET state='expired' WHERE state='pending'").run().changes as number; const state = { rooms, requestRooms, requests }; beforeCommit?.(state); return state; }); }
+    recover(beforeCommit?: (state: { rooms: string[]; requestRooms: string[]; requests: number }) => void): { rooms: string[]; requestRooms: string[]; requests: number } {
+        return this.transaction(() => {
+            const rooms = this.db.prepare("SELECT DISTINCT room FROM inbox WHERE status IN ('sent','consumed')").all().map(r => r.room as string);
+            const requestRooms = this.db.prepare("SELECT DISTINCT room FROM requests WHERE state='pending'").all().map(r => r.room as string);
+            this.db.exec("UPDATE inbox SET status='uncertain' WHERE status IN ('sent','consumed'); UPDATE action_runs SET state='uncertain' WHERE state='running'; UPDATE outbox SET state=CASE WHEN kind='file' AND file_state='done' AND file_target IS NOT NULL THEN 'pending' WHEN kind='file' AND file_state='pending' THEN 'pending' WHEN target IS NULL OR file_state='sending' THEN 'uncertain' ELSE 'pending' END, file_state=CASE WHEN file_state='sending' THEN 'uncertain' ELSE file_state END WHERE state IN ('sending','preparing');");
+            const requests = this.db.prepare("UPDATE requests SET state='expired' WHERE state='pending'").run().changes as number;
+            const state = { rooms, requestRooms, requests }; beforeCommit?.(state); return state;
+        });
+    }
     rememberContext(room: string, messages: Message[]): void {
         const insert = this.db.prepare('INSERT OR REPLACE INTO context_refs VALUES(?,?,?,?)');
         for (const m of messages) insert.run(room, m.id, JSON.stringify({ ...m, text: '' }), Date.now());
@@ -94,7 +109,6 @@ export class Store {
         return !!this.db.prepare("SELECT 1 FROM context_refs WHERE room=? AND json_extract(message,'$.threadId')=? UNION ALL SELECT 1 FROM inbox WHERE room=? AND json_extract(message,'$.threadId')=? LIMIT 1").get(room, threadId, room, threadId);
     }
     discardInput(room: string, id: string): void {
-        // Keep only the id tombstone, never rejected body or resource metadata.
         this.db.prepare("UPDATE inbox SET status='cancelled',message='{}',payload=NULL WHERE room=? AND id=?").run(room, id);
     }
     recordOutput(id: string, room: string, session: string): void { this.db.prepare('INSERT OR REPLACE INTO outputs VALUES(?,?,?,?)').run(id, room, session, Date.now()); }
@@ -105,7 +119,6 @@ export class Store {
         this.db.prepare("DELETE FROM receipts WHERE desired=applied AND desired!='processing' AND at<?").run(now - 7 * 86400000);
         this.db.prepare("DELETE FROM inbox WHERE status IN ('background','context') AND at<?").run(now - backgroundMs);
         this.db.prepare("UPDATE inbox SET message='{}',payload=NULL WHERE status IN ('done','cancelled','uncertain') AND at<?").run(now - 86400000);
-        // Retain tombstones for 30 days to suppress platform retries after restarts.
         this.db.prepare("DELETE FROM inbox WHERE status IN ('done','cancelled','uncertain') AND at<?").run(now - 30 * 86400000);
         this.db.prepare('DELETE FROM outputs WHERE at<?').run(now - 30 * 86400000);
         this.db.prepare("DELETE FROM outbox WHERE state IN ('done','cancelled') AND file_path IS NULL AND at<?").run(now - 7 * 86400000);

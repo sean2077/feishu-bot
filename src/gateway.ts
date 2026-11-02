@@ -15,6 +15,7 @@ import { hash, redact, safeFile, readBoundedFile, Serial, errorText } from './ut
 import { prepareWorkspace, translateWorkerFile, type Workspace } from './workspace.ts';
 import { managementReply } from './management.ts';
 import { imageBatchEligible, stageImageBatch, sealImageWindows, imageBatchMembers } from './image-batches.ts';
+import { recordUsage } from './usage.ts';
 interface Slot {
     room: Room;
     session: Session;
@@ -259,10 +260,11 @@ export class Gateway {
                 }
                 return;
             }
-            // Every authorized text/control input closes the preceding image window,
-            // including read commands. Stop/new can still cancel it before dispatch.
+            // Read commands seal a window but do not dispatch work. The existing
+            // durable deadline still wakes that batch without making a query start a worker.
             const boundary = !imageBatchEligible(message);
             if (boundary) this.store.transaction(() => sealImageWindows(this.store, room.key));
+            let dispatchNeeded = false;
             try {
                 const rateKey = room.key + ':' + message.senderId, now = Date.now(), recent = (this.rates.get(rateKey) ?? []).filter(t => t > now - 60000);
                 if (recent.length >= this.config.limits.messagesPerMinute) {
@@ -277,7 +279,7 @@ export class Gateway {
                     await this.notice(room, `消息未提交：${message.inputIssue ?? '正文或附件数量超过本次输入上限，请分开发送。'}`, message);
                     return;
                 }
-                if (/^\/(help|status|sessions|new|resume|stop|answer|outputs|retry-output)(?:\s|$)/.test(message.text)) {
+                if (/^\/(help|status|sessions|new|resume|stop|answer|outputs|retry-output|usage)(?:\s|$)/.test(message.text)) {
                     this.store.insert(room.key, message, 'done');
                     await this.command(room, message);
                     return;
@@ -326,14 +328,14 @@ export class Gateway {
                     this.store.queue(delivery);
                     this.store.consumeBackground(room.key, background.map(m => m.id));
                 });
+                dispatchNeeded = true;
                 this.receipts.accept(room, session.id, message);
                 if (compactMatch && (this.slots.get(room.key)?.busy || this.store.countPending(room.key) > 1))
                     await this.notice(room, '已接收 /compact，将在当前工作轮次结束后整理上下文；期间仍可处理审批。', message);
                 if (supplementTo && this.store.pending(room.key).some(d => d.command))
                     await this.notice(room, '补充已保存，等待前面的 /compact 控制边界；若目标运行先结束则取消，不会另起任务。审批仍可正常操作。', message);
             } finally {
-                // Dispatch consults durable rows and deadlines; no delayed model task is kept only in memory.
-                if (!this.closing) this.kick(room);
+                if (dispatchNeeded && !this.closing) this.kick(room);
             }
         });
     }
@@ -463,7 +465,7 @@ export class Gateway {
                         if (batch && totalBytes > Math.min(batch.maxBytes, this.config.limits.imageBatchBytes)) throw new Error('image batch byte limit');
                         const name = basename(resource.name).replace(/[^\p{L}\p{N}_.-]/gu, '_').slice(0, 100) || 'attachment';
                         const path = join(slot.workspace!.inbound, `${hash(member.message.id).slice(0, 16)}-${index}-${name}`);
-                        paths.push(path); // Also remove a partially written file on a local write failure.
+                        paths.push(path);
                         await writeFile(path, bytes, { mode: 0o600 });
                         member.attachments.push({ path, name: resource.name });
                     }
@@ -536,7 +538,7 @@ export class Gateway {
                 this.store.setCc(slot.session.id, event.ccId);
                 slot.session.ccId = event.ccId;
                 break;
-            case 'accepted': break; // Transport acknowledgement is not proof the model has read it.
+            case 'accepted': break;
             case 'consumed':
                 this.store.transaction(() => {
                     for (const id of slot.inputGroups.get(event.uuid) ?? [event.uuid])
@@ -561,6 +563,17 @@ export class Gateway {
                 break;
             }
             case 'result': {
+                // Actual SDK result IDs deduplicate accounting and terminal rendering across restarts.
+                // Result usage remains observable even when subsequent answer persistence fails.
+                const disposition = this.store.transaction(() => {
+                    const result = recordUsage(this.store, slot.room, slot.session, event);
+                    if (result !== 'duplicate') this.store.audit(slot.room.key, 'turn_result', {
+                        session: slot.session.id, success: event.success, compact: event.compact,
+                        resultId: event.resultId, models: event.models, usage: event.usage ?? {}
+                    });
+                    return result;
+                });
+                if (disposition === 'duplicate') break;
                 const nativeIds = event.uuids?.length ? event.uuids : event.uuid ? [event.uuid] : [];
                 const finished = [...new Set(nativeIds.flatMap(id => slot.inputGroups.get(id) ?? [id]))].filter(id => slot.deliveries.has(id));
                 const anchor = finished.length ? slot.deliveries.get(finished[0]!) : event.replyToUuid ? slot.replyAnchors.get(event.replyToUuid) : undefined;
@@ -576,7 +589,6 @@ export class Gateway {
                 slot.busy = slot.deliveries.size > 0;
                 slot.anchor = slot.deliveries.values().next().value;
                 this.cancelLostSupplements(slot.room);
-                // Done is applied only after durable output delivery, for all original image inputs too.
                 this.receipts.settle(slot.room.key, slot.session.id, origins, false);
                 const compactText = event.compact === 'compacted' ? '上下文已由 Claude Code 原生压缩，会话保持不变。'
                     : event.compact === 'not_needed' ? '原生压缩未执行（例如历史不足），会话保持不变。'
@@ -593,7 +605,6 @@ export class Gateway {
                         if (current) void this.track(this.notice(current,
                             '回复保存失败，本轮不标记完成；未确认输入不会自动重放。请检查服务诊断和磁盘状态。')).catch(() => {});
                     }).finally(() => { slot.activeRequests--; this.kickWaiting(); });
-                this.store.audit(slot.room.key, 'turn_result', { session: slot.session.id, success: event.success, compact: event.compact, usage: event.usage ?? {} });
                 this.kickWaiting();
                 break;
             }
@@ -713,7 +724,7 @@ export class Gateway {
         const view = managementReply(command, arg, { room, actor: message.senderId, store: this.store,
             runtime: slot, approvals: slot ? this.approvals.size(slot.session.id) : 0 });
         if (view !== undefined) {
-            await this.notice(room, command === '/help' ? view + '\n\n/btw 正文、/ps 正文：仅补充正在执行的前台任务，不新建任务，不代替审批回答。' : view, message);
+            await this.notice(room, view, message);
             return;
         }
         if (command === '/retry-output') {

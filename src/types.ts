@@ -64,7 +64,6 @@ export interface Config {
     };
 }
 export type ReceiptState = 'processing' | 'done' | 'clear';
-/** A persisted external-add attempt is not proof of a successful reaction. */
 export type ReceiptApplied = ReceiptState | 'attempt:processing' | 'attempt:done';
 export interface HistoryQuery {
     limit: number; startTime?: number; endTime?: number; pageToken?: string; threadId?: string;
@@ -87,7 +86,10 @@ export type WorkerEvent =
     { type: 'consumed'; uuid: string } |
     { type: 'text' | 'thinking'; text: string; partial: boolean; blockId?: string; turnId?: string } |
     { type: 'compaction'; phase: 'start' | 'complete'; trigger: 'manual' | 'auto' } |
-    { type: 'result'; text: string; success: boolean; uuid?: string; uuids?: string[]; usage?: Args; replyToUuid?: string; compact?: 'compacted' | 'not_needed' | 'failed' } |
+    { type: 'result'; text: string; success: boolean; uuid?: string; uuids?: string[]; usage?: Args;
+        /** Native result identity, distinct from the originating input UUID. */
+        resultId?: string; models?: string[];
+        replyToUuid?: string; compact?: 'compacted' | 'not_needed' | 'failed' } |
     { type: 'activity'; tool?: string; background?: number; pinned?: boolean; state?: 'idle' | 'running' | 'requires_action' } |
     { type: 'request'; id: string; kind: 'permission' | 'question' | 'action' | 'send_file' | 'attachment' | 'history'; name: string; input: Args } |
     { type: 'error'; message: string } |

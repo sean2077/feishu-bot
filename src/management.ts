@@ -1,5 +1,6 @@
 import type { Room, Session, Worker } from './types.ts';
 import type { Store } from './store.ts';
+import { usageReply } from './usage.ts';
 
 interface RuntimeView {
     session: Session;
@@ -37,7 +38,6 @@ const count = (store: Store, sql: string, room: string): number => Number(store.
 const pendingOutputCount = (store: Store, room: string): number => count(store,
     "SELECT count(*) AS n FROM outbox WHERE room=? AND state NOT IN ('done','cancelled')", room);
 function selectedSession(store: Store, room: string): Session | undefined {
-    // The current session may be older than the recent-history display window.
     const row = store.db.prepare("SELECT id,room,cc,state,created FROM sessions WHERE room=? AND state='open'").get(room);
     return row ? { id: String(row.id), roomKey: String(row.room), ccId: row.cc ? String(row.cc) : undefined,
         state: 'open', createdAt: Number(row.created) } : undefined;
@@ -97,17 +97,19 @@ const deliveryReasons: Record<string, string> = {
 };
 /** Read-only presentation. Never creates a session, changes delivery state or calls the native runtime. */
 export function managementReply(command: string, arg: string, ctx: Context): string | undefined {
-    if (!['/help', '/status', '/sessions', '/outputs'].includes(command)) return undefined;
+    if (!['/help', '/status', '/sessions', '/outputs', '/usage'].includes(command)) return undefined;
     if (arg && (arg !== '--json' || command === '/help')) return `用法：${command}${command === '/help' ? '' : ' [--json]'}`;
     const { store, room, actor } = ctx;
     const manage = room.maintainers.includes(actor) || room.dmUser === actor;
     if (command === '/help') return [
-        '**日常对话**', '群里请明确 @ 机器人；私聊直接发送。忙时补充仍交给原生会话处理。',
-        '', '**查看与回答**', '/status 当前工作、待回答事项及交付情况', '/sessions 本聊天历史会话', '/outputs 尚未完整送达的回复和文件', '/answer 请求ID 回答（多题也可使用卡片）',
+        '**日常对话**', '群里请明确 @ 机器人；私聊直接发送。忙时普通消息仍交给原生会话处理。',
+        '/btw 正文、/ps 正文：仅补充当前前台任务，不新建任务，不代替审批回答；接收确认不代表模型已读取。',
+        '', '**查看与回答**', '/status 当前工作、待回答事项及交付情况', '/sessions 本聊天历史会话', '/outputs 尚未完整送达的回复和文件', '/usage 当前选中会话的 SDK 用量，不估造费用或上下文占用', '/answer 请求ID 回答（多题也可使用卡片）',
         '', '**会话管理**', '/stop 停止运行，保留上下文；下条消息继续', '/compact [说明] 在轮次边界执行原生压缩', '/new 明确新建会话', '/resume 会话ID 选择本聊天历史', '/retry-output 输出ID 明确补发；结果未知时可能重复',
         manage ? '你可以管理本聊天会话。工具审批仍限项目维护者。' : '新建、恢复、停止、压缩和补发限项目维护者；私聊本人可管理自己的会话。',
-        '', '排障需要机器数据时，可用 /status --json、/sessions --json、/outputs --json。'
+        '', '排障需要机器数据时，可用 /status --json、/sessions --json、/outputs --json、/usage --json。'
     ].join('\n');
+    if (command === '/usage') return usageReply(store, room, arg);
     if (command === '/status') {
         const view = statusView(ctx);
         return arg === '--json' ? JSON.stringify(view, null, 2) : formatStatus(view, manage);
