@@ -513,7 +513,9 @@ export class Gateway {
         const current = roomFromKey(this.config, slot.room.key);
         if (!current || slot.abort.signal.aborted) throw new Error('Conversation is no longer authorized');
         const project = this.config.projects.find(p => p.id === slot.room.projectId)!;
-        if (event.kind === 'history') return this.history.read(current, slot.session.id, event.input, slot.abort.signal);
+        if (event.kind === 'history') return waitOrAbort(
+            () => this.history.read(current, slot.session.id, event.input, slot.abort.signal), slot.abort.signal
+        );
         if (event.kind === 'action') {
             const w = slot.workspace!;
             return this.broker.execute(slot.room, slot.session.id, project, event.name, event.input, slot.abort.signal, w.work, path => translateWorkerFile(this.config, w, path));

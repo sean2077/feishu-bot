@@ -4,6 +4,7 @@
 
 | 项目 | 当前结果 | 证据 / 下一步 |
 |---|---|---|
+| 原生按需群历史读取停滞时服务无法关闭 | 已修复（真实 Gateway／模拟停滞历史 API／跨平台 CI） | 原生 `read_chat_history` 请求等待飞书历史 API 不返回时，`Gateway.close()` 虽已中止会话，仍会等待挂起的工具任务。现复用现有 `waitOrAbort`，及时释放关闭等待；历史读取返回后仍需检查取消信号才可缓存或回传，不向已停止 Worker 交付结果。底层 SDK 请求可能持续到其网络超时；真实 Feishu 掉线与模型工具调用仍待联调。 |
 | 停止或关闭时未完成附件下载阻塞会话收尾 | 已修复（真实 Gateway／SQLite、模拟停滞下载、跨平台 CI） | `/stop` 原本会排队等待当前 `dispatch` 的 Feishu 附件下载，关闭时原生 `fetch_attachment` 也可能卡住任务收尾。现在按会话 AbortSignal 及时结束这些等待，下载流取得后也会响应取消并销毁；已取消输入不进入 CC、不重新标记为 `uncertain`。不重放外部写入、不更改正常下载限制。SDK 原始请求若尚未返回，仍可能持续到其自身网络超时；真实飞书掉线及进程级联调待测。 |
 | 群聊追问选项被其他授权成员借用或覆盖 | 已修复（真实 Gateway／SQLite、模拟飞书／Worker、跨平台 CI） | 同一共享追问卡片的勾选原先按请求而非操作成员保存；一个成员可直接提交另一人的选择。现在按 operator 独立保存，提交只能使用本人选择；共享卡片不再展示个人勾选，仅通过操作提示反馈，避免误导其他成员。不改变维护者审批权限、一次性结果或历史。真实飞书卡片交互待联调。 |
 | 主动文件投递已领取、但尚未开始上传时异常退出 | 已修复（真实 SQLite 状态故障注入／模拟飞书／跨平台 CI） | `kind=file` 的 `state=sending` 已持久化、`file_state=pending` 尚未越过上传栅栏时没有外部写入，旧恢复错误按无 `target` 判为 `uncertain`，使文件滞留。现在仅该未发起上传的状态恢复为 `pending`，可安全自动首次上传；`file_state=sending` 的结果未知上传仍保留 `uncertain`，不自动重复发送。真实飞书与实际进程强杀待验收。 |
@@ -45,6 +46,8 @@
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #47 针对原生 `read_chat_history` 在历史 API 停滞时阻塞服务关闭建立回归。仅新增测试的 `0adc3cb` 在[修复前 CI 41392319409](https://github.com/sean2077/feishu-bot/actions/runs/41392319409) 的 Ubuntu Node.js 22.16／24 两组实际失败：2 秒内 `Gateway.close()` 未完成；Windows 两组被后续提交取消，不算红阶段复现。代码提交 `e68897b` 将只读历史请求纳入现有会话 AbortSignal 等待，[CI 41392406443](https://github.com/sean2077/feishu-bot/actions/runs/41392406443) Ubuntu／Windows × Node.js 22.16／24 四组完整检查均通过。生产 Gateway／SQLite 与模拟历史网络停滞已验证；底层网络请求自身的终止、真实飞书与真实模型未验收。
 
 PR #46 的 [修复前 CI 41387040517](https://github.com/sean2077/feishu-bot/actions/runs/41387040517) 在 Ubuntu Node 22.16／24 均实际复现 `/stop` 被停滞附件下载阻塞的新增断言失败；Windows 作业因后续代码提交取消，不能算修复前 Windows 复现。代码版 [CI 41387229295](https://github.com/sean2077/feishu-bot/actions/runs/41387229295) 在 Ubuntu／Windows × Node 22.16／24 四组通过，Node22 核心各 152 通过＋1 项平台条件跳过，另有 12 项原生进程套件通过。新增两项回归使用真实 Gateway、SQLite 和模拟停滞下载；未触及实际 Feishu HTTP 连接，最终 PR／main CI 单独核验。
 
