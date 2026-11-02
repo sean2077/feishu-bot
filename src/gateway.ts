@@ -893,6 +893,7 @@ export class Gateway {
     async close(): Promise<void> {
         this.closing = true;
         this.noticeAbort.abort();
+        this.outbox.close(); // Release stalled durable Feishu waits before draining tracked tasks.
         clearInterval(this.housekeeping);
         for (const key of this.imageTimers.keys()) this.clearImageTimer(key);
         this.approvals.close();

@@ -28,10 +28,40 @@ export class Outbox {
     readonly store: Store;
     readonly transport: Transport;
     private active = new Set<string>();
+    /** Only in-flight provider waits are retained; a local close never cancels a remote write. */
+    private readonly inFlight = new Set<() => void>();
+    private closing = false;
     private retryAfter = new Map<string, { at: number; id: string }>();
     readonly receipts?: Receipts;
     readonly allowed?: (row: Outgoing, room: Room) => boolean;
     constructor(store: Store, transport: Transport, receipts?: Receipts, allowed?: (row: Outgoing, room: Room) => boolean) { this.store = store; this.transport = transport; this.receipts = receipts; this.allowed = allowed; }
+    /** Stop waiting locally; the remote card/file request may still be accepted. */
+    close(): void {
+        if (this.closing) return;
+        this.closing = true;
+        for (const release of this.inFlight) release();
+    }
+    /** One shutdown fence shared by creates, known-ID updates, uploads and cosmetic notices. */
+    private async providerIO<T>(start: () => Promise<T>): Promise<T> {
+        if (this.closing) throw new Error('outbox closing');
+        let release!: () => void;
+        let abortScheduled: ReturnType<typeof setImmediate> | undefined;
+        const closed = new Promise<never>((_, reject) => {
+            // Give an already-resolving provider receipt one event-loop turn to
+            // persist its ID. Never wait for a network request with no response.
+            release = () => { abortScheduled = setImmediate(() => reject(new Error('outbox closing'))); };
+        });
+        this.inFlight.add(release);
+        try {
+            return await Promise.race([Promise.resolve().then(() => {
+                if (this.closing) throw new Error('outbox closing');
+                return start();
+            }), closed]);
+        } finally {
+            if (abortScheduled) clearImmediate(abortScheduled);
+            this.inFlight.delete(release);
+        }
+    }
     save(room: Room, session: string, text: string, success: boolean, target?: string, replyTo?: string, threadId?: string, card?: object, origins: Origin[] = [], file?: { name: string; directory: string }): string {
         const id = randomUUID();
         // The full answer is the durable source. A local export can be regenerated after a restart.
@@ -80,7 +110,7 @@ export class Outbox {
         return !!row && row.state === 'sending' && this.permitted(row, room);
     }
     async deliver(id: string, room: Room, explicit = false): Promise<boolean> {
-        if (this.active.has(id)) return false;
+        if (this.closing || this.active.has(id)) return false;
         const row = this.get(id);
         if (!row || row.room !== room.key || row.state === 'done' || row.state === 'cancelled') return false;
         if (!this.permitted(row, room)) return false;
@@ -100,7 +130,7 @@ export class Outbox {
                     if (!this.sending(id, room)) return false;
                     this.store.db.prepare("UPDATE outbox SET file_state='sending' WHERE id=? AND state='sending'").run(id);
                     phase = 'file_send';
-                    const fileTarget = await this.transport.file(room, row.filePath, row.fileName);
+                    const fileTarget = await this.providerIO(() => this.transport.file(room, row.filePath!, row.fileName!));
                     const saved = this.store.db.prepare("UPDATE outbox SET file_target=?,file_state='done' WHERE id=? AND state='sending'").run(fileTarget, id).changes;
                     if (!saved || !this.sending(id, room)) return false;
                     this.store.recordOutput(fileTarget, room.key, row.session);
@@ -112,8 +142,8 @@ export class Outbox {
             } else {
                 const text = row.text.length > 24000 ? row.text.slice(0, 23800) + '\n\n（完整答案另附文件。）' : row.text;
                 const card = row.card ?? displayCard(row.success ? '回复' : '执行失败', text || '本轮已结束。');
-                if (target) await this.transport.update(target, card);
-                else target = await this.transport.card(room, card, row.replyTo, row.threadId);
+                if (target) await this.providerIO(() => this.transport.update(target!, card));
+                else target = await this.providerIO(() => this.transport.card(room, card, row.replyTo, row.threadId));
                 const saved = this.store.db.prepare("UPDATE outbox SET target=? WHERE id=? AND state='sending'").run(target, id).changes;
                 if (!saved || !this.sending(id, room)) return false;
                 this.store.recordOutput(target, room.key, row.session);
@@ -125,7 +155,7 @@ export class Outbox {
                     if (!this.sending(id, room)) return false;
                     this.store.db.prepare("UPDATE outbox SET file_state='sending' WHERE id=? AND state='sending'").run(id);
                     phase = 'file_send';
-                    const fileTarget = await this.transport.file(room, row.filePath, row.fileName);
+                    const fileTarget = await this.providerIO(() => this.transport.file(room, row.filePath!, row.fileName!));
                     const fileSaved = this.store.db.prepare("UPDATE outbox SET file_target=?,file_state='done' WHERE id=? AND state='sending'").run(fileTarget, id).changes;
                     if (!fileSaved || !this.sending(id, room)) return false;
                     this.store.recordOutput(fileTarget, room.key, row.session);
@@ -176,8 +206,8 @@ export class Outbox {
         card.header = { ...card.header, title: { tag: 'plain_text', content: '回复尚未完整送达' } };
         card.body = { ...card.body, elements: [...(card.body?.elements ?? []), { tag: 'markdown',
             content: `完整文件尚未确认送达；未标记完成。可用 /outputs 查看状态，或 /retry-output ${row.id} 明确补发（可能重复已送达的文件）。` }] };
-        try { await this.transport.update(target, card); }
-        catch { this.store.audit(room.key, 'delivery_notice_pending', { id: row.id, reason }); }
+        try { await this.providerIO(() => this.transport.update(target, card)); }
+        catch { if (!this.closing) this.store.audit(room.key, 'delivery_notice_pending', { id: row.id, reason }); }
     }
     private async pendingAttachmentNotice(row: Outgoing, room: Room, target: string): Promise<void> {
         const current = this.get(row.id);
@@ -188,8 +218,8 @@ export class Outbox {
         card.header = { ...card.header, title: { tag: 'plain_text', content: '回复附件尚未完整送达' } };
         card.body = { ...card.body, elements: [...(card.body?.elements ?? []), { tag: 'markdown',
             content: '主动发送的文件尚未确认送达；本轮未标记完成。可用 /outputs 查看待交付记录，必要时由维护者明确补发。' }] };
-        try { await this.transport.update(target, card); }
-        catch { this.store.audit(room.key, 'delivery_notice_pending', { id: row.id }); }
+        try { await this.providerIO(() => this.transport.update(target, card)); }
+        catch { if (!this.closing) this.store.audit(room.key, 'delivery_notice_pending', { id: row.id }); }
     }
     /** Prune terminal exports only. Unknown uploads retain their bytes for explicit recovery. */
     async pruneCompletedExports(now: number, exportsDir: string): Promise<void> {
