@@ -87,3 +87,41 @@ test('shutdown during a final result and uncertain preview create preserves the 
         await rm(f.dir, { recursive: true, force: true });
     }
 });
+
+test('a stalled update to a known preview card cannot block stop', { timeout: 15000 }, async () => {
+    const f = await fixture();
+    const pending = heldCall();
+    let updates = 0;
+    let stopTask: Promise<void> | undefined;
+    let closed = false;
+    try {
+        const original = message({ text: 'stream more output' });
+        await f.gateway.message(original);
+        await until(() => f.workers[0]?.sent.length === 1);
+        const worker = f.workers[0]!, uuid = worker.sent[0]!.uuid;
+        worker.emit({ type: 'text', text: 'first preview', partial: false, blockId: 'text:0', turnId: uuid });
+        await until(() => f.transport.sent.some(s => !!s.card && s.replyTo === original.id), 4500);
+        const id = f.transport.sent.find(s => !!s.card && s.replyTo === original.id)!.id;
+        assert.ok(f.store.db.prepare('SELECT 1 FROM outputs WHERE id=?').get(id));
+
+        f.transport.update = async () => { updates++; await pending.promise; };
+        worker.emit({ type: 'text', text: 'second preview', partial: false, blockId: 'text:0', turnId: uuid });
+        await until(() => updates === 1, 4500);
+        stopTask = f.gateway.message(message({ senderId: 'admin', text: '/stop' }));
+        assert.equal(await Promise.race([stopTask.then(() => true), delay(1800).then(() => false)]), true,
+            'a known-ID preview update must not retain the room stop barrier');
+        assert.equal(worker.stopped, true);
+        assert.equal(f.store.db.prepare('SELECT status FROM inbox WHERE id=?').get(original.id)?.status, 'cancelled');
+        assert.ok(!f.transport.receiptStates.some(r => r.id === original.id && r.state === 'done'));
+
+        await f.gateway.close();
+        f.store.close(); closed = true;
+        pending.release();
+        await delay(35);
+    } finally {
+        pending.release();
+        await stopTask?.catch(() => {});
+        if (!closed) { await f.gateway.close().catch(() => {}); f.store.close(); }
+        await rm(f.dir, { recursive: true, force: true });
+    }
+});
