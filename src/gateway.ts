@@ -30,6 +30,8 @@ interface Slot {
     deliveries: Map<string, Delivery>;
     /** Native input UUID -> original image input UUIDs. Never substitutes durable original rows. */
     inputGroups: Map<string, string[]>;
+    /** Worker queue acknowledgement, not pipe-write completion or model consumption. */
+    acceptedSupplements: Set<string>;
     anchor?: Delivery;
     renders: Map<string, Render>;
     replyAnchors: Map<string, Delivery>;
@@ -123,8 +125,11 @@ export class Gateway {
         return !!slot?.live && !!slot.worker && slot.busy && !slot.compacting && !slot.stopUnconfirmed &&
             slot.session.id === delivery.sessionId && !!target && !target.command && !target.supplementTo;
     }
-    private cancelSupplement(room: Room, delivery: Delivery, reason: string, deliverNotice = true): void {
-        if (!this.store.db.prepare("SELECT 1 FROM inbox WHERE room=? AND uuid=? AND status='queued'").get(room.key, delivery.uuid)) return;
+    private cancelSupplement(room: Room, delivery: Delivery, reason: string, deliverNotice = true,
+        expectedStatus: 'queued' | 'sent' = 'queued'): boolean {
+        // A sent input is cancellable only after the worker explicitly proves it never entered the native queue.
+        if (!this.store.db.prepare('SELECT 1 FROM inbox WHERE room=? AND session=? AND uuid=? AND status=?')
+            .get(room.key, delivery.sessionId, delivery.uuid, expectedStatus)) return false;
         const current = route(this.config, delivery.message);
         let noticeId: string | undefined;
         this.store.transaction(() => {
@@ -139,6 +144,7 @@ export class Gateway {
         this.receipts.settle(room.key, delivery.sessionId, [delivery.message], false);
         if (noticeId && deliverNotice && !this.closing)
             void this.track(this.outbox.deliver(noticeId, current!)).catch(() => {});
+        return true;
     }
     private cancelLostSupplements(room: Room): void {
         for (const delivery of this.store.pending(room.key))
@@ -374,7 +380,7 @@ export class Gateway {
                 }
                 const session = this.store.session(room.key);
                 const created: Slot = { room, session, abort: new AbortController(), live: true, busy: false,
-                    background: -1, pinned: false, lastActivity: Date.now(), deliveries: new Map(), inputGroups: new Map(),
+                    background: -1, pinned: false, lastActivity: Date.now(), deliveries: new Map(), inputGroups: new Map(), acceptedSupplements: new Set(),
                     requests: new Set(), activeRequests: 0, renders: new Map(), replyAnchors: new Map() };
                 this.slots.set(room.key, created);
                 return created;
@@ -486,8 +492,6 @@ export class Gateway {
                 slot.lastActivity = Date.now();
                 handedOff = true;
                 await slot.worker!.send(batch ? { ...delivery, batchInputs: members } : delivery);
-                if (delivery.supplementTo && slot.live && !this.closing)
-                    void this.track(this.notice(room, '补充已交给原生输入流；这不代表模型已读取、理解或执行。', delivery.message));
                 if (delivery.command) return;
             } catch (e) {
                 if (!slot.live || slot.abort.signal.aborted || this.closing) return;
@@ -538,7 +542,26 @@ export class Gateway {
                 this.store.setCc(slot.session.id, event.ccId);
                 slot.session.ccId = event.ccId;
                 break;
-            case 'accepted': break;
+            case 'accepted': {
+                const delivery = slot.deliveries.get(event.uuid);
+                if (!delivery?.supplementTo || slot.acceptedSupplements.has(event.uuid)) break;
+                slot.acceptedSupplements.add(event.uuid);
+                if (!this.closing && this.inputAuthorized(slot.room, delivery))
+                    void this.track(this.notice(slot.room, '补充已交给原生输入流；这不代表模型已读取、理解或执行。', delivery.message));
+                break;
+            }
+            case 'input_rejected': {
+                const delivery = slot.deliveries.get(event.uuid);
+                if (!delivery?.supplementTo || event.reason !== 'foreground_ended' || slot.acceptedSupplements.has(event.uuid)) break;
+                if (!this.cancelSupplement(slot.room, delivery, '原生接收补充前，目标前台运行已结束。', true, 'sent')) break;
+                // Persist cancellation and feedback before releasing ownership; a failed transaction remains recoverable.
+                slot.deliveries.delete(event.uuid);
+                slot.replyAnchors.delete(event.uuid);
+                slot.busy = slot.deliveries.size > 0;
+                slot.anchor = slot.deliveries.values().next().value;
+                this.kickWaiting();
+                break;
+            }
             case 'consumed':
                 this.store.transaction(() => {
                     for (const id of slot.inputGroups.get(event.uuid) ?? [event.uuid])
@@ -583,7 +606,7 @@ export class Gateway {
                 const render = unbound ?? this.renderFor(slot, finished[0] ?? event.replyToUuid);
                 if (unbound) { unbound.bindOrigin(anchor); slot.renders.delete('background:unknown'); }
                 slot.renders.delete(key);
-                for (const id of finished) slot.deliveries.delete(id);
+                for (const id of finished) { slot.deliveries.delete(id); slot.acceptedSupplements.delete(id); }
                 for (const id of nativeIds) slot.inputGroups.delete(id);
                 if (slot.compacting && finished.includes(slot.compacting)) slot.compacting = undefined;
                 slot.busy = slot.deliveries.size > 0;

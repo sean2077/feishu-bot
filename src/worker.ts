@@ -42,6 +42,11 @@ function input(delivery: Delivery): void {
         if (queuedBeforeInit.length >= 128) throw new Error('startup input limit');
         queuedBeforeInit.push(delivery); return;
     }
+    // Host state can lag this process's terminal result; fence before native enqueue.
+    if (delivery.supplementTo && !knownInputs.has(delivery.supplementTo)) {
+        emit({ type: 'input_rejected', uuid: delivery.uuid, reason: 'foreground_ended' });
+        return;
+    }
     const content = (d: Delivery) => ({ trigger: d.message, background: d.background, quote: d.quote, attachments: d.attachments });
     // One native input, with every original image's UUID, author, message and file provenance.
     const envelope = delivery.batchInputs
@@ -177,6 +182,7 @@ async function start(init: Init): Promise<void> {
                 replyToUuid: output.origin(event), compact: isCompact ? (success ? compact!.ran ? 'compacted' : 'not_needed' : 'failed') : undefined,
                 usage: event.usage as Args | undefined });
             for (const id of uuids) knownInputs.delete(id);
+            if (uuid) knownInputs.delete(uuid); // Retire the single-UUID fallback too.
             if (isCompact) compact = undefined;
             modelsInTurn.clear();
             output.endTurn();

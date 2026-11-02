@@ -83,6 +83,8 @@ export interface Transport {
 export type WorkerEvent =
     { type: 'ready'; ccId: string } |
     { type: 'accepted'; uuid: string } |
+    /** Proof that the input was rejected before entering the native SDK queue. */
+    { type: 'input_rejected'; uuid: string; reason: 'foreground_ended' } |
     { type: 'consumed'; uuid: string } |
     { type: 'text' | 'thinking'; text: string; partial: boolean; blockId?: string; turnId?: string } |
     { type: 'compaction'; phase: 'start' | 'complete'; trigger: 'manual' | 'auto' } |
