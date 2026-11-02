@@ -911,7 +911,7 @@ export class Gateway {
         await this.dispatchSerial.drain();
         await this.poolSerial.drain();
         await Promise.allSettled([...this.tasks]);
-        await this.receipts.drain();
+        await this.receipts.close();
         for (const [key, slot] of this.slots) if (!slot.stopUnconfirmed) this.slots.delete(key);
         if (this.slots.size) throw new Error(`Native worker termination unconfirmed (${this.slots.size}). Verify remaining native processes before restarting.`);
     }
