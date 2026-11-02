@@ -49,7 +49,12 @@ export class Store {
     }
     private sessionRow(r: Record<string, unknown>): Session { return { id: r.id as string, roomKey: r.room as string, ccId: r.cc as string | undefined, state: r.state as Session['state'], createdAt: r.created as number }; }
     newSession(room: string): Session { return this.transaction(() => { this.db.prepare("UPDATE sessions SET state='archived' WHERE room=? AND state='open'").run(room); const id = randomUUID(), now = Date.now(); this.db.prepare('INSERT INTO sessions VALUES(?,?,NULL,?,?)').run(id, room, 'open', now); return { id, roomKey: room, state: 'open', createdAt: now }; }); }
-    listSessions(room: string): Session[] { return this.db.prepare('SELECT * FROM sessions WHERE room=? ORDER BY created DESC LIMIT 20').all(room).map(r => this.sessionRow(r)); }
+    listSessions(room: string): Session[] {
+        // Keep the selected session visible to management, stop and recovery even
+        // when it falls outside the latest 20 entries. At most 21 rows are returned.
+        return this.db.prepare("SELECT * FROM sessions WHERE room=? AND (state='open' OR id IN (SELECT id FROM sessions WHERE room=? ORDER BY created DESC,id DESC LIMIT 20)) ORDER BY created DESC,id DESC")
+            .all(room, room).map(r => this.sessionRow(r));
+    }
     resume(room: string, id: string): Session {
         const r = this.db.prepare('SELECT * FROM sessions WHERE room=? AND id=?').get(room, id);
         if (!r)
