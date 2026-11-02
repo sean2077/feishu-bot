@@ -4,6 +4,7 @@
 
 | 项目 | 当前结果 | 证据 / 下一步 |
 |---|---|---|
+| 群聊追问选项被其他授权成员借用或覆盖 | 已修复（真实 Gateway／SQLite、模拟飞书／Worker、跨平台 CI） | 同一共享追问卡片的勾选原先按请求而非操作成员保存；一个成员可直接提交另一人的选择。现在按 operator 独立保存，提交只能使用本人选择；共享卡片不再展示个人勾选，仅通过操作提示反馈，避免误导其他成员。不改变维护者审批权限、一次性结果或历史。真实飞书卡片交互待联调。 |
 | 主动文件投递已领取、但尚未开始上传时异常退出 | 已修复（真实 SQLite 状态故障注入／模拟飞书／跨平台 CI） | `kind=file` 的 `state=sending` 已持久化、`file_state=pending` 尚未越过上传栅栏时没有外部写入，旧恢复错误按无 `target` 判为 `uncertain`，使文件滞留。现在仅该未发起上传的状态恢复为 `pending`，可安全自动首次上传；`file_state=sending` 的结果未知上传仍保留 `uncertain`，不自动重复发送。真实飞书与实际进程强杀待验收。 |
 | 已持久化卡片／文件回执因本地 output 索引失败而滞留 | 已修复（SQLite 故障注入／模拟飞书／跨平台 CI） | 外部卡片创建或文件上传返回的 provider ID 已保存到 `outbox.target`／`file_target`，但单独的 `outputs` 索引写入失败，旧逻辑仍误判为 `uncertain` 并禁止安全自动恢复。现仅依据数据库中已保存的 ID 与 `file_state=done` 将其保留为 `pending`：卡片只更新已知 ID，文件只重建本地索引，不重复创建或上传。未保存 provider ID 的未知写仍为 `uncertain`，不盲重试；真实飞书待验收。 |
 | 最终回复提交后、首次预览或飞书创建前崩溃 | 已修复（真实 SQLite／模拟 Worker 与飞书／跨平台 CI） | 无预览任务排队且此前未发生未知创建时，`Render.finish()` 不再将已持久化答案先标成 `preparing`；它在同一事务中以可恢复的 `pending` 记录最终答案和输入完成状态，崩溃后由原有 Outbox 安全投递。仍有待完成预览创建或未知远端写入的情形保持 `preparing`／`uncertain`，不能自动重做。未进行真实飞书验收。 |
@@ -43,6 +44,8 @@
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #45 验证群聊多人操作同一追问卡片时的选项归属。仅添加回归的 `dcc2682` 在[修复前 CI 41381888758](https://github.com/sean2077/feishu-bot/actions/runs/41381888758) 由 Ubuntu Node.js 22.16/24 和 Windows Node.js 22.16 三组实际复现：Bob 未选择却可提交 Alice 的选项，得到错误的 `已提交`；Windows Node.js 24 作业因后续提交被取消，不能称为红阶段复现。修复 `5ace9ad` 的[CI 41382000675](https://github.com/sean2077/feishu-bot/actions/runs/41382000675) 在 Ubuntu/Windows × Node.js 22.16/24 四组完整检查通过。新增验证按作者隔离选项、提交者身份与原生回执一致；共享卡片不泄漏其他成员勾选。真实飞书交互、真实模型和实际部署均未验证；文档与回归最终版本及合入 main 的 CI 仍须独立核验。
 
 PR #44 针对主动文件在本地领取投递之后、外部上传意图持久登记之前的异常退出窗口建立真实 SQLite 状态故障注入。仅添加回归的 `8c7662f` 在[修复前 CI 41376670082](https://github.com/sean2077/feishu-bot/actions/runs/41376670082) 的 Ubuntu Node.js 22.16／24 两组实际失败：预期可恢复 `pending`，实际为 `uncertain`；Windows 两组被后续修复提交取消，不能称 Windows 已完成红阶段复现。修复 `7cb810e` 的[CI 41376782553](https://github.com/sean2077/feishu-bot/actions/runs/41376782553) 已通过 Ubuntu／Windows × Node.js 22.16／24 四组完整检查，未放宽失败、授权或 Done 断言。回归同时确认已越过上传栅栏的未知远端写不自动重发；模拟飞书上传不等于真实飞书或 OS 强杀验收。最终文档版及合入 main 的 CI 需独立核验。
 

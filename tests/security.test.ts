@@ -78,6 +78,35 @@ test('question answers require explicit request identity; normal conversation is
         await f.close();
     }
 });
+test('group question selections belong to the submitting author, not the shared card', async () => {
+    const f = await fixture();
+    try {
+        await f.gateway.message(message());
+        await until(() => f.workers[0]?.sent.length === 1);
+        const w = f.workers[0]!;
+        w.emit({ type: 'request', kind: 'question', id: 'two-author-question', name: 'AskUserQuestion', input: { questions: [
+            { question: 'Which branch?', options: [{ label: 'main' }, { label: 'dev' }] },
+            { question: 'Which mode?', options: [{ label: 'dry-run' }, { label: 'execute' }] }
+        ] } });
+        await until(() => !!f.store.db.prepare("SELECT id FROM requests WHERE state='pending'").get());
+        await until(() => f.transport.sent.some(item => !!item.card));
+        const id = String(f.store.db.prepare("SELECT id FROM requests WHERE state='pending'").get()!.id);
+        const cardId = f.transport.sent.find(item => !!item.card)!.id;
+        // Alice's selections must not allow Bob to submit an answer that Bob never chose.
+        await f.gateway.approvals.click('group1', 'alice', { request: id, question: 0, option: 0 }, cardId);
+        await f.gateway.approvals.click('group1', 'alice', { request: id, question: 1, option: 0 }, cardId);
+        assert.equal(f.transport.updates.length, 0, 'do not expose an individual selection on the shared card');
+        assert.equal(await f.gateway.approvals.click('group1', 'bob', { request: id, decision: 'submit' }, cardId), '请回答所有问题');
+        assert.equal(w.responses.length, 0);
+        await f.gateway.approvals.click('group1', 'bob', { request: id, question: 0, option: 1 }, cardId);
+        await f.gateway.approvals.click('group1', 'bob', { request: id, question: 1, option: 1 }, cardId);
+        assert.equal(await f.gateway.approvals.click('group1', 'bob', { request: id, decision: 'submit' }, cardId), '已提交');
+        await until(() => w.responses.length === 1);
+        assert.deepEqual(w.responses[0]!.value.answers, { 'Which branch?': 'dev', 'Which mode?': 'execute' });
+        assert.equal(f.store.db.prepare('SELECT actor FROM requests WHERE id=?').get(id)!.actor, 'bob');
+    }
+    finally { await f.close(); }
+});
 test('bounded file exports reject traversal, symlink escape and oversized content', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'export-'));
     try {
