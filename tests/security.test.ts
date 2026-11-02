@@ -95,6 +95,7 @@ test('group question selections belong to the submitting author, not the shared 
         // Alice's selections must not allow Bob to submit an answer that Bob never chose.
         await f.gateway.approvals.click('group1', 'alice', { request: id, question: 0, option: 0 }, cardId);
         await f.gateway.approvals.click('group1', 'alice', { request: id, question: 1, option: 0 }, cardId);
+        assert.equal(f.transport.updates.length, 0, 'do not expose an individual selection on the shared card');
         assert.equal(await f.gateway.approvals.click('group1', 'bob', { request: id, decision: 'submit' }, cardId), '请回答所有问题');
         assert.equal(w.responses.length, 0);
         await f.gateway.approvals.click('group1', 'bob', { request: id, question: 0, option: 1 }, cardId);
