@@ -18,6 +18,8 @@ export interface Delivery {
     uuid: string; roomKey: string; sessionId: string; message: Message;
     background: Message[]; quote?: Message;
     command?: { name: 'compact'; instructions: string };
+    /** An unsent supplement is valid only while this foreground input is still running. */
+    supplementTo?: string;
     attachments: { path: string; name: string }[];
 }
 export interface ActionSpec {

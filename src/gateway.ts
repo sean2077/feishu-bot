@@ -96,6 +96,7 @@ export class Gateway {
     private sanitize(room: Room, delivery: Delivery): boolean {
         const current = route(this.config, delivery.message);
         if (!current || current.key !== room.key || !triggers(delivery.message)) return false;
+        if (delivery.supplementTo && delivery.command) return false;
         if (delivery.command && (delivery.command.name !== 'compact' ||
             !/^\/compact(?:\s|$)/.test(delivery.message.text.trim()) ||
             !current.maintainers.includes(delivery.message.senderId) && current.dmUser !== delivery.message.senderId)) return false;
@@ -104,6 +105,39 @@ export class Gateway {
         delivery.quote = undefined;
         delivery.attachments = [];
         return true;
+    }
+    private foregroundTarget(room: Room): Delivery | undefined {
+        const slot = this.slots.get(room.key);
+        if (!slot?.live || !slot.worker || !slot.busy || slot.compacting || slot.stopUnconfirmed) return undefined;
+        return [...slot.deliveries.values()].find(d => !d.command && !d.supplementTo);
+    }
+    private supplementAlive(room: Room, delivery: Delivery): boolean {
+        if (!delivery.supplementTo) return true;
+        const slot = this.slots.get(room.key), target = slot?.deliveries.get(delivery.supplementTo);
+        return !!slot?.live && !!slot.worker && slot.busy && !slot.compacting && !slot.stopUnconfirmed &&
+            slot.session.id === delivery.sessionId && !!target && !target.command && !target.supplementTo;
+    }
+    private cancelSupplement(room: Room, delivery: Delivery, reason: string, deliverNotice = true): void {
+        if (!this.store.db.prepare("SELECT 1 FROM inbox WHERE room=? AND uuid=? AND status='queued'").get(room.key, delivery.uuid)) return;
+        const current = route(this.config, delivery.message);
+        let noticeId: string | undefined;
+        this.store.transaction(() => {
+            this.store.mark(delivery.uuid, 'cancelled');
+            if (current?.key === room.key && triggers(delivery.message)) {
+                const text = `补充已取消：${reason} 未提交给模型，也不会转成新任务。`;
+                noticeId = this.outbox.save(current, delivery.sessionId, text, false, undefined, delivery.message.id,
+                    delivery.message.threadId, displayCard('补充已取消', text), [delivery.message]);
+                this.store.db.prepare("UPDATE outbox SET kind='recovery' WHERE id=?").run(noticeId);
+            } else this.store.discardInput(room.key, delivery.message.id);
+        });
+        this.receipts.settle(room.key, delivery.sessionId, [delivery.message], false);
+        if (noticeId && deliverNotice && !this.closing)
+            void this.track(this.outbox.deliver(noticeId, current!)).catch(() => {});
+    }
+    private cancelLostSupplements(room: Room): void {
+        for (const delivery of this.store.pending(room.key))
+            if (delivery.supplementTo && !this.supplementAlive(room, delivery))
+                this.cancelSupplement(room, delivery, '目标前台运行已经结束或停止。');
     }
     async recover(): Promise<void> {
         const recovered = this.store.recover(state => {
@@ -139,6 +173,8 @@ export class Gateway {
                 if (!room || !this.sanitize(room, delivery)) {
                     this.store.discardInput(key, delivery.message.id);
                     this.receipts.settle(key, delivery.sessionId, [delivery.message], false);
+                } else if (delivery.supplementTo) {
+                    this.cancelSupplement(room, delivery, '服务已重启，原前台运行不再存在。', false);
                 } else this.store.queue(delivery);
             }
             if (!room) continue;
@@ -188,18 +224,37 @@ export class Gateway {
                 await this.command(room, message);
                 return;
             }
+            const supplement = /^\/(btw|ps)(?:\s+([\s\S]*))?$/.exec(message.text);
+            let supplementTo: string | undefined;
+            if (supplement) {
+                const body = supplement[2]?.trim();
+                if (!body) {
+                    this.store.insert(room.key, message, 'done');
+                    await this.notice(room, '用法：/btw 补充正文（/ps 同义）。仅补充当前正在执行的前台任务。', message);
+                    return;
+                }
+                const target = this.foregroundTarget(room);
+                if (!target) {
+                    this.store.insert(room.key, message, 'cancelled');
+                    await this.notice(room, '当前没有正在执行的前台任务，补充未提交。需要开始任务时请发送普通消息。', message);
+                    return;
+                }
+                supplementTo = target.uuid;
+                // Do not parse the body a second time: /btw /new is ordinary attributed text.
+                message.text = body;
+            }
             if (this.store.countPending(room.key) >= this.config.limits.inboxPerRoom) {
                 this.store.insert(room.key, message, 'cancelled');
                 await this.notice(room, '本群待交付输入已达上限，请查看 /status 或联系维护者。', message);
                 return;
             }
-            const compactMatch = /^\/compact(?:\s+([\s\S]*))?$/.exec(message.text);
+            const compactMatch = supplement ? null : /^\/compact(?:\s+([\s\S]*))?$/.exec(message.text);
             if (compactMatch && !room.maintainers.includes(message.senderId) && room.dmUser !== message.senderId) {
                 this.store.insert(room.key, message, 'cancelled');
                 await this.notice(room, '整理共享会话需要维护者操作。', message);
                 return;
             }
-            const session = this.store.session(room.key), background = compactMatch ? [] : this.store.background(room.key, now, this.config.limits.backgroundMs, this.config.limits.backgroundMessages)
+            const session = this.store.session(room.key), background = compactMatch || supplement ? [] : this.store.background(room.key, now, this.config.limits.backgroundMs, this.config.limits.backgroundMessages)
                 .filter(m => readable(room, m));
             let contextChars = 0;
             for (let i = background.length - 1; i >= 0; i--) {
@@ -209,12 +264,14 @@ export class Gateway {
                     break;
                 }
             }
-            const delivery: Delivery = { uuid: randomUUID(), roomKey: room.key, sessionId: session.id, message, background, attachments: [],
+            const delivery: Delivery = { uuid: randomUUID(), roomKey: room.key, sessionId: session.id, message, background, attachments: [], supplementTo,
                 command: compactMatch ? { name: 'compact', instructions: (compactMatch[1] ?? '').slice(0, 4000) } : undefined };
             this.store.transaction(() => { this.store.insert(room.key, message, 'queued'); this.store.queue(delivery); this.store.consumeBackground(room.key, background.map(m => m.id)); });
             this.receipts.accept(room, session.id, message);
             if (compactMatch && (this.slots.get(room.key)?.busy || this.store.countPending(room.key) > 1))
                 await this.notice(room, '已接收 /compact，将在当前工作轮次结束后整理上下文；期间仍可处理审批。', message);
+            if (supplementTo && this.store.pending(room.key).some(d => d.command))
+                await this.notice(room, '补充已保存，等待前面的 /compact 控制边界；若目标运行先结束则取消，不会另起任务。审批仍可正常操作。', message);
             this.kick(room);
         });
     }
@@ -230,6 +287,7 @@ export class Gateway {
     private async dispatch(room: Room): Promise<void> {
         if (this.closing)
             return;
+        this.cancelLostSupplements(room);
         const pending = this.store.pending(room.key).filter(delivery => {
             if (this.sanitize(room, delivery)) { this.store.queue(delivery); return true; }
             this.store.discardInput(room.key, delivery.message.id);
@@ -302,9 +360,14 @@ export class Gateway {
         for (const delivery of pending) {
             if (!slot.live || this.closing)
                 return;
+            if (!this.store.db.prepare("SELECT 1 FROM inbox WHERE uuid=? AND status='queued'").get(delivery.uuid)) continue;
             if (delivery.sessionId !== slot.session.id) {
                 this.store.mark(delivery.uuid, 'cancelled');
                 this.receipts.settle(room.key, delivery.sessionId, [delivery.message], false);
+                continue;
+            }
+            if (delivery.supplementTo && !this.supplementAlive(room, delivery)) {
+                this.cancelSupplement(room, delivery, '目标前台运行已经结束或停止。');
                 continue;
             }
             if (slot.compacting) return;
@@ -336,6 +399,18 @@ export class Gateway {
                 }
                 if (!slot.live || slot.abort.signal.aborted)
                     return;
+                if (delivery.supplementTo && !this.supplementAlive(room, delivery)) {
+                    this.cancelSupplement(room, delivery, '目标前台运行已在附件或引用准备期间结束。');
+                    await Promise.allSettled(delivery.attachments.map(a => unlink(a.path)));
+                    continue;
+                }
+                const current = route(this.config, delivery.message);
+                if (!current || current.key !== room.key || !triggers(delivery.message)) {
+                    this.store.discardInput(room.key, delivery.message.id);
+                    this.receipts.settle(room.key, delivery.sessionId, [delivery.message], false);
+                    continue;
+                }
+                if (!this.store.db.prepare("SELECT 1 FROM inbox WHERE uuid=? AND status='queued'").get(delivery.uuid)) continue;
                 slot.deliveries.set(delivery.uuid, delivery);
                 slot.replyAnchors.set(delivery.uuid, { ...delivery, message: { ...delivery.message, text: '', resources: [] }, background: [], quote: undefined, attachments: [] });
                 if (slot.replyAnchors.size > 10000) slot.replyAnchors.delete(slot.replyAnchors.keys().next().value!);
@@ -347,12 +422,18 @@ export class Gateway {
                 // Mark before writing: a crash after an ambiguous write must not replay an external action.
                 this.store.mark(delivery.uuid, 'sent');
                 await slot.worker!.send(delivery);
+                if (delivery.supplementTo && slot.live && !this.closing)
+                    void this.track(this.notice(room, '补充已交给原生输入流；这不代表模型已读取、理解或执行。', delivery.message));
                 if (delivery.command) return; // A persisted barrier: later inputs wait for its native result.
             }
             catch (e) {
                 // /stop and shutdown already own the cancellation state. A late
                 // network rejection must not turn a cancelled input into uncertain.
                 if (!slot.live || slot.abort.signal.aborted || this.closing) return;
+                if (delivery.supplementTo && !slot.deliveries.has(delivery.uuid) && !this.supplementAlive(room, delivery)) {
+                    this.cancelSupplement(room, delivery, '目标前台运行已在交付前结束。');
+                    continue;
+                }
                 this.receipts.settle(room.key, delivery.sessionId, [delivery.message], false);
                 this.store.mark(delivery.uuid, 'uncertain');
                 await this.notice(room, `本条交付未确认，不会自动重放：${redact(errorText(e), this.secrets)}`, delivery.message);
@@ -405,6 +486,7 @@ export class Gateway {
                     slot.busy = event.state !== 'idle';
                 if (event.tool && /Monitor|CronCreate|ScheduleWakeup/.test(event.tool))
                     slot.pinned = true;
+                if (event.state === 'idle') this.cancelLostSupplements(slot.room);
                 this.kickWaiting();
                 break;
             case 'text':
@@ -429,6 +511,7 @@ export class Gateway {
                 if (slot.compacting && finished.includes(slot.compacting)) slot.compacting = undefined;
                 slot.busy = slot.deliveries.size > 0;
                 slot.anchor = slot.deliveries.values().next().value;
+                this.cancelLostSupplements(slot.room);
                 // Clear the transient marker now; Done is applied only after durable output delivery.
                 this.receipts.settle(slot.room.key, slot.session.id, origins, false);
                 const compactText = event.compact === 'compacted' ? '上下文已由 Claude Code 原生压缩，会话保持不变。'
@@ -495,6 +578,7 @@ export class Gateway {
                         noticeId = this.outbox.saveRecovery(current, slot.session.id, text, displayCard('工作中断', text));
                     }
                 });
+                this.cancelLostSupplements(slot.room);
                 for (const render of slot.renders.values()) void this.track(render.cancel('执行中断'));
                 if (!cleanupFailed && this.slots.get(slot.room.key) === slot)
                     this.slots.delete(slot.room.key);
@@ -589,7 +673,7 @@ export class Gateway {
         const view = managementReply(command, arg, { room, actor: message.senderId, store: this.store,
             runtime: slot, approvals: slot ? this.approvals.size(slot.session.id) : 0 });
         if (view !== undefined) {
-            await this.notice(room, view, message);
+            await this.notice(room, command === '/help' ? view + '\n\n/btw 正文、/ps 正文：仅补充正在执行的前台任务，不新建任务，不代替审批回答。' : view, message);
             return;
         }
         if (command === '/retry-output') {
@@ -625,7 +709,7 @@ export class Gateway {
             }
             if (!(await stopConfirmed())) return;
             this.store.resume(room.key, arg);
-            await this.notice(room, '已选择历史会话。下一条消息会恢复上下文；旧后台进程不会自动重启。', message);
+            await this.notice(room, '已选择历史会话，旧运行未交付的补充已取消。下一条消息会恢复上下文；旧后台进程不会自动重启。', message);
             return;
         }
         if (command === '/stop' || command === '/new') {
@@ -633,10 +717,10 @@ export class Gateway {
             if (command === '/new') {
                 this.store.db.prepare("DELETE FROM inbox WHERE room=? AND status='background'").run(room.key);
                 this.store.newSession(room.key);
-                await this.notice(room, '已新建本聊天会话。', message);
+                await this.notice(room, '已新建本聊天会话，旧运行未交付的补充已取消。', message);
             }
             else
-                await this.notice(room, '已停止本聊天运行、后台进程和待交付输入。上下文和会话 ID 保留，下条消息继续原会话；只有 /new 新建会话。', message);
+                await this.notice(room, '已停止本聊天运行、后台进程和待交付输入；未交付的补充已取消。上下文和会话 ID 保留，下条消息继续原会话；只有 /new 新建会话。', message);
         }
     }
     private async stopRoom(room: Room): Promise<void> {
