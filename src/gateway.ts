@@ -13,6 +13,7 @@ import { Approvals, displayCard, type Question } from './approvals.ts';
 import { ActionBroker } from './actions.ts';
 import { hash, redact, safeFile, readBoundedFile, Serial, errorText } from './util.ts';
 import { prepareWorkspace, translateWorkerFile, type Workspace } from './workspace.ts';
+import { managementReply } from './management.ts';
 interface Slot {
     room: Room;
     session: Session;
@@ -582,20 +583,13 @@ export class Gateway {
         return this.approvals.request(slot.room, slot.session.id, event.name, event.input, `工具：${event.name}\n参数：\`${redact(JSON.stringify(event.input), this.secrets).slice(0, 5000)}\``, slot.abort.signal, questions);
     }
     private async command(room: Room, message: Message): Promise<void> {
-        const [command, ...parts] = message.text.trim().split(/\s+/), arg = parts.join(' ');
+        const [command = '', ...parts] = message.text.trim().split(/\s+/), arg = parts.join(' ');
         const maintainer = room.maintainers.includes(message.senderId);
-        if (command === '/help') {
-            await this.notice(room, '群里请明确 @ 机器人；私聊直接发送。/status 状态；/sessions 本聊天历史；/compact 原生压缩；/new 新会话；/resume 会话ID 恢复；/stop 停止本聊天全部运行；/answer 请求ID 回答。新建、恢复与停止限维护者（私聊本人也可管理会话）。', message);
-            return;
-        }
-        if (command === '/status') {
-            const slot = this.slots.get(room.key);
-            const saved = slot?.session ?? this.store.listSessions(room.key).find(s => s.state === 'open');
-            await this.notice(room, JSON.stringify({ project: room.projectId, session: saved?.id, nativeSessionId: saved?.ccId, state: slot?.stopUnconfirmed ? 'termination_unconfirmed' : slot ? (slot.busy ? 'working' : 'connected') : saved ? 'suspended' : 'not_started', background: slot?.background ?? 0, monitorPinned: slot?.pinned ?? false, pendingOrUnconfirmed: this.store.countPending(room.key), approvals: slot ? this.approvals.size(slot.session.id) : 0 }, null, 2), message);
-            return;
-        }
-        if (command === '/outputs') {
-            await this.notice(room, JSON.stringify(this.outbox.pending(room.key), null, 2), message);
+        const slot = this.slots.get(room.key);
+        const view = managementReply(command, arg, { room, actor: message.senderId, store: this.store,
+            runtime: slot, approvals: slot ? this.approvals.size(slot.session.id) : 0 });
+        if (view !== undefined) {
+            await this.notice(room, view, message);
             return;
         }
         if (command === '/retry-output') {
@@ -605,10 +599,6 @@ export class Gateway {
             }
             const ok = await this.outbox.deliver(arg, room, true);
             await this.notice(room, ok ? '已补发。此前结果不明确时可能出现重复消息。' : '未补发：记录不存在、已发送或渠道仍不可用。', message);
-            return;
-        }
-        if (command === '/sessions') {
-            await this.notice(room, this.store.listSessions(room.key).map(s => `${s.id} · ${s.state}`).join('\n') || '尚无历史会话', message);
             return;
         }
         if (command === '/answer') {
@@ -628,8 +618,8 @@ export class Gateway {
             }
         };
         if (command === '/resume') {
-            // Validate ownership before touching the current running session.
-            if (!this.store.listSessions(room.key).some(s => s.id === arg)) {
+            // Validate ownership before touching the current running session; the display limit is not an ownership boundary.
+            if (!this.store.db.prepare('SELECT 1 FROM sessions WHERE room=? AND id=?').get(room.key, arg)) {
                 await this.notice(room, '只能恢复本聊天列出的会话。', message);
                 return;
             }
