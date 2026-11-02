@@ -63,8 +63,11 @@ export class Render {
         if (!signal) return start();
         if (signal.aborted) throw new Error('preview cancelled');
         let onAbort!: () => void;
+        let cancelQueued: ReturnType<typeof setImmediate> | undefined;
         const aborted = new Promise<never>((_, reject) => {
-            onAbort = () => reject(new Error('preview cancelled'));
+            // Allow an already-settling provider result to supply its durable ID
+            // in this event-loop turn, but never wait on an unbounded network call.
+            onAbort = () => { cancelQueued = setImmediate(() => reject(new Error('preview cancelled'))); };
             signal.addEventListener('abort', onAbort, { once: true });
         });
         try {
@@ -72,7 +75,10 @@ export class Render {
                 if (signal.aborted) throw new Error('preview cancelled');
                 return start();
             }), aborted]);
-        } finally { signal.removeEventListener('abort', onAbort); }
+        } finally {
+            if (cancelQueued) clearImmediate(cancelQueued);
+            signal.removeEventListener('abort', onAbort);
+        }
     }
     private flush(): void {
         // Track queued as well as in-flight previews. A final reply cannot be
@@ -87,9 +93,9 @@ export class Render {
                 if (this.messageId) await this.previewIO(() => this.transport.update(this.messageId!, card));
                 else {
                     const id = await this.previewIO(() => this.transport.card(this.room, card, this.replyTo, this.threadId));
-                    // A late provider response must never index into a closed store.
-                    // Its unrecorded create remains ambiguous, not safely repeatable.
-                    if (this.signal?.aborted) { this.createUncertain = true; return; }
+                    // A confirmed provider ID arriving before local preview
+                    // release remains recoverable. Close awaits this tail before
+                    // closing SQLite; later unknown outcomes never resume here.
                     this.messageId = id;
                     this.store.recordOutput(id, this.room.key, this.session);
                     if (this.finalId) this.store.db.prepare("UPDATE outbox SET target=? WHERE id=? AND state='preparing'").run(id, this.finalId);
