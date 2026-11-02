@@ -123,7 +123,7 @@ export function parseConfig(value: unknown, baseDir = process.cwd()): Config {
     unique(groups.map(g => g.chatId), 'groups'); unique(dms.map(d => d.userId), 'dms');
     for (const b of [...groups, ...dms]) if (!projects.some(p => p.id === b.projectId)) throw new Error(`unknown project ${b.projectId}`);
     const l = obj(c.limits ?? {}, 'limits');
-    keys(l, ['backgroundMessages', 'backgroundMs', 'textChars', 'inboxPerRoom', 'attachmentBytes', 'approvalMs', 'updateMs', 'messagesPerMinute'], 'limits');
+    keys(l, ['backgroundMessages', 'backgroundMs', 'textChars', 'inboxPerRoom', 'attachmentBytes', 'approvalMs', 'updateMs', 'messagesPerMinute', 'imageBatchMs', 'imageBatchMaxImages', 'imageBatchBytes'], 'limits');
     return {
         tenantId: identifier(c.tenantId, 'tenantId'), appId: identifier(c.appId, 'appId'),
         appSecretEnv: identifier(c.appSecretEnv ?? 'FEISHU_APP_SECRET', 'appSecretEnv'), dataDir: resolve(baseDir, text(c.dataDir, 'dataDir', 'state')),
@@ -138,7 +138,10 @@ export function parseConfig(value: unknown, baseDir = process.cwd()): Config {
             textChars: integer(l.textChars, 'textChars', 20000, 100, 200000), inboxPerRoom: integer(l.inboxPerRoom, 'inboxPerRoom', 64, 1, 64),
             attachmentBytes: integer(l.attachmentBytes, 'attachmentBytes', 20 * 1024 * 1024, 1024, 100 * 1024 * 1024),
             approvalMs: integer(l.approvalMs, 'approvalMs', 300000, 1000, 3600000), updateMs: integer(l.updateMs, 'updateMs', 1000, 250, 30000),
-            messagesPerMinute: integer(l.messagesPerMinute, 'messagesPerMinute', 30, 1, 1000)
+            messagesPerMinute: integer(l.messagesPerMinute, 'messagesPerMinute', 30, 1, 1000),
+            imageBatchMs: integer(l.imageBatchMs, 'imageBatchMs', 0, 0, 5000),
+            imageBatchMaxImages: integer(l.imageBatchMaxImages, 'imageBatchMaxImages', 8, 2, 12),
+            imageBatchBytes: integer(l.imageBatchBytes, 'imageBatchBytes', 40 * 1024 * 1024, 1, 100 * 1024 * 1024)
         }
     };
 }

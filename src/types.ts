@@ -18,12 +18,19 @@ export interface Session {
     id: string; roomKey: string; ccId?: string;
     state: 'open' | 'stopped' | 'archived'; createdAt: number;
 }
+export interface ImageBatch {
+    id: string; deadline: number; closed: boolean; maxImages: number; maxBytes: number;
+}
 export interface Delivery {
     uuid: string; roomKey: string; sessionId: string; message: Message;
     background: Message[]; quote?: Message;
     command?: { name: 'compact'; instructions: string };
     /** An unsent supplement is valid only while this foreground input is still running. */
     supplementTo?: string;
+    /** Persisted on each original row; the fixed window survives service restart. */
+    imageBatch?: ImageBatch;
+    /** Wire-only aggregation. Original rows, UUIDs and receipt ownership remain separate. */
+    batchInputs?: Delivery[];
     attachments: { path: string; name: string }[];
 }
 export interface ActionSpec {
@@ -53,6 +60,7 @@ export interface Config {
     limits: {
         backgroundMessages: number; backgroundMs: number; textChars: number; inboxPerRoom: number;
         attachmentBytes: number; approvalMs: number; updateMs: number; messagesPerMinute: number;
+        imageBatchMs: number; imageBatchMaxImages: number; imageBatchBytes: number;
     };
 }
 export type ReceiptState = 'processing' | 'done' | 'clear';
