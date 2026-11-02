@@ -289,7 +289,7 @@ export class Gateway {
                     this.store.insert(room.key, message, 'done');
                     // A read-only command has a synchronous snapshot, but its Feishu
                     // reply must not hold admission or block a later /stop.
-                    if (/^\\/(help|status|sessions|outputs|usage)(?:\\s|$)/.test(message.text))
+                    if (/^\/(help|status|sessions|outputs|usage)(?:\s|$)/.test(message.text))
                         void this.track(this.command(room, message)).catch(error => {
                             try { this.store.audit(room.key, 'management_read_failed',
                                 { error: redact(errorText(error), this.secrets) }); } catch { /* storage unavailable */ }
