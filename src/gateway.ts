@@ -73,6 +73,7 @@ export class Gateway {
     private track<T>(task: Promise<T>): Promise<T> { this.tasks.add(task); void task.finally(() => this.tasks.delete(task)).catch(() => { }); return task; }
     private secrets: string[];
     private closing = false;
+    private readonly noticeAbort = new AbortController();
     private housekeeping: ReturnType<typeof setInterval>;
     constructor(config: Config, store: Store, transport: Transport, factory: WorkerFactory, secrets: string[] = []) {
         this.config = config;
@@ -830,11 +831,19 @@ export class Gateway {
         void this.track(this.notice(room, text, message)).catch(() => {});
     }
     private async notice(room: Room, text: string, message?: Message): Promise<void> {
+        if (this.closing) return;
         try {
-            const id = await this.transport.send(room, text, message?.id, message?.threadId);
+            // These best-effort replies are not durable outbox operations. Stop
+            // awaiting their network outcome when shutdown begins; the underlying
+            // transport may still finish remotely, but cannot access closed state.
+            const id = await waitOrAbort(
+                () => this.transport.send(room, text, message?.id, message?.threadId), this.noticeAbort.signal);
+            if (this.closing) return;
             const session = this.store.listSessions(room.key).find(s => s.state === 'open');
             if (session) this.store.recordOutput(id, room.key, session.id);
-        } catch { this.store.audit(room.key, 'notice_failed', {}); }
+        } catch {
+            if (!this.closing) this.store.audit(room.key, 'notice_failed', {});
+        }
     }
     async sweep(now = Date.now()): Promise<void> {
         if (this.closing) return;
@@ -883,6 +892,7 @@ export class Gateway {
     }
     async close(): Promise<void> {
         this.closing = true;
+        this.noticeAbort.abort();
         clearInterval(this.housekeeping);
         for (const key of this.imageTimers.keys()) this.clearImageTimer(key);
         this.approvals.close();
