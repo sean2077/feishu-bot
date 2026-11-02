@@ -22,7 +22,6 @@ interface Pending {
     session: string;
     kind: 'permission' | 'question';
     expires: number;
-    messageId?: string;
     name: string;
     summary: string;
     cards: Map<string, string | undefined>;
@@ -67,7 +66,6 @@ export class Approvals {
                 try {
                     const messageId = await this.transport.card(target, this.render(id, p));
                     p.cards.set(messageId, p.forwarded ? target.dmUser : undefined);
-                    p.messageId ??= messageId;
                     if (!p.forwarded)
                         this.store.recordOutput(messageId, room.key, session);
                     if (!this.pending.has(id))
@@ -91,7 +89,7 @@ export class Approvals {
         const buttons: object[] = [];
         p.questions.forEach((q, qi) => q.options.forEach((o, oi) => buttons.push(button(`${qi + 1}. ${o.label}`, { request: id, question: qi, option: oi }))));
         buttons.push(button('提交选择', { request: id, decision: 'submit' }, 'primary'), button('取消', { request: id, decision: 'deny' }));
-        return displayCard('需要补充信息', p.questions.map((q, i) => `${i + 1}. ${q.question}`).join('\n\n') + `\n\n可多题选择后提交。自由回答：\`/answer ${id} 你的回答\`。`, buttons);
+        return displayCard('需要补充信息', p.questions.map((q, i) => `${i + 1}. ${q.question}`).join('\n\n') + `\n\n可多题选择后提交。每位成员独立选择，以操作提示为准，卡片不显示个人勾选。自由回答：\`/answer ${id} 你的回答\`。`, buttons);
     }
     async click(chatId: string, operator: string, value: unknown, messageId?: string): Promise<string> {
         if (!value || typeof value !== 'object')
