@@ -22,5 +22,11 @@
     "members": ["ou_example_member"]
   }],
   "dms": [{ "userId": "ou_example_owner", "projectId": "assistant" }],
-  "limits": { "backgroundMessages": 0 }
+  "limits": {
+    "backgroundMessages": 0,
+    "imageBatchMs": 0,
+    "imageBatchMaxImages": 8,
+    "attachmentBytes": 20971520,
+    "imageBatchBytes": 41943040
+  }
 }
