@@ -4,6 +4,7 @@
 
 | 项目 | 当前结果 | 证据 / 下一步 |
 |---|---|---|
+| 停止或关闭时未完成附件下载阻塞会话收尾 | 已修复（真实 Gateway／SQLite、模拟停滞下载、跨平台 CI） | `/stop` 原本会排队等待当前 `dispatch` 的 Feishu 附件下载，关闭时原生 `fetch_attachment` 也可能卡住任务收尾。现在按会话 AbortSignal 及时结束这些等待，下载流取得后也会响应取消并销毁；已取消输入不进入 CC、不重新标记为 `uncertain`。不重放外部写入、不更改正常下载限制。SDK 原始请求若尚未返回，仍可能持续到其自身网络超时；真实飞书掉线及进程级联调待测。 |
 | 群聊追问选项被其他授权成员借用或覆盖 | 已修复（真实 Gateway／SQLite、模拟飞书／Worker、跨平台 CI） | 同一共享追问卡片的勾选原先按请求而非操作成员保存；一个成员可直接提交另一人的选择。现在按 operator 独立保存，提交只能使用本人选择；共享卡片不再展示个人勾选，仅通过操作提示反馈，避免误导其他成员。不改变维护者审批权限、一次性结果或历史。真实飞书卡片交互待联调。 |
 | 主动文件投递已领取、但尚未开始上传时异常退出 | 已修复（真实 SQLite 状态故障注入／模拟飞书／跨平台 CI） | `kind=file` 的 `state=sending` 已持久化、`file_state=pending` 尚未越过上传栅栏时没有外部写入，旧恢复错误按无 `target` 判为 `uncertain`，使文件滞留。现在仅该未发起上传的状态恢复为 `pending`，可安全自动首次上传；`file_state=sending` 的结果未知上传仍保留 `uncertain`，不自动重复发送。真实飞书与实际进程强杀待验收。 |
 | 已持久化卡片／文件回执因本地 output 索引失败而滞留 | 已修复（SQLite 故障注入／模拟飞书／跨平台 CI） | 外部卡片创建或文件上传返回的 provider ID 已保存到 `outbox.target`／`file_target`，但单独的 `outputs` 索引写入失败，旧逻辑仍误判为 `uncertain` 并禁止安全自动恢复。现仅依据数据库中已保存的 ID 与 `file_state=done` 将其保留为 `pending`：卡片只更新已知 ID，文件只重建本地索引，不重复创建或上传。未保存 provider ID 的未知写仍为 `uncertain`，不盲重试；真实飞书待验收。 |
@@ -44,6 +45,8 @@
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #46 的 [修复前 CI 41387040517](https://github.com/sean2077/feishu-bot/actions/runs/41387040517) 在 Ubuntu Node 22.16／24 均实际复现 `/stop` 被停滞附件下载阻塞的新增断言失败；Windows 作业因后续代码提交取消，不能算修复前 Windows 复现。代码版 [CI 41387229295](https://github.com/sean2077/feishu-bot/actions/runs/41387229295) 在 Ubuntu／Windows × Node 22.16／24 四组通过，Node22 核心各 152 通过＋1 项平台条件跳过，另有 12 项原生进程套件通过。新增两项回归使用真实 Gateway、SQLite 和模拟停滞下载；未触及实际 Feishu HTTP 连接，最终 PR／main CI 单独核验。
 
 PR #45 验证群聊多人操作同一追问卡片时的选项归属。仅添加回归的 `dcc2682` 在[修复前 CI 41381888758](https://github.com/sean2077/feishu-bot/actions/runs/41381888758) 由 Ubuntu Node.js 22.16/24 和 Windows Node.js 22.16 三组实际复现：Bob 未选择却可提交 Alice 的选项，得到错误的 `已提交`；Windows Node.js 24 作业因后续提交被取消，不能称为红阶段复现。修复 `5ace9ad` 的[CI 41382000675](https://github.com/sean2077/feishu-bot/actions/runs/41382000675) 在 Ubuntu/Windows × Node.js 22.16/24 四组完整检查通过。新增验证按作者隔离选项、提交者身份与原生回执一致；共享卡片不泄漏其他成员勾选。真实飞书交互、真实模型和实际部署均未验证；文档与回归最终版本及合入 main 的 CI 仍须独立核验。
 

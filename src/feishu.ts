@@ -28,9 +28,13 @@ export function feishuTransport(config: Config, log: (event: string, detail: obj
         send: async (room, text, replyTo, threadId) => (await channel.send(room.chatId, { markdown: text }, { replyTo, replyInThread: !!threadId })).messageId,
         card: async (room, card, replyTo, threadId) => (await channel.send(room.chatId, { card }, { replyTo, replyInThread: !!threadId })).messageId,
         update: async (id, card) => channel.updateCard(id, card),
-        download: async (id, resource) => {
+        download: async (id, resource, signal) => {
+            if (signal?.aborted) throw new Error('attachment download cancelled');
             const response = await channel.rawClient.im.v1.messageResource.get({ path: { message_id: id, file_key: resource.key }, params: { type: resource.kind } });
             const stream = response.getReadableStream() as import('node:stream').Readable;
+            const onAbort = () => stream.destroy(new Error('attachment download cancelled'));
+            signal?.addEventListener('abort', onAbort, { once: true });
+            if (signal?.aborted) onAbort();
             const timer = setTimeout(() => stream.destroy(new Error('attachment download timed out')), 60000);
             timer.unref();
             const chunks: Buffer[] = [];
@@ -47,6 +51,7 @@ export function feishuTransport(config: Config, log: (event: string, detail: obj
             }
             finally {
                 clearTimeout(timer);
+                signal?.removeEventListener('abort', onAbort);
                 stream.destroy();
             }
         },
