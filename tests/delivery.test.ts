@@ -125,12 +125,14 @@ test('a claimed agent file before upload intent survives restart without an ambi
         f.store.db.prepare("UPDATE outbox SET state='sending',file_state='sending' WHERE id=?").run(started);
 
         f.store.recover();
-        assert.deepEqual(f.store.db.prepare('SELECT state,file_state FROM outbox WHERE id=?').get(safe),
-            { state: 'pending', file_state: 'pending' },
+        const safeState = f.store.db.prepare('SELECT state,file_state FROM outbox WHERE id=?').get(safe);
+        assert.equal(safeState?.state, 'pending',
             'a claim before the durable upload fence must remain safe to auto-retry');
-        assert.deepEqual(f.store.db.prepare('SELECT state,file_state FROM outbox WHERE id=?').get(started),
-            { state: 'uncertain', file_state: 'uncertain' },
+        assert.equal(safeState?.file_state, 'pending');
+        const startedState = f.store.db.prepare('SELECT state,file_state FROM outbox WHERE id=?').get(started);
+        assert.equal(startedState?.state, 'uncertain',
             'a potentially accepted upload must still require explicit confirmation');
+        assert.equal(startedState?.file_state, 'uncertain');
 
         const restarted = new Outbox(f.store, f.transport);
         assert.deepEqual(restarted.retryable(room.key), [safe]);
