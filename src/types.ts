@@ -5,6 +5,10 @@ export interface Message {
     id: string; chatId: string; chatType: 'group' | 'p2p'; senderId: string;
     senderName?: string; senderIsBot?: boolean; senderIsSelf?: boolean; text: string; time: number;
     mentioned: boolean; replyTo?: string; threadId?: string; resources: Resource[];
+    /** Fixed compatibility explanation, never the raw event or provider error. */
+    inputIssue?: string;
+    /** Set by the adapter only for standalone image inputs, not rich text or captions. */
+    imageOnly?: boolean;
 }
 export interface Room {
     key: string; chatId: string; projectId: string; dmUser?: string;

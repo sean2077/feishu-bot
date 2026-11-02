@@ -9,6 +9,7 @@ import { connectBeforeStop } from './connect.ts';
 import { deploymentChecks, runDoctor } from './doctor.ts';
 import { Store } from './store.ts';
 import { feishuDiagnostic } from './feishu-diagnostics.ts';
+import { bindFeishuInbound } from './feishu-events.ts';
 let secrets: string[] = [];
 async function main(): Promise<void> {
     const { command, configPath, probe, probeFeishu } = parseCli(process.argv.slice(2));
@@ -82,7 +83,7 @@ async function main(): Promise<void> {
     };
     try {
         store = new Store(join(config.dataDir, 'gateway.sqlite'));
-        const { feishuTransport, normalize } = await import('./feishu.ts');
+        const { feishuTransport } = await import('./feishu.ts');
         const { runtimeFactory } = await import('./runtime.ts');
         const { Gateway } = await import('./gateway.ts');
         const connected = feishuTransport(config, log);
@@ -93,13 +94,7 @@ async function main(): Promise<void> {
         }); };
         process.once('SIGINT', onSignal);
         process.once('SIGTERM', onSignal);
-        channel.on('message', async message => { if (closed) return;
-            try { await gateway!.message(normalize(message)); } catch (e) { log('inbound_failed', { error: errorText(e) }); } });
-        channel.on('cardAction', async event => {
-            if (closed || !event.messageId) return {};
-            const content = await gateway!.approvals.click(event.chatId, event.operator.openId, event.action.value, event.messageId);
-            return content ? { toast: { type: 'info' as const, content } } : {};
-        });
+        bindFeishuInbound(channel, gateway, log, () => closed);
         channel.on('error', error => log('feishu_error', feishuDiagnostic(error)));
         channel.on('reconnecting', () => log('feishu_reconnecting'));
         channel.on('reconnected', () => log('feishu_reconnected'));

@@ -95,7 +95,7 @@ export class Gateway {
     }
     private sanitize(room: Room, delivery: Delivery): boolean {
         const current = route(this.config, delivery.message);
-        if (!current || current.key !== room.key || !triggers(delivery.message)) return false;
+        if (!current || current.key !== room.key || !triggers(delivery.message) || delivery.message.inputIssue) return false;
         if (delivery.supplementTo && delivery.command) return false;
         if (delivery.command && (delivery.command.name !== 'compact' ||
             !/^\/compact(?:\s|$)/.test(delivery.message.text.trim()) ||
@@ -205,7 +205,7 @@ export class Gateway {
             this.rooms.set(room.key, room);
             const triggered = triggers(message);
             if (!triggered) {
-                if (this.config.limits.backgroundMessages > 0) {
+                if (this.config.limits.backgroundMessages > 0 && !message.inputIssue) {
                     this.store.insert(room.key, message);
                     this.trimBackground(room.key);
                 }
@@ -219,6 +219,12 @@ export class Gateway {
             }
             recent.push(now);
             this.rates.set(rateKey, recent);
+            if (message.inputIssue || original.text.trim().length > this.config.limits.textChars || original.resources.length > 12) {
+                // A partial SDK placeholder or silent truncation is not a complete model input.
+                this.store.insert(room.key, { ...message, text: '', resources: [] }, 'cancelled');
+                await this.notice(room, `消息未提交：${message.inputIssue ?? '正文或附件数量超过本次输入上限，请分开发送。'}`, message);
+                return;
+            }
             if (/^\/(help|status|sessions|new|resume|stop|answer|outputs|retry-output)(?:\s|$)/.test(message.text)) {
                 this.store.insert(room.key, message, 'done');
                 await this.command(room, message);

@@ -1,29 +1,33 @@
-import { createLarkChannel, normalize as normalizeEvent, type LarkChannel, type NormalizedMessage, type RawMessageEvent } from '@larksuite/channel';
+import { createLarkChannel, normalize as normalizeEvent, LarkChannelError, type LarkChannel, type RawMessageEvent } from '@larksuite/channel';
 import { readFile, stat } from 'node:fs/promises';
-import { readable } from './policy.ts';
+import { readable, roomFromKey } from './policy.ts';
 import { feishuSdkLogger } from './feishu-diagnostics.ts';
-import type { Config, Message, Resource, Transport, Room, ReceiptState, ReceiptApplied } from './types.ts';
-export function normalize(msg: NormalizedMessage): Message {
-    return { id: msg.messageId, chatId: msg.chatId, chatType: msg.chatType, senderId: msg.senderId, senderName: msg.senderName,
-        senderIsBot: msg.senderType !== 'user', text: msg.rawContentType === 'merge_forward' ? '[合并转发未自动展开；可按需读取当前聊天的原始消息。]' : msg.content, time: msg.createTime,
-        mentioned: msg.mentionedBot, replyTo: msg.replyToMessageId, threadId: msg.threadId,
-        resources: (msg.rawContentType === 'merge_forward' ? [] : msg.resources).filter(r => ['image', 'file', 'audio', 'video'].includes(r.type)).map(r => ({ key: r.fileKey, kind: r.type === 'image' ? 'image' : 'file', name: r.fileName ?? `${r.type}-${r.fileKey.slice(-12)}` })) };
-}
-export function feishuTransport(config: Config, log: (event: string, detail: object) => void): {
+import { normalizeFeishuMessage as normalize } from './feishu-input.ts';
+import type { Config, Message, Transport, Room, ReceiptState, ReceiptApplied } from './types.ts';
+export { normalize };
+export function feishuTransport(config: Config, log: (event: string, detail: object) => void,
+    createChannel: typeof createLarkChannel = createLarkChannel): {
     transport: Transport;
     channel: ReturnType<typeof createLarkChannel>;
 } {
     const secret = process.env[config.appSecretEnv];
     if (!secret)
         throw new Error(`missing Feishu credential ${config.appSecretEnv}`);
-    const channel = createLarkChannel({ appId: config.appId, appSecret: secret, resolveSenderNames: false, includeRawEvent: false,
-        respectProxyEnv: true, httpTimeoutMs: 20000,
+    const channel = createChannel({ appId: config.appId, appSecret: secret, resolveSenderNames: false,
+        // Inspect completeness in memory, then discard raw data at normalize(). Never log or persist it.
+        includeRawEvent: true, respectProxyEnv: true, httpTimeoutMs: 20000,
         policy: { requireMention: config.limits.backgroundMessages === 0, respondToMentionAll: false, groupAllowlist: config.groups.length ? config.groups.map(g => g.chatId) : ['__disabled__'], dmMode: 'allowlist', dmAllowlist: config.dms.map(d => d.userId) },
         safety: { chatQueue: { enabled: true, mergeWhileBusy: false, cardActions: 'separate' }, batch: { text: { delayMs: 0, longDelayMs: 0, maxMessages: 1 }, media: { delayMs: 0, maxItems: 1 } } },
         logger: feishuSdkLogger(log),
         // Do not blindly retry message creation after an ambiguous network failure.
         // Known-ID card updates are retried through the durable application outbox.
         outbound: { retry: { maxAttempts: 1, baseDelayMs: 500 }, ssrfGuard: true } });
+    // 0.7.1 expands merge-forward descendants BEFORE its policy gate. Fence that
+    // public API method, retaining the original only for explicit scoped reads below.
+    // No SDK private fields or second connection are used in production.
+    const messageApi = channel.rawClient.im.v1.message;
+    const scopedMessageGet = messageApi.get.bind(messageApi);
+    messageApi.get = async () => { throw new LarkChannelError('not_supported', 'Automatic message expansion is disabled'); };
     const receipt = reactionHandler(channel, config.appId);
     const transport: Transport = {
         send: async (room, text, replyTo, threadId) => (await channel.send(room.chatId, { markdown: text }, { replyTo, replyInThread: !!threadId })).messageId,
@@ -57,11 +61,12 @@ export function feishuTransport(config: Config, log: (event: string, detail: obj
             }
         },
         fetch: async (id, room) => {
-            if (!room) return undefined;
-            const response = await channel.rawClient.im.v1.message.get({ path: { message_id: id } });
+            const current = room && roomFromKey(config, room.key);
+            if (!current || current.chatId !== room?.chatId) return undefined;
+            const response = await scopedMessageGet({ path: { message_id: id } });
             if (response.code !== 0 && response.code !== undefined) throw new Error(`Message API error ${response.code}`);
             const item = response.data?.items?.find(m => m.message_id === id);
-            return item ? normalizeHistoryItem(item, room, channel.botIdentity?.openId, config.appId) : undefined;
+            return item ? normalizeHistoryItem(item, current, channel.botIdentity?.openId, config.appId) : undefined;
         },
         history: async (room, query) => {
             const response = await channel.rawClient.im.v1.message.list({ params: {
@@ -86,7 +91,6 @@ export function feishuTransport(config: Config, log: (event: string, detail: obj
     return { transport, channel };
 }
 
-
 type ApiItem = NonNullable<NonNullable<Awaited<ReturnType<LarkChannel['rawClient']['im']['v1']['message']['list']>>['data']>['items']>[number];
 /** Preserve API ownership fields: the SDK fetchMessage helper drops chat_id in 0.7.1. */
 export async function normalizeHistoryItem(item: ApiItem, room: Room, botOpenId?: string, appId?: string): Promise<Message | undefined> {
@@ -107,7 +111,7 @@ export async function normalizeHistoryItem(item: ApiItem, room: Room, botOpenId?
             mentions: item.mentions?.map(m => ({ key: m.key, id: { [m.id_type]: m.id }, name: m.name }))
         }
     };
-    const normalized = await normalizeEvent(event, { botIdentity: { openId: botOpenId ?? '', name: '' }, stripBotMentions: false });
+    const normalized = await normalizeEvent(event, { botIdentity: { openId: botOpenId ?? '', name: '' }, stripBotMentions: false, includeRaw: true });
     return { ...normalize(normalized), senderName: item.sender.sender_name, senderIsSelf: self };
 }
 
