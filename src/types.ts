@@ -5,6 +5,10 @@ export interface Message {
     id: string; chatId: string; chatType: 'group' | 'p2p'; senderId: string;
     senderName?: string; senderIsBot?: boolean; senderIsSelf?: boolean; text: string; time: number;
     mentioned: boolean; replyTo?: string; threadId?: string; resources: Resource[];
+    /** Fixed compatibility explanation, never the raw event or provider error. */
+    inputIssue?: string;
+    /** Set by the adapter only for standalone image inputs, not rich text or captions. */
+    imageOnly?: boolean;
 }
 export interface Room {
     key: string; chatId: string; projectId: string; dmUser?: string;
@@ -14,10 +18,19 @@ export interface Session {
     id: string; roomKey: string; ccId?: string;
     state: 'open' | 'stopped' | 'archived'; createdAt: number;
 }
+export interface ImageBatch {
+    id: string; deadline: number; closed: boolean; maxImages: number; maxBytes: number;
+}
 export interface Delivery {
     uuid: string; roomKey: string; sessionId: string; message: Message;
     background: Message[]; quote?: Message;
     command?: { name: 'compact'; instructions: string };
+    /** An unsent supplement is valid only while this foreground input is still running. */
+    supplementTo?: string;
+    /** Persisted on each original row; the fixed window survives service restart. */
+    imageBatch?: ImageBatch;
+    /** Wire-only aggregation. Original rows, UUIDs and receipt ownership remain separate. */
+    batchInputs?: Delivery[];
     attachments: { path: string; name: string }[];
 }
 export interface ActionSpec {
@@ -47,10 +60,10 @@ export interface Config {
     limits: {
         backgroundMessages: number; backgroundMs: number; textChars: number; inboxPerRoom: number;
         attachmentBytes: number; approvalMs: number; updateMs: number; messagesPerMinute: number;
+        imageBatchMs: number; imageBatchMaxImages: number; imageBatchBytes: number;
     };
 }
 export type ReceiptState = 'processing' | 'done' | 'clear';
-/** A persisted external-add attempt is not proof of a successful reaction. */
 export type ReceiptApplied = ReceiptState | 'attempt:processing' | 'attempt:done';
 export interface HistoryQuery {
     limit: number; startTime?: number; endTime?: number; pageToken?: string; threadId?: string;
@@ -70,10 +83,15 @@ export interface Transport {
 export type WorkerEvent =
     { type: 'ready'; ccId: string } |
     { type: 'accepted'; uuid: string } |
+    /** Proof that the input was rejected before entering the native SDK queue. */
+    { type: 'input_rejected'; uuid: string; reason: 'foreground_ended' } |
     { type: 'consumed'; uuid: string } |
     { type: 'text' | 'thinking'; text: string; partial: boolean; blockId?: string; turnId?: string } |
     { type: 'compaction'; phase: 'start' | 'complete'; trigger: 'manual' | 'auto' } |
-    { type: 'result'; text: string; success: boolean; uuid?: string; uuids?: string[]; usage?: Args; replyToUuid?: string; compact?: 'compacted' | 'not_needed' | 'failed' } |
+    { type: 'result'; text: string; success: boolean; uuid?: string; uuids?: string[]; usage?: Args;
+        /** Native result identity, distinct from the originating input UUID. */
+        resultId?: string; models?: string[];
+        replyToUuid?: string; compact?: 'compacted' | 'not_needed' | 'failed' } |
     { type: 'activity'; tool?: string; background?: number; pinned?: boolean; state?: 'idle' | 'running' | 'requires_action' } |
     { type: 'request'; id: string; kind: 'permission' | 'question' | 'action' | 'send_file' | 'attachment' | 'history'; name: string; input: Args } |
     { type: 'error'; message: string } |

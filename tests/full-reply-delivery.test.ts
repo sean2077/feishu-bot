@@ -171,8 +171,9 @@ test('schema upgrade preserves prior completed deliveries without replaying them
         store = new Store(path); store.recover();
         const row = store.db.prepare('SELECT * FROM outbox').get()!;
         assert.equal(row.state, 'done'); assert.equal(row.file_state, 'none'); assert.equal(row.text, 'answer');
-        assert.equal(store.db.prepare('PRAGMA user_version').get()!.user_version, 4);
+        assert.equal(store.db.prepare('PRAGMA user_version').get()!.user_version, 5);
         assert.equal(row.kind, 'reply');
+        assert.equal(store.db.prepare('SELECT count(*) AS n FROM usage_results').get()!.n, 0, 'legacy delivery is not fabricated into a usage result');
     } finally { store?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

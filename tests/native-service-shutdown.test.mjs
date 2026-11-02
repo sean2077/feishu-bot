@@ -12,13 +12,14 @@ const cliUrl = new URL('../dist/cli.js', import.meta.url);
 const channelFixture = `
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-export const normalize = message => message;
 export function feishuTransport() {
     const channel = new EventEmitter();
     const keepAlive = setInterval(() => {}, 1000);
     channel.connect = async () => {
-        const message = { id: 'fixture-message', chatId: 'group1', chatType: 'group',
-            senderId: 'alice', text: 'fixture', time: Date.now(), mentioned: true, resources: [] };
+        // Match the Channel SDK event contract; the production adapter is not replaced.
+        const message = { messageId: 'fixture-message', chatId: 'group1', chatType: 'group',
+            senderId: 'alice', senderType: 'user', content: 'fixture', rawContentType: 'text',
+            createTime: Date.now(), mentionedBot: true, mentionAll: false, mentions: [], resources: [] };
         for (const listener of channel.listeners('message')) await listener(message);
     };
     channel.disconnect = async () => { clearInterval(keepAlive); };

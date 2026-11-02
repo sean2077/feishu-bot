@@ -5,7 +5,7 @@
 ```text
 飞书群聊／私聊
   → Channel SDK
-  → 授权与明确触发、持久收件、审批
+  → 生产入站适配、授权与明确触发、持久收件、审批
   → 当前聊天的原生 CC 输入／输出流
        → 配置的模型服务
        → tools / skills / subagents / compaction / Monitor
@@ -25,17 +25,31 @@ Linux 和 Windows 使用相同 launcher。`runtime.ts` 管理进程，`worker.ts
 
 房间键包含 tenant、app、project、聊天类型、chat ID 和私聊用户 ID，不包含线程。`projects` 是资源／权限配置单元，不必是代码仓库。会话元数据与原生 transcript 一起持久化；按明确 `resume` ID 恢复，原生恢复失败不自动创建新会话。
 
-普通真人消息使用原生 `priority: next`、独立 UUID 和 `client_composed` 的结构化输入，不额外分类。CC 可能在工具结束后才读取补充，不承诺即时抢占。关闭 SDK 有损跨消息合并，保留每条作者、引用和资源。
+普通真人消息使用原生 `priority: next`、独立 UUID 和 `client_composed` 的结构化输入，不额外分类。CC 可能在工具结束后才读取补充，不承诺即时抢占。SDK 跨消息合并保持关闭；网关显式图片批次保留每条原始来源，不依赖有损 SDK 合并。
 
-收件状态为 queued、sent、consumed、done；传输确认不等于模型已读。按结果的 UUID 集合确认实际消费的输入，不把后台通知视作所有任务完成。接收顺序使用持久化插入顺序，不让消息时间戳重排 `/compact` 控制边界。
+收件状态为 queued、sent、consumed、done，另有 cancelled 和 uncertain；传输确认不等于模型已读。按结果的 UUID 集合确认实际消费的输入，不把后台通知视作所有任务完成。接收顺序使用持久化插入顺序，不让消息时间戳重排 `/compact` 控制边界。
+
+### 前台补充
+
+Gateway 识别 `/btw`、`/ps` 并剥离命令名，仅将正文放进已有 JSON 输入。`Delivery.supplementTo` 持久绑定接收时仍在运行的前台原输入 UUID，不另建 Agent 或旁路查询。空闲热进程、仅有后台活动、compact 和无目标的情形不会创建会话或 Worker。
+
+派发前及引用／附件等待后重新检查目标、会话和授权。已排队 compact 按原顺序阻止后续补充；目标结束、退出或恢复时，仍 queued 的补充取消并保存可恢复通知。sent／consumed 的未知结果沿用原有不重放规则。批准／拒绝使用独立卡片回调，不被补充或 compact 截获。
+
+### 原始消息与连续图片
+
+`feishu-events.ts` 是 CLI 和集成测试共同使用的生产订阅入口；`feishu-input.ts` 对真实 SDK 的归一化结果做完整性检查，不重写富文本渲染。SDK 原始对象仅在该检查中短暂使用，输出 Message 不含 raw；不完整输入带固定说明，获准触发后明确拒绝，不送模型。具体格式见[原始消息](raw-messages.md)。
+
+`image-batches.ts` 只管理 inbox 的有界图片等待窗口，默认关闭。每条原消息拥有独立 inbox 行、UUID、消息 ID 和来源；批次 ID、固定截止时间与限制快照保存在各行 payload，与接收在同一事务提交。按同 room、session、作者、replyTo、threadId 合并连续独立图片，文本及命令封闭窗口。定时器仅唤醒派发，重启依赖数据库而不是内存计时器。
+
+派发顺序从 SQLite 刷新，完整下载并检查总量后，在一个事务中把所有原消息标记 sent，再组成一次 `imageBatch` 原生输入。任何发送前失败都不以部分图片调用模型，并清理本次准备的文件。Worker 保留每条图片的 UUID 和归属；Gateway 的 inputGroups 将原生消费／结果中的批次入口 UUID 映射回所有原消息。完整交付屏障和授权不改变。已跨发送边界的批次重启后整批 uncertain，不自动重放。
 
 ## 历史与压缩
 
 `backgroundMessages` 默认为 0，不缓存和预注入非 @ 消息。`history.ts` 按显式工具请求读取一页，校验聊天、作者、条数、时间和绑定游标，不做全量归档。仅缓存已授权资源的有限元数据供附件访问，不建立新的完整聊天副本。
 
-锁定的 Channel SDK 0.7.1 的 `fetchMessage` 辅助函数未保留 `chat_id`，因此引用和历史查询使用官方原始 API 的所有权字段，再复用官方内容归一化。不自动递归展开合并转发内容。
+锁定的 Channel SDK 0.7.1 的 `fetchMessage` 辅助函数未保留 `chat_id`，因此引用和历史查询使用官方原始 API 的所有权字段，再复用官方内容归一化。该 SDK 还会在策略判断之前展开合并转发：适配器封住自动调用的公开 `message.get` 方法，只将原方法留在显式受限引用读取的闭包中。生产不访问 SDK 私有字段、不新增连接，不递归展开合并转发。升级 SDK 必须重跑这项边界测试。
 
-`/compact` 单独走原生命令路径，不能与普通 JSON 输入混淆。持久化控制边界等待当前轮结束，随后输入暂缓，卡片审批不阻塞。原生 `compact_boundary` 区分实际压缩与无需压缩。网关不另建自动压缩策略，不禁用 CC 自带自动压缩。
+`/compact` 单独走原生命令路径，不能与普通 JSON 输入混淆。持久化控制边界等待当前轮结束和最终交付，随后输入暂缓，卡片审批不阻塞。原生 `compact_boundary` 区分实际压缩与无需压缩。网关不另建自动压缩策略，不禁用 CC 自带自动压缩。
 
 ## 输出与回执
 
@@ -43,7 +57,15 @@ Linux 和 Windows 使用相同 launcher。`runtime.ts` 管理进程，`worker.ts
 
 `render.ts` 将思考与答案放在同一卡片，流式更新限频，结束折叠思考。最终内容先保存到 outbox，再等待网络；outbox 保存完整卡片与输入归属。已知 ID 重试更新，创建结果不明确时留待显式补发，不盲目再建。
 
-`receipts.ts` 持久化每条消息的目标表情状态，串行合并晚到的网络回执。Done 只在成功回复交付后添加，失败／停止清理临时状态。恢复时清理旧处理中标记，并重新检查授权。审批和追问保持独立交互，不属于隐藏的工具轨迹。
+`receipts.ts` 持久化每条消息的目标表情状态，串行合并晚到的网络回执。Done 只在成功回复和必要文件完整交付后添加，失败／停止清理临时状态。恢复时清理旧处理中标记，并重新检查授权。审批和追问保持独立交互，不属于隐藏的工具轨迹。
+
+## 使用量与兼容迁移
+
+Worker 透传真实 SDK result UUID 与 `usage`，仅从主循环响应元数据提取模型，不拿配置别名或累计 `modelUsage` 代替。`usage.ts` 在结果审计事务中写入 `usage_results`，主键为本地会话＋原生结果 ID；重复结果不重复累计或渲染。用量采集与答案交付分开，不能因文件尚未交付就抹去已发生的模型消耗。
+
+SQLite schema 5 增加 `usage_results` 和 `usage_coverage`，保留旧表和 session 映射。旧会话首次迁移标记 prior_unknown，不从无稳定 ID 的历史审计伪造完整累计；新会话建立时登记统计起点。字段缺失保留 NULL，无法取得稳定结果 ID 时标记覆盖不完整而不猜测去重键。查询仅用当前 room 的选中 session，支持中文与 JSON，不创建会话、不唤醒 Worker、不扫描 transcript、不计算账单或上下文占用。
+
+锁定 SDK 的持续输入实测验证 `result.usage` 的每结果口径：普通两轮、带工具多步轮次和重启续接均与确定性服务逐次声明吻合。主循环用量不包含子代理，升级 SDK 时必须重跑真实原生测试。详细字段见[使用量](usage.md#使用量)。
 
 ## 权限与扩展
 
@@ -62,6 +84,7 @@ Linux 和 Windows 使用相同 launcher。`runtime.ts` 管理进程，`worker.ts
 - [Feishu Channel SDK](https://github.com/larksuite/channel-sdk-node)
 - [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript)
 - [原生 Slash Commands](https://code.claude.com/docs/en/agent-sdk/slash-commands)
+- [Agent SDK 用量说明](https://code.claude.com/docs/en/agent-sdk/cost-tracking)
 - [飞书历史消息 API](https://open.feishu.cn/document/server-docs/im-v1/message/list)
 
 [对话规则](conversation-contract.md) · [权限说明](../SECURITY.md) · [使用场景](usage.md) · [验证](validation.md)
