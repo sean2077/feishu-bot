@@ -57,6 +57,23 @@ export class Render {
         this.timer = setTimeout(() => { this.timer = undefined; this.flush(); }, this.interval);
         this.timer.unref();
     }
+    /** Release the local preview wait on stop; the provider may still accept the write. */
+    private async previewIO<T>(start: () => Promise<T>): Promise<T> {
+        const signal = this.signal;
+        if (!signal) return start();
+        if (signal.aborted) throw new Error('preview cancelled');
+        let onAbort!: () => void;
+        const aborted = new Promise<never>((_, reject) => {
+            onAbort = () => reject(new Error('preview cancelled'));
+            signal.addEventListener('abort', onAbort, { once: true });
+        });
+        try {
+            return await Promise.race([Promise.resolve().then(() => {
+                if (signal.aborted) throw new Error('preview cancelled');
+                return start();
+            }), aborted]);
+        } finally { signal.removeEventListener('abort', onAbort); }
+    }
     private flush(): void {
         // Track queued as well as in-flight previews. A final reply cannot be
         // considered never-sent while a prior create may still start or finish.
@@ -67,24 +84,35 @@ export class Render {
             const snapshot = JSON.stringify(card);
             if (snapshot === this.last || (!this.messageId && this.createUncertain)) return;
             try {
-                if (this.messageId) await this.transport.update(this.messageId, card);
+                if (this.messageId) await this.previewIO(() => this.transport.update(this.messageId!, card));
                 else {
-                    this.messageId = await this.transport.card(this.room, card, this.replyTo, this.threadId);
-                    this.store.recordOutput(this.messageId, this.room.key, this.session);
-                    if (this.finalId) this.store.db.prepare("UPDATE outbox SET target=? WHERE id=? AND state='preparing'").run(this.messageId, this.finalId);
+                    const id = await this.previewIO(() => this.transport.card(this.room, card, this.replyTo, this.threadId));
+                    // A late provider response must never index into a closed store.
+                    // Its unrecorded create remains ambiguous, not safely repeatable.
+                    if (this.signal?.aborted) { this.createUncertain = true; return; }
+                    this.messageId = id;
+                    this.store.recordOutput(id, this.room.key, this.session);
+                    if (this.finalId) this.store.db.prepare("UPDATE outbox SET target=? WHERE id=? AND state='preparing'").run(id, this.finalId);
                 }
-                this.last = snapshot;
+                if (!this.signal?.aborted) this.last = snapshot;
             } catch {
                 if (!this.messageId) this.createUncertain = true;
-                this.store.audit(this.room.key, 'preview_delivery_pending', { session: this.session });
+                if (!this.signal?.aborted)
+                    this.store.audit(this.room.key, 'preview_delivery_pending', { session: this.session });
             }
         }).catch(() => {}).finally(() => { this.pendingPreviews--; });
     }
     async cancel(title = '已停止'): Promise<void> {
         this.closed = true; clearTimeout(this.timer);
         await this.tail;
-        if (this.messageId) await this.transport.update(this.messageId,
-            replyCard(title, '以下为中断前输出，不代表任务完成。\n\n' + this.content('text'), this.content('thinking'), true)).catch(() => {});
+        if (this.messageId) {
+            // Best-effort cosmetic update cannot become another stop/shutdown barrier.
+            // No database state is accessed after the network response.
+            try {
+                void this.transport.update(this.messageId,
+                    replyCard(title, '以下为中断前输出，不代表任务完成。\n\n' + this.content('text'), this.content('thinking'), true)).catch(() => {});
+            } catch { /* Provider call failed before returning its promise. */ }
+        }
     }
     async finish(text: string, success: boolean, dataDir: string, origins: Origin[], title?: string, onPersisted?: () => void): Promise<void> {
         if (this.closed) return;
