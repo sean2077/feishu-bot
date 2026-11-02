@@ -107,6 +107,42 @@ test('persisted file upload receipt resumes without uploading again after local 
     } finally { await f.close(); }
 });
 
+test('a claimed agent file before upload intent survives restart without an ambiguous retry', async () => {
+    const f = await fixture();
+    try {
+        const room = route(f.config, message())!, session = f.store.session(room.key);
+        const snapshot = join(f.dir, 'file-before-upload.txt');
+        await writeFile(snapshot, 'durable bytes');
+        const outbox = new Outbox(f.store, f.transport);
+        const safe = outbox.saveFile(room, session.id, snapshot, 'safe.txt');
+        const started = outbox.saveFile(room, session.id, snapshot, 'possibly-uploaded.txt');
+
+        // The first operation was claimed, but crashed during the local stat()
+        // before file_state='sending' authorized any Feishu upload.
+        f.store.db.prepare("UPDATE outbox SET state='sending' WHERE id=?").run(safe);
+        // For the second operation the upload intent WAS persisted, so a
+        // restart cannot know if Feishu accepted it.
+        f.store.db.prepare("UPDATE outbox SET state='sending',file_state='sending' WHERE id=?").run(started);
+
+        f.store.recover();
+        const safeState = f.store.db.prepare('SELECT state,file_state FROM outbox WHERE id=?').get(safe);
+        assert.equal(safeState?.state, 'pending',
+            'a claim before the durable upload fence must remain safe to auto-retry');
+        assert.equal(safeState?.file_state, 'pending');
+        const startedState = f.store.db.prepare('SELECT state,file_state FROM outbox WHERE id=?').get(started);
+        assert.equal(startedState?.state, 'uncertain',
+            'a potentially accepted upload must still require explicit confirmation');
+        assert.equal(startedState?.file_state, 'uncertain');
+
+        const restarted = new Outbox(f.store, f.transport);
+        assert.deepEqual(restarted.retryable(room.key), [safe]);
+        assert.equal(await restarted.deliver(safe, room), true);
+        assert.equal(f.transport.sent.length, 1, 'only the never-started upload may be sent');
+        assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(safe)?.state, 'done');
+        assert.equal(await restarted.deliver(started, room), false, 'unknown upload is never replayed automatically');
+    } finally { await f.close(); }
+});
+
 test('known-card updates are retried and concurrent outbox instances claim once', async () => {
     const f = await fixture();
     try {
