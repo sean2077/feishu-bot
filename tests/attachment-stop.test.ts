@@ -57,3 +57,29 @@ test('shutdown releases a pending native fetch_attachment request', { timeout: 1
         await f.close();
     }
 });
+
+
+test('shutdown does not wait for a stalled native read_chat_history request', { timeout: 10000 }, async () => {
+    const f = await fixture();
+    let started!: () => void;
+    let release!: () => void;
+    const reading = new Promise<void>(resolve => { started = resolve; });
+    const stalled = new Promise<{ messages: [] }>(resolve => { release = () => resolve({ messages: [] }); });
+    f.transport.history = async () => { started(); return stalled; };
+    let shutdown: Promise<void> | undefined;
+    try {
+        await f.gateway.message(message());
+        await until(() => !!f.workers[0]?.sent.length);
+        f.workers[0]!.emit({ type: 'request', id: 'stalled-history', kind: 'history',
+            name: 'read_chat_history', input: { limit: 1 } });
+        await reading;
+        shutdown = f.gateway.close();
+        const completed = await Promise.race([shutdown.then(() => true), delay(2000).then(() => false)]);
+        assert.equal(completed, true, 'shutdown must not await a stalled read-only history API call');
+        assert.equal(f.workers[0]!.responses.length, 0, 'stopped worker must not receive late history');
+    } finally {
+        release();
+        await shutdown?.catch(() => {});
+        await f.close();
+    }
+});
