@@ -33,6 +33,17 @@ interface Slot {
     activeRequests: number;
     stopUnconfirmed?: boolean;
 }
+/** Release the per-room dispatch lock even when an adapter is still awaiting a network response. */
+async function waitOrAbort<T>(start: () => Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) throw new Error('operation cancelled');
+    let onAbort!: () => void;
+    const aborted = new Promise<never>((_, reject) => {
+        onAbort = () => reject(new Error('operation cancelled'));
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try { return await Promise.race([start(), aborted]); }
+    finally { signal.removeEventListener('abort', onAbort); }
+}
 export class Gateway {
     readonly config: Config;
     readonly store: Store;
@@ -299,7 +310,12 @@ export class Gateway {
             if (delivery.command && (slot.busy || slot.deliveries.size > 0 || slot.activeRequests > 0 || this.approvals.size(slot.session.id))) return;
             try {
                 if (delivery.message.replyTo && !delivery.command) {
-                    const quoted = await this.transport.fetch(delivery.message.replyTo, room).catch(() => undefined);
+                    const quoted = await waitOrAbort(
+                        () => this.transport.fetch(delivery.message.replyTo!, room), slot.abort.signal
+                    ).catch(error => {
+                        if (slot.abort.signal.aborted) throw error;
+                        return undefined;
+                    });
                     if (quoted && readable(room, quoted)) {
                         delivery.quote = { ...quoted, text: quoted.text.slice(0, this.config.limits.textChars), resources: quoted.resources.slice(0, 12) };
                         this.store.rememberContext(room.key, [delivery.quote]);
@@ -307,7 +323,9 @@ export class Gateway {
                 }
                 const w = slot.workspace!;
                 for (const [index, resource] of delivery.message.resources.entries()) {
-                    const bytes = await this.transport.download(delivery.message.id, resource);
+                    const bytes = await waitOrAbort(
+                        () => this.transport.download(delivery.message.id, resource, slot.abort.signal), slot.abort.signal
+                    );
                     if (bytes.byteLength > this.config.limits.attachmentBytes)
                         throw new Error('附件超过允许大小');
                     const name = basename(resource.name).replace(/[^\p{L}\p{N}_.-]/gu, '_').slice(0, 100) || 'attachment';
@@ -331,6 +349,9 @@ export class Gateway {
                 if (delivery.command) return; // A persisted barrier: later inputs wait for its native result.
             }
             catch (e) {
+                // /stop and shutdown already own the cancellation state. A late
+                // network rejection must not turn a cancelled input into uncertain.
+                if (!slot.live || slot.abort.signal.aborted || this.closing) return;
                 this.receipts.settle(room.key, delivery.sessionId, [delivery.message], false);
                 this.store.mark(delivery.uuid, 'uncertain');
                 await this.notice(room, `本条交付未确认，不会自动重放：${redact(errorText(e), this.secrets)}`, delivery.message);
@@ -504,7 +525,9 @@ export class Gateway {
             const resource = message.resources?.find(r => r.key === key);
             if (!resource)
                 throw new Error('unknown attachment');
-            const data = await this.transport.download(id, resource);
+            const data = await waitOrAbort(
+                () => this.transport.download(id, resource, slot.abort.signal), slot.abort.signal
+            );
             if (data.byteLength > this.config.limits.attachmentBytes)
                 throw new Error('attachment exceeds size limit');
             const w = slot.workspace!;
