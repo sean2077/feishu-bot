@@ -26,3 +26,5 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
       - run: node dist/cli.js --help
+      - name: Native fixture baseline (not live model or Feishu)
+        run: node scripts/benchmark-native.mjs --samples 3 --warm-turns 2 --idle-ms 1000
