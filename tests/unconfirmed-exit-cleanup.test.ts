@@ -35,8 +35,9 @@ test('failed cleanup after an unexpected exit reserves the original session owne
         await gateway.message(message({ chatId: 'group2' }));
         await until(() => workers.length > 1 || f.transport.sent.some(s => s.text?.includes('输入已保存')));
         assert.equal(workers.length, 1, 'unconfirmed descendants still occupy the original capacity');
-        await gateway.message(message({ senderId: 'admin', text: '/status' }));
-        assert.match(f.transport.sent.at(-1)?.text ?? '', /termination_unconfirmed/);
+        const status = message({ senderId: 'admin', text: '/status --json' });
+        await gateway.message(status);
+        assert.equal(JSON.parse(f.transport.sent.find(s => s.replyTo === status.id)!.text!).state, 'termination_unconfirmed');
         await gateway.message(message({ senderId: 'admin', text: '/new' }));
         assert.equal(f.store.session(first.room.key).id, sessionId, 'a failed stop must not rotate an unconfirmed transcript');
         await assert.rejects(gateway.close(), /termination unconfirmed/i);
@@ -65,8 +66,9 @@ test('worker initialization failure with unconfirmed cleanup does not free capac
         await gateway.message(message());
         await until(() => attempts === 1);
         const sessionBefore = f.store.db.prepare("SELECT id FROM sessions WHERE state='open'").get()?.id;
-        await gateway.message(message({ senderId: 'admin', text: '/status' }));
-        assert.match(f.transport.sent.at(-1)?.text ?? '', /termination_unconfirmed/);
+        const status = message({ senderId: 'admin', text: '/status --json' });
+        await gateway.message(status);
+        assert.equal(JSON.parse(f.transport.sent.find(s => s.replyTo === status.id)!.text!).state, 'termination_unconfirmed');
         await gateway.message(message({ senderId: 'admin', text: '/new' }));
         assert.equal(f.store.db.prepare("SELECT id FROM sessions WHERE state='open'").get()?.id, sessionBefore,
             'no replacement session can be created after unconfirmed startup cleanup');

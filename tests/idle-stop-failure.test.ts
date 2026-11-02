@@ -40,8 +40,11 @@ test('failed idle stop retains capacity and refuses a second native session owne
         await until(() => workers.length > 1 || f.transport.sent.some(s => s.text?.includes('当前会话')));
         assert.equal(workers.length, 1, 'unconfirmed stop must reserve the original process slot');
 
+        const status = message({ senderId: 'admin', text: '/status --json' });
+        await gateway.message(status);
+        assert.equal(JSON.parse(f.transport.sent.find(s => s.replyTo === status.id)!.text!).state, 'termination_unconfirmed');
         await gateway.message(message({ senderId: 'admin', text: '/status' }));
-        assert.match(f.transport.sent.at(-1)?.text ?? '', /termination_unconfirmed/);
+        assert.match(f.transport.sent.at(-1)?.text ?? '', /停止未确认/);
         await gateway.message(message({ senderId: 'admin', text: '/new' }));
         assert.equal(f.store.session(first.room.key).id, sessionId, 'failed stop cannot rotate a live transcript');
         assert.match(f.transport.sent.at(-1)?.text ?? '', /未确认退出/);
