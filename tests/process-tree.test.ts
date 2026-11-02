@@ -85,7 +85,7 @@ if (level < 2) spawn(process.execPath, [__filename, dir, String(level + 1)], {st
 });
 
 // Parent exit must not leave an unowned native CLI process tree running.
-test('native process-tree stop reaps live descendants after their root exited', { timeout: 40000 }, async () => {
+test('native process-tree stop reaps live descendants after their root exited', { timeout: 40000 }, async t => {
     const dir = await mkdtemp(join(tmpdir(), 'feishu-orphan-tree-'));
     const script = join(dir, 'orphan.cjs');
     await writeFile(script, [
@@ -127,7 +127,18 @@ test('native process-tree stop reaps live descendants after their root exited', 
         const activeBeats = await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`), 'utf8')));
         assert.ok(preLive.every(Boolean) && activeBeats.every((beat, i) => beat !== initialBeats[i]),
             JSON.stringify({ preLive, initialBeats, activeBeats, pids }));
-        await killTree(parent, 100);
+        const cleanupReports: import('../src/process.ts').WindowsCleanupReport[] = [];
+        await killTree(parent, 100, report => cleanupReports.push(report));
+        if (process.platform === 'win32') {
+            const cim = cleanupReports.find(r => r.method === 'cim');
+            assert.ok(cim, 'exited-root cleanup must use the tracked CIM fallback');
+            assert.equal(cim.outcome, 'success');
+            assert.deepEqual(cim.stages.map(stage => stage.name), ['started', 'snapshot', 'ancestry', 'termination'],
+                'report every completed stage without changing the real cleanup path');
+            assert.ok(cim.stages.every((stage, i) => Number.isSafeInteger(stage.elapsedMs) &&
+                (i === 0 || stage.elapsedMs >= cim.stages[i - 1]!.elapsedMs)));
+            t.diagnostic('windows-cim-cleanup-stages ' + JSON.stringify(cim));
+        }
         await eventually(async () => (await Promise.all(pids.slice(1).map(live))).every(value => !value),
             'Orphaned native descendants survived after the root exited');
         const beats = await Promise.all([1, 2].map(i => readFile(join(dir, `${i}.beat`), 'utf8')));

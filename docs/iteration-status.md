@@ -69,6 +69,14 @@
 
 [实现版 CI 41516734515](https://github.com/sean2077/feishu-bot/actions/runs/41516734515) 在 Ubuntu／Windows × Node.js 22.16／24 四组全部通过且无需重跑。已读取 Ubuntu24.04.5／Node24.22.1 与 Windows Server2025／Node24.22.2 日志：核心 250 项通过、1 项既有平台条件跳过，原生／进程 15 项通过，原生 fixture 基线 3 样本／9 轮通过。三个新测试在两组日志中均通过，覆盖真正关闭之后释放迟到的远端结果，再重开 Store 和 Gateway 检查没有错误重发或完成。实际 CC 使用确定性模型与模拟飞书；没有真实服务验收。最终文档 head、PR 合并与 main 独立 CI 以 GitHub 结果为准。
 
+### Windows 孤儿进程清理的分阶段诊断
+
+[PR #59](https://github.com/sean2077/feishu-bot/pull/59) 针对旧有 PowerShell/CIM 清理偶发超过15秒的问题，先保持原有一次性 Win32_Process 快照、启动时间和 PID 归属校验及终止路径，增加按需的无进程身份阶段计时；超时／错误报告最近完成的阶段，不额外记录进程列表或命令行。真实 Windows 父子孙进程与心跳检查仍作为是否清理成功的验收，不能因为得到计时就把清理标记为可靠。
+
+在[首轮 PR CI 41526576820](https://github.com/sean2077/feishu-bot/actions/runs/41526576820) 的 Windows Server 2025 平台上，Node 22.16 的一次孤儿树清理测得 Node 总耗时 4173 ms、PowerShell 内部快照完成 1249 ms、谱系遍历完成 1287 ms、终止完成 1781 ms；Node 24 的另一次分别为 2902／617／655／888 ms。PowerShell 内部时钟从脚本开始运行，累计值之差才对应阶段耗时；Node 总耗时还包含启动、退出、进程间通信与缓冲开销，不能将差额单独认定为 PowerShell 启动时间。两次不同托管 runner 的小样本都成功，不能推出原有15秒偶发故障已经解决或得出性能提升幅度。
+
+微软 [Win32_Process](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-process) 说明 ParentProcessId 可能指向已退出或 PID 被复用的进程，继续以 CreationDate 和已知父子谱系验证归属，不能改为按名称终止或仅靠旧 PID 命中。若中间祖先已完全消失，当前一次性快照仍无法可靠重建链条；该限制留待专门方案及真实 Windows 验证。最终合并及 main 独立 CI 另行核对，不能由首轮 PR CI 代替。
+
 ## 接入、交互与测量
 
 | 范围 | 状态 | 验收边界 |
