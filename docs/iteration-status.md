@@ -4,6 +4,7 @@
 
 | 项目 | 当前结果 | 证据 / 下一步 |
 |---|---|---|
+| 主动文件投递已领取、但尚未开始上传时异常退出 | 已修复（真实 SQLite 状态故障注入／模拟飞书／跨平台 CI） | `kind=file` 的 `state=sending` 已持久化、`file_state=pending` 尚未越过上传栅栏时没有外部写入，旧恢复错误按无 `target` 判为 `uncertain`，使文件滞留。现在仅该未发起上传的状态恢复为 `pending`，可安全自动首次上传；`file_state=sending` 的结果未知上传仍保留 `uncertain`，不自动重复发送。真实飞书与实际进程强杀待验收。 |
 | 已持久化卡片／文件回执因本地 output 索引失败而滞留 | 已修复（SQLite 故障注入／模拟飞书／跨平台 CI） | 外部卡片创建或文件上传返回的 provider ID 已保存到 `outbox.target`／`file_target`，但单独的 `outputs` 索引写入失败，旧逻辑仍误判为 `uncertain` 并禁止安全自动恢复。现仅依据数据库中已保存的 ID 与 `file_state=done` 将其保留为 `pending`：卡片只更新已知 ID，文件只重建本地索引，不重复创建或上传。未保存 provider ID 的未知写仍为 `uncertain`，不盲重试；真实飞书待验收。 |
 | 最终回复提交后、首次预览或飞书创建前崩溃 | 已修复（真实 SQLite／模拟 Worker 与飞书／跨平台 CI） | 无预览任务排队且此前未发生未知创建时，`Render.finish()` 不再将已持久化答案先标成 `preparing`；它在同一事务中以可恢复的 `pending` 记录最终答案和输入完成状态，崩溃后由原有 Outbox 安全投递。仍有待完成预览创建或未知远端写入的情形保持 `preparing`／`uncertain`，不能自动重做。未进行真实飞书验收。 |
 | 服务关闭时最终答案已持久化但预览仍在创建 | 已修复（真实 SQLite／模拟飞书预览竞态／跨平台 CI） | 原生结果与输入 `done` 已事务提交，正常关闭发生在预览创建响应前时，旧逻辑却将最终 Outbox `preparing` 改成 `cancelled`，重启后永久丢失回复。现等待预览结论后保留结果：有已知卡片 ID 则 `pending`，可安全更新；创建结果未知则 `uncertain`，不自动重做。显式 `/stop` 对待处理输出的取消保持有效；真实飞书待验收。 |
@@ -42,6 +43,8 @@
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #44 针对主动文件在本地领取投递之后、外部上传意图持久登记之前的异常退出窗口建立真实 SQLite 状态故障注入。仅添加回归的 `8c7662f` 在[修复前 CI 41376670082](https://github.com/sean2077/feishu-bot/actions/runs/41376670082) 的 Ubuntu Node.js 22.16／24 两组实际失败：预期可恢复 `pending`，实际为 `uncertain`；Windows 两组被后续修复提交取消，不能称 Windows 已完成红阶段复现。修复 `7cb810e` 的[CI 41376782553](https://github.com/sean2077/feishu-bot/actions/runs/41376782553) 已通过 Ubuntu／Windows × Node.js 22.16／24 四组完整检查，未放宽失败、授权或 Done 断言。回归同时确认已越过上传栅栏的未知远端写不自动重发；模拟飞书上传不等于真实飞书或 OS 强杀验收。最终文档版及合入 main 的 CI 需独立核验。
 
 PR #42 复现卡片／文件 provider ID 已持久化但本地 `outputs` 索引写入失败的恢复分类错误。仅新增两项 SQLite 触发器故障注入回归的 `c4b725a` 在 [CI 41371666229](https://github.com/sean2077/feishu-bot/actions/runs/41371666229) 的 Ubuntu Node.js 22.16／24 两组实败：两项新增断言均得到 `uncertain`，预期为 `pending`；Windows 两组被随后修复提交取消，不能称已在 Windows red-phase 复现。修复 `3c4efed` 在 [CI 41371803399](https://github.com/sean2077/feishu-bot/actions/runs/41371803399) 的 Ubuntu／Windows × Node.js 22.16／24 四组完整通过。Node 22.16 两个平台均为 148 项核心通过、1 项平台专用跳过及 12 项原生子进程测试通过。新增用例确认卡片不会再次创建、文件不会再次上传，重建 Outbox 后可安全继续本地索引与完成状态；原有未持久化 target 的未知写回归保持通过。使用真实 SQLite 与模拟飞书 API，不代表真实飞书远端一致性或磁盘故障联调。最终文档版 PR CI 和合入 main 的 CI 独立核验。
 
