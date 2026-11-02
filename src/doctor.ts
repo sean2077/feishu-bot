@@ -5,9 +5,19 @@ import type { Config } from './types.ts';
 import { modelHeaders, secretsFor } from './config.ts';
 import { runCommand } from './actions.ts';
 import { errorText, redact } from './util.ts';
+import { probeFeishuIdentity, type ProbeState } from './feishu-probe.ts';
 
 export interface Diagnostic { name: string; ok: boolean; detail?: string; skipped?: boolean; }
-export interface DoctorReport { platform: string; runtime: 'native'; ready: boolean; scope: string; checks: Diagnostic[]; }
+export interface DoctorReport {
+    platform: string;
+    runtime: 'native';
+    /** All checks requested by this invocation passed; not live-service acceptance. */
+    ready: boolean;
+    scope: string;
+    checks: Diagnostic[];
+    verification: Record<'local' | 'model' | 'feishuAuth' | 'feishuIdentity' | 'messageDelivery' | 'cardCallbacks' | 'fileDelivery' | 'nativeTools', ProbeState>;
+    nextSteps: string[];
+}
 
 function placeholder(value: string): boolean {
     return /^(?:your[-_ ]|replace[-_ ]with[-_ ]|<[^>]+>$)/i.test(value.trim()) ||
@@ -53,7 +63,7 @@ export function deploymentChecks(config: Config): Diagnostic[] {
     return checks;
 }
 
-export async function runDoctor(config: Config, probe = false): Promise<DoctorReport> {
+export async function runDoctor(config: Config, probe = false, probeFeishu = false): Promise<DoctorReport> {
     const secrets = secretsFor(config);
     const checks = deploymentChecks(config);
     const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
@@ -111,6 +121,27 @@ export async function runDoctor(config: Config, probe = false): Promise<DoctorRe
             });
         }
     }
+    const verification: DoctorReport['verification'] = {
+        local: checks.every(c => c.ok) ? 'passed' : 'failed', model: 'not_checked',
+        feishuAuth: 'not_checked', feishuIdentity: 'not_checked', messageDelivery: 'not_checked',
+        cardCallbacks: 'not_checked', fileDelivery: 'not_checked', nativeTools: 'not_checked'
+    };
+    let identitySent = false;
+    if (probeFeishu) {
+        const secret = process.env[config.appSecretEnv];
+        if (placeholder(config.appId) || !secret?.trim() || placeholder(secret)) {
+            verification.feishuAuth = verification.feishuIdentity = 'blocked';
+            checks.push({ name: 'Feishu application authentication', ok: false, skipped: true,
+                detail: 'Not sent: replace the appId and application credential placeholders first.' });
+            checks.push({ name: 'Feishu bot identity', ok: false, skipped: true, detail: 'Not checked: application authentication must succeed first.' });
+        } else {
+            identitySent = true;
+            const evidence = await probeFeishuIdentity(config.appId, secret);
+            verification.feishuAuth = evidence.auth;
+            verification.feishuIdentity = evidence.identity;
+            checks.push(...evidence.checks);
+        }
+    }
     let probeSent = false;
     if (probe) {
         if (deploymentChecks(config).some(c => !c.ok)) {
@@ -151,7 +182,15 @@ export async function runDoctor(config: Config, probe = false): Promise<DoctorRe
                 throw new Error('The endpoint did not return an assistant Messages response. HTTP success alone is not sufficient.');
             return 'Basic Messages response verified. Streaming, tools and live Feishu behavior were not tested.';
         });
+        const modelCheck = checks.at(-1)!;
+        verification.model = modelCheck.skipped ? 'blocked' : modelCheck.ok ? 'passed' : 'failed';
     }
-    return { platform: process.platform, runtime: 'native', ready: checks.every(c => c.ok),
-        scope: probeSent ? 'Local checks and one basic model request; not full deployment acceptance.' : 'Local checks only; no Feishu or model requests were made.', checks };
+    const nextSteps: string[] = [];
+    if (verification.local !== 'passed') nextSteps.push('Correct the failed local checks before starting the service. Keep credentials in the service environment.');
+    if (verification.feishuIdentity !== 'passed') nextSteps.push('Run doctor --probe-feishu to check application authentication and bot identity without sending chat messages or calling a model.');
+    if (verification.model !== 'passed') nextSteps.push('Run doctor --probe only when a potentially billable basic model request is authorized.');
+    nextSteps.push('In a separate authorized test chat, verify message events, card callbacks, file delivery and native tools. Follow docs/validation.md; these are not verified by doctor.');
+    const scope = !identitySent && !probeSent ? 'Local checks only; no Feishu or model requests were made.'
+        : `Local checks${identitySent ? ' and Feishu application identity requests' : ''}${probeSent ? ' and one basic model request' : ''}; not full deployment acceptance.`;
+    return { platform: process.platform, runtime: 'native', ready: checks.every(c => c.ok), scope, checks, verification, nextSteps };
 }

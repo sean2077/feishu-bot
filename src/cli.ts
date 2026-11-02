@@ -10,9 +10,9 @@ import { deploymentChecks, runDoctor } from './doctor.ts';
 import { Store } from './store.ts';
 let secrets: string[] = [];
 async function main(): Promise<void> {
-    const { command, configPath, probe } = parseCli(process.argv.slice(2));
+    const { command, configPath, probe, probeFeishu } = parseCli(process.argv.slice(2));
     if (command === 'help') {
-        console.log('feishu-bot init [--config path]\nfeishu-bot doctor [--config path] [--probe]\nfeishu-bot run [--config path]\n\nLinux / Windows: run one native service. Claude sessions start on demand and stay warm between messages.');
+        console.log('feishu-bot init [--config path]\nfeishu-bot doctor [--config path] [--probe] [--probe-feishu]\nfeishu-bot run [--config path]\n\nDoctor is offline by default. --probe-feishu reads application identity; --probe sends a potentially billable model request. Neither verifies live collaboration.\nLinux / Windows: run one native service. Claude sessions start on demand and stay warm between messages.');
         return;
     }
     if (command === 'init') {
@@ -23,7 +23,7 @@ async function main(): Promise<void> {
             if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`${configPath} already exists; it was not overwritten.`);
             throw error;
         }
-        console.log(`Created ${configPath}. Fill in app/chat/member IDs and model endpoint settings, then run npm run doctor and npm start.`);
+        console.log(`Created ${configPath}.\n1. Fill in app/chat/member IDs and the model endpoint; set credentials in the service environment.\n2. Run doctor --config <path> for local checks.\n3. Explicitly opt in to --probe-feishu for bot identity and --probe for a potentially billable model request.\n4. Verify message events, card callbacks and file delivery in a separate authorized test chat before regular use.\nSee docs/deployment.md and docs/validation.md. No application or permission was changed.`);
         return;
     }
     const config = await loadConfig(configPath).catch(error => {
@@ -40,7 +40,7 @@ async function main(): Promise<void> {
     secrets = secretsFor(config);
     const log = (event: string, detail: object = {}) => process.stderr.write(redact(JSON.stringify({ at: new Date().toISOString(), event, ...detail }), secrets) + '\n');
     if (command === 'doctor') {
-        const report = await runDoctor(config, probe);
+        const report = await runDoctor(config, probe, probeFeishu);
         console.log(JSON.stringify(report, null, 2));
         if (!report.ready) process.exitCode = 1;
         return;
