@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../src/store.ts';
 import { Receipts } from '../src/receipts.ts';
+import type { ReceiptApplied, ReceiptState } from '../src/types.ts';
 import { fixture, message, until } from './helpers.ts';
 
 // A real Gateway/SQLite with a deliberately unresolved reaction API call.
@@ -16,7 +17,7 @@ test('shutdown releases a stalled reaction and recovery reconciles its uncertain
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
     const sent: { id: string; state: string; applied?: string }[] = [];
-    f.transport.receipt = async (id, state = 'processing', applied) => {
+    f.transport.receipt = async (id: string, state: ReceiptState = 'processing', applied?: ReceiptApplied) => {
         sent.push({ id, state, applied });
         await held;
     };
@@ -47,7 +48,7 @@ test('shutdown releases a stalled reaction and recovery reconciles its uncertain
 
         reopened = new Store(join(f.dir, 'state.sqlite'));
         const replay: { id: string; state: string; applied?: string }[] = [];
-        f.transport.receipt = async (id, state = 'processing', applied) => {
+        f.transport.receipt = async (id: string, state: ReceiptState = 'processing', applied?: ReceiptApplied) => {
             replay.push({ id, state, applied });
         };
         recovered = new Receipts(reopened, f.transport);
