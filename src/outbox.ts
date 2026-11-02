@@ -145,17 +145,25 @@ export class Outbox {
             if (row.kind === 'reply') this.receipts?.settle(room.key, row.session, row.origins, row.success);
             return true;
         } catch {
-            // Classify by the persisted target, not the local ID returned by a create.
-            // If recording that ID failed, the remote card may exist but a retry would create another.
-            const state = phase === 'file_send' || (phase === 'card' && !row.target) ? 'uncertain' : 'pending';
-            const reason = phase === 'file_send' ? row.kind === 'file'
-                ? 'Agent file upload is unconfirmed; an explicit retry may duplicate a previously accepted file.'
-                : 'Full-answer file delivery is unconfirmed; explicit retry may duplicate a previously accepted message.'
+            // An accepted create/upload can fail in local indexing *after* its
+            // provider ID was saved. Use only durable IDs to decide whether an
+            // automatic retry is safe, never an in-memory ID from a response.
+            const persisted = this.store.db.prepare('SELECT target,file_state,file_target FROM outbox WHERE id=?').get(id);
+            const knownCard = !!persisted?.target;
+            const knownFile = persisted?.file_state === 'done' && !!persisted.file_target;
+            const state = (phase === 'card' && !knownCard) || (phase === 'file_send' && !knownFile)
+                ? 'uncertain' : 'pending';
+            const reason = phase === 'file_send' ? knownFile
+                ? 'File receipt saved; local delivery completion is pending.'
+                : row.kind === 'file'
+                    ? 'Agent file upload is unconfirmed; an explicit retry may duplicate a previously accepted file.'
+                    : 'Full-answer file delivery is unconfirmed; explicit retry may duplicate a previously accepted message.'
                 : phase === 'file_prepare' ? 'Cannot read or prepare the file; check the data directory permissions and capacity.'
+                : knownCard ? 'Reply target saved; local delivery completion is pending.'
                 : 'Reply card delivery is unconfirmed.';
             const changed = this.store.db.prepare("UPDATE outbox SET state=?,file_state=CASE WHEN file_state='sending' THEN 'uncertain' ELSE file_state END,delivery_error=? WHERE id=? AND state='sending'").run(state, reason, id).changes;
-            this.store.audit(room.key, 'output_delivery_failed', { id, phase, kind: row.kind, knownTarget: !!target });
-            if (changed && target && phase !== 'card') await this.pendingFileNotice(row, room, target, reason);
+            this.store.audit(room.key, 'output_delivery_failed', { id, phase, kind: row.kind, knownTarget: knownCard, knownFile });
+            if (changed && target && phase !== 'card' && !knownFile) await this.pendingFileNotice(row, room, target, reason);
             return false;
         } finally { this.active.delete(id); }
     }
