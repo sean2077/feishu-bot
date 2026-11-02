@@ -8,6 +8,7 @@ import { parseCli } from './cli-options.ts';
 import { connectBeforeStop } from './connect.ts';
 import { deploymentChecks, runDoctor } from './doctor.ts';
 import { Store } from './store.ts';
+import { feishuDiagnostic } from './feishu-diagnostics.ts';
 let secrets: string[] = [];
 async function main(): Promise<void> {
     const { command, configPath, probe, probeFeishu } = parseCli(process.argv.slice(2));
@@ -99,7 +100,7 @@ async function main(): Promise<void> {
             const content = await gateway!.approvals.click(event.chatId, event.operator.openId, event.action.value, event.messageId);
             return content ? { toast: { type: 'info' as const, content } } : {};
         });
-        channel.on('error', error => log('feishu_error', { code: error.code }));
+        channel.on('error', error => log('feishu_error', feishuDiagnostic(error)));
         channel.on('reconnecting', () => log('feishu_reconnecting'));
         channel.on('reconnected', () => log('feishu_reconnected'));
         // Recover persisted state before the event source can deliver new input.

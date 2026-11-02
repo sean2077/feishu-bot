@@ -1,6 +1,7 @@
 import { createLarkChannel, normalize as normalizeEvent, type LarkChannel, type NormalizedMessage, type RawMessageEvent } from '@larksuite/channel';
 import { readFile, stat } from 'node:fs/promises';
 import { readable } from './policy.ts';
+import { feishuSdkLogger } from './feishu-diagnostics.ts';
 import type { Config, Message, Resource, Transport, Room, ReceiptState, ReceiptApplied } from './types.ts';
 export function normalize(msg: NormalizedMessage): Message {
     return { id: msg.messageId, chatId: msg.chatId, chatType: msg.chatType, senderId: msg.senderId, senderName: msg.senderName,
@@ -19,7 +20,7 @@ export function feishuTransport(config: Config, log: (event: string, detail: obj
         respectProxyEnv: true, httpTimeoutMs: 20000,
         policy: { requireMention: config.limits.backgroundMessages === 0, respondToMentionAll: false, groupAllowlist: config.groups.length ? config.groups.map(g => g.chatId) : ['__disabled__'], dmMode: 'allowlist', dmAllowlist: config.dms.map(d => d.userId) },
         safety: { chatQueue: { enabled: true, mergeWhileBusy: false, cardActions: 'separate' }, batch: { text: { delayMs: 0, longDelayMs: 0, maxMessages: 1 }, media: { delayMs: 0, maxItems: 1 } } },
-        logger: { debug: () => { }, trace: () => { }, info: () => { }, warn: () => log('feishu_warning', {}), error: () => log('feishu_sdk_error', {}) },
+        logger: feishuSdkLogger(log),
         // Do not blindly retry message creation after an ambiguous network failure.
         // Known-ID card updates are retried through the durable application outbox.
         outbound: { retry: { maxAttempts: 1, baseDelayMs: 500 }, ssrfGuard: true } });
