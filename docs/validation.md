@@ -22,7 +22,7 @@ npm run check
 
 `process-tree.test.ts` 创建真实的父、子、孙三代进程，检查 PID 存活状态及心跳停止，而非仅断言调用过 stop。此用例在 Windows 也运行；测试结果不能外推为任意脱离父进程的系统任务都可回收。工作区路径测试使用实际目录别名，核对规范路径、已有文件及会话身份保持不变。
 
-Windows 的已退出根进程测试同时记录 `windows-cim-cleanup-stages` 诊断行：PowerShell 内部的 started、snapshot、ancestry 和 termination 阶段累计耗时，以及 Node 侧包含进程启动和退出的总耗时。测试继续验证真实子孙 PID 和心跳；计时不会替代清理确认。生产路径默认不打印进程 ID、命令行或完整 WMI 快照；仅在 CIM 清理失败时错误包含最后完成的阶段与总耗时。该证据可以区分 PowerShell 启动、CIM 查询、树关系计算和目标进程终止瓶颈，但单次 CI 测量不能推断总体失败率，已消失的中间祖先仍无法安全重建。
+Windows 的已退出根进程测试同时记录 `windows-cim-cleanup-stages` 诊断行：PowerShell 内部的 started、snapshot、ancestry 和 termination 阶段累计耗时，以及 Node 侧包含进程启动和退出的总耗时。测试继续验证真实子孙 PID 和心跳；计时不会替代清理确认。生产路径默认不打印进程 ID、命令行或完整 WMI 快照；仅在 CIM 清理失败时错误包含最后完成的阶段与总耗时。该证据可以分别估算 CIM 查询、树关系计算及目标进程终止；Node 总耗时减去 PowerShell 内部耗时还包含进程启动、退出、IPC 等开销，无法单独归因为启动。单次 CI 测量不能推断总体失败率，已消失的中间祖先仍无法安全重建。
 
 ## 迁移交互专项
 
