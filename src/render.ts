@@ -14,6 +14,7 @@ export class Render {
     private timer?: ReturnType<typeof setTimeout>;
     private closed = false;
     private tail: Promise<void> = Promise.resolve();
+    private pendingPreviews = 0;
     private last = '';
     private status = '处理中';
     private legacy = 0;
@@ -57,6 +58,9 @@ export class Render {
         this.timer.unref();
     }
     private flush(): void {
+        // Track queued as well as in-flight previews. A final reply cannot be
+        // considered never-sent while a prior create may still start or finish.
+        this.pendingPreviews++;
         this.tail = this.tail.then(async () => {
             if (this.signal?.aborted || !this.replyTo) return; // Buffer unattributed background content until its result supplies an origin.
             const card = replyCard(this.status, this.content('text'), this.content('thinking'));
@@ -74,7 +78,7 @@ export class Render {
                 if (!this.messageId) this.createUncertain = true;
                 this.store.audit(this.room.key, 'preview_delivery_pending', { session: this.session });
             }
-        }).catch(() => {});
+        }).catch(() => {}).finally(() => { this.pendingPreviews--; });
     }
     async cancel(title = '已停止'): Promise<void> {
         this.closed = true; clearTimeout(this.timer);
@@ -91,16 +95,27 @@ export class Render {
         const card = replyCard(title ?? (success ? '回复' : '执行失败'), body, thinking, true);
         // Persist before awaiting slow preview I/O. Recovery will never lose the final answer or blindly recreate an uncertain preview.
         const file = answer.length > 24000 ? { name: 'reply.md', directory: join(dataDir, 'exports', hash(this.room.key).slice(0, 32)) } : undefined;
+        // Only an outstanding preview could be creating a card at this point.
+        // A never-started reply is already safe to retry if we crash immediately
+        // after committing it, before finish() resumes from its first await.
+        const initialState = this.pendingPreviews ? 'preparing' :
+            this.createUncertain && !this.messageId ? 'uncertain' : 'pending';
         // The final answer and its originating input's completion are one
         // durable transition. A failed insert must leave the input recoverable.
         const id = this.store.transaction(() => {
             const saved = this.outbox.save(this.room, this.session, answer, success, this.messageId, this.replyTo, this.threadId, card, origins, file);
-            this.store.db.prepare("UPDATE outbox SET state='preparing' WHERE id=?").run(saved);
+            if (initialState !== 'pending')
+                this.store.db.prepare('UPDATE outbox SET state=? WHERE id=?').run(initialState, saved);
             onPersisted?.();
             return saved;
         });
         this.finalId = id;
         await this.tail;
+        if (initialState !== 'preparing') {
+            if (initialState === 'pending' && !this.signal?.aborted)
+                await this.outbox.deliver(id, this.room);
+            return;
+        }
         // The final answer was committed together with its input's done state.
         // Shutdown only stops this in-memory attempt; the persisted reply must
         // remain recoverable. An explicit /stop can still cancel the row.

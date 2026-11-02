@@ -179,3 +179,35 @@ test('shutdown retains an ambiguous preview create without automatically recreat
         await f.close();
     }
 });
+
+test('a committed final reply without a preview remains retryable across an immediate restart', async () => {
+    const f = await fixture();
+    try {
+        const input = message();
+        await f.gateway.message(input);
+        await until(() => f.workers[0]?.sent.length === 1);
+        const worker = f.workers[0]!;
+        const uuid = worker.sent[0]!.uuid;
+        worker.emit({ type: 'consumed', uuid });
+
+        // No text/thinking preview was ever queued. Inspect the synchronous
+        // durable commit before finish() resumes after its first await.
+        worker.emit({ type: 'result', uuid, success: true, text: 'answer with no preview' });
+        const row = f.store.db.prepare("SELECT id,state,target,text FROM outbox WHERE kind='reply'").get()!;
+        assert.equal(row.text, 'answer with no preview');
+        assert.equal(row.target, null);
+        assert.equal(f.store.db.prepare('SELECT status FROM inbox WHERE id=?').get(input.id)?.status, 'done');
+        assert.equal(row.state, 'pending',
+            'a crash before the first external create must not make a never-sent answer uncertain');
+
+        // Simulate startup recovery at this exact durable boundary. A create
+        // cannot have started, so it must remain safe to deliver once.
+        f.store.recover();
+        assert.equal(f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(row.id)?.state, 'pending');
+        await until(() => f.store.db.prepare('SELECT state FROM outbox WHERE id=?').get(row.id)?.state === 'done');
+        assert.equal(f.transport.sent.filter(item => item.card).length, 1,
+            'the saved answer must be delivered without a duplicate create');
+    } finally {
+        await f.close();
+    }
+});
