@@ -98,9 +98,12 @@ export class Receipts {
             }
         }).catch(() => {});
     }
-    async drain(): Promise<void> {
+    /** Tests and callers can flush current work without shutting the receipt service down. */
+    async drain(): Promise<void> { await this.serial.drain(); }
+    /** Shutdown alone releases in-flight Feishu waits; durable attempts remain for reconciliation. */
+    async close(): Promise<void> {
         this.closing = true;
         for (const release of this.inFlight) release();
-        await this.serial.drain();
+        await this.drain();
     }
 }
