@@ -4,6 +4,7 @@ export interface CliOptions {
     command: 'help' | 'init' | 'doctor' | 'run';
     configPath: string;
     probe: boolean;
+    probeFeishu: boolean;
 }
 
 /** Parse before touching configuration, state or the network. */
@@ -12,7 +13,7 @@ export function parseCli(argv: string[], cwd = process.cwd()): CliOptions {
     const command = first === '--help' || first === '-h' ? 'help' : first;
     if (!['help', 'init', 'doctor', 'run'].includes(command))
         throw new Error(`Unknown command ${JSON.stringify(first)}. Use --help.`);
-    let config = 'config.json', probe = false, configSeen = false;
+    let config = 'config.json', probe = false, probeFeishu = false, configSeen = false;
     for (let i = 0; i < rest.length; i++) {
         const arg = rest[i]!;
         if (arg === '--config' || arg.startsWith('--config=')) {
@@ -24,11 +25,13 @@ export function parseCli(argv: string[], cwd = process.cwd()): CliOptions {
             configSeen = true;
         } else if (arg === '--probe' && command === 'doctor' && !probe) {
             probe = true;
+        } else if (arg === '--probe-feishu' && command === 'doctor' && !probeFeishu) {
+            probeFeishu = true;
         } else if (arg === '--help' || arg === '-h') {
-            return { command: 'help', configPath: resolve(cwd, config), probe: false };
+            return { command: 'help', configPath: resolve(cwd, config), probe: false, probeFeishu: false };
         } else {
-            throw new Error(`Unexpected argument ${JSON.stringify(arg)}. --probe is supported only by doctor. Use --help.`);
+            throw new Error(`Unexpected argument ${JSON.stringify(arg)}. --probe and --probe-feishu are supported only by doctor. Use --help.`);
         }
     }
-    return { command: command as CliOptions['command'], configPath: resolve(cwd, config), probe };
+    return { command: command as CliOptions['command'], configPath: resolve(cwd, config), probe, probeFeishu };
 }
