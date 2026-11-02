@@ -147,6 +147,7 @@ test('stalled durable update keeps known card ID for update-only recovery', { ti
         recovered = new Gateway(f.config, reopened, f.transport, f.factory);
         f.transport.update = async () => { updates++; };
         await recovered.recover();
+        await recovered.sweep();
         await until(() => reopened!.db.prepare('SELECT state FROM outbox WHERE id=?').get(row.id)?.state === 'done');
         assert.equal(f.transport.sent.filter(m => m.card).length, 1);
         assert.equal(updates, 2, 'recovery updates exactly the original confirmed card');
