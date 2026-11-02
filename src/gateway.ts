@@ -275,19 +275,26 @@ export class Gateway {
                 const rateKey = room.key + ':' + message.senderId, now = Date.now(), recent = (this.rates.get(rateKey) ?? []).filter(t => t > now - 60000);
                 if (recent.length >= this.config.limits.messagesPerMinute) {
                     this.store.insert(room.key, message, 'cancelled');
-                    await this.notice(room, '消息过于频繁，请稍后再试。', message);
+                    this.notify(room, '消息过于频繁，请稍后再试。', message);
                     return;
                 }
                 recent.push(now);
                 this.rates.set(rateKey, recent);
                 if (message.inputIssue || original.text.trim().length > this.config.limits.textChars || original.resources.length > 12) {
                     this.store.insert(room.key, { ...message, text: '', resources: [] }, 'cancelled');
-                    await this.notice(room, `消息未提交：${message.inputIssue ?? '正文或附件数量超过本次输入上限，请分开发送。'}`, message);
+                    this.notify(room, `消息未提交：${message.inputIssue ?? '正文或附件数量超过本次输入上限，请分开发送。'}`, message);
                     return;
                 }
                 if (/^\/(help|status|sessions|new|resume|stop|answer|outputs|retry-output|usage)(?:\s|$)/.test(message.text)) {
                     this.store.insert(room.key, message, 'done');
-                    await this.command(room, message);
+                    // A read-only command has a synchronous snapshot, but its Feishu
+                    // reply must not hold admission or block a later /stop.
+                    if (/^\\/(help|status|sessions|outputs|usage)(?:\\s|$)/.test(message.text))
+                        void this.track(this.command(room, message)).catch(error => {
+                            try { this.store.audit(room.key, 'management_read_failed',
+                                { error: redact(errorText(error), this.secrets) }); } catch { /* storage unavailable */ }
+                        });
+                    else await this.command(room, message);
                     return;
                 }
                 const supplement = /^\/(btw|ps)(?:\s+([\s\S]*))?$/.exec(message.text);
@@ -296,13 +303,13 @@ export class Gateway {
                     const body = supplement[2]?.trim();
                     if (!body) {
                         this.store.insert(room.key, message, 'done');
-                        await this.notice(room, '用法：/btw 补充正文（/ps 同义）。仅补充当前正在执行的前台任务。', message);
+                        this.notify(room, '用法：/btw 补充正文（/ps 同义）。仅补充当前正在执行的前台任务。', message);
                         return;
                     }
                     const target = this.foregroundTarget(room);
                     if (!target) {
                         this.store.insert(room.key, message, 'cancelled');
-                        await this.notice(room, '当前没有正在执行的前台任务，补充未提交。需要开始任务时请发送普通消息。', message);
+                        this.notify(room, '当前没有正在执行的前台任务，补充未提交。需要开始任务时请发送普通消息。', message);
                         return;
                     }
                     supplementTo = target.uuid;
@@ -310,13 +317,13 @@ export class Gateway {
                 }
                 if (this.store.countPending(room.key) >= this.config.limits.inboxPerRoom) {
                     this.store.insert(room.key, message, 'cancelled');
-                    await this.notice(room, '本群待交付输入已达上限，请查看 /status 或联系维护者。', message);
+                    this.notify(room, '本群待交付输入已达上限，请查看 /status 或联系维护者。', message);
                     return;
                 }
                 const compactMatch = supplement ? null : /^\/compact(?:\s+([\s\S]*))?$/.exec(message.text);
                 if (compactMatch && !room.maintainers.includes(message.senderId) && room.dmUser !== message.senderId) {
                     this.store.insert(room.key, message, 'cancelled');
-                    await this.notice(room, '整理共享会话需要维护者操作。', message);
+                    this.notify(room, '整理共享会话需要维护者操作。', message);
                     return;
                 }
                 const session = this.store.session(room.key), background = compactMatch || supplement ? [] : this.store.background(room.key, now, this.config.limits.backgroundMs, this.config.limits.backgroundMessages)
@@ -337,9 +344,9 @@ export class Gateway {
                 dispatchNeeded = true;
                 this.receipts.accept(room, session.id, message);
                 if (compactMatch && (this.slots.get(room.key)?.busy || this.store.countPending(room.key) > 1))
-                    await this.notice(room, '已接收 /compact，将在当前工作轮次结束后整理上下文；期间仍可处理审批。', message);
+                    this.notify(room, '已接收 /compact，将在当前工作轮次结束后整理上下文；期间仍可处理审批。', message);
                 if (supplementTo && this.store.pending(room.key).some(d => d.command))
-                    await this.notice(room, '补充已保存，等待前面的 /compact 控制边界；若目标运行先结束则取消，不会另起任务。审批仍可正常操作。', message);
+                    this.notify(room, '补充已保存，等待前面的 /compact 控制边界；若目标运行先结束则取消，不会另起任务。审批仍可正常操作。', message);
             } finally {
                 if (dispatchNeeded && !this.closing) this.kick(room);
             }
@@ -817,6 +824,10 @@ export class Gateway {
             if (this.slots.get(room.key) === slot) this.slots.delete(room.key);
         });
         this.kickWaiting();
+    }
+    /** Informational sends cannot hold inbound chat locks while Feishu is slow. */
+    private notify(room: Room, text: string, message?: Message): void {
+        void this.track(this.notice(room, text, message)).catch(() => {});
     }
     private async notice(room: Room, text: string, message?: Message): Promise<void> {
         try {
