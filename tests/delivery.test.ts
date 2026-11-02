@@ -55,6 +55,58 @@ test('a confirmed new card with an unpersisted target is never auto-created agai
     } finally { await f.close(); }
 });
 
+test('persisted card target resumes after local output indexing fails', async () => {
+    const f = await fixture();
+    try {
+        const room = route(f.config, message())!, session = f.store.session(room.key);
+        const outbox = new Outbox(f.store, f.transport);
+        const id = outbox.save(room, session.id, 'result remains durable', true);
+        // The Feishu create succeeded and its message ID was saved, but the
+        // separate local output ownership index write fails before completion.
+        f.store.db.exec(`CREATE TRIGGER reject_output_index BEFORE INSERT ON outputs
+            BEGIN SELECT RAISE(ABORT, 'fixture: output index failed'); END`);
+        assert.equal(await outbox.deliver(id, room), false);
+        const row = f.store.db.prepare('SELECT state,target FROM outbox WHERE id=?').get(id)!;
+        assert.equal(f.transport.sent.filter(item => item.card).length, 1);
+        assert.ok(row.target, 'the provider target was persisted before the local index failed');
+        assert.equal(row.state, 'pending', 'a persisted target can be safely updated, not recreated');
+        assert.deepEqual(outbox.retryable(room.key), [id]);
+        f.store.db.exec('DROP TRIGGER reject_output_index');
+
+        const restarted = new Outbox(f.store, f.transport);
+        assert.equal(await restarted.deliver(id, room), true);
+        assert.equal(f.transport.sent.filter(item => item.card).length, 1, 'must not create another card');
+        assert.equal(f.transport.updates.length, 1);
+        assert.equal(f.store.isOutput(room.key, String(row.target)), true);
+    } finally { await f.close(); }
+});
+
+test('persisted file upload receipt resumes without uploading again after local index failure', async () => {
+    const f = await fixture();
+    try {
+        const room = route(f.config, message())!, session = f.store.session(room.key);
+        const path = join(f.dir, 'persisted-file.txt');
+        await writeFile(path, 'file bytes');
+        const outbox = new Outbox(f.store, f.transport);
+        const id = outbox.saveFile(room, session.id, path, 'persisted-file.txt');
+        f.store.db.exec(`CREATE TRIGGER reject_output_index BEFORE INSERT ON outputs
+            BEGIN SELECT RAISE(ABORT, 'fixture: output index failed'); END`);
+        assert.equal(await outbox.deliver(id, room), false);
+        const row = f.store.db.prepare('SELECT state,file_state,file_target FROM outbox WHERE id=?').get(id)!;
+        assert.equal(f.transport.sent.length, 1);
+        assert.equal(row.file_state, 'done');
+        assert.ok(row.file_target, 'the provider file ID was persisted before local indexing failed');
+        assert.equal(row.state, 'pending', 'a confirmed file must not require an ambiguous manual retry');
+        assert.deepEqual(outbox.retryable(room.key), [id]);
+        f.store.db.exec('DROP TRIGGER reject_output_index');
+
+        const restarted = new Outbox(f.store, f.transport);
+        assert.equal(await restarted.deliver(id, room), true);
+        assert.equal(f.transport.sent.length, 1, 'must not upload the file a second time');
+        assert.equal(f.store.isOutput(room.key, String(row.file_target)), true);
+    } finally { await f.close(); }
+});
+
 test('known-card updates are retried and concurrent outbox instances claim once', async () => {
     const f = await fixture();
     try {
