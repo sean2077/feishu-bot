@@ -4,6 +4,7 @@
 
 | 项目 | 当前结果 | 证据 / 下一步 |
 |---|---|---|
+| 最终回复提交后、首次预览或飞书创建前崩溃 | 已修复（真实 SQLite／模拟 Worker 与飞书／跨平台 CI） | 无预览任务排队且此前未发生未知创建时，`Render.finish()` 不再将已持久化答案先标成 `preparing`；它在同一事务中以可恢复的 `pending` 记录最终答案和输入完成状态，崩溃后由原有 Outbox 安全投递。仍有待完成预览创建或未知远端写入的情形保持 `preparing`／`uncertain`，不能自动重做。未进行真实飞书验收。 |
 | 服务关闭时最终答案已持久化但预览仍在创建 | 已修复（真实 SQLite／模拟飞书预览竞态／跨平台 CI） | 原生结果与输入 `done` 已事务提交，正常关闭发生在预览创建响应前时，旧逻辑却将最终 Outbox `preparing` 改成 `cancelled`，重启后永久丢失回复。现等待预览结论后保留结果：有已知卡片 ID 则 `pending`，可安全更新；创建结果未知则 `uncertain`，不自动重做。显式 `/stop` 对待处理输出的取消保持有效；真实飞书待验收。 |
 | 持久化最终回复在首次卡片创建前崩溃 | 已修复（真实 SQLite／模拟飞书／跨平台 CI） | 最终回复已以 `pending` 且 `target=NULL` 持久化，但在 `deliver()` 抢占 `sending` 前崩溃时，原本的定期重试永不选取该行，造成答案滞留。现仅对尚未开始外部写入的 `pending` 回复允许自动创建；任何已进入 `sending` 且结果未知的创建在恢复时仍保持 `uncertain`，不自动重放。按原聊天授权重新检查、保留附件交付屏障、每轮 10 条限制及游标轮转。真实飞书创建结果仍需联调。 |
 | 远端卡片已创建但回执 ID 落库失败时的重复创建 | 已修复（真实 SQLite 故障注入／模拟飞书／跨平台 CI） | 远端 `card()` 返回 ID 后，SQLite 保存 `outbox.target` 失败时，旧逻辑按局部变量判断为 `pending`，持久记录仍无 target，自动重试会再创建卡片。现按数据库读出的原 target 判断：未知创建保持 `uncertain`，不自动重发；已知 target 的卡片更新仍可安全重试。真实飞书与实际磁盘故障未验收。 |
@@ -40,6 +41,8 @@
 | Windows 孤儿进程清理偶发超时 | 未修复生产路径；CI 冷启动阶段已定位 | [PR #18 分阶段测量](https://github.com/sean2077/feishu-bot/actions/runs/41267952734) 显示首次 PowerShell 脚本执行前约 10.95–11.07 秒，CIM 查询约 0.68–1.61 秒，进程终止阶段远短于冷启动。限制测试文件并行度为 2 后，在[对照 CI](https://github.com/sean2077/feishu-bot/actions/runs/41268313285) 中启动前阶段约 3.42–4.19 秒；这是不同 runner 上的测试调度观察，不代表生产 Windows 11 的进程清理故障已经修复。PR #13/#14 的 WMI 替换未证明收益，保持未合入。 |
 
 ## 本轮验证
+
+PR #41 调查无预览情况下，最终答案和输入 `done` 已持久提交、但 `finish()` 尚未跨越首次异步边界时崩溃的恢复分类。仅添加回归的提交 `783f8ba` 在 [CI 41365745542](https://github.com/sean2077/feishu-bot/actions/runs/41365745542) 的 Ubuntu Node.js 22.16／24 两组实际失败：期望可安全恢复的 `pending`，实际为 `preparing`；Windows 两组在后续修复提交触发新 CI 后取消，不声称红阶段 Windows 已复现。代码提交 `54837b6` 跟踪排队和正在执行的预览，只有不存在尚未判定的预览且不存在历史未知创建时才在提交时直接保存 `pending`；其余情况维持保守的待确认策略。[CI 41365838479](https://github.com/sean2077/feishu-bot/actions/runs/41365838479) 在 Ubuntu／Windows × Node.js 22.16／24 四组完整通过，原有已知预览卡片更新及未知创建不重复执行的回归仍通过。使用真实 SQLite、Gateway、Outbox 和模拟 Worker／飞书传输，不代表真实 Feishu 服务一致性测试；最终文档版与合入 main 的 CI 另行核验。
 
 PR #40 对服务正常关闭与并发预览创建建立故障复现：仅新增首个回归的 `304d510` 在 [CI 41360951492](https://github.com/sean2077/feishu-bot/actions/runs/41360951492) 的 Ubuntu／Windows × Node.js 22.16／24 四组均实际失败（答案已持久化、输入已是 `done`，但输出被误改为 `cancelled`）。修复 `d126eba` 后，如果预览返回已知卡片 ID，保留 `pending` 供重启后安全更新；如果创建响应丢失，保留 `uncertain`，不得自动再次创建。补充两种竞态回归后的 [CI 41361124877](https://github.com/sean2077/feishu-bot/actions/runs/41361124877) 四组完整通过（Node22 每组 145 项核心通过＋1 项平台条件跳过，各 12 项原生子进程测试通过）。仅使用真实 SQLite／Gateway、模拟 Worker 与飞书传输；不声称真实飞书或模型服务联调。最终文档提交和合入 main 后的 CI 独立核验。
 
