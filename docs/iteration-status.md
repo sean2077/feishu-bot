@@ -77,6 +77,14 @@
 
 微软 [Win32_Process](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-process) 说明 ParentProcessId 可能指向已退出或 PID 被复用的进程，继续以 CreationDate 和已知父子谱系验证归属，不能改为按名称终止或仅靠旧 PID 命中。若中间祖先已完全消失，当前一次性快照仍无法可靠重建链条；该限制留待专门方案及真实 Windows 验证。最终合并及 main 独立 CI 另行核对，不能由首轮 PR CI 代替。
 
+### 关闭后迟到的审批卡
+
+[PR #60](https://github.com/sean2077/feishu-bot/pull/60) 审查审批卡创建与服务停止／SQLite 关闭的交接：原实现收到飞书成功创建的远端卡片 ID 后，先尝试写本地输出索引，再检查请求是否已经结束。如果网络响应晚于服务关闭，本地数据库已经关闭，索引操作抛错并被捕获，原计划的“请求已结束”卡片更新因此不会发出；远端可能留下看似仍可操作的旧卡。旧审批回调的持久请求状态仍会拒绝授权，因此这是错误的状态展示和退出后资源访问，不是已证实的越权执行。
+
+测试先行 `9c4d9a6` 的 [CI 41535771820](https://github.com/sean2077/feishu-bot/actions/runs/41535771820) 中，Ubuntu Node 24 既有核心用例通过、1 项既有平台跳过，新增的实际 Gateway／SQLite＋延迟模拟飞书卡创建回归失败：服务与 SQLite 已关闭后，迟到卡片没有被更新为失效状态。修复 `0886718` 将请求归属检查移至输出索引之前；若已经停止／取消，便不再访问数据库或将其登记为有效审批卡，仅尝试一次不阻塞的失效外观更新。没有引入新队列、远端重试或改变审批结果。
+
+修复版 [CI 41535930186](https://github.com/sean2077/feishu-bot/actions/runs/41535930186) 的 Ubuntu Node 22/24 与 Windows Node 22 检查通过；Windows Node 24 的新审批测试也通过，但其未改动的真实孤儿树进程回收测试再次触发旧 PowerShell/CIM 15 秒失败：`elapsedMs=15017`、`last=not_started`、捕获 stdout 为空。此证据只能说明超时前未收到第一条阶段标记，不能区分进程启动、脚本执行前等待与 stdout 缓冲；不将其武断归因于启动，也不因此降低 PID／心跳安全检查或延长超时。最终 head 与 main 的独立验证以 PR 及 GitHub 实际结果为准。
+
 ## 接入、交互与测量
 
 | 范围 | 状态 | 验收边界 |

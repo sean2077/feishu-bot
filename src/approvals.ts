@@ -69,11 +69,16 @@ export class Approvals {
             void Promise.all(targets.map(async (target) => {
                 try {
                     const messageId = await this.transport.card(target, this.render(id, p));
+                    // The provider may accept a create after /stop or shutdown has
+                    // settled the request and closed SQLite. Invalidate the late
+                    // card without indexing it as a live approval or touching DB.
+                    if (this.pending.get(id) !== p) {
+                        void this.transport.update(messageId, displayCard('请求已结束', '该请求不再接受操作。')).catch(() => { });
+                        return true;
+                    }
                     p.cards.set(messageId, p.forwarded ? target.dmUser : undefined);
                     if (!p.forwarded)
                         this.store.recordOutput(messageId, room.key, session);
-                    if (!this.pending.has(id))
-                        void this.transport.update(messageId, displayCard('请求已结束', '该请求不再接受操作。')).catch(() => { });
                     return true;
                 }
                 catch {
