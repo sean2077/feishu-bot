@@ -60,7 +60,7 @@ async function respond(res, body, plan, usage) {
 export async function migrationFixture(planResponse, { actions = false } = {}) {
     const root = await mkdtemp(join(tmpdir(), 'feishu-migration-'));
     const marker = join(root, 'operation-count.txt');
-    const f = { root, marker, mode: 'plain', requests: [], errors: [], events: [], workers: [], sent: [], updates: [], receipts: [], files: [], downloads: [], logs: [], quotes: new Map(), resources: new Map(), closed: false, onFile: undefined, onEvent: undefined };
+    const f = { root, marker, mode: 'plain', requests: [], errors: [], events: [], workers: [], sent: [], updates: [], receipts: [], files: [], downloads: [], logs: [], quotes: new Map(), resources: new Map(), handled: new Set(), rejected: new Map(), closed: false, onFile: undefined, onEvent: undefined };
     const modelServer = createServer(async (req, res) => {
         try {
             const chunks = []; let size = 0;
@@ -113,11 +113,18 @@ export async function migrationFixture(planResponse, { actions = false } = {}) {
     const open = async () => {
         f.store = new Store(join(root, 'gateway.sqlite'));
         f.gateway = new Gateway(f.config, f.store, f.transport, factory);
+        // Observe completion only. Never bypass the production SDK safety lane or Gateway entry.
+        const handle = f.gateway.message.bind(f.gateway);
+        f.gateway.message = async message => {
+            try { await handle(message); }
+            finally { f.handled.add(message.id); }
+        };
         f.channel = feishuTransport(f.config, (event, detail) => f.logs.push({ event, detail })).channel;
         // Test-only ingress: the actual pinned SDK dispatcher/normalizer/safety still run.
         f.channel.botIdentity = identity;
         f.channel.safety.setBotIdentity(identity);
         f.channel.registerDispatcherHandlers();
+        f.channel.on('reject', event => f.rejected.set(event.messageId, event.reason));
         f.closed = false;
         bindFeishuInbound(f.channel, f.gateway, (event, detail) => f.logs.push({ event, detail }), () => f.closed);
         await f.gateway.recover();
@@ -128,7 +135,14 @@ export async function migrationFixture(planResponse, { actions = false } = {}) {
             message_type: type, content: JSON.stringify(content), create_time: String(Date.now()), parent_id: options.reply, thread_id: options.thread,
             mentions: options.mention === false ? [] : [{ key: '@_user_1', id: { open_id: identity.openId }, name: identity.name }] }
     });
-    f.receive = async event => { await f.channel.dispatcher.handles.get('im.message.receive_v1')(event); return event.message.message_id; };
+    f.receive = async event => {
+        const id = event.message.message_id;
+        await f.channel.dispatcher.handles.get('im.message.receive_v1')(event);
+        // pushMessage resolves after enqueue, not after onMessage. Assertions and restart
+        // must wait for actual handler completion rather than racing the SDK's async lane.
+        await until(() => f.handled.has(id) || f.rejected.has(id), 'raw message handled or explicitly rejected');
+        return id;
+    };
     f.text = (text, options = {}) => f.receive(f.raw('text', { text: `@_user_1 ${text}` }, options));
     f.click = (card, operator, value) => f.channel.dispatcher.handles.get('card.action.trigger')({
         context: { open_message_id: card.id, open_chat_id: 'group1' }, operator: { open_id: operator }, action: { tag: 'button', value }
