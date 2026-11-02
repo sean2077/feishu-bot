@@ -46,7 +46,11 @@ export class Approvals {
     async request(room: Room, session: string, name: string, input: Args, summary: string, signal?: AbortSignal, questions?: Question[]): Promise<Outcome> {
         if (signal?.aborted)
             return { approved: false, reason: 'cancelled' };
-        if (questions && (!questions.length || questions.length > 8 || questions.some(q => !q || typeof q.question !== 'string' || !q.question || !Array.isArray(q.options) || q.options.length > 12 || q.options.some(o => !o || typeof o.label !== 'string'))))
+        if (questions && (!questions.length || questions.length > 8 || questions.some(q =>
+            !q || typeof q.question !== 'string' || !q.question ||
+            (q.header !== undefined && typeof q.header !== 'string') ||
+            !Array.isArray(q.options) || q.options.length > 12 || q.options.some(o =>
+                !o || typeof o.label !== 'string' || (o.description !== undefined && typeof o.description !== 'string')))))
             return { approved: false, reason: 'unsupported question shape' };
         if (this.pending.size >= 256)
             return { approved: false, reason: 'too many pending requests' };
@@ -86,10 +90,19 @@ export class Approvals {
             return displayCard('需要维护者批准', `${p.summary}\n\n仅批准这一次操作，超时或停止后失效。\n请求：\`${id}\``, [
                 button('批准一次', { request: id, decision: 'allow' }, 'primary'), button('拒绝', { request: id, decision: 'deny' }, 'danger')
             ]);
-        const buttons: object[] = [];
-        p.questions.forEach((q, qi) => q.options.forEach((o, oi) => buttons.push(button(`${qi + 1}. ${o.label}`, { request: id, question: qi, option: oi }))));
-        buttons.push(button('提交选择', { request: id, decision: 'submit' }, 'primary'), button('取消', { request: id, decision: 'deny' }));
-        return displayCard('需要补充信息', p.questions.map((q, i) => `${i + 1}. ${q.question}`).join('\n\n') + `\n\n可多题选择后提交。每位成员独立选择，以操作提示为准，卡片不显示个人勾选。自由回答：\`/answer ${id} 你的回答\`。`, buttons);
+        // Keep each option beside its explanation, without nested column layouts
+        // or rendering one member's selections onto the shared group card.
+        const elements: object[] = [];
+        p.questions.forEach((q, qi) => {
+            const mode = q.multiSelect ? '多选' : '单选';
+            elements.push({ tag: 'markdown', content: `**${qi + 1}. ${q.header ? `${q.header} · ` : ''}${mode}**\n${q.question}` });
+            q.options.forEach((o, oi) => {
+                if (o.description) elements.push({ tag: 'markdown', content: `${qi + 1}.${oi + 1} ${o.label}\n${o.description}` });
+                elements.push(button(`${qi + 1}. ${o.label}`, { request: id, question: qi, option: oi }));
+            });
+        });
+        elements.push(button('提交选择', { request: id, decision: 'submit' }, 'primary'), button('取消', { request: id, decision: 'deny' }));
+        return displayCard('需要补充信息', `回答所有问题后提交。每位成员独立选择，以操作提示为准，卡片不显示个人勾选。\n自由回答：\`/answer ${id} 你的回答\`。`, elements);
     }
     async click(chatId: string, operator: string, value: unknown, messageId?: string): Promise<string> {
         if (!value || typeof value !== 'object')
