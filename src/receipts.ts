@@ -5,6 +5,9 @@ import { Serial } from './util.ts';
 /** Durable desired state plus per-message serialization closes late-reaction races. */
 export class Receipts {
     private serial = new Serial();
+    private closing = false;
+    /** Only currently awaiting network responses are retained; completed calls leave no listeners. */
+    private readonly inFlight = new Set<() => void>();
     private retryAfter?: { at: number; id: string };
     readonly store: Store;
     readonly transport: Transport;
@@ -46,9 +49,20 @@ export class Receipts {
         this.retryAfter = last ? { at: Number(last.at), id: String(last.id) } : undefined;
         for (const row of rows) this.kick(String(row.id));
     }
+    /** Release only the local wait. The remote reaction may still be accepted after shutdown. */
+    private async sendOrClose(id: string, state: ReceiptState, applied?: ReceiptApplied): Promise<boolean> {
+        if (this.closing) return false;
+        let release!: () => void;
+        const closed = new Promise<false>(resolve => { release = () => resolve(false); });
+        this.inFlight.add(release);
+        try { return await Promise.race([this.transport.receipt(id, state, applied).then(() => true), closed]); }
+        finally { this.inFlight.delete(release); }
+    }
     private kick(id: string): void {
+        if (this.closing) return;
         void this.serial.run(id, async () => {
             for (;;) {
+                if (this.closing) return;
                 const row = this.store.db.prepare('SELECT desired,applied,room,sender FROM receipts WHERE id=?').get(id);
                 if (!row || row.desired === row.applied) return;
                 if (row.desired !== 'clear' && this.allowed && !this.allowed(String(row.room), String(row.sender ?? ''))) {
@@ -69,15 +83,24 @@ export class Receipts {
                     if (applied !== attempt)
                         this.store.db.prepare('UPDATE receipts SET applied=? WHERE id=?').run(attempt, id);
                 }
-                try { await this.transport.receipt(id, next, applied); }
+                try {
+                    if (!(await this.sendOrClose(id, next, applied)) || this.closing) return;
+                }
                 catch {
+                    if (this.closing) return;
                     this.store.audit(String(row.room), 'receipt_retry_pending', { messageId: id });
                     return;
                 }
+                // The durable attempt remains uncertain if the network outlives shutdown.
+                if (this.closing) return;
                 this.store.db.prepare('UPDATE receipts SET applied=? WHERE id=?').run(next, id);
                 // Re-read: completion/cancellation may have arrived during an add request.
             }
         }).catch(() => {});
     }
-    async drain(): Promise<void> { await this.serial.drain(); }
+    async drain(): Promise<void> {
+        this.closing = true;
+        for (const release of this.inFlight) release();
+        await this.serial.drain();
+    }
 }
