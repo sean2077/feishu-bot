@@ -207,8 +207,15 @@ test('real CC/SDK passes a special question-text key through the native AskUserQ
     });
     try {
         const id = await f.text('Ask the fixture questions');
-        await until(() => f.sent.some(s => s.card?.header?.title?.content === '需要补充信息'), 'native question card');
+        await until(() => f.requests.length > 0, 'fixture model receives native input');
+        await until(() => f.sent.some(s => s.card?.header?.title?.content === '需要补充信息') ||
+            f.events.some(e => e.type === 'result') || f.errors.length > 0, 'native question card or terminal result', 12000);
         const card = f.sent.find(s => s.card?.header?.title?.content === '需要补充信息');
+        assert.ok(card, 'Actual CC/SDK did not open a question: ' + JSON.stringify({
+            requests: f.requests.map(r => ({ number: r.number, mode: r.mode })),
+            events: f.events.filter(e => ['result', 'request', 'error', 'activity'].includes(e.type)).slice(-12),
+            errors: f.errors, logs: f.logs.slice(-6)
+        }));
         const actions = card.card.body.elements.filter(element => element.value).map(element => element.value);
         for (let index = 0; index < 2; index++) {
             const choice = actions.find(value => value.question === index && value.option === 0);
