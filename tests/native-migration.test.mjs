@@ -233,7 +233,9 @@ test('real CC/SDK passes a special question-text key through the native AskUserQ
         assert.ok(submit);
         assert.match((await f.click(card, 'alice', submit))?.toast?.content ?? '', /已提交/);
         await until(() => f.done(id), 'native question result and final delivery');
+        assert.deepEqual(f.errors, [], 'model fixture assertions must hold; actual tool results: ' +
+            JSON.stringify(f.requests.slice(1).flatMap(r => (r.body.messages ?? [])
+                .flatMap(m => Array.isArray(m.content) ? m.content.filter(b => b.type === 'tool_result') : []))).slice(0, 3000));
         assert.ok(inspected, 'follow-up model call must validate the serialized answer');
-        assert.deepEqual(f.errors, []);
     } finally { await f.close(); }
 });
