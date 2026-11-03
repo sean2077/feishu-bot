@@ -50,7 +50,9 @@ export class Approvals {
             !q || typeof q.question !== 'string' || !q.question ||
             (q.header !== undefined && typeof q.header !== 'string') ||
             !Array.isArray(q.options) || q.options.length > 12 || q.options.some(o =>
-                !o || typeof o.label !== 'string' || (o.description !== undefined && typeof o.description !== 'string')))))
+                !o || typeof o.label !== 'string' || (o.description !== undefined && typeof o.description !== 'string'))) ||
+            // Answers are keyed by question text in the native SDK. A duplicate would overwrite one answer.
+            new Set(questions.map(q => q.question)).size !== questions.length))
             return { approved: false, reason: 'unsupported question shape' };
         if (this.pending.size >= 256)
             return { approved: false, reason: 'too many pending requests' };
