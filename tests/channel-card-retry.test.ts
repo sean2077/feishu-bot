@@ -83,7 +83,7 @@ test('pinned SDK 0.7.1 drops distinct-token repeat submit; scoped /answer restor
         await f.gateway.message(message({ senderId: 'bob', chatId: 'group2',
             text: `/answer ${requestId} cross-chat` }));
         assert.equal(f.store.db.prepare('SELECT state FROM requests WHERE id=?').get(requestId)!.state, 'pending');
-        assert.deepEqual(await click(submit, 'delivery-foreign-chat', 'alice', 'group2'), {});
+        assert.deepEqual(await click(submit, 'delivery-foreign-chat', 'bob', 'group2'), {});
         assert.deepEqual(await click(submit, 'delivery-unauthorized-user', 'stranger'), {});
         assert.equal(f.store.db.prepare('SELECT state FROM requests WHERE id=?').get(requestId)!.state, 'pending');
 
