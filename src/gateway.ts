@@ -833,14 +833,17 @@ export class Gateway {
     private async notice(room: Room, text: string, message?: Message): Promise<void> {
         if (this.closing) return;
         try {
+            // Bind a best-effort reply to the session at its origin. A delayed
+            // Feishu response must not be indexed against a later /new or /resume,
+            // nor retroactively acquire a session that did not yet exist.
+            const sessionId = this.store.listSessions(room.key).find(s => s.state === 'open')?.id;
             // These best-effort replies are not durable outbox operations. Stop
             // awaiting their network outcome when shutdown begins; the underlying
             // transport may still finish remotely, but cannot access closed state.
             const id = await waitOrAbort(
                 () => this.transport.send(room, text, message?.id, message?.threadId), this.noticeAbort.signal);
             if (this.closing) return;
-            const session = this.store.listSessions(room.key).find(s => s.state === 'open');
-            if (session) this.store.recordOutput(id, room.key, session.id);
+            if (sessionId) this.store.recordOutput(id, room.key, sessionId);
         } catch {
             if (!this.closing) this.store.audit(room.key, 'notice_failed', {});
         }
