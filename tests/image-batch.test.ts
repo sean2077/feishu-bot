@@ -235,18 +235,35 @@ test('revocation during batch preparation discards all members before model inpu
     } finally { release?.(Buffer.from('cleanup')); await f.close(); }
 });
 
-test('a queued image window survives a gateway restart with the same session and original members', async () => {
-    const f = await fixture(); enable(f, 180);
+test('a queued image window survives a gateway restart with the same session and original members', async t => {
+    const f = await fixture(); enable(f, 180, 3);
     let recovered: Gateway | undefined;
+    // Freeze logical time so a busy runner cannot expire the window before shutdown.
+    // The separate window-expiry test checks real timer delivery.
+    const receivedAt = Date.now();
+    t.mock.method(Date, 'now', () => receivedAt);
     try {
         const a = image(), b = image(); await f.gateway.message(a); await f.gateway.message(b);
         const room = route(f.config, a)!, pending = f.store.pending(room.key), session = pending[0]!.sessionId;
-        await f.gateway.close(); assert.equal(f.workers.length, 0);
+        assert.equal(pending.length, 2);
+        assert.equal(f.workers.length, 0, 'an unexpired window must not start a worker');
+        await f.gateway.close();
+        assert.equal(f.workers.length, 0, 'shutdown must not dispatch unsent images');
         recovered = new Gateway(f.config, f.store, f.transport, f.factory); await recovered.recover();
+        assert.equal(f.workers.length, 0, 'recovery must preserve the unexpired window');
+        const waiting = f.store.pending(room.key);
+        assert.deepEqual(waiting.map(d => d.uuid), pending.map(d => d.uuid));
+        assert.deepEqual(waiting.map(d => d.imageBatch?.id), pending.map(d => d.imageBatch?.id));
+        // A third eligible image closes the persisted window at the count limit.
+        const c = image(); await recovered.message(c);
+        t.mock.restoreAll(); // Restore real time before the bounded polling helper.
         await until(() => allSent(f).length === 1);
-        assert.deepEqual(ids(allSent(f)[0]!), [a.id, b.id]); assert.equal(allSent(f)[0]!.sessionId, session);
-        assert.deepEqual(members(allSent(f)[0]!).map(d => d.uuid), pending.map(d => d.uuid));
-    } finally { await recovered?.close(); await f.close(); }
+        const sent = allSent(f)[0]!;
+        assert.deepEqual(ids(sent), [a.id, b.id, c.id]);
+        assert.equal(sent.sessionId, session);
+        assert.deepEqual(members(sent).map(d => d.uuid).slice(0, 2), pending.map(d => d.uuid));
+        assert.ok(sent.imageBatch?.closed);
+    } finally { t.mock.restoreAll(); await recovered?.close(); await f.close(); }
 });
 
 test('sent image batches become uncertain as a unit after restart and are never automatically replayed', async () => {
