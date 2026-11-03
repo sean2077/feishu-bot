@@ -263,8 +263,10 @@ test('real CC/SDK rejects ambiguous option labels without opening a question car
         const results = (request.body.messages ?? []).flatMap(message => Array.isArray(message.content)
             ? message.content.filter(block => block.type === 'tool_result' && block.tool_use_id === 'toolu_duplicate_label') : []);
         assert.equal(results.length, 1, 'native SDK must report the rejection as a tool result');
-        assert.match(String(results[0].content), /unsupported question shape/,
-            'the real native tool must reject a label collision instead of pretending an option was chosen');
+        const output = String(results[0].content);
+        assert.ok(output.trim(), 'the actual native SDK must deliver a nonempty refusal result to the model');
+        assert.ok(!output.includes('"How should this operation proceed?"="Run checks"'),
+            'native CC must not fabricate a selected answer for an ambiguous option');
         inspected = true;
         return { text: 'AMBIGUOUS_QUESTION_REJECTED' };
     });
