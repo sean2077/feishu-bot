@@ -186,3 +186,61 @@ test('production raw entry: attributed supplements, approval, compact barrier, c
         t.diagnostic('Actual CC + pinned raw SDK ingress: one approved local operation, two attributed supplements, native compact, full-file Done barrier, stop/resume, queued image restart and two native Read calls. Feishu delivery and model intelligence are substitutes.');
     } finally { firstGate.resolve(); fileGate.resolve(); await f.close(); }
 });
+
+test('real CC/SDK passes a special question-text key through the native AskUserQuestion answer', { timeout: 90000 }, async () => {
+    let asked = false, inspected = false;
+    const f = await migrationFixture((_f, request) => {
+        if (!asked) {
+            asked = true;
+            return { content: [{ type: 'tool_use', id: 'toolu_special_question', name: 'AskUserQuestion', input: {
+                questions: [
+                    { question: '__proto__', header: 'Property key', options: [
+                        { label: 'supported', description: 'Retain the exact key.' },
+                        { label: 'cancel', description: 'Stop the fixture.' }
+                    ], multiSelect: false },
+                    { question: 'Continue?', header: 'Confirmation', options: [
+                        { label: 'yes', description: 'Continue with the answer.' },
+                        { label: 'no', description: 'Stop the fixture.' }
+                    ], multiSelect: false }
+                ]
+            } }] };
+        }
+        const results = (request.body.messages ?? []).flatMap(message => Array.isArray(message.content)
+            ? message.content.filter(block => block.type === 'tool_result' && block.tool_use_id === 'toolu_special_question') : []);
+        assert.equal(results.length, 1, 'actual native tool must supply exactly one answer result');
+        const output = String(results[0].content);
+        // The pinned CC renders approved answers into its native tool-result text,
+        // rather than retaining the answers object as raw JSON.
+        assert.ok(output.includes('"__proto__"="supported"'), 'actual native tool result must retain the special answer key');
+        assert.ok(output.includes('"Continue?"="yes"'), 'ordinary question mapping must remain intact');
+        inspected = true;
+        return { text: 'QUESTION_KEY_PRESERVED' };
+    });
+    try {
+        const id = await f.text('Ask the fixture questions');
+        await until(() => f.requests.length > 0, 'fixture model receives native input');
+        await until(() => f.sent.some(s => s.card?.header?.title?.content === '需要补充信息') ||
+            f.events.some(e => e.type === 'result') || f.errors.length > 0, 'native question card or terminal result', 12000);
+        const card = f.sent.find(s => s.card?.header?.title?.content === '需要补充信息');
+        assert.ok(card, 'Actual CC/SDK did not open a question: ' + JSON.stringify({
+            requests: f.requests.map(r => ({ number: r.number, mode: r.mode })),
+            events: f.events.filter(e => ['result', 'request', 'error', 'activity'].includes(e.type)).slice(-12),
+            errors: f.errors, logs: f.logs.slice(-6)
+        }));
+        const actions = card.card.body.elements.filter(element => element.value).map(element => element.value);
+        for (let index = 0; index < 2; index++) {
+            const choice = actions.find(value => value.question === index && value.option === 0);
+            assert.ok(choice);
+            const toast = await f.click(card, 'alice', choice);
+            assert.match(toast?.toast?.content ?? '', /已记录你的选择/);
+        }
+        const submit = actions.find(value => value.decision === 'submit');
+        assert.ok(submit);
+        assert.match((await f.click(card, 'alice', submit))?.toast?.content ?? '', /已提交/);
+        await until(() => f.done(id), 'native question result and final delivery');
+        assert.deepEqual(f.errors, [], 'model fixture assertions must hold; actual tool results: ' +
+            JSON.stringify(f.requests.slice(1).flatMap(r => (r.body.messages ?? [])
+                .flatMap(m => Array.isArray(m.content) ? m.content.filter(b => b.type === 'tool_result') : []))).slice(0, 3000));
+        assert.ok(inspected, 'follow-up model call must validate the serialized answer');
+    } finally { await f.close(); }
+});

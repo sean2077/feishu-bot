@@ -6,6 +6,10 @@
 
 先在飞书＋原生 Claude Code 的既定场景做到比 cc-connect 更自然、可靠、易维护，而不是复制全部渠道和执行底座。对标以相同任务的实际体验为准：首次部署需要的人工步骤、多人补充是否完整进入会话、追问与附件是否好用、故障后是否知道如何继续、恢复是否避免重复副作用，以及同条件的延迟和资源占用。测试通过只证明所覆盖的契约；没有真实客户侧验收或同条件对照，不宣称已经整体超越。
 
+### JavaScript 特殊问句键的答案完整性
+
+[PR #66](https://github.com/sean2077/feishu-bot/pull/66) 审核追问卡片收集答案时的对象键语义。已有重复问句校验不覆盖特殊但唯一的正文，例如 `__proto__`；原实现把该正文直接赋值到普通 `{}`，JavaScript 继承的 setter 使这一项不成为可枚举的自有属性，卡片返回「已提交」却从 JSON 答案中丢失该项。测试先行 `c6cc614` 的 [Ubuntu Node24 CI 41570946595](https://github.com/sean2077/feishu-bot/actions/runs/41570946595) 已确认新增 Gateway／SQLite＋模拟卡片选择测试失败，具体为 `Object.hasOwn(answers, '__proto__') === false`；其他 257 项核心用例通过，1 项平台条件跳过。修复仅用 `Object.fromEntries` 构造标准自有数据属性，不改变原生答案字段、作者权限、重复问句拒绝或会话交付。专项、完整平台 CI 和 main 合入后状态须分别核验。本次合成问题形态不是实际模型／飞书服务验收。
+
 ### 重复问句导致答案覆盖
 
 [PR #65](https://github.com/sean2077/feishu-bot/pull/65) 复核原生 `AskUserQuestion` 的答案结构：SDK 以 `question` 文本作为 `answers` 的键，两个提问即使 `header` 不同，只要正文完全一致，卡片逐项收集后仍会把前一项答案覆盖。命令 `/answer` 的多题 JSON 也不能保留两个相同键。这属于可复现的无声答案丢失风险，而不是授权绕过。测试先行 `abedddc` 的 [Ubuntu Node24 CI 41564467069](https://github.com/sean2077/feishu-bot/actions/runs/41564467069) 在真实 Gateway／SQLite、模拟飞书卡片入口中按预期失败：新增用例等待有效拒绝，却观察到请求仍挂起。修复 `b3951bb` 只在创建卡片和持久请求前拒绝完全重复的问句键，返回现有 `unsupported question shape`，不自行重命名问题或伪造多份答案。其他形态、作者选择与原生会话逻辑不变。专项及完整跨平台验证见 PR CI；尚无真实飞书／模型服务验收。
