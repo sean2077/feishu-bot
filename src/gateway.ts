@@ -769,7 +769,9 @@ export class Gateway {
         }
         if (command === '/answer') {
             const id = parts.shift() ?? '';
-            await this.notice(room, this.approvals.answer(room, message.senderId, id, parts.join(' ')), message);
+            // Question settlement is synchronous; an informational Feishu acknowledgement
+            // must not hold the per-room inbound lock and block a later /stop.
+            this.notify(room, this.approvals.answer(room, message.senderId, id, parts.join(' ')), message);
             return;
         }
         if (!maintainer && room.dmUser !== message.senderId) {
