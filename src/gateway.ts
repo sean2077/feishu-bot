@@ -397,7 +397,7 @@ export class Gateway {
                 if (this.closing || !this.store.pending(room.key).length) return;
                 if (!this.waitingNotified.has(room.key)) {
                     this.waitingNotified.add(room.key);
-                    await this.notice(room, '当前会话都在工作、监控或停止尚未确认，输入已保存。正常空闲后会自动处理；停止未确认时请维护者检查服务诊断。', pending[0]?.message);
+                    this.notify(room, '当前会话都在工作、监控或停止尚未确认，输入已保存。正常空闲后会自动处理；停止未确认时请维护者检查服务诊断。', pending[0]?.message);
                 }
                 return;
             }
@@ -420,7 +420,7 @@ export class Gateway {
         if (slot.stopUnconfirmed) {
             if (!this.waitingNotified.has(room.key)) {
                 this.waitingNotified.add(room.key);
-                await this.notice(room, '原生进程尚未确认退出；本聊天输入已保存，不会启动可能重叠的新进程。请检查服务诊断。');
+                this.notify(room, '原生进程尚未确认退出；本聊天输入已保存，不会启动可能重叠的新进程。请检查服务诊断。');
             }
             return;
         }
@@ -514,7 +514,7 @@ export class Gateway {
                 if (!handedOff && batch) { this.rejectImageBatch(room, members, true); continue; }
                 this.store.transaction(() => { for (const member of members) this.store.mark(member.uuid, 'uncertain'); });
                 for (const member of members) this.receipts.settle(room.key, member.sessionId, [member.message], false);
-                await this.notice(room, `本条交付未确认，不会自动重放：${redact(errorText(e), this.secrets)}`, delivery.message);
+                this.notify(room, `本条交付未确认，不会自动重放：${redact(errorText(e), this.secrets)}`, delivery.message);
                 if (handedOff) {
                     this.event(slot, { type: 'exit', code: null });
                     await slot.worker?.stop();
