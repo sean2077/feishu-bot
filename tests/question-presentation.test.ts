@@ -111,3 +111,34 @@ test('native question key named __proto__ survives card selection as an own JSON
         assert.equal(JSON.stringify(result.answers), '{"__proto__":"supported","Continue?":"yes"}');
     } finally { await f.close(); }
 });
+
+test('options with identical answer labels are rejected before presenting a lossy native question', async () => {
+    const f = await fixture();
+    try {
+        await f.gateway.message(message());
+        await until(() => f.workers[0]?.sent.length === 1);
+        const worker = f.workers[0]!;
+        for (const multiSelect of [false, true]) {
+            const questions: Question[] = [{
+                question: 'How should the operation proceed?',
+                multiSelect,
+                options: [
+                    { label: 'Run checks', description: 'Inspect without modifying state.' },
+                    { label: 'Run checks', description: 'Apply the requested changes.' }
+                ]
+            }];
+            const before = f.transport.sent.length;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const outcome = f.gateway.approvals.request(worker.room, worker.session.id,
+                'AskUserQuestion', { questions }, 'fixture', undefined, questions);
+            const result = await Promise.race([
+                outcome, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 300); })
+            ]);
+            clearTimeout(timer);
+            assert.deepEqual(result, { approved: false, reason: 'unsupported question shape' },
+                'two semantically different options must not serialize to the same native answer');
+            assert.equal(f.transport.sent.length, before);
+            assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM requests WHERE state='pending'").get()!.n, 0);
+        }
+    } finally { await f.close(); }
+});
