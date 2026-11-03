@@ -37,11 +37,15 @@ test('an authorized private-chat user can stop after rate exhaustion without ope
             mentioned: false, text: '/stop' }));
         assert.equal(worker.stopped, true, 'a private-chat owner can stop without another normal-message allowance');
 
-        await f.gateway.message(message({ senderId: 'bob', text: 'start group work' }));
+        await f.gateway.message(message({ senderId: 'alice', text: 'start group work' }));
         await until(() => f.workers[1]?.sent.length === 1);
         const groupWorker = f.workers[1]!;
+        // Bob has not used his group-message allowance. Denial must come from
+        // group maintenance authorization, not from the rate limit.
         await f.gateway.message(message({ senderId: 'bob', text: '/stop' }));
         assert.equal(groupWorker.stopped, false, 'a non-maintainer cannot stop a shared group');
+        assert.ok(f.transport.sent.some(s => s.room.chatId === 'group1' && s.text?.includes('维护者')),
+            'the shared-group stop must reach the permission check');
     } finally {
         await f.close();
     }
