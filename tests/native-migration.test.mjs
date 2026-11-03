@@ -244,3 +244,36 @@ test('real CC/SDK passes a special question-text key through the native AskUserQ
         assert.ok(inspected, 'follow-up model call must validate the serialized answer');
     } finally { await f.close(); }
 });
+
+test('real CC/SDK rejects ambiguous option labels without opening a question card', { timeout: 90000 }, async () => {
+    let issued = false, inspected = false;
+    const f = await migrationFixture((_fixture, request) => {
+        if (!issued) {
+            issued = true;
+            return { content: [{ type: 'tool_use', id: 'toolu_duplicate_label', name: 'AskUserQuestion', input: {
+                questions: [{
+                    question: 'How should this operation proceed?', header: 'Execution mode', multiSelect: false,
+                    options: [
+                        { label: 'Run checks', description: 'Read without changing anything.' },
+                        { label: 'Run checks', description: 'Apply the requested changes.' }
+                    ]
+                }]
+            } }] };
+        }
+        const results = (request.body.messages ?? []).flatMap(message => Array.isArray(message.content)
+            ? message.content.filter(block => block.type === 'tool_result' && block.tool_use_id === 'toolu_duplicate_label') : []);
+        assert.equal(results.length, 1, 'native SDK must report the rejection as a tool result');
+        assert.match(String(results[0].content), /unsupported question shape/,
+            'the real native tool must reject a label collision instead of pretending an option was chosen');
+        inspected = true;
+        return { text: 'AMBIGUOUS_QUESTION_REJECTED' };
+    });
+    try {
+        const id = await f.text('Ask which checks to run');
+        await until(() => f.done(id) || f.errors.length > 0, 'native rejection and terminal reply', 20000);
+        assert.deepEqual(f.errors, [], 'model fixture must receive the actual native tool result');
+        assert.ok(inspected, 'native CC should continue after rejecting the ambiguous question');
+        assert.equal(f.sent.filter(s => s.card?.header?.title?.content === '需要补充信息').length, 0,
+            'do not present an unanswerable native question card');
+    } finally { await f.close(); }
+});
