@@ -194,8 +194,14 @@ test('real CC/SDK passes a special question-text key through the native AskUserQ
             asked = true;
             return { content: [{ type: 'tool_use', id: 'toolu_special_question', name: 'AskUserQuestion', input: {
                 questions: [
-                    { question: '__proto__', header: 'Property key', options: [{ label: 'supported', description: 'Retain the exact key.' }], multiSelect: false },
-                    { question: 'Continue?', header: 'Confirmation', options: [{ label: 'yes', description: 'Continue with the answer.' }], multiSelect: false }
+                    { question: '__proto__', header: 'Property key', options: [
+                        { label: 'supported', description: 'Retain the exact key.' },
+                        { label: 'cancel', description: 'Stop the fixture.' }
+                    ], multiSelect: false },
+                    { question: 'Continue?', header: 'Confirmation', options: [
+                        { label: 'yes', description: 'Continue with the answer.' },
+                        { label: 'no', description: 'Stop the fixture.' }
+                    ], multiSelect: false }
                 ]
             } }] };
         }
