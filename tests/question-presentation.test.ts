@@ -54,3 +54,29 @@ test('malformed optional question metadata is rejected before creating a card', 
         }
     } finally { await f.close(); }
 });
+
+test('repeated question text cannot silently overwrite a distinct answer, even with different headers', async () => {
+    const f = await fixture();
+    try {
+        await f.gateway.message(message());
+        await until(() => f.workers[0]?.sent.length === 1);
+        const worker = f.workers[0]!;
+        const before = f.transport.sent.length;
+        const questions: Question[] = [
+            { header: 'First environment', question: 'Which choice?', options: [{ label: 'development' }, { label: 'release' }] },
+            { header: 'Second environment', question: 'Which choice?', options: [{ label: 'staging' }, { label: 'production' }] }
+        ];
+        // Native SDK AskUserQuestion resolves with Record<question text, answer>.
+        // Distinct answers for the same key cannot both survive serialization.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const outcome = f.gateway.approvals.request(worker.room, worker.session.id,
+            'AskUserQuestion', { questions }, 'fixture', undefined, questions);
+        const result = await Promise.race([
+            outcome, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 300); })
+        ]);
+        clearTimeout(timer);
+        assert.deepEqual(result, { approved: false, reason: 'unsupported question shape' });
+        assert.equal(f.transport.sent.length, before, 'do not present an unanswerable or lossy card');
+        assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM requests WHERE state='pending'").get()!.n, 0);
+    } finally { await f.close(); }
+});
