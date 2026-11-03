@@ -38,3 +38,39 @@ test('a stalled capacity notice must not prevent dispatch after another room rel
         await f.close();
     }
 });
+
+
+test('a stalled capacity notice cannot hold an authorized stop for the waiting room', { timeout: 10000 }, async () => {
+    const f = await fixture();
+    f.config.runtime.maxWorkers = 1;
+    const originalSend = f.transport.send.bind(f.transport);
+    let releaseNotice!: () => void;
+    const stalled = new Promise<void>(resolve => { releaseNotice = resolve; });
+    let noticeStarted = false;
+    f.transport.send = async (room, text, replyTo, threadId) => {
+        if (room.chatId === 'group2' && text.includes('当前会话都在工作')) {
+            noticeStarted = true;
+            await stalled;
+        }
+        return originalSend(room, text, replyTo, threadId);
+    };
+    let stopping: Promise<void> | undefined;
+    try {
+        await f.gateway.message(message({ chatId: 'group1' }));
+        await until(() => f.workers[0]?.sent.length === 1);
+        const waiting = message({ chatId: 'group2', text: 'should stay queued until cancelled' });
+        await f.gateway.message(waiting);
+        await until(() => noticeStarted);
+        stopping = f.gateway.message(message({ chatId: 'group2', senderId: 'admin', text: '/stop' }));
+        const completed = await Promise.race([
+            stopping.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 1200))
+        ]);
+        assert.equal(completed, true, '/stop must not wait for a stalled best-effort capacity notice');
+        assert.equal(f.workers.length, 1);
+        assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM inbox WHERE id=? AND status='queued'").get(waiting.id)!.n, 0);
+    } finally {
+        releaseNotice();
+        await stopping?.catch(() => {});
+        await f.close();
+    }
+});
