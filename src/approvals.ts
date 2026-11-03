@@ -154,14 +154,15 @@ export class Approvals {
             return '已批准一次';
         }
         if (v.decision === 'submit') {
-            const answers: Record<string, string> = {};
+            const entries: [string, string][] = [];
             for (let qi = 0; qi < p.questions.length; qi++) {
                 const q = p.questions[qi]!, selected = p.selected.get(operator)?.get(qi);
                 if (!selected?.size)
                     return '请回答所有问题';
-                answers[q.question] = [...selected].map(i => q.options[i]!.label).join(', ');
+                // fromEntries creates own data properties even for keys such as "__proto__".
+                entries.push([q.question, [...selected].map(i => q.options[i]!.label).join(', ')]);
             }
-            this.settle(id, { approved: true, answers }, operator);
+            this.settle(id, { approved: true, answers: Object.fromEntries(entries) }, operator);
             return '已提交';
         }
         const qi = Number(v.question), oi = Number(v.option), q = p.questions[qi];
