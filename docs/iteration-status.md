@@ -14,9 +14,11 @@
 
 修复 `74f8711` 仅将已有的选中 session 快照移到发送前；无原会话就不登记，已有原会话则使用该 ID，网络等待、关闭释放、远端结果未知和 `/stop`／`/new` 排序语义均不改变。不增加模型请求、持久发送队列或网络重试。实现版 [CI 41551148613](https://github.com/sean2077/feishu-bot/actions/runs/41551148613) 与最终 head、合入后的验证分别以实际记录为准。该回归是模拟慢速飞书响应，不代表真实飞书／模型服务已验收。
 
-### 原生 Channel SDK 卡片重试待验证
+### 原生 Channel SDK 卡片重试已在锁定版本复现
 
-锁定的 `@larksuite/channel@0.7.1` 卡片回调在 SDK 安全管线按消息／操作者／按钮内容去重，默认去重窗口为 12 小时；不同投递 token 的真实重复点击可能无法到达 Gateway。上游 [PR #22](https://github.com/larksuite/channel-sdk-node/pull/22) 提议改用平台投递 ID／token，2026-11-03 查询时仍未合并。当前[问题 #63](https://github.com/sean2077/feishu-bot/issues/63)要求先用实际锁定 SDK 的入口复现“先提交不完整问题、补全选项后重新点提交”和多选取消，再决定采用已发布的上游修复；目前只是源码级风险判断，**尚未在本仓库 CI 或真实飞书复现**。不得为绕过去重而开放未经授权的 raw 事件入口或重建审批循环。
+[问题 #63](https://github.com/sean2077/feishu-bot/issues/63) 的 SDK 去重风险已在实际锁定的 `@larksuite/channel@0.7.1` 中复现，而不只是阅读源码。[PR #64](https://github.com/sean2077/feishu-bot/pull/64) 测试先行提交 `c08ef78` 的 [CI 41558967123](https://github.com/sean2077/feishu-bot/actions/runs/41558967123) 中，Ubuntu Node24 在真实 SDK `card.action.trigger` 分发器、生产 `bindFeishuInbound`、Gateway／SQLite 和待完成追问链路上失败：首次提交不完整后，即使选项已经补齐且再次点击具有不同 token，SDK 返回 `undefined` 而非预期“已提交”，请求仍未完成。已检查失败是业务验收差异，不是 TypeScript／fixture 注入失败。另确认多选同一选项的第二次点击同样被去重。测试的网络入口为合成事件，不是线上飞书客户端。
+
+后续用锁定 SDK 的当前实际行为建立明确的已知限制测试，同时校验未授权作者、跨群输入、重复投递和 `/answer` 的授权恢复，不将已知错误描述为可用功能。2026-11-03 查询时上游 [PR #22](https://github.com/larksuite/channel-sdk-node/pull/22) 仍开放，未发现经验证的可升级版本；因此不在应用内接管原始事件或关闭现有去重。部署者可按[使用说明](usage.md#追问卡片重复点击)通过授权的 `/answer` 回答（多题 JSON）。如上游发布兼容修复，应重新验证卡片正常重试、同投递重放、审批权限与平台 CI 后再考虑升级。真实手机／桌面点击验收仍未进行。
 
 ## 迁移交互增强
 
