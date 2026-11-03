@@ -186,3 +186,41 @@ test('production raw entry: attributed supplements, approval, compact barrier, c
         t.diagnostic('Actual CC + pinned raw SDK ingress: one approved local operation, two attributed supplements, native compact, full-file Done barrier, stop/resume, queued image restart and two native Read calls. Feishu delivery and model intelligence are substitutes.');
     } finally { firstGate.resolve(); fileGate.resolve(); await f.close(); }
 });
+
+test('real CC/SDK passes a special question-text key through the native AskUserQuestion answer', { timeout: 90000 }, async () => {
+    let asked = false, inspected = false;
+    const f = await migrationFixture((_f, request) => {
+        if (!asked) {
+            asked = true;
+            return { content: [{ type: 'tool_use', id: 'toolu_special_question', name: 'AskUserQuestion', input: {
+                questions: [
+                    { question: '__proto__', header: 'Property key', options: [{ label: 'supported', description: 'Retain the exact key.' }], multiSelect: false },
+                    { question: 'Continue?', header: 'Confirmation', options: [{ label: 'yes', description: 'Continue with the answer.' }], multiSelect: false }
+                ]
+            } }] };
+        }
+        const input = JSON.stringify(request.body.messages);
+        assert.ok(input.includes('"__proto__":"supported"'), 'actual native follow-up must receive the special answer key');
+        assert.ok(input.includes('"Continue?":"yes"'), 'ordinary keys remain intact');
+        inspected = true;
+        return { text: 'QUESTION_KEY_PRESERVED' };
+    });
+    try {
+        const id = await f.text('Ask the fixture questions');
+        await until(() => f.sent.some(s => s.card?.header?.title?.content === '需要补充信息'), 'native question card');
+        const card = f.sent.find(s => s.card?.header?.title?.content === '需要补充信息');
+        const actions = card.card.body.elements.filter(element => element.value).map(element => element.value);
+        for (let index = 0; index < 2; index++) {
+            const choice = actions.find(value => value.question === index && value.option === 0);
+            assert.ok(choice);
+            const toast = await f.click(card, 'alice', choice);
+            assert.match(toast?.toast?.content ?? '', /已记录你的选择/);
+        }
+        const submit = actions.find(value => value.decision === 'submit');
+        assert.ok(submit);
+        assert.match((await f.click(card, 'alice', submit))?.toast?.content ?? '', /已提交/);
+        await until(() => f.done(id), 'native question result and final delivery');
+        assert.ok(inspected, 'follow-up model call must validate the serialized answer');
+        assert.deepEqual(f.errors, []);
+    } finally { await f.close(); }
+});
