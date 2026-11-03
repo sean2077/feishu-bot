@@ -273,14 +273,22 @@ export class Gateway {
             if (boundary) this.store.transaction(() => sealImageWindows(this.store, room.key));
             let dispatchNeeded = false;
             try {
-                const rateKey = room.key + ':' + message.senderId, now = Date.now(), recent = (this.rates.get(rateKey) ?? []).filter(t => t > now - 60000);
-                if (recent.length >= this.config.limits.messagesPerMinute) {
-                    this.store.insert(room.key, message, 'cancelled');
-                    this.notify(room, '消息过于频繁，请稍后再试。', message);
-                    return;
+                // An authorized stop must remain available even after normal message traffic
+                // reaches its limit. Other commands and non-maintainer input still consume it.
+                const authorizedStop = /^\\/stop(?:\\s|$)/.test(message.text) &&
+                    (room.maintainers.includes(message.senderId) || room.dmUser === message.senderId);
+                const now = Date.now();
+                if (!authorizedStop) {
+                    const rateKey = room.key + ':' + message.senderId;
+                    const recent = (this.rates.get(rateKey) ?? []).filter(t => t > now - 60000);
+                    if (recent.length >= this.config.limits.messagesPerMinute) {
+                        this.store.insert(room.key, message, 'cancelled');
+                        this.notify(room, '消息过于频繁，请稍后再试。', message);
+                        return;
+                    }
+                    recent.push(now);
+                    this.rates.set(rateKey, recent);
                 }
-                recent.push(now);
-                this.rates.set(rateKey, recent);
                 if (message.inputIssue || original.text.trim().length > this.config.limits.textChars || original.resources.length > 12) {
                     this.store.insert(room.key, { ...message, text: '', resources: [] }, 'cancelled');
                     this.notify(room, `消息未提交：${message.inputIssue ?? '正文或附件数量超过本次输入上限，请分开发送。'}`, message);
