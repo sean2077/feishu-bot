@@ -205,9 +205,14 @@ test('real CC/SDK passes a special question-text key through the native AskUserQ
                 ]
             } }] };
         }
-        const input = JSON.stringify(request.body.messages);
-        assert.ok(input.includes('"__proto__":"supported"'), 'actual native follow-up must receive the special answer key');
-        assert.ok(input.includes('"Continue?":"yes"'), 'ordinary keys remain intact');
+        const results = (request.body.messages ?? []).flatMap(message => Array.isArray(message.content)
+            ? message.content.filter(block => block.type === 'tool_result' && block.tool_use_id === 'toolu_special_question') : []);
+        assert.equal(results.length, 1, 'actual native tool must supply exactly one answer result');
+        const output = String(results[0].content);
+        // The pinned CC renders approved answers into its native tool-result text,
+        // rather than retaining the answers object as raw JSON.
+        assert.ok(output.includes('"__proto__"="supported"'), 'actual native tool result must retain the special answer key');
+        assert.ok(output.includes('"Continue?"="yes"'), 'ordinary question mapping must remain intact');
         inspected = true;
         return { text: 'QUESTION_KEY_PRESERVED' };
     });
