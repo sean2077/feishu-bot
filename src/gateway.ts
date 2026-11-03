@@ -275,7 +275,7 @@ export class Gateway {
             try {
                 // An authorized stop must remain available even after normal message traffic
                 // reaches its limit. Other commands and non-maintainer input still consume it.
-                const authorizedStop = /^\\/stop(?:\\s|$)/.test(message.text) &&
+                const authorizedStop = /^\/stop(?:\s|$)/.test(message.text) &&
                     (room.maintainers.includes(message.senderId) || room.dmUser === message.senderId);
                 const now = Date.now();
                 if (!authorizedStop) {
