@@ -55,3 +55,44 @@ for (const kind of ['status', 'invalid input'] as const) {
         }
     });
 }
+
+test('a stalled /answer acknowledgement cannot block an authorized /stop', { timeout: 10000 }, async () => {
+    const f = await fixture();
+    let release!: () => void;
+    let began!: () => void;
+    const attempted = new Promise<void>(resolve => { began = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let answering: Promise<void> | undefined;
+    let stopping: Promise<void> | undefined;
+    try {
+        await f.gateway.message(message({ text: 'task awaiting a native question' }));
+        await until(() => f.workers[0]?.sent.length === 1);
+        const worker = f.workers[0]!;
+        const waiting = f.gateway.approvals.request(worker.room, worker.session.id, 'AskUserQuestion',
+            {}, 'test-only question', undefined, [{ question: 'Continue?', options: [{ label: 'yes' }, { label: 'no' }] }]);
+        await until(() => !!f.store.db.prepare("SELECT id FROM requests WHERE state='pending'").get());
+        const requestId = String(f.store.db.prepare("SELECT id FROM requests WHERE state='pending'").get()!.id);
+        const answer = message({ senderId: 'alice', text: `/answer ${requestId} yes` });
+        const originalSend = f.transport.send.bind(f.transport);
+        f.transport.send = async (room, text, replyTo, threadId) => {
+            if (replyTo === answer.id) { began(); await held; }
+            return originalSend(room, text, replyTo, threadId);
+        };
+        answering = f.gateway.message(answer);
+        await attempted;
+        assert.deepEqual(await waiting, { approved: true, answers: { 'Continue?': 'yes' } },
+            'the native question has already settled before the acknowledgement network wait');
+
+        const stopMessage = message({ senderId: 'admin', text: '/stop' });
+        stopping = f.gateway.message(stopMessage);
+        const completed = await Promise.race([stopping.then(() => true), delay(1200).then(() => false)]);
+        assert.equal(completed, true, 'a stalled /answer confirmation must not hold the inbound chat lock');
+        assert.equal(worker.stopped, true);
+        assert.equal(f.workers.length, 1, 'neither /answer nor /stop should start another worker');
+        assert.ok(f.transport.sent.some(s => s.replyTo === stopMessage.id), 'stop was acknowledged');
+    } finally {
+        release?.();
+        await Promise.allSettled([answering, stopping].filter((p): p is Promise<void> => !!p));
+        await f.close();
+    }
+});
