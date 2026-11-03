@@ -80,3 +80,34 @@ test('repeated question text cannot silently overwrite a distinct answer, even w
         assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM requests WHERE state='pending'").get()!.n, 0);
     } finally { await f.close(); }
 });
+
+test('native question key named __proto__ survives card selection as an own JSON answer', async () => {
+    const f = await fixture();
+    try {
+        await f.gateway.message(message());
+        await until(() => f.workers[0]?.sent.length === 1);
+        const worker = f.workers[0]!;
+        const questions: Question[] = [
+            { question: '__proto__', options: [{ label: 'supported' }] },
+            { question: 'Continue?', options: [{ label: 'yes' }] }
+        ];
+        const outcome = f.gateway.approvals.request(worker.room, worker.session.id,
+            'AskUserQuestion', { questions }, 'fixture', undefined, questions);
+        await until(() => f.transport.sent.some(item => JSON.stringify(item.card).includes('需要补充信息')));
+        const card = f.transport.sent.find(item => JSON.stringify(item.card).includes('需要补充信息'))!;
+        await until(() => !!f.store.db.prepare('SELECT 1 FROM outputs WHERE id=?').get(card.id));
+        const requestId = (card.card as { body: { elements: { value?: { request: string } }[] } })
+            .body.elements.find(element => element.value)?.value?.request;
+        assert.ok(requestId);
+        for (let index = 0; index < questions.length; index++)
+            assert.match(await f.gateway.approvals.click('group1', 'alice',
+                { request: requestId, question: index, option: 0 }, card.id), /已记录你的选择/);
+        assert.equal(await f.gateway.approvals.click('group1', 'alice',
+            { request: requestId, decision: 'submit' }, card.id), '已提交');
+        const result = await outcome;
+        assert.equal(result.approved, true);
+        assert.equal(Object.hasOwn(result.answers!, '__proto__'), true,
+            'a valid native question must not vanish through the Object.prototype setter');
+        assert.equal(JSON.stringify(result.answers), '{"__proto__":"supported","Continue?":"yes"}');
+    } finally { await f.close(); }
+});
