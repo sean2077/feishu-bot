@@ -35,6 +35,19 @@ $env:MODEL_AUTH_TOKEN = "replace-with-model-token"
 .\bin\feishu-bot.exe run
 ```
 
+前台 `run` 适合调试。常驻运行使用内置服务命令，不需要编写 `.ps1`、`.vbs` 或 `.cmd` 启动脚本：
+
+```sh
+./bin/feishu-bot daemon install --config ~/.feishu-bot/config.json
+./bin/feishu-bot daemon status
+./bin/feishu-bot daemon logs -f
+./bin/feishu-bot daemon stop
+```
+
+Windows 使用 `.\bin\feishu-bot.exe daemon ...`，可省略 `--config`：缺省先找当前目录 `config.json`，再找 `%USERPROFILE%\.feishu-bot\config.json`。`daemon install` 会把当前二进制复制到安装目录的 `bin/`，生成或校验 `service.env`（权限 0600），执行离线 `doctor` 检查，然后注册登录启动服务：Windows 使用任务计划程序直接执行二进制，Linux 使用 systemd user/system unit。没有中间启动脚本，密钥也不会写入任务或 unit 定义。未传 `--env-file` 时从当前环境生成 `service.env`；已有服务可用 `daemon stop`、`daemon restart`、`daemon uninstall` 管理。`daemon status --json` 供脚本读取，`daemon logs -n 100` 查看最近日志。
+
+服务默认在用户登录后运行（Windows），以保留当前用户的 `nativeConfig: inherit`、原生历史和环境。注销/关机留下的 `gateway.lock` 不会被自动删除；核实派生进程后使用 `daemon start --reclaim-stale-lock`。完整命令、路径和限制见[部署与配置](docs/deployment.md)。
+
 模型凭据的环境变量名可通过 `model.tokenEnv` 指定；已有显式配置保持有效。未配置时默认读取 `MODEL_AUTH_TOKEN`，不会尝试其他账号或凭据。
 
 [部署与配置](docs/deployment.md) · [不同使用场景](docs/usage.md) · [从 TypeScript 版迁移](docs/go-migration.md)

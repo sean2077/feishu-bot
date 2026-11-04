@@ -17,6 +17,7 @@ var assignJob = kernel32.NewProc("AssignProcessToJobObject")
 var queryJob = kernel32.NewProc("QueryInformationJobObject")
 var terminateJob = kernel32.NewProc("TerminateJobObject")
 var openProcess = kernel32.NewProc("OpenProcess")
+var waitForSingleObject = kernel32.NewProc("WaitForSingleObject")
 var createSnapshot = kernel32.NewProc("CreateToolhelp32Snapshot")
 var firstThread = kernel32.NewProc("Thread32First")
 var nextThread = kernel32.NewProc("Thread32Next")
@@ -54,6 +55,24 @@ func winError(name string, err error) error {
 		err = syscall.EINVAL
 	}
 	return fmt.Errorf("%s: %w", name, err)
+}
+
+// Alive reports whether a process exists. Access-denied is treated as alive so
+// callers remain conservative around locks owned by the same account.
+func Alive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	handle, _, err := openProcess.Call(0x1000|0x00100000, 0, uintptr(pid)) // QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+	if handle == 0 {
+		if errno, ok := err.(syscall.Errno); ok && errno == syscall.ERROR_ACCESS_DENIED {
+			return true
+		}
+		return false
+	}
+	defer closeHandle.Call(handle)
+	result, _, _ := waitForSingleObject.Call(handle, 0)
+	return result == 0x102 // WAIT_TIMEOUT
 }
 func prepareCommand(cmd *exec.Cmd) {
 	// Suspend before the first instruction: all descendants enter the owned Job,

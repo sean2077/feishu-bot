@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sean2077/feishu-bot/internal/config"
@@ -25,12 +26,17 @@ import (
 var Version = "0.3.0-dev"
 
 const help = `feishu-bot init [--config path]
-feishu-bot doctor [--config path] [--probe] [--probe-feishu]
-feishu-bot run [--config path]
+feishu-bot doctor [--config path] [--env-file path] [--probe] [--probe-feishu]
+feishu-bot run [--config path] [--env-file path] [--log-file path]
+               [--log-max-size MB] [--log-max-backups N] [--service]
+feishu-bot daemon install|uninstall|start|stop|restart|status|logs
+feishu-bot config path|example|format
 feishu-bot version
 
 Doctor is offline by default. --probe-feishu reads application identity;
 --probe sends a potentially billable model request. Neither verifies live collaboration.
+daemon install copies this binary into a work directory, writes service.env,
+registers a logon service and starts it with no launcher scripts.
 Linux / Windows: one Go service starts native Claude Code sessions on demand
 and reuses their processes between messages. Node.js is not a runtime dependency.
 `
@@ -39,6 +45,7 @@ and reuses their processes between messages. Node.js is not a runtime dependency
 // cancellation before startup. All credentials are redacted from diagnostics.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var secrets []string
+	errOut := io.Writer(stderr)
 	err := func() error {
 		o, err := Parse(args)
 		if err != nil {
@@ -52,7 +59,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		switch o.Command {
 		case "help":
-			_, err = io.WriteString(stdout, help)
+			text := help
+			if o.Subcommand == "daemon" {
+				text = daemonHelp
+			}
+			if o.Subcommand == "config" {
+				text = configHelp
+			}
+			_, err = io.WriteString(stdout, text)
 			return err
 		case "version":
 			_, err = fmt.Fprintf(stdout, "feishu-bot %s\n", Version)
@@ -62,6 +76,27 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		case "action":
 			secrets = []string{os.Getenv("FEISHU_ACTION_TOKEN")}
 			return native.RunActionClient(ctx, o.ActionArgs, stdout)
+		case "daemon":
+			return runDaemon(ctx, o, stdout, stderr)
+		case "config":
+			return runConfigCommand(ctx, o, stdout, stderr)
+		}
+		if o.EnvFile != "" {
+			if err := LoadEnvFile(o.EnvFile); err != nil {
+				return err
+			}
+		}
+		var logWriter *RotatingWriter
+		if o.Command == "run" && o.LogFile != "" {
+			logWriter, err = openLogFile(o.LogFile, o.LogSize, o.LogKeep)
+			if err != nil {
+				return err
+			}
+			defer logWriter.Close()
+			errOut = io.MultiWriter(logWriter, stderr)
+			if o.Service {
+				detachConsole()
+			}
 		}
 		c, err := config.Load(o.ConfigPath)
 		if err != nil {
@@ -94,14 +129,25 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if len(failed) > 0 {
 			return errors.New("startup configuration is incomplete; run feishu-bot doctor\n" + strings.Join(failed, "\n"))
 		}
-		log := jsonLogger(stderr, secrets)
+		logOut := io.Writer(stderr)
+		if logWriter != nil {
+			logOut = logWriter
+		}
+		log := jsonLogger(logOut, secrets)
 		return runService(ctx, c, log, newService)
 	}()
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, core.Redact(err.Error(), secrets))
+		_, _ = fmt.Fprintln(errOut, core.Redact(err.Error(), secrets))
 		return 1
 	}
 	return 0
+}
+
+func openLogFile(path string, maxSize, backups int) (*RotatingWriter, error) {
+	if maxSize <= 0 {
+		maxSize = 10
+	}
+	return NewRotatingWriter(path, int64(maxSize)*1024*1024, backups)
 }
 
 func initialize(path string, out io.Writer) error {
@@ -180,6 +226,7 @@ func runService(parent context.Context, c core.Config, log core.Logger, makeServ
 	var st *store.Store
 	var g serviceGateway
 	var channel serviceChannel
+	var stopRequested atomic.Bool
 	ctx, cancel := context.WithCancel(parent)
 	defer func() {
 		cancel()
@@ -210,6 +257,10 @@ func runService(parent context.Context, c core.Config, log core.Logger, makeServ
 			result = errors.Join(result, unlock())
 		}
 	}()
+	stopPath := stopRequestPath(c.DataDir)
+	if err := clearStopRequest(stopPath); err != nil {
+		return err
+	}
 	st, err = store.Open(filepath.Join(c.DataDir, "gateway.sqlite"))
 	if err != nil {
 		return err
@@ -221,8 +272,12 @@ func runService(parent context.Context, c core.Config, log core.Logger, makeServ
 	if g == nil || channel == nil {
 		return errors.New("service initialization returned an incomplete gateway or transport")
 	}
+	go watchStop(ctx, stopPath, cancel, func() { stopRequested.Store(true) }, log)
 	if err = g.Recover(ctx); err != nil {
-		if parent.Err() != nil {
+		if parent.Err() != nil || stopRequested.Load() {
+			if stopRequested.Load() && log != nil {
+				log("recover_stopped", core.Args{"error": err.Error()})
+			}
 			return nil
 		}
 		return err
@@ -235,5 +290,61 @@ func runService(parent context.Context, c core.Config, log core.Logger, makeServ
 	if parent.Err() != nil {
 		return nil
 	}
+	if stopRequested.Load() {
+		if err != nil && log != nil {
+			log("channel_stopped", core.Args{"error": err.Error()})
+		}
+		return nil
+	}
 	return err
+}
+
+const stopRequestFile = "gateway.stop"
+const stopPollInterval = 250 * time.Millisecond
+
+func stopRequestPath(dataDir string) string {
+	return filepath.Join(dataDir, stopRequestFile)
+}
+
+func clearStopRequest(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return errors.New("cannot inspect stop control file")
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("stop control path is not a regular file")
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.New("cannot remove stale stop control file")
+	}
+	return nil
+}
+
+func watchStop(ctx context.Context, path string, cancel context.CancelFunc, mark func(), log core.Logger) {
+	ticker := time.NewTicker(stopPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			info, err := os.Lstat(path)
+			if err == nil && info.Mode().IsRegular() {
+				if mark != nil {
+					mark()
+				}
+				if log != nil {
+					log("stop_requested", core.Args{"source": "control_file"})
+				}
+				cancel()
+				return
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) && log != nil {
+				log("stop_request_check_failed", core.Args{"error": "cannot inspect control file"})
+			}
+		}
+	}
 }

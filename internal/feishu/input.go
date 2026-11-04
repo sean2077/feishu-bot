@@ -203,7 +203,24 @@ func normalizeMessage(event messageEvent, botID string, strip bool) core.Message
 		if json.Unmarshal([]byte(raw.Content), &content) != nil || content == nil {
 			issue = invalidInput
 		} else {
-			m.Text, m.Resources, issue = renderContent(raw.Type, content, botID, strip && m.Mentioned)
+			// Post mentions are rendered as "@_user_1" keys or display names in
+			// the content body, not necessarily as open_ids. Strip every key and
+			// name that the event's mention list attributes to this bot.
+			botMentions := map[string]bool{}
+			if strip && m.Mentioned {
+				for _, v := range raw.Mentions {
+					if botID != "" && v.ID.OpenID == botID {
+						if v.Key != "" {
+							botMentions[v.Key] = true
+						}
+						if v.Name != "" {
+							botMentions[v.Name] = true
+							botMentions["@"+v.Name] = true
+						}
+					}
+				}
+			}
+			m.Text, m.Resources, issue = renderContent(raw.Type, content, botID, strip && m.Mentioned, botMentions)
 		}
 	}
 	if issue == "" {
@@ -258,7 +275,7 @@ func resourceFields(a map[string]any, key string) (string, string, bool) {
 	}
 	return k, name, true
 }
-func renderContent(kind string, content map[string]any, botID string, strip bool) (string, []core.Resource, string) {
+func renderContent(kind string, content map[string]any, botID string, strip bool, botMentions map[string]bool) (string, []core.Resource, string) {
 	switch kind {
 	case "text":
 		s, ok := content["text"].(string)
@@ -280,7 +297,7 @@ func renderContent(kind string, content map[string]any, botID string, strip bool
 		r := resource("file", key, name)
 		return "[文件：" + r.Name + "]", []core.Resource{r}, ""
 	case "post":
-		return renderPost(content, botID, strip)
+		return renderPost(content, botID, strip, botMentions)
 	case "interactive":
 		text, ok := renderInteractive(content)
 		if !ok {
@@ -292,7 +309,7 @@ func renderContent(kind string, content map[string]any, botID string, strip bool
 	}
 }
 func object(v any) (map[string]any, bool) { m, ok := v.(map[string]any); return m, ok }
-func renderPost(content map[string]any, botID string, strip bool) (string, []core.Resource, string) {
+func renderPost(content map[string]any, botID string, strip bool, botMentions map[string]bool) (string, []core.Resource, string) {
 	var body map[string]any
 	if _, ok := content["title"]; ok {
 		body = content
@@ -404,7 +421,7 @@ func renderPost(content map[string]any, botID string, strip bool) (string, []cor
 				}
 			case "at":
 				id := stringValue(el, "user_id")
-				if strip && botID != "" && id == botID {
+				if strip && (id == botID || botMentions[id]) {
 					continue
 				}
 				name := stringValue(el, "user_name")

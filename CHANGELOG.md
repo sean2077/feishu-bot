@@ -8,6 +8,10 @@
 - 使用 Go 的有界流式文件传输、可取消飞书长连接、持久 CardKit 序号和不确定外部写入恢复。Windows 原生进程使用 Job Object 确认派生进程退出。
 - CI 改为 Ubuntu／Windows 的 Go 构建、竞态检测、vet 和独立固定原生 CLI 测试；新增同 fixture 的 Go 基准命令。
 - 部署需要独立安装原生 Claude，可通过 `runtime.claudeExecutable` 指定；固定操作正则使用 RE2。详见 [迁移与回滚](docs/go-migration.md)。
+- 新增 `daemon install/uninstall/start/stop/restart/status/logs` 与 `config path/example/format`。Windows 任务计划程序直接执行安装目录中的二进制，Linux 使用 systemd；不再需要 launcher/stop 脚本。
+- `run` 新增 `--env-file`、`--log-file`、日志轮转和 `--service`；`daemon install` 复制二进制、生成或校验 `service.env`（不把密钥写入任务/unit）、执行离线 doctor 预检，并支持幂等升级与同名任务所有权检查。
+- 新增 `<dataDir>/gateway.stop` 控制文件优雅停止；`daemon stop` 等待 `gateway.lock` 释放，不强制杀进程；stale lock 需要显式 `daemon start --reclaim-stale-lock`。
+- 修复飞书 post 消息的 `at` 元素使用 mention key（如 `@_user_1`）时机器人名未被剥离，导致 `@机器人 /status` 被当作普通模型输入的问题；群内命令现在按预期识别。
 
 内存收益需要同版本、同配置和同样本测量。真实飞书、真实模型及客户端验收单独进行；历史 TypeScript 测试结果不计作 Go 覆盖。
 

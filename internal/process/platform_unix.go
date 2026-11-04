@@ -16,6 +16,16 @@ type platformTree struct {
 }
 
 func prepareCommand(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} }
+
+// Alive reports whether a process exists. EPERM means the process exists but
+// belongs to another user, which is treated as alive conservatively.
+func Alive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
 func attachCommand(cmd *exec.Cmd) (*platformTree, error) {
 	group, err := captureGroup(cmd.Process.Pid)
 	if err != nil {

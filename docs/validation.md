@@ -19,6 +19,7 @@ Go 1.25+ 可构建；CI 配置 Ubuntu／Windows 与 Go 1.25／1.27。生产构�
 | gateway | 授权及零副作用、忙时输入／补充／compact、审批、历史范围、图片批次、完整交付、会话控制 |
 | feishu | 原始事件、明确 @、CardKit 序号、同卡更新、反应所有权、有界文件与可取消连接 |
 | native | stream-json、公开内容归属、权限／MCP 控制、原生配置、热续轮、停止与恢复 |
+| daemon | install/uninstall/start/stop/restart/status/logs；env 文件、二进制复制、离线预检、幂等、同名任务所有权、stale lock 恢复、日志轮转、任务动作无脚本 |
 | integration | 真实 Claude + Gateway + SQLite 的审批写入、追问、完整交付、空闲回收与重启续接 |
 
 新增或修改具体行为时，使用能观察外部结果或状态不变量的测试，不以“调用了 stop”代替进程已退出、不以“发送函数返回”代替完整交付、不以“模型说记得”代替相同 session ID。
@@ -56,6 +57,7 @@ go test -race -count=1 -timeout 180s -v ./internal/native ./internal/integration
 6. **停止与恢复。**任务、审批、图片窗口、慢下载和最终交付时分别测试 `/stop`、重启；检查未知外部写入不重放。停止／回收／恢复保留原生 ID，仅 `/new` 新建；改变 cwd／配置身份会拒绝旧会话。
 7. **用量。**无结果时未知；连续轮次、工具轮次、重启和重复结果不重复累计。查询不调用模型，不混入其他聊天、子代理或累计 modelUsage。
 8. **继承与后台。**先用无副作用 hook／技能／MCP 验证配置来源，再测试实际需要的原生后台能力。只清理本次创建的测试任务，记录工具返回的 ID。后台输出归属不能借用随后出现的前台输入。
+9. **服务生命周期。** Windows 登录任务直接执行安装目录中的二进制，不出现脚本或控制台窗口；`daemon status` 报告 PID/配置/日志；`daemon logs -f` 能跟上轮转；`daemon stop` 优雅退出并释放 `gateway.lock`；`daemon start`／`daemon restart` 后 `/status` 仍是同一 session ID 和原生 session ID。未经核实不要删除 stale lock；显式 `daemon start --reclaim-stale-lock` 只清理已无进程持有的锁。`daemon uninstall` 删除任务/unit 但保留 config、service.env、日志和 state。
 
 手机和桌面分别记录。模型流式、多模态、工具和长上下文能力分别验收；基础 Messages 探针成功不替代这些结果。共享 cwd 的原生持久定时任务仍遵循 Claude 的项目级规则，不能宣称跨聊天隔离。
 
