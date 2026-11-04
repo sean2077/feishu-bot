@@ -6,27 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"syscall"
+	"time"
 )
 
 func (t *platformTree) signal(sig syscall.Signal) error {
-	return confirmDarwinGroupSignal(syscall.Kill(-t.pid, sig), t.group.active)
+	return confirmDarwinGroupSignal(syscall.Kill(-t.pid, sig), t.group.active, groupExitTimeout)
 }
 
-func confirmDarwinGroupSignal(err error, active func() (bool, error)) error {
+func confirmDarwinGroupSignal(err error, active func() (bool, error), timeout time.Duration) error {
 	if !errors.Is(err, syscall.EPERM) {
 		return err
 	}
-	// Darwin's killpg1 skips zombies, then returns EPERM when no signalable
-	// member remains. The final descendant can exit between our active check
-	// and kill, especially after SIGTERM. Accept only a fresh identity check
-	// proving that no executing member remains; real permission errors stay
-	// failures. See XNU bsd/kern/kern_sig.c, killpg1.
-	alive, queryErr := active()
-	if queryErr != nil {
-		return errors.Join(err, fmt.Errorf("recheck process group after signal: %w", queryErr))
+	// XNU makes exiting processes invisible to killpg1's proc_find before
+	// setting SZOMB. sysctl can still return those records through zombproc,
+	// so even a fresh snapshot may look active after kill returns EPERM.
+	// Reuse the normal exit-confirmation deadline without resending a signal.
+	// A failed query or a group that stays active must retain the original
+	// permission error. See kern_exit.c's proc_prepareexit/proc_exit and
+	// kern_proc.c's pgrp_iterate/proc_iterate in the XNU sources.
+	if waitErr := waitGroupInactive(active, timeout); waitErr != nil {
+		return errors.Join(err, fmt.Errorf("confirm process group exit after signal: %w", waitErr))
 	}
-	if !alive {
-		return nil
-	}
-	return err
+	return nil
 }

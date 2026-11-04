@@ -15,6 +15,8 @@ type platformTree struct {
 	group *groupIdentity
 }
 
+const groupExitTimeout = 5 * time.Second
+
 func prepareCommand(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} }
 
 // Alive reports whether a process exists. EPERM means the process exists but
@@ -49,7 +51,7 @@ func (t *platformTree) terminate(exited <-chan struct{}) error {
 	}
 	err = t.signal(syscall.SIGTERM)
 	if err != nil && !errors.Is(err, syscall.ESRCH) {
-		return err
+		return fmt.Errorf("send SIGTERM to process group %d: %w", t.pid, err)
 	}
 	timer := time.NewTimer(750 * time.Millisecond)
 	select {
@@ -68,9 +70,9 @@ func (t *platformTree) terminate(exited <-chan struct{}) error {
 	}
 	err = t.signal(syscall.SIGKILL)
 	if err != nil && !errors.Is(err, syscall.ESRCH) {
-		return err
+		return fmt.Errorf("send SIGKILL to process group %d: %w", t.pid, err)
 	}
-	if err = waitGroupInactive(t.group.active, 5*time.Second); err != nil {
+	if err = waitGroupInactive(t.group.active, groupExitTimeout); err != nil {
 		return fmt.Errorf("process group termination unconfirmed: %w", err)
 	}
 	return nil
@@ -87,7 +89,7 @@ func waitGroupInactive(active func() (bool, error), timeout time.Duration) error
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("live descendants remained after SIGKILL")
+			return fmt.Errorf("live descendants remained after termination deadline")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

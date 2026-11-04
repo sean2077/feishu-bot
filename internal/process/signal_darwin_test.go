@@ -31,7 +31,7 @@ func TestDarwinSignalPermissionErrorRequiresConfirmedExit(t *testing.T) {
 			err := confirmDarwinGroupSignal(tc.signal, func() (bool, error) {
 				queries++
 				return tc.alive, tc.query
-			})
+			}, 0)
 			if !errors.Is(err, tc.want) || queries != tc.queries {
 				t.Fatalf("signal result = %v, queries = %d; want %v, %d", err, queries, tc.want, tc.queries)
 			}
@@ -39,6 +39,34 @@ func TestDarwinSignalPermissionErrorRequiresConfirmedExit(t *testing.T) {
 				t.Fatal("lost the identity query failure", err)
 			}
 		})
+	}
+}
+
+func TestDarwinSignalWaitsForExitStateToSettle(t *testing.T) {
+	queries := 0
+	err := confirmDarwinGroupSignal(syscall.EPERM, func() (bool, error) {
+		queries++
+		// An exiting process can remain non-SZOMB in multiple sysctl
+		// snapshots after proc_find can no longer find it for signalling.
+		return queries < 3, nil
+	}, time.Second)
+	if err != nil || queries != 3 {
+		t.Fatalf("exit transition result = %v, queries = %d; want success after 3 snapshots", err, queries)
+	}
+}
+
+func TestDarwinSignalExitWaitPreservesLaterQueryFailure(t *testing.T) {
+	queryFailure := errors.New("cannot read process identity during exit")
+	queries := 0
+	err := confirmDarwinGroupSignal(syscall.EPERM, func() (bool, error) {
+		queries++
+		if queries == 1 {
+			return true, nil
+		}
+		return false, queryFailure
+	}, time.Second)
+	if !errors.Is(err, syscall.EPERM) || !errors.Is(err, queryFailure) || queries != 2 {
+		t.Fatalf("unconfirmed exit lost errors: %v, queries = %d", err, queries)
 	}
 }
 
