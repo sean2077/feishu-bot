@@ -10,7 +10,7 @@ go vet ./...
 go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 ```
 
-Go 1.25+ 可构建；CI 配置 Ubuntu／Windows 与 Go 1.25／1.27。生产构建支持 `CGO_ENABLED=0`，竞态检测使用 runner 的 C 工具链。Go 测试使用临时 SQLite／目录、虚构身份、本地 HTTP／WebSocket 和可控 Worker，不读取部署配置或调用真实服务。
+Go 1.25+ 可构建；常规 CI 保留 Ubuntu／Windows 与 Go 1.25／1.27，并增加 Linux arm64、macOS amd64／arm64 的 Go 1.27 检查。生产构建支持 `CGO_ENABLED=0`，竞态检测使用 runner 的 C 工具链。Go 测试使用临时 SQLite／目录、虚构身份、本地 HTTP／WebSocket 和可控 Worker，不读取部署配置或调用真实服务。
 
 测试与被测包同目录，使用 `*_test.go`；平台专用测试使用 `_windows_test.go` 等文件名或构建约束。原生协议 fixture 位于 `internal/native`、`internal/integration` 和 `cmd/benchmark-native`。当前 CI 不设覆盖率门槛；新增行为应覆盖可观察的契约结果，而不是追求覆盖率数字。
 
@@ -21,6 +21,7 @@ Go 1.25+ 可构建；CI 配置 Ubuntu／Windows 与 Go 1.25／1.27。生产构�
 | gateway | 授权及零副作用、忙时输入／补充／compact、审批、历史范围、图片批次、完整交付、会话控制 |
 | feishu | 原始事件、明确 @、CardKit 序号、同卡更新、反应所有权、有界文件与可取消连接 |
 | native | stream-json、公开内容归属、权限／MCP 控制、原生配置、热续轮、停止与恢复 |
+| process | 对应平台上的子进程组／Job Object、父进程先退出后的派生进程清理、终止确认；Darwin 还核对进程表身份和僵尸状态 |
 | daemon | install/uninstall/start/stop/restart/status/logs；env 文件、二进制复制、离线预检、幂等、同名任务所有权、stale lock 恢复、日志轮转、任务动作无脚本 |
 | integration | 真实 Claude + Gateway + SQLite 的审批写入、追问、完整交付、空闲回收与重启续接 |
 
@@ -41,11 +42,19 @@ $env:CLAUDE_NATIVE_PATH = "C:/tools/claude.exe"
 go test -race -count=1 -timeout 180s -v ./internal/native ./internal/integration ./cmd/benchmark-native
 ```
 
-没有设置变量时，真实 CLI 用例明确 skip，普通单元测试继续运行。CI 在单独测试步骤中安装固定 SDK 包所携带的原生 CLI；这是获取 fixture 的构建依赖，生产服务不运行该 SDK。不得将 skip 写为真实协议已验证。
+没有设置变量时，真实 CLI 用例明确 skip，普通单元测试继续运行。CI 在单独测试步骤中安装固定 SDK 包所携带的原生 CLI，并核对 runner 的平台、架构和 CLI 版本；缺失或不匹配会使该步骤失败。这是获取 fixture 的构建依赖，生产服务不运行该 SDK。不得将 skip 写为真实协议已验证。
 
 组合回归通过网关实际审批卡和 `/answer` 完成原生 Write／AskUserQuestion，核对临时文件内容与超长回复导出，确认文件交付回执之前没有 Done。随后触发空闲回收、停止并重开数据库，检查三代原生进程保持同一会话 ID 和历史。测试中的飞书传输和模型仍为本地替身。
 
 原生协议是版本敏感边界。更改 CLI 版本、控制帧、环境继承或工具设置时，应验证初始化、连续两轮、原生 ID、权限／追问控制、MCP、compact 和停止后 resume，并记录实际覆盖范围。测试中的合成 token 只检查采集／去重，不是账单。
+
+## 发布包验证
+
+版本 tag 对应的提交在 Linux amd64／arm64、Windows amd64、macOS amd64／arm64 原生 runner 上分别运行竞态测试、vet 和固定原生 CLI 回归。随后用 `CGO_ENABLED=0` 构建生产二进制，对将要上传的压缩包解压并执行 `--version`、`--help`、隔离目录中的 `init` 等冒烟检查。交叉编译成功不能代替目标架构的实际执行。
+
+常规 CI 通过 `python -m unittest discover -s .github/scripts -p 'test_*.py'` 检查版本、发布说明、打包与发布状态机；这些测试不上传附件。发布 job 再核对完整文件集合、构建身份与 SHA-256，上传草稿后重新下载验证，最后公开 Release。具体契约与重跑方式见[版本发布](releasing.md)。
+
+离线发布工具测试、原生平台构建、真实 GitHub 发布和真实飞书／模型验收是四类证据。只有实际 tag 工作流完成并核对公开页面及附件，才能报告该版本发布成功。macOS 的测试不代表内置 daemon 或 Apple Developer ID 签名／公证已提供。
 
 ## 飞书与模型真实验收
 

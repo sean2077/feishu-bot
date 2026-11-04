@@ -1,0 +1,58 @@
+name: Verify Go gateway
+description: Run Go checks and the pinned native CLI against the local deterministic model.
+inputs:
+  native-platform:
+    description: Expected Node platform and architecture for the native CLI fixture.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Verify Go source
+      shell: bash
+      run: go test -race -count=1 -timeout 180s ./...
+    - name: Vet Go source
+      shell: bash
+      run: go vet ./...
+    - name: Set up Python for portable CI helpers
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: '3.12'
+    - name: Set up Node for the test fixture only
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: '22'
+    - name: Install and verify the pinned native CLI fixture
+      shell: python
+      env:
+        EXPECTED_NATIVE_PLATFORM: ${{ inputs.native-platform }}
+      run: |
+        import os
+        from pathlib import Path
+        import subprocess
+
+        platform = subprocess.check_output(
+            ["node", "-p", "process.platform + '-' + process.arch"], text=True
+        ).strip()
+        expected = os.environ["EXPECTED_NATIVE_PLATFORM"]
+        if platform != expected:
+            raise SystemExit(f"Runner platform {platform!r} does not match {expected!r}")
+        fixture = Path(os.environ["RUNNER_TEMP"]) / "claude-fixture"
+        npm = "npm.cmd" if os.name == "nt" else "npm"
+        subprocess.run(
+            [npm, "install", "--prefix", str(fixture), "--ignore-scripts",
+             "--no-audit", "--no-fund", "@anthropic-ai/claude-agent-sdk@0.3.316"],
+            check=True,
+        )
+        filename = "claude.exe" if os.name == "nt" else "claude"
+        native = fixture / "node_modules" / "@anthropic-ai" / f"claude-agent-sdk-{platform}" / filename
+        if not native.is_file():
+            raise SystemExit(f"Pinned native fixture executable was not installed: {native}")
+        version = subprocess.check_output([str(native), "--version"], text=True).strip()
+        print(version)
+        if not version or version.split()[0] != "2.1.316":
+            raise SystemExit("Pinned native fixture has an unexpected version")
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+            output.write(f"CLAUDE_NATIVE_PATH={native}\n")
+    - name: Real native CLI with local deterministic model
+      shell: bash
+      run: go test -race -count=1 -timeout 180s ./internal/native ./internal/integration ./cmd/benchmark-native

@@ -1,7 +1,7 @@
 # feishu-bot
 
 - Feishu + Claude Code. Preserve native streaming input, compaction and background work; do not add a second planner or business scheduler.
-- Linux and Windows use the same native service. Start sessions on demand and reuse warm processes; reclaim only confirmed idle processes without discarding history.
+- Linux, macOS and Windows use the same native service; built-in daemon management is Linux/Windows only. Start sessions on demand and reuse warm processes; reclaim only confirmed idle processes without discarding history.
 - Group triggers require an allowed chat, allowed author and explicit bot mention. DMs require an allowed user. Reject silently before context, downloads or reactions.
 - Background pre-injection defaults to zero. History, quotes, pagination and attachments must enforce current chat and author scope; never turn history access into a cross-chat tool.
 - Preserve the native session across process reclamation, restart, stop and compact. Only explicit new-session operations rotate it. Never silently replace a failed resume.
@@ -19,7 +19,7 @@
 以下命令默认在仓库根目录执行。仓库没有 Makefile、Justfile 或 Taskfile；构建和检查直接使用 Go 命令。
 
 - 构建：`go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot`；Windows 输出 `./bin/feishu-bot.exe`。生产构建使用 `CGO_ENABLED=0`。
-- 检查：`go test -race ./...`、`go vet ./...`。竞态检测需要平台的 C 工具链；CI 覆盖 Ubuntu／Windows 与 Go 1.25／1.27。
+- 检查：`go test -race ./...`、`go vet ./...`。竞态检测需要平台的 C 工具链；CI 保留 Ubuntu／Windows 的 Go 1.25／1.27，并覆盖 Linux arm64 与 macOS 两种架构。
 - 原生协议回归：设置 `CLAUDE_NATIVE_PATH` 指向 Claude Code 2.1.316 后运行 `go test -race -count=1 -timeout 180s ./internal/native ./internal/integration ./cmd/benchmark-native`；未设置时相关用例明确跳过。
 - 使用与部署命令：`./bin/feishu-bot init|doctor|run|daemon ...`；完整路径、配置和限制见[部署与配置](docs/deployment.md)。
 
@@ -34,12 +34,12 @@
 
 - 现有历史混用 `feat:`、`fix:`、`test:`、`docs:`、`refactor:` 等前缀和句子式标题；仓库没有提交信息检查钩子。发布分析工具按前缀推断版本，未分类提交需人工确认。
 - 完成边界按请求区分：本地提交、推送、PR、合并和发布互不授权。CI 在 push `main` 和 PR 上运行；只报告实际运行的结果。
-- [CHANGELOG](CHANGELOG.md)是版本记录权威，标签格式 `vMAJOR.MINOR.PATCH`（已有 `v0.2.0`）；当前没有 tag 触发的发布工作流，公开与可见性按[公开发布检查](docs/publication.md)由维护者确认。
+- [CHANGELOG](CHANGELOG.md)是版本记录权威；推送严格稳定标签 `vMAJOR.MINOR.PATCH` 触发五个平台的构建、验证和 GitHub Release 发布。版本映射、产物、失败重跑与完成边界见[版本发布](docs/releasing.md)。公开与可见性按[公开发布检查](docs/publication.md)由维护者确认。
 
 ## 环境与协作
 
 - 需要 Go 1.25+ 和 Git；真实原生协议测试还需要 Claude Code 2.1.316。生产二进制不依赖 Node.js、npm 或 CGO 动态库。
-- Windows 使用 Git for Windows；Linux 和 Windows 共用同一原生服务，不维护两套实现。
+- Windows 使用 Git for Windows；Linux、macOS 和 Windows 共用同一原生服务。macOS 使用前台 `run` 或外部服务管理，内置 `daemon` 暂不支持 macOS。
 - Agent harness 位于 `.agents/`，`.claude/` 和 `.codex/` 是投影。Hooks 需要 Python 3.8+ 和真实符号链接；Windows 需启用 Git `core.symlinks`，否则 `agent-scaffold verify` 会失败。
 
 <!-- agent-scaffold:start (managed; edit outside) profile=default domains=docs,tools,testing,specs,terminology,git,release,environment -->

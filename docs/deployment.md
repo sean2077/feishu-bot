@@ -1,6 +1,6 @@
 # 部署与配置
 
-Linux 和 Windows 运行同一个 Go 服务。源码构建需要 Go 1.25+；部署只需网关二进制、Git 和原生 Claude Code。Windows 使用 Git for Windows。协议测试固定使用 Claude Code 2.1.316，升级 CLI 后须重新验收。
+Linux、macOS 和 Windows 运行同一个 Go 服务。源码构建需要 Go 1.25+；部署只需网关二进制、Git 和原生 Claude Code。Windows 使用 Git for Windows。协议测试固定使用 Claude Code 2.1.316，升级 CLI 后须重新验收。内置 `daemon` 管理仅支持 Linux／Windows；macOS 使用前台 `run` 或自行配置服务管理。
 
 ## 飞书应用与授权
 
@@ -14,16 +14,50 @@ Linux 和 Windows 运行同一个 Go 服务。源码构建需要 Go 1.25+；部�
 
 原生打字效果需要应用可调用 CardKit 卡片创建及内容更新接口，通常须开通并发布 `cardkit:card:write`。明确的权限拒绝发生在发送消息之前时，可降级为同卡整卡更新；超时或结果未知不会触发重复发送。CardKit 的消息与卡片 ID、递增序列和最后确认快照保存在 `dataDir` 的状态库内，重启后的更新继续使用原卡片。正常结束关闭流式并折叠思考；实际手机和桌面效果仍需分别验收。
 
+## 发布包安装
+
+从 [GitHub Releases](https://github.com/sean2077/feishu-bot/releases) 选择目标 Go 版本，下载与本机匹配的压缩包和同一版本的 `SHA256SUMS.txt`。Linux、macOS 分别提供 amd64／arm64，Windows 提供 amd64；macOS Intel 选择 `darwin-amd64`，Apple Silicon 选择 `darwin-arm64`。完整产物命名见[版本发布](releasing.md#发布产物)。
+
+执行下面与平台对应的命令，核对结果与 `SHA256SUMS.txt` 中该文件一行的 SHA-256 一致。`vX.Y.Z` 是版本占位符，替换成实际下载版本：
+
+```sh
+# Linux 示例
+sha256sum feishu-bot-vX.Y.Z-linux-amd64.tar.gz
+# macOS Apple Silicon 示例
+shasum -a 256 feishu-bot-vX.Y.Z-darwin-arm64.tar.gz
+```
+
+Windows PowerShell：
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\feishu-bot-vX.Y.Z-windows-amd64.zip
+```
+
+校验后解压并进入包内同名目录。以 macOS Apple Silicon 为例：
+
+```sh
+tar -xzf feishu-bot-vX.Y.Z-darwin-arm64.tar.gz
+cd feishu-bot-vX.Y.Z-darwin-arm64
+./feishu-bot --version
+./feishu-bot init
+```
+
+Windows 解压 ZIP 后使用 `.\feishu-bot.exe`。包内 `INSTALL.md` 给出该版本的安装入口，`BUILDINFO.json` 记录 tag、提交和目标平台；`config.example.json` 是参考模板。`init` 创建实际使用的 `config.json`，已有配置会被保留。凭据、状态库、会话历史和日志留在部署目录，升级时只更换已核对的二进制并保留这些数据。TypeScript 旧版升级另见[Go 迁移](go-migration.md)。
+
+macOS 产物未提供 Developer ID 签名或 Apple 公证。若首次运行被系统阻止，在确认下载来自本仓库且 SHA-256 一致后，按 [Apple 的按程序放行说明](https://support.apple.com/en-us/102445)在“系统设置 → 隐私与安全性”中对这个程序选择“仍要打开”。保持系统全局保护启用；此操作只针对已核对的程序。
+
 ## 安装和启动
+
+从源码构建：
 
 ```sh
 go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 ./bin/feishu-bot init
 ```
 
-编辑 `config.json`。`init` 创建配置父目录，拒绝覆盖已有配置。更新后重新构建二进制再重启；测试使用 `go test -race ./...` 和 `go vet ./...`。Windows 构建使用 `go build -trimpath -o ./bin/feishu-bot.exe ./cmd/feishu-bot`。
+编辑 `config.json`。`init` 创建配置父目录，拒绝覆盖已有配置。源码更新后重新构建二进制再重启；测试使用 `go test -race ./...` 和 `go vet ./...`。Windows 构建使用 `go build -trimpath -o ./bin/feishu-bot.exe ./cmd/feishu-bot`。下文命令沿用源码构建的 `./bin/feishu-bot` 路径；使用发布包时换成解压目录中的 `./feishu-bot`，Windows 对应 `.\feishu-bot.exe`。
 
-Linux：
+Linux／macOS：
 
 ```sh
 export FEISHU_APP_SECRET='replace-with-app-secret'
@@ -45,7 +79,7 @@ $env:MODEL_AUTH_TOKEN = "replace-with-model-token"
 
 ## 内置 daemon 服务
 
-前台 `run` 只用于调试。常驻部署使用内置命令，不生成任何启动脚本：
+本节适用于 Linux／Windows。常驻部署可使用内置命令，不生成任何启动脚本；macOS 使用前台 `run` 或自行配置服务管理，当前没有内置 launchd 管理器。
 
 ```sh
 ./bin/feishu-bot daemon install --config /etc/feishu-bot/config.json
@@ -109,6 +143,8 @@ Go 飞书 HTTP／WebSocket 客户端使用系统证书及 Go 的代理环境规�
 `doctor --probe` 发送一个小请求，可能产生费用；只检查基础连接，不代表流式、工具、子代理、图片或长上下文已验收。模型额度由上游控制，`runtime.maxWorkers` 只限制活跃会话数。
 
 ## 常驻运行
+
+macOS 使用外部服务管理时，由管理器运行 `feishu-bot run`，明确配置工作目录、`--config`、`--env-file`、日志路径和原生 Claude Code 路径。网关自身的配置、授权、状态持久化和停止确认规则与其他平台相同；内置 `daemon install/start/stop` 不适用于 macOS。
 
 Linux 可使用 `daemon install` 生成 user 或 system unit；下面的 [systemd 示例](../deploy/feishu-bot.service) 适合专用账户或开机即运行的 system 部署。按安装位置修改服务账户、工作目录和二进制路径。使用专用非 root 账户，配置与环境文件仅授予必要读取权限。环境文件不写 `export`：
 

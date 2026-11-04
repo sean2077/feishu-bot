@@ -19,7 +19,7 @@ go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 
 ## 回归要求
 
-变更消息或运行时逻辑时，覆盖忙时输入归属、群与私聊路由、引用和附件、审批回调、停止与恢复、容量回收及结果未知时的处理。涉及平台差异时分别验证 Linux 和 Windows。
+变更消息或运行时逻辑时，覆盖忙时输入归属、群与私聊路由、引用和附件、审批回调、停止与恢复、容量回收及结果未知时的处理。涉及平台差异时分别验证 Linux、macOS 和 Windows；架构相关修改还须验证 amd64／arm64。macOS 的网关可通过 `run` 运行，内置 `daemon` 管理仅支持 Linux／Windows。
 
 原生运行时测试使用真实 CC 与本地模拟模型，不需要真实服务密钥。CI 仅在安装固定测试二进制时使用 npm；生产网关及每个会话均不加载 Node.js 或 TypeScript SDK。模拟测试、平台 CI 和实际飞书／模型服务验收必须分别记录。
 
@@ -39,7 +39,9 @@ go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 
 `CHANGELOG.md` 是版本记录权威，`Unreleased` 汇总尚未打标签的变更。标签使用 `vMAJOR.MINOR.PATCH`，当前已有 `v0.2.0`。Go 模块没有单独的包版本文件；当前发布以 `CHANGELOG.md` 和标签为准。
 
-仓库目前没有 tag 触发的发布工作流；推送标签不会自动构建或发布制品。公开范围、可见性和发布材料按[公开发布检查](docs/publication.md)由维护者确认。发布前运行完整检查，并区分本地测试、平台 CI 与真实飞书／模型验收。
+独立的 [release 工作流](.github/workflows/release.yml) 只监听稳定版本 tag；在精确的 tag 提交上完成五个平台的原生测试、构建和压缩包冒烟，完整附件上传并校验后才公开 GitHub Release。普通 push／PR 验证不会发布版本。版本映射、发布步骤、重跑规则和完成证据以[版本发布](docs/releasing.md)为准。
+
+公开范围、可见性和发布材料按[公开发布检查](docs/publication.md)由维护者确认。区分本地测试、平台 CI 与真实飞书／模型验收；新增发布工作流或合并 PR 不等于已发布新版本。
 
 ## 可公开的内容
 

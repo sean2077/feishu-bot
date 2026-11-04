@@ -35,9 +35,10 @@ feishu-bot version
 
 Doctor is offline by default. --probe-feishu reads application identity;
 --probe sends a potentially billable model request. Neither verifies live collaboration.
-daemon install copies this binary into a work directory, writes service.env,
-registers a logon service and starts it with no launcher scripts.
-Linux / Windows: one Go service starts native Claude Code sessions on demand
+On Linux and Windows, daemon install copies this binary into a work directory,
+writes service.env, registers a logon service and starts it with no launcher scripts.
+On macOS, use run in the foreground or with your own service manager.
+Linux / macOS / Windows: one Go service starts native Claude Code sessions on demand
 and reuses their processes between messages. Node.js is not a runtime dependency.
 `
 

@@ -8,6 +8,8 @@ permissions:
 concurrency:
   group: verify-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
 jobs:
   cross-platform:
     strategy:
@@ -15,38 +17,70 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         go: ['1.25.x', '1.27.x']
+        include:
+          - os: ubuntu-latest
+            native-platform: linux-x64
+          - os: windows-latest
+            native-platform: win32-x64
+          - os: ubuntu-24.04-arm
+            go: '1.27.x'
+            native-platform: linux-arm64
+          - os: macos-15-intel
+            go: '1.27.x'
+            native-platform: darwin-x64
+          - os: macos-15
+            go: '1.27.x'
+            native-platform: darwin-arm64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ matrix.go }}
           cache: true
-      - name: Verify Go source
-        run: go test -race -count=1 -timeout 180s ./...
-      - run: go vet ./...
-      - name: Build production binary without CGO
-        shell: pwsh
+      - uses: ./.github/actions/verify
+        with:
+          native-platform: ${{ matrix.native-platform }}
+      - name: Build and run the production binary without CGO
+        shell: bash
+        env:
+          CGO_ENABLED: '0'
         run: |
-          $env:CGO_ENABLED = '0'
-          $binary = if ($IsWindows) { './bin/feishu-bot.exe' } else { './bin/feishu-bot' }
-          go build -trimpath -o $binary ./cmd/feishu-bot
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $binary --help
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Install pinned native CLI fixture (test dependency only)
-        shell: pwsh
+          mkdir -p bin
+          binary=./bin/feishu-bot
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            binary+=.exe
+          fi
+          go build -trimpath -o "$binary" ./cmd/feishu-bot
+          "$binary" --help
+          "$binary" --version
+
+  release-tools:
+    name: Check release tooling and workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Test release tooling without publishing
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py'
+      - name: Check GitHub Actions workflows
+        shell: bash
         run: |
-          $fixture = Join-Path $env:RUNNER_TEMP 'claude-fixture'
-          npm install --prefix $fixture --ignore-scripts --no-audit --no-fund @anthropic-ai/claude-agent-sdk@0.3.316
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $platform = if ($IsWindows) { 'win32-x64' } else { 'linux-x64' }
-          $file = if ($IsWindows) { 'claude.exe' } else { 'claude' }
-          $native = Join-Path $fixture "node_modules/@anthropic-ai/claude-agent-sdk-$platform/$file"
-          if (-not (Test-Path $native)) { throw 'Pinned native fixture executable was not installed' }
-          "CLAUDE_NATIVE_PATH=$native" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          & $native --version
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Real native CLI with local deterministic model
-        run: go test -race -count=1 -timeout 180s ./internal/native ./internal/integration ./cmd/benchmark-native
+          actionlint_dir="$RUNNER_TEMP/actionlint"
+          mkdir -p "$actionlint_dir"
+          curl --fail --silent --show-error --location \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$actionlint_dir/actionlint.tar.gz"
+          printf '%s  %s\n' \
+            8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 \
+            "$actionlint_dir/actionlint.tar.gz" | sha256sum --check -
+          tar -xzf "$actionlint_dir/actionlint.tar.gz" -C "$actionlint_dir" actionlint
+          "$actionlint_dir/actionlint" -color
