@@ -674,7 +674,7 @@ func (g *Gateway) dispatch(r core.Room) error {
 	}
 	if worker == nil {
 		p, _ := g.config.Project(r.ProjectID)
-		w, err := workspace.Prepare(g.config, r, s.session, p)
+		w, err := workspace.PrepareContext(s.ctx, g.config, r, s.session, p)
 		if err == nil {
 			err = g.store.BindLaunchIdentity(s.session, w, p.CWD != "")
 		}

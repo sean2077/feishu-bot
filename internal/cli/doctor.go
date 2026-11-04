@@ -19,6 +19,7 @@ import (
 
 	"github.com/sean2077/feishu-bot/internal/config"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/process"
 	"github.com/sean2077/feishu-bot/internal/store"
 )
 
@@ -53,7 +54,10 @@ func deploymentChecks(c core.Config) []Diagnostic {
 	check("model.model", c.Model.Model)
 	check("model.smallModel", c.Model.SmallModel)
 	u, _ := url.Parse(c.Model.BaseURL)
-	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	host := ""
+	if u != nil {
+		host = strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	}
 	for _, domain := range []string{"example", "invalid", "example.com", "example.net", "example.org"} {
 		if host == domain || strings.HasSuffix(host, "."+domain) {
 			unfinished = append(unfinished, "model.baseUrl")
@@ -125,11 +129,14 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 func versionCommand(ctx context.Context, program string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, program, args...)
+	cmd := exec.Command(program, args...)
 	b := &cappedWriter{limit: 4096}
 	cmd.Stdout = b
 	cmd.Stderr = b
-	if err := cmd.Run(); err != nil {
+	if err := process.Run(ctx, cmd); err != nil {
+		if errors.Is(err, process.ErrUnconfirmed) {
+			return "", errors.New("version check process termination unconfirmed; inspect the configured executable")
+		}
 		return "", errors.New("executable failed its version check")
 	}
 	return strings.TrimSpace(b.String()), nil
@@ -137,6 +144,10 @@ func versionCommand(ctx context.Context, program string, args ...string) (string
 func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) DoctorReport {
 	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: deploymentChecks(c), Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made."}
 	add := func(name string, fn func() (string, error)) {
+		if ctx.Err() != nil {
+			r.Checks = append(r.Checks, Diagnostic{Name: name, Skipped: true, Detail: "Diagnostic cancelled."})
+			return
+		}
 		detail, err := fn()
 		if err != nil {
 			detail = core.Redact(err.Error(), config.Secrets(c))

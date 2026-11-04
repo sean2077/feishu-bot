@@ -1,10 +1,14 @@
 package workspace
 
 import (
+	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -98,5 +102,134 @@ func TestSeedExcludesCredentialsHooksAndLinks(t *testing.T) {
 		if _, e := os.Stat(filepath.Join(target, name)); !os.IsNotExist(e) {
 			t.Fatal("copied forbidden seed entry", name)
 		}
+	}
+}
+
+func TestCancelledPreparationDoesNotCreateState(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := PrepareContext(ctx, core.Config{DataDir: root}, core.Room{Key: "room"}, core.Session{}, core.Project{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatal("cancelled startup created private state", err)
+	}
+}
+
+func TestSeedRetryCannotFollowDestinationLink(t *testing.T) {
+	source, target, outside := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "document.txt"), []byte("seed content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	protected := filepath.Join(outside, "protected.txt")
+	if err := os.WriteFile(protected, []byte("keep original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(protected, filepath.Join(target, "document.txt")); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows symlink privilege unavailable")
+		}
+		t.Fatal(err)
+	}
+	if err := seedTree(source, target, &seedLimit{}); err == nil {
+		t.Fatal("seed retry followed an existing destination link")
+	}
+	data, err := os.ReadFile(protected)
+	if err != nil || string(data) != "keep original" {
+		t.Fatal("seed overwrote outside its workspace", string(data), err)
+	}
+}
+
+func TestPreparationRejectsRedirectedPrivateDirectories(t *testing.T) {
+	for _, name := range []string{"workspace", "home", "inbound"} {
+		t.Run(name, func(t *testing.T) {
+			c := core.Config{DataDir: t.TempDir()}
+			room := core.Room{Key: "room"}
+			w, err := Prepare(c, room, core.Session{}, core.Project{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			directory := filepath.Join(w.Root, name)
+			if err = os.Remove(directory); err != nil {
+				t.Fatal(err)
+			}
+			if err = os.Symlink(t.TempDir(), directory); err != nil {
+				if runtime.GOOS == "windows" {
+					t.Skip("Windows symlink privilege unavailable")
+				}
+				t.Fatal(err)
+			}
+			if _, err = Prepare(c, room, core.Session{}, core.Project{}); err == nil {
+				t.Fatal("redirected private storage admitted", name)
+			}
+		})
+	}
+}
+
+func TestLockReleaseIsIdempotentAcrossSubsequentOwner(t *testing.T) {
+	dir := t.TempDir()
+	release, err := Lock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = release(); err != nil {
+		t.Fatal(err)
+	}
+	next, err := Lock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next()
+	errs := make(chan error, 16)
+	for i := 0; i < cap(errs); i++ {
+		go func() { errs <- release() }()
+	}
+	for i := 0; i < cap(errs); i++ {
+		if err := <-errs; err != nil {
+			t.Fatal("release was not idempotent", err)
+		}
+	}
+	if unexpected, err := Lock(dir); err == nil {
+		_ = unexpected()
+		t.Fatal("previous owner released the new owner's lock")
+	}
+}
+
+func TestSeededWorkspaceInitializesGitOnceAndKeepsEdits(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("Git not installed")
+	}
+	source := t.TempDir()
+	file := filepath.Join(source, "README.md")
+	if err := os.WriteFile(file, []byte("initial source"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := core.Config{DataDir: t.TempDir()}
+	room := core.Room{Key: "seeded-room"}
+	project := core.Project{SeedDir: source}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	w, err := PrepareContext(ctx, c, room, core.Session{ID: "first"}, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(w.Work, ".git", "HEAD")); err != nil {
+		t.Fatal("Git baseline was not initialized", err)
+	}
+	if err := os.WriteFile(filepath.Join(w.Work, "README.md"), []byte("conversation edits"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("changed source"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	next, err := PrepareContext(ctx, c, room, core.Session{ID: "second"}, project)
+	if err != nil || next.Work != w.Work {
+		t.Fatal(next, err)
+	}
+	data, err := os.ReadFile(filepath.Join(w.Work, "README.md"))
+	if err != nil || string(data) != "conversation edits" {
+		t.Fatal("new session reseeded a durable workspace", string(data), err)
 	}
 }

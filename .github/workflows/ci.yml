@@ -49,4 +49,4 @@ jobs:
           & $native --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Real native CLI with local deterministic model
-        run: go test -race -count=1 -timeout 180s ./internal/native
+        run: go test -race -count=1 -timeout 180s ./internal/native ./internal/integration ./cmd/benchmark-native

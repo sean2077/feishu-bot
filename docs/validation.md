@@ -19,6 +19,7 @@ Go 1.25+ 可构建；CI 配置 Ubuntu／Windows 与 Go 1.25／1.27。生产构�
 | gateway | 授权及零副作用、忙时输入／补充／compact、审批、历史范围、图片批次、完整交付、会话控制 |
 | feishu | 原始事件、明确 @、CardKit 序号、同卡更新、反应所有权、有界文件与可取消连接 |
 | native | stream-json、公开内容归属、权限／MCP 控制、原生配置、热续轮、停止与恢复 |
+| integration | 真实 Claude + Gateway + SQLite 的审批写入、追问、完整交付、空闲回收与重启续接 |
 
 新增或修改具体行为时，使用能观察外部结果或状态不变量的测试，不以“调用了 stop”代替进程已退出、不以“发送函数返回”代替完整交付、不以“模型说记得”代替相同 session ID。
 
@@ -27,17 +28,19 @@ Go 1.25+ 可构建；CI 配置 Ubuntu／Windows 与 Go 1.25／1.27。生产构�
 协议测试使用原生 **Claude Code 2.1.316** 和仅监听回环地址的确定性模型服务；不使用真实模型凭据，不连接真实飞书。指向已安装的固定版本 CLI：
 
 ```sh
-CLAUDE_NATIVE_PATH=/absolute/path/to/claude go test -race -count=1 -v ./internal/native
+CLAUDE_NATIVE_PATH=/absolute/path/to/claude go test -race -count=1 -timeout 180s -v ./internal/native ./internal/integration ./cmd/benchmark-native
 ```
 
 PowerShell：
 
 ```powershell
 $env:CLAUDE_NATIVE_PATH = "C:/tools/claude.exe"
-go test -race -count=1 -v ./internal/native
+go test -race -count=1 -timeout 180s -v ./internal/native ./internal/integration ./cmd/benchmark-native
 ```
 
 没有设置变量时，真实 CLI 用例明确 skip，普通单元测试继续运行。CI 在单独测试步骤中安装固定 SDK 包所携带的原生 CLI；这是获取 fixture 的构建依赖，生产服务不运行该 SDK。不得将 skip 写为真实协议已验证。
+
+组合回归通过网关实际审批卡和 `/answer` 完成原生 Write／AskUserQuestion，核对临时文件内容与超长回复导出，确认文件交付回执之前没有 Done。随后触发空闲回收、停止并重开数据库，检查三代原生进程保持同一会话 ID 和历史。测试中的飞书传输和模型仍为本地替身。
 
 原生协议是版本敏感边界。更改 CLI 版本、控制帧、环境继承或工具设置时，应验证初始化、连续两轮、原生 ID、权限／追问控制、MCP、compact 和停止后 resume，并记录实际覆盖范围。测试中的合成 token 只检查采集／去重，不是账单。
 

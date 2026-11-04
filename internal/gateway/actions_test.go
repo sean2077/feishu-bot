@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -196,6 +197,32 @@ func TestActionProcessFixture(t *testing.T) {
 	case "timeout":
 		time.Sleep(10 * time.Second)
 		os.Exit(0)
+	case "descendant":
+		cmd := exec.Command(os.Args[0], "-test.run=^TestActionProcessFixture$")
+		cmd.Env = envList(cleanActionEnv(map[string]string{"FEISHU_ACTION_TEST_PROCESS": "heartbeat", "FEISHU_ACTION_HEARTBEAT": os.Getenv("FEISHU_ACTION_HEARTBEAT"), "GORACE": "atexit_sleep_ms=0"}))
+		if err := cmd.Start(); err != nil {
+			os.Exit(20)
+		}
+		for i := 0; i < 100; i++ {
+			if data, _ := os.ReadFile(os.Getenv("FEISHU_ACTION_HEARTBEAT")); len(data) > 0 {
+				os.Exit(0)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		os.Exit(21)
+	case "heartbeat":
+		f, err := os.OpenFile(os.Getenv("FEISHU_ACTION_HEARTBEAT"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			os.Exit(22)
+		}
+		// Bound the helper itself so a broken ownership regression cannot
+		// leave a test process running indefinitely.
+		for i := 0; i < 300; i++ {
+			_, _ = f.WriteString(".")
+			time.Sleep(10 * time.Millisecond)
+		}
+		_ = f.Close()
+		os.Exit(0)
 	default:
 		os.Exit(19)
 	}
@@ -327,5 +354,27 @@ func TestStopCannotClearUnknownConcurrentStartup(t *testing.T) {
 	s.mu.Unlock()
 	if !unconfirmed {
 		t.Fatal("stop cleared unconfirmed startup ownership")
+	}
+}
+
+func TestActionCompletionCleansDescendantsWithClosedStdio(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	heartbeat := filepath.Join(t.TempDir(), "heartbeat")
+	env := cleanActionEnv(map[string]string{"FEISHU_ACTION_TEST_PROCESS": "descendant", "FEISHU_ACTION_HEARTBEAT": heartbeat, "GORACE": "atexit_sleep_ms=0"})
+	code, _, err := runActionCommand(context.Background(), executable, []string{"-test.run=^TestActionProcessFixture$"}, "", env, 3000)
+	if err != nil || code != 0 {
+		t.Fatal(code, err)
+	}
+	before, err := os.ReadFile(heartbeat)
+	if err != nil || len(before) == 0 {
+		t.Fatal("descendant did not start", err)
+	}
+	time.Sleep(75 * time.Millisecond)
+	after, err := os.ReadFile(heartbeat)
+	if err != nil || len(after) != len(before) {
+		t.Fatal("action reported completion while descendant still ran", len(before), len(after), err)
 	}
 }

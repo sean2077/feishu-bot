@@ -11,10 +11,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/process"
 )
 
 var excluded = map[string]bool{".git": true, "node_modules": true, ".env": true, ".ssh": true, ".aws": true, ".azure": true, ".npmrc": true, ".pypirc": true, ".netrc": true, ".git-credentials": true, "state": true, "dist": true, ".claude": true}
@@ -25,17 +28,51 @@ type seedLimit struct {
 }
 
 func seedTree(source, target string, limit *seedLimit) error {
-	entries, err := os.ReadDir(source)
+	return seedTreeContext(context.Background(), source, target, limit)
+}
+func seedTreeContext(ctx context.Context, source, target string, limit *seedLimit) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	in, err := os.OpenRoot(source)
 	if err != nil {
 		return err
 	}
+	defer in.Close()
+	out, err := os.OpenRoot(target)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	return seedDirectory(ctx, in, out, ".", limit, 0)
+}
+func seedDirectory(ctx context.Context, source, target *os.Root, path string, limit *seedLimit, depth int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if depth > 256 {
+		return errors.New("workspace seed directory nesting exceeds limit")
+	}
+	dir, err := source.Open(path)
+	if err != nil {
+		return err
+	}
+	entries, err := dir.ReadDir(-1)
+	_ = dir.Close()
+	if err != nil {
+		return err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		name := strings.ToLower(entry.Name())
 		if excluded[name] || strings.HasPrefix(name, ".env.") {
 			continue
 		}
-		src, dst := filepath.Join(source, entry.Name()), filepath.Join(target, entry.Name())
-		st, err := os.Lstat(src)
+		relative := filepath.Join(path, entry.Name())
+		st, err := source.Lstat(relative)
 		if err != nil {
 			return err
 		}
@@ -43,10 +80,10 @@ func seedTree(source, target string, limit *seedLimit) error {
 			continue
 		}
 		if st.IsDir() {
-			if err = os.MkdirAll(dst, 0700); err != nil {
+			if err = target.MkdirAll(relative, 0700); err != nil {
 				return err
 			}
-			if err = seedTree(src, dst, limit); err != nil {
+			if err = seedDirectory(ctx, source, target, relative, limit, depth+1); err != nil {
 				return err
 			}
 		} else if st.Mode().IsRegular() {
@@ -55,24 +92,45 @@ func seedTree(source, target string, limit *seedLimit) error {
 			if limit.files > 20000 || limit.bytes > 512<<20 {
 				return errors.New("workspace seed exceeds limit")
 			}
-			if err = copyFile(src, dst, st.Mode().Perm(), st.Size()); err != nil {
+			if err = copySeedFile(ctx, source, target, relative, st.Mode().Perm(), st.Size()); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
 }
-func copyFile(source, target string, mode os.FileMode, limit int64) error {
-	in, err := os.Open(source)
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+func copySeedFile(ctx context.Context, source, target *os.Root, path string, mode os.FileMode, limit int64) error {
+	in, err := source.Open(path)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	st, err := in.Stat()
 	if err != nil {
 		return err
 	}
-	n, err := io.Copy(out, io.LimitReader(in, limit+1))
+	if !st.Mode().IsRegular() {
+		return errors.New("seed source is no longer a regular file")
+	}
+	// Both roots stay bound to open directory handles. Existing destination links
+	// and source replacements cannot redirect a retry outside those directories.
+	out, err := target.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	n, err := io.Copy(out, contextReader{ctx: ctx, reader: io.LimitReader(in, limit+1)})
 	closeErr := out.Close()
 	if err != nil {
 		return err
@@ -82,12 +140,30 @@ func copyFile(source, target string, mode os.FileMode, limit int64) error {
 	}
 	return closeErr
 }
+func physicalDirectory(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(absolute)
+}
+func ownDirectory(path, expected string) error {
+	actual, err := physicalDirectory(path)
+	if err != nil {
+		return err
+	}
+	if !core.Inside(expected, actual) || !core.Inside(actual, expected) {
+		return errors.New("conversation storage directory was redirected")
+	}
+	return nil
+}
+
 func inherited(w core.Workspace) (core.Workspace, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return w, err
 	}
-	home, err = filepath.EvalSymlinks(home)
+	home, err = physicalDirectory(home)
 	if err != nil {
 		return w, err
 	}
@@ -114,18 +190,34 @@ func inherited(w core.Workspace) (core.Workspace, error) {
 	w.ConfigDirOverride = override
 	return w, nil
 }
-func Prepare(c core.Config, room core.Room, _ core.Session, p core.Project) (core.Workspace, error) {
-	root := filepath.Join(c.DataDir, "rooms", core.Hash(room.Key)[:32])
-	if err := os.MkdirAll(root, 0700); err != nil {
+func Prepare(c core.Config, room core.Room, session core.Session, p core.Project) (core.Workspace, error) {
+	return PrepareContext(context.Background(), c, room, session, p)
+}
+
+// PrepareContext preserves the durable room layout while allowing shutdown to
+// cancel seed copies and Git initialization before a native session is started.
+func PrepareContext(ctx context.Context, c core.Config, room core.Room, _ core.Session, p core.Project) (core.Workspace, error) {
+	if err := ctx.Err(); err != nil {
 		return core.Workspace{}, err
 	}
-	root, err := filepath.EvalSymlinks(root)
+	rooms := filepath.Join(c.DataDir, "rooms")
+	if err := os.MkdirAll(rooms, 0700); err != nil {
+		return core.Workspace{}, err
+	}
+	rooms, err := physicalDirectory(rooms)
 	if err != nil {
+		return core.Workspace{}, err
+	}
+	root := filepath.Join(rooms, core.Hash(room.Key)[:32])
+	if err = os.MkdirAll(root, 0700); err != nil {
+		return core.Workspace{}, err
+	}
+	if err = ownDirectory(root, root); err != nil {
 		return core.Workspace{}, err
 	}
 	w := core.Workspace{Root: root, Work: filepath.Join(root, "workspace"), Home: filepath.Join(root, "home"), Inbound: filepath.Join(root, "inbound"), NativeConfig: "isolated", ConfigDirOverride: true}
 	if p.CWD != "" {
-		work, err := filepath.EvalSymlinks(p.CWD)
+		work, err := physicalDirectory(p.CWD)
 		if err != nil {
 			return w, err
 		}
@@ -139,32 +231,44 @@ func Prepare(c core.Config, room core.Room, _ core.Session, p core.Project) (cor
 		w.Work = work
 	}
 	for _, dir := range []string{w.Work, w.Home, w.Inbound} {
+		if err = ctx.Err(); err != nil {
+			return w, err
+		}
 		if err = os.MkdirAll(dir, 0700); err != nil {
 			return w, err
+		}
+		if dir != w.Work || p.CWD == "" {
+			if err = ownDirectory(dir, dir); err != nil {
+				return w, err
+			}
 		}
 	}
 	w.ConfigDir = filepath.Join(w.Home, ".claude")
 	if p.CWD == "" {
 		marker := filepath.Join(root, "seeded")
-		_, markerErr := os.Stat(marker)
+		markerInfo, markerErr := os.Lstat(marker)
+		if markerErr == nil && !markerInfo.Mode().IsRegular() {
+			return w, errors.New("invalid workspace seed marker")
+		}
+
 		if markerErr != nil && !errors.Is(markerErr, os.ErrNotExist) {
 			return w, markerErr
 		}
 		if errors.Is(markerErr, os.ErrNotExist) {
 			if p.SeedDir != "" {
-				source, e := filepath.EvalSymlinks(p.SeedDir)
+				source, e := physicalDirectory(p.SeedDir)
 				if e != nil {
 					return w, e
 				}
 				if core.Inside(source, root) || core.Inside(root, source) {
 					return w, errors.New("seedDir and state directory must not overlap")
 				}
-				if e = seedTree(source, w.Work, &seedLimit{}); e != nil {
+				if e = seedTreeContext(ctx, source, w.Work, &seedLimit{}); e != nil {
 					return w, e
 				}
 			}
 			if p.TrustedConfigDir != "" {
-				source, e := filepath.EvalSymlinks(p.TrustedConfigDir)
+				source, e := physicalDirectory(p.TrustedConfigDir)
 				if e != nil {
 					return w, e
 				}
@@ -175,26 +279,44 @@ func Prepare(c core.Config, room core.Room, _ core.Session, p core.Project) (cor
 				if e = os.MkdirAll(local, 0700); e != nil {
 					return w, e
 				}
-				if e = seedTree(source, local, &seedLimit{}); e != nil {
+				if e = ownDirectory(local, local); e != nil {
+					return w, e
+				}
+				if e = seedTreeContext(ctx, source, local, &seedLimit{}); e != nil {
 					return w, e
 				}
 			}
 			if p.SeedDir != "" {
-				if err = initGit(w); err != nil {
+				if err = initGit(ctx, w); err != nil {
 					return w, err
 				}
 			}
-			if err = os.WriteFile(marker, []byte("1\n"), 0600); err != nil {
+			if err = ctx.Err(); err != nil {
 				return w, err
 			}
+			markerFile, err := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+			if err != nil {
+				return w, err
+			}
+			_, writeErr := markerFile.WriteString("1\n")
+			closeErr := markerFile.Close()
+			if writeErr != nil {
+				return w, writeErr
+			}
+			if closeErr != nil {
+				return w, closeErr
+			}
 		}
+	}
+	if err = ctx.Err(); err != nil {
+		return w, err
 	}
 	if p.NativeConfig == "inherit" {
 		return inherited(w)
 	}
 	return w, nil
 }
-func initGit(w core.Workspace) error {
+func initGit(parent context.Context, w core.Workspace) error {
 	template := filepath.Join(w.Root, "empty-git-template")
 	if err := os.MkdirAll(template, 0700); err != nil {
 		return err
@@ -211,13 +333,16 @@ func initGit(w core.Workspace) error {
 	}
 	env = append(env, "HOME="+w.Root, "USERPROFILE="+w.Root, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+null, "GIT_TEMPLATE_DIR="+template)
 	for _, args := range [][]string{{"init", "-b", "main"}, {"add", "-A"}, {"-c", "core.hooksPath=" + template, "-c", "commit.gpgSign=false", "-c", "user.name=Feishu Bot", "-c", "user.email=feishu-bot@example.invalid", "commit", "--allow-empty", "-m", "Project source snapshot"}} {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		cmd := exec.CommandContext(ctx, "git", args...)
+		ctx, cancel := context.WithTimeout(parent, time.Minute)
+		cmd := exec.Command("git", args...)
 		cmd.Dir = w.Work
 		cmd.Env = env
-		err := cmd.Run()
+		err := process.Run(ctx, cmd)
 		cancel()
 		if err != nil {
+			if errors.Is(err, process.ErrUnconfirmed) || parent.Err() != nil {
+				return err
+			}
 			return errors.New("cannot initialize project source baseline")
 		}
 	}
@@ -325,7 +450,10 @@ func Lock(dir string) (func() error, error) {
 	token := core.NewID()
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return nil, fmt.Errorf("data directory is locked; verify its recorded PID before removing a stale gateway.lock")
+		if errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("data directory is locked; verify its recorded PID before removing a stale gateway.lock")
+		}
+		return nil, fmt.Errorf("cannot acquire data directory lock: %w", err)
 	}
 	err = json.NewEncoder(f).Encode(core.Args{"pid": os.Getpid(), "token": token, "startedAt": time.Now().UnixMilli()})
 	if err == nil {
@@ -339,7 +467,9 @@ func Lock(dir string) (func() error, error) {
 		os.Remove(path)
 		return nil, err
 	}
-	return func() error {
+	var releaseOnce sync.Once
+	var releaseErr error
+	release := func() error {
 		data, err := os.ReadFile(path)
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -357,5 +487,6 @@ func Lock(dir string) (func() error, error) {
 			return errors.New("data directory lock ownership changed")
 		}
 		return os.Remove(path)
-	}, nil
+	}
+	return func() error { releaseOnce.Do(func() { releaseErr = release() }); return releaseErr }, nil
 }

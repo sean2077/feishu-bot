@@ -141,6 +141,7 @@ type fakeGateway struct {
 	st      *store.Store
 	recover func(context.Context) error
 	stopErr error
+	stop    func(context.Context) error
 	closed  bool
 }
 
@@ -152,10 +153,13 @@ func (g *fakeGateway) Recover(ctx context.Context) error {
 }
 func (g *fakeGateway) Message(context.Context, core.Message) error             { return nil }
 func (g *fakeGateway) Action(context.Context, core.CardAction) (string, error) { return "", nil }
-func (g *fakeGateway) Close(context.Context) error {
+func (g *fakeGateway) Close(ctx context.Context) error {
 	g.closed = true
 	if !g.st.IsOpen() {
 		return errors.New("database closed before gateway")
+	}
+	if g.stop != nil {
+		return g.stop(ctx)
 	}
 	return g.stopErr
 }
@@ -212,5 +216,63 @@ func TestUnconfirmedShutdownKeepsExclusiveLock(t *testing.T) {
 	}
 	if _, err = os.Stat(filepath.Join(c.DataDir, "gateway.lock")); err != nil {
 		t.Fatal("unconfirmed process stop released the lock", err)
+	}
+}
+
+func TestShutdownKeepsTransportAndDatabaseAvailableForFinalCards(t *testing.T) {
+	c := config.Defaults()
+	c.DataDir = t.TempDir()
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := &fakeChannel{start: func(ctx context.Context) error { cancel(); return ctx.Err() }}
+	g := &fakeGateway{}
+	g.stop = func(ctx context.Context) error {
+		if ctx.Err() != nil {
+			return errors.New("shutdown inherited the cancelled connection context")
+		}
+		if ch.closed {
+			return errors.New("transport closed before final approval-card updates")
+		}
+		if _, err := g.st.Session("shutdown-fixture"); err != nil {
+			return err
+		}
+		return nil
+	}
+	err := runService(parent, c, func(string, core.Args) {}, func(_ core.Config, st *store.Store, _ core.Logger) (serviceGateway, serviceChannel, error) {
+		g.st = st
+		return g, ch, nil
+	})
+	if err != nil || !g.closed || !ch.closed || g.st.IsOpen() {
+		t.Fatal("incomplete ordered shutdown", err)
+	}
+	if _, err := os.Stat(filepath.Join(c.DataDir, "gateway.lock")); !os.IsNotExist(err) {
+		t.Fatal("confirmed shutdown retained lock", err)
+	}
+}
+
+func TestCancelledInitAndDoctorDoNotCreateFiles(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	path := filepath.Join(t.TempDir(), "new", "config.json")
+	var out, errs bytes.Buffer
+	if code := Run(ctx, []string{"init", "--config", path}, &out, &errs); code == 0 {
+		t.Fatal("cancelled init reported success")
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+		t.Fatal("cancelled init created a directory", err)
+	}
+	c := config.Defaults()
+	c.DataDir = filepath.Join(t.TempDir(), "doctor-state")
+	report := RunDoctor(ctx, c, false, false)
+	if report.Ready {
+		t.Fatal("cancelled doctor claimed readiness")
+	}
+	if _, err := os.Stat(c.DataDir); !os.IsNotExist(err) {
+		t.Fatal("cancelled doctor created probe state", err)
+	}
+	out.Reset()
+	errs.Reset()
+	if code := Run(ctx, []string{"run", "--config", path}, &out, &errs); code != 0 || errs.Len() != 0 {
+		t.Fatal("cancelled run attempted startup", code, errs.String())
 	}
 }

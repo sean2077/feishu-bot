@@ -170,6 +170,11 @@ func runActionCommand(ctx context.Context, executable string, args []string, cwd
 				}
 				code = exit.ExitCode()
 			}
+			// A short action is complete only when its owned descendants
+			// are gone too, even if they closed stdio before the leader.
+			if err := tree.Terminate(done); err != nil {
+				return code, output.String(), err
+			}
 			return code, output.String(), nil
 		}
 	case <-ctx.Done():

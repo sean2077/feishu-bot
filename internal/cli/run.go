@@ -44,6 +44,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return err
 		}
+		if err := ctx.Err(); err != nil && o.Command != "help" && o.Command != "version" {
+			if o.Command == "run" {
+				return nil
+			}
+			return err
+		}
 		switch o.Command {
 		case "help":
 			_, err = io.WriteString(stdout, help)
@@ -177,11 +183,9 @@ func runService(parent context.Context, c core.Config, log core.Logger, makeServ
 	ctx, cancel := context.WithCancel(parent)
 	defer func() {
 		cancel()
-		if channel != nil {
-			if err := channel.Close(); err != nil {
-				result = errors.Join(result, err)
-			}
-		}
+		// Start has returned (or admission never began), and cancellation stops
+		// the inbound stream. Keep REST transport alive until approval cards and
+		// other final gateway updates have been settled.
 		confirmed := true
 		if g != nil {
 			log("shutdown", nil)
@@ -192,6 +196,11 @@ func runService(parent context.Context, c core.Config, log core.Logger, makeServ
 				confirmed = false
 				result = errors.Join(result, err)
 				log("shutdown_unconfirmed", core.Args{"error": err.Error()})
+			}
+		}
+		if channel != nil {
+			if err := channel.Close(); err != nil {
+				result = errors.Join(result, err)
 			}
 		}
 		if st != nil {
@@ -208,6 +217,9 @@ func runService(parent context.Context, c core.Config, log core.Logger, makeServ
 	g, channel, err = makeService(c, st, log)
 	if err != nil {
 		return err
+	}
+	if g == nil || channel == nil {
+		return errors.New("service initialization returned an incomplete gateway or transport")
 	}
 	if err = g.Recover(ctx); err != nil {
 		if parent.Err() != nil {
