@@ -11,4 +11,5 @@
 - Use native permission rules and scoped maintainer approvals. Same-account directories are not a security sandbox.
 - Keep documentation, examples, prompts, PR descriptions and comments independent of any individual's environment or private discussions. Use fictional identifiers and reserved example domains; never copy deployment credentials, internal endpoints or personal paths.
 - Document existing capabilities and limitations. Support different usage scenarios through configuration, not a general-purpose platform framework.
-- Run relevant tests and `npm run check` when available. Separate simulated-provider evidence, platform CI and live-service acceptance; report only what actually ran.
+- The production service is Go. Keep native Claude Code as a direct child; do not reintroduce per-session Node workers or a second agent loop. Preserve the existing SQLite schema and conversation namespace during migrations.
+- Run relevant tests, `go test -race ./...`, `go vet ./...` and the native CLI fixtures when available. Separate simulated-provider evidence, platform CI and live-service acceptance; report only what actually ran.

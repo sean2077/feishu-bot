@@ -1,5 +1,16 @@
 # 版本记录
 
+## Unreleased — Go 原生网关
+
+- 用 Go 替换生产 TypeScript 服务、会话 worker、飞书适配、审批、交付、诊断及固定操作示例；一个服务直接管理持久 Claude 原生进程，运行时不再依赖 Node.js 或 TypeScript Agent SDK。
+- 保留既有 JSON 配置、SQLite schema 5、聊天命名空间、原生 session ID 和工作区布局；停止、恢复及 compact 不主动新建会话。
+- 通过双向 stream-json 实现原生权限、追问、MCP、hooks、忙时输入与后台来源，固定 CLI 2.1.316 做真实进程／本地模型协议回归。
+- 使用 Go 的有界流式文件传输、可取消飞书长连接、持久 CardKit 序号和不确定外部写入恢复。Windows 原生进程使用 Job Object 确认派生进程退出。
+- CI 改为 Ubuntu／Windows 的 Go 构建、竞态检测、vet 和独立固定原生 CLI 测试；新增同 fixture 的 Go 基准命令。
+- 部署需要独立安装原生 Claude，可通过 `runtime.claudeExecutable` 指定；固定操作正则使用 RE2。详见 [迁移与回滚](docs/go-migration.md)。
+
+内存收益需要同版本、同配置和同样本测量。真实飞书、真实模型及客户端验收单独进行；历史 TypeScript 测试结果不计作 Go 覆盖。
+
 ## 0.2.0 — 2026-11-04
 
 ### 本地原生接入

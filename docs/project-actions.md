@@ -19,14 +19,14 @@
 
 `workspaceFile` 在审批前保存文件快照和 SHA256，批准后读取快照。GitLab 示例在独立的干净 checkout 中应用补丁，禁用 hooks 和全局 Git 配置，不在可修改项目中运行携带业务凭据的脚本。
 
-Linux 示例使用 `/usr/bin/node`，Windows 改成实际 `node.exe` 与脚本路径。不要把输入拼入 `sh -c`、PowerShell 或动态脚本；固定 argv 并不自动证明执行器的业务逻辑安全。
+示例使用编译后的 `project-operations` 二进制，Windows 配置对应 `.exe` 的绝对路径。不要把输入拼入 `sh -c`、PowerShell 或动态脚本；固定 argv 并不自动证明执行器的业务逻辑安全。
 
 ## 原生后台工具
 
 配置业务操作后，原生 Bash／Monitor 可使用相同入口：
 
 ```sh
-node "$FEISHU_ACTION_CLIENT" jenkins-status '{}'
+"$FEISHU_ACTION_CLIENT" action jenkins-status '{}'
 ```
 
 权限与 MCP `project_action` 相同，写操作仍等待维护者批准。这里不新增 cron 或监控调度器。进程停止后接口失效，恢复会话不重启旧 Monitor。
@@ -40,3 +40,11 @@ node "$FEISHU_ACTION_CLIENT" jenkins-status '{}'
 各服务的认证、资源权限和错误语义需联调。Jenkins 示例使用 API token 与 REVISION 参数；表格示例仅读取第一页及分页信息，不宣称返回全部记录。结果未知的写操作不自动重试，应先核对远端状态。
 
 接口参考：[Jenkins](https://www.jenkins.io/doc/book/using/remote-access-api/) · [GitLab MR](https://docs.gitlab.com/api/merge_requests/) · [飞书文档子块](https://open.feishu.cn/document/server-docs/docs/docs/docx-v1/document-block-children/create)
+
+## 构建 Go 示例执行器
+
+```sh
+go build -trimpath -o ./bin/project-operations ./examples/actions/project-operations
+```
+
+将生成的受信任二进制部署到配置的绝对路径；Windows 使用 `.exe`。`examples/project-actions.json` 的默认路径是示例，部署时按实际位置修改。执行器不随聊天工作区复制，也不接受模型提供的 URL、仓库、基础分支或 HTTP 方法。网关与示例均不再需要 Node.js。

@@ -1,0 +1,296 @@
+package gateway
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/workspace"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+var parameterTemplate = regexp.MustCompile(`\{\{([^}]+)\}\}`)
+
+// ActionArguments performs value substitution only after policy validation; it
+// never passes user-controlled shell syntax to an interpreter.
+func ActionArguments(spec core.ActionSpec, input core.Args, snapshots map[string]string) ([]string, error) {
+	for name := range input {
+		if _, ok := spec.Parameters[name]; !ok {
+			return nil, fmt.Errorf("unknown parameter: %s", name)
+		}
+	}
+	values := map[string]string{}
+	for name, p := range spec.Parameters {
+		value, ok := input[name].(string)
+		if !ok || len([]rune(value)) > p.MaxLength || strings.ContainsAny(value, "\x00\r\n") || strings.HasPrefix(value, "-") {
+			return nil, fmt.Errorf("invalid parameter: %s", name)
+		}
+		if len(p.Enum) > 0 && !contains(p.Enum, value) {
+			return nil, fmt.Errorf("invalid option: %s", name)
+		}
+		if p.Pattern != "" {
+			re, e := regexp.Compile("^(?:" + p.Pattern + ")$")
+			if e != nil || !re.MatchString(value) {
+				return nil, fmt.Errorf("parameter does not match policy: %s", name)
+			}
+		}
+		values[name] = value
+	}
+	args := make([]string, len(spec.Args))
+	for i, arg := range spec.Args {
+		unknown := false
+		args[i] = parameterTemplate.ReplaceAllStringFunc(arg, func(match string) string {
+			key := match[2 : len(match)-2]
+			if v, ok := snapshots[key]; ok {
+				return v
+			}
+			v, ok := values[key]
+			if !ok {
+				unknown = true
+			}
+			return v
+		})
+		if unknown {
+			return nil, errors.New("action template references an unknown parameter")
+		}
+	}
+	return args, nil
+}
+func cleanActionEnv(extra map[string]string) map[string]string {
+	env := map[string]string{}
+	for _, key := range []string{"PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "TZ", "TEMP", "TMP"} {
+		if v, ok := os.LookupEnv(key); ok {
+			env[key] = v
+		}
+	}
+	for key, v := range extra {
+		env[key] = v
+	}
+	return env
+}
+func envList(env map[string]string) []string {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, k+"="+env[k])
+	}
+	return out
+}
+
+type boundedOutput struct {
+	mu       sync.Mutex
+	b        bytes.Buffer
+	max      int
+	overflow chan struct{}
+	once     sync.Once
+}
+
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := len(p)
+	remaining := b.max - b.b.Len()
+	if len(p) > remaining {
+		if remaining > 0 {
+			b.b.Write(p[:remaining])
+		}
+		b.once.Do(func() { close(b.overflow) })
+	} else {
+		b.b.Write(p)
+	}
+	return n, nil
+}
+func (b *boundedOutput) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.b.String() }
+func runActionCommand(ctx context.Context, executable string, args []string, cwd string, env map[string]string, timeoutMS int64) (int, string, error) {
+	if e := ctx.Err(); e != nil {
+		return 0, "", e
+	}
+	cmd := exec.Command(executable, args...)
+	cmd.Dir = cwd
+	cmd.Env = envList(env)
+	cmd.WaitDelay = 2 * time.Second
+	output := &boundedOutput{max: 1024 * 1024, overflow: make(chan struct{})}
+	cmd.Stdout = output
+	cmd.Stderr = output
+	prepareProcess(cmd)
+	if e := cmd.Start(); e != nil {
+		return 0, "", e
+	}
+	tree, e := attachProcess(cmd)
+	if e != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return 0, "", e
+	}
+	defer tree.close()
+	done := make(chan struct{})
+	waited := make(chan error, 1)
+	go func() { err := cmd.Wait(); waited <- err; close(done) }()
+	if timeoutMS <= 0 {
+		timeoutMS = 60000
+	}
+	timer := time.NewTimer(time.Duration(timeoutMS) * time.Millisecond)
+	defer timer.Stop()
+	reason := ""
+	select {
+	case e = <-waited:
+		select {
+		case <-output.overflow:
+			reason = "output size limit"
+		default:
+		}
+		if reason != "" {
+			// Both completion and overflow may be ready. Oversized output
+			// must not become a successful action by select's random choice.
+		} else if errors.Is(e, exec.ErrWaitDelay) {
+			reason = "process pipes remained open"
+		} else {
+			code := 0
+			if e != nil {
+				var exit *exec.ExitError
+				if !errors.As(e, &exit) {
+					return 0, output.String(), e
+				}
+				code = exit.ExitCode()
+			}
+			return code, output.String(), nil
+		}
+	case <-ctx.Done():
+		reason = "operation cancelled"
+	case <-timer.C:
+		reason = "operation timed out"
+	case <-output.overflow:
+		reason = "output size limit"
+	}
+	if err := tree.terminate(done); err != nil {
+		return 0, output.String(), fmt.Errorf("%s; process termination unconfirmed: %w", reason, err)
+	}
+	select {
+	case <-done:
+		return 0, output.String(), errors.New(reason)
+	case <-time.After(5 * time.Second):
+		return 0, output.String(), fmt.Errorf("%s; process termination unconfirmed", reason)
+	}
+}
+func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string, p core.Project, id string, input core.Args, w core.Workspace) (core.Args, error) {
+	var spec *core.ActionSpec
+	for _, a := range p.Actions {
+		if a.ID == id {
+			v := a
+			spec = &v
+			break
+		}
+	}
+	if spec == nil {
+		return nil, errors.New("action not allowed in this project")
+	}
+	if _, e := ActionArguments(*spec, input, nil); e != nil {
+		return nil, e
+	}
+	run := core.NewID()
+	staging := filepath.Join(g.config.DataDir, "action-inputs", run)
+	defer os.RemoveAll(staging)
+	snapshots := map[string]string{}
+	digests := map[string]string{}
+	for name, param := range spec.Parameters {
+		if !param.WorkspaceFile {
+			continue
+		}
+		if !regexp.MustCompile(`^[a-zA-Z0-9_]+$`).MatchString(name) {
+			return nil, errors.New("invalid file parameter name")
+		}
+		path, e := workspace.TranslateFile(w, stringArg(input, name))
+		if e != nil {
+			return nil, e
+		}
+		target := filepath.Join(staging, name)
+		if e = workspace.Snapshot(w.Work, path, target, 10*1024*1024); e != nil {
+			return nil, e
+		}
+		f, e := os.Open(target)
+		if e != nil {
+			return nil, e
+		}
+		digest := sha256.New()
+		_, e = io.Copy(digest, f)
+		f.Close()
+		if e != nil {
+			return nil, e
+		}
+		snapshots[name] = target
+		digests[name] = hex.EncodeToString(digest.Sum(nil))
+	}
+	args, e := ActionArguments(*spec, input, snapshots)
+	if e != nil {
+		return nil, e
+	}
+	digest := core.Hash(jsonText(core.Args{"id": id, "input": input, "fileDigests": digests}))
+	if !spec.ReadOnly {
+		summary := "项目：" + p.ID + "\n操作：" + spec.Description + "\n参数：`" + cut(jsonText(g.redactArgs(input)), 4000) + "`\n文件快照 SHA256：`" + jsonText(digests) + "`\n摘要：`" + digest[:16] + "`"
+		decision, e := g.ask(ctx, r, session, id, input, summary, nil)
+		if e != nil {
+			return nil, e
+		}
+		if !boolArg(decision, "approved") {
+			return core.Args{"ok": false, "error": stringArg(decision, "reason")}, nil
+		}
+	}
+	if ctx.Err() != nil {
+		return core.Args{"ok": false, "error": "cancelled"}, nil
+	}
+	env := cleanActionEnv(spec.Vars)
+	secrets := append([]string(nil), g.secrets...)
+	for key, name := range spec.Env {
+		value, ok := os.LookupEnv(name)
+		if !ok {
+			return nil, fmt.Errorf("missing configured secret: %s", name)
+		}
+		env[key] = value
+		if value != "" {
+			secrets = append(secrets, value)
+		}
+	}
+	execution, e := g.beginAction(ctx, r.Key, run)
+	if e != nil {
+		return nil, e
+	}
+	unconfirmed := false
+	defer func() { g.endAction(run, execution, unconfirmed) }()
+	if _, e = g.store.DB.Exec("INSERT INTO action_runs(id,room,session,action,digest,state,at) VALUES(?,?,?,?,?,'running',?)", run, r.Key, session, id, digest, time.Now().UnixMilli()); e != nil {
+		return nil, e
+	}
+	g.audit(r.Key, "action_started", core.Args{"run": run, "action": id, "digest": digest, "readOnly": spec.ReadOnly})
+	code, output, e := g.actionRunner(ctx, spec.Executable, args, spec.CWD, env, spec.TimeoutMS)
+	if e != nil {
+		_, _ = g.store.DB.Exec("UPDATE action_runs SET state='uncertain' WHERE id=?", run)
+		if strings.Contains(e.Error(), "process termination unconfirmed") {
+			unconfirmed = true
+			g.audit(r.Key, "action_termination_unconfirmed", core.Args{"run": run, "action": id})
+		}
+		return nil, e
+	}
+	state := "failed"
+	if code == 0 {
+		state = "done"
+	}
+	if _, e = g.store.DB.Exec("UPDATE action_runs SET state=? WHERE id=?", state, run); e != nil {
+		return nil, e
+	}
+	g.audit(r.Key, "action_finished", core.Args{"run": run, "action": id, "code": code})
+	return core.Args{"ok": code == 0, "code": code, "output": core.Redact(output, secrets)}, nil
+}

@@ -1,0 +1,33 @@
+diff --git a/scripts/benchmark-metrics.mjs b/scripts/benchmark-metrics.mjs
+index b9a322b..f0ec8e2 100644
+--- a/scripts/benchmark-metrics.mjs
++++ b/scripts/benchmark-metrics.mjs
+@@ -1,4 +1,5 @@
+ import { execFile } from 'node:child_process';
++import { readFile, readdir } from 'node:fs/promises';
+ import { performance } from 'node:perf_hooks';
+ 
+ const usageKeys = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
+@@ -38,6 +39,22 @@ export async function memorySnapshot() {
+     const method = windows ? 'Win32_Process.WorkingSetSize' : 'ps RSS (KiB converted to bytes)';
+     let collectorPid;
+     try {
++        if (process.platform === 'linux') {
++            // Measurement-only namespace correction; production source unchanged.
++            const parse = text => {
++                const field = name => new RegExp('^' + name + ':\\s+(\\d+)', 'm').exec(text)?.[1];
++                const pid = Number(field('Pid')), ppid = Number(field('PPid')), rss = Number(field('VmRSS'));
++                return Number.isFinite(pid) && Number.isFinite(ppid) && Number.isFinite(rss) ? { pid, ppid, bytes: rss * 1024 } : null;
++            };
++            const root = parse(await readFile('/proc/self/status', 'utf8'));
++            if (!root) throw new Error('root-not-observed');
++            const rows = [];
++            for (const entry of await readdir('/proc')) {
++                if (!/^\d+$/.test(entry)) continue;
++                try { const row = parse(await readFile('/proc/' + entry + '/status', 'utf8')); if (row) rows.push(row); } catch {}
++            }
++            return { status: 'observed', method: '/proc VmRSS (KiB converted to bytes)', collectionMs: Math.round(performance.now() - started), ...memoryFromRows(rows, root.pid, -1) };
++        }
+         if (!windows && process.platform !== 'linux') throw new Error('unsupported-platform');
+         const command = windows ? 'powershell.exe' : 'ps';
+         const args = windows ? ['-NoProfile', '-NonInteractive', '-Command',

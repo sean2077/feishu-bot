@@ -1,13 +1,15 @@
 # 开发与贡献
 
-需要 Node.js 22.16+ 和 Git。安装依赖后运行检查：
+需要 Go 1.25+ 和 Git；真实原生协议测试还需要 Claude Code 2.1.316。安装依赖后运行检查：
 
 ```sh
-npm ci --ignore-scripts
-npm run check
+go mod download
+go test -race ./...
+go vet ./...
+go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 ```
 
-依赖采用精确版本与 lockfile；不要用 `--force` 或 `--legacy-peer-deps` 掩盖兼容性问题。
+依赖通过 `go.mod`／`go.sum` 固定。保持无 CGO 的生产构建，SQLite 使用 `modernc.org/sqlite`；竞态检测需要平台的 C 工具链。变更依赖后运行 `go mod tidy` 并检查差异。真实 CLI 测试使用 `CLAUDE_NATIVE_PATH` 指向固定版本的原生二进制，未设置时明确跳过。
 
 ## 设计边界
 
@@ -19,7 +21,13 @@ npm run check
 
 变更消息或运行时逻辑时，覆盖忙时输入归属、群与私聊路由、引用和附件、审批回调、停止与恢复、容量回收及结果未知时的处理。涉及平台差异时分别验证 Linux 和 Windows。
 
-原生运行时测试使用真实 SDK/CC 与本地模拟模型，不需要真实服务密钥。模拟测试、平台 CI 和实际飞书／模型服务验收必须分别记录。
+原生运行时测试使用真实 CC 与本地模拟模型，不需要真实服务密钥。CI 仅在安装固定测试二进制时使用 npm；生产网关及每个会话均不加载 Node.js 或 TypeScript SDK。模拟测试、平台 CI 和实际飞书／模型服务验收必须分别记录。
+
+## 模块
+
+`internal/core` 是跨模块的消息和运行时接口；`config` 负责严格配置；`store` 负责兼容 SQLite；`workspace` 负责目录身份和文件快照；`native` 负责 Claude 双向协议和进程生命周期；`feishu` 负责平台 HTTP、长连接和 CardKit；`gateway` 负责会话、授权、审批和持久交付；`cli` 只负责启动、诊断和关闭。
+
+不要在数据库事务内再次通过 Store 调用数据库；当前使用单连接来保持事务顺序。网络操作不应持有入站锁或 SQLite 事务。增加异步操作时同时处理取消、迟到返回、授权变化及结果未知的情形。
 
 ## 可公开的内容
 

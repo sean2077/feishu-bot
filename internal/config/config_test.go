@@ -1,0 +1,193 @@
+package config
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func fixture(t *testing.T) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile("../../examples/config.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v map[string]any
+	if err = json.Unmarshal(data, &v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+func TestExistingConfigurationDefaults(t *testing.T) {
+	v := fixture(t)
+	data, _ := json.Marshal(v)
+	base := t.TempDir()
+	c, err := Parse(data, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Runtime.MaxWorkers != 4 || c.Runtime.IdleMS != 900000 || c.Limits.BackgroundMessages != 0 || c.Limits.ImageBatchMS != 0 {
+		t.Fatalf("changed defaults: %+v %+v", c.Runtime, c.Limits)
+	}
+	if c.Projects[0].PermissionMode != "acceptEdits" || c.Projects[0].NativeConfig != "isolated" || c.DataDir != filepath.Join(base, "state") {
+		t.Fatal("existing configuration semantics changed")
+	}
+}
+func TestConfigRejectsInvalidAndUnknownValues(t *testing.T) {
+	cases := map[string]func(map[string]any){
+		"unknown":         func(v map[string]any) { v["limtis"] = map[string]any{} },
+		"unknown nested":  func(v map[string]any) { v["runtime"].(map[string]any)["memory"] = 512 },
+		"null limit":      func(v map[string]any) { v["limits"].(map[string]any)["approvalMs"] = nil },
+		"fractional":      func(v map[string]any) { v["runtime"].(map[string]any)["idleMs"] = 0.5 },
+		"unbounded queue": func(v map[string]any) { v["limits"].(map[string]any)["inboxPerRoom"] = 100000 },
+		"url credentials": func(v map[string]any) { v["model"].(map[string]any)["baseUrl"] = "https://user:secret@example.com" },
+		"header injection": func(v map[string]any) {
+			v["model"].(map[string]any)["extraHeaders"] = map[string]any{"X-Token": "ok\r\nX: no"}
+		},
+		"wildcard maintainer": func(v map[string]any) { v["projects"].([]any)[0].(map[string]any)["maintainers"] = []string{"*"} },
+		"duplicate group":     func(v map[string]any) { g := v["groups"].([]any); v["groups"] = append(g, g[0]) },
+		"cwd seed conflict": func(v map[string]any) {
+			p := v["projects"].([]any)[0].(map[string]any)
+			p["cwd"] = "existing"
+			p["seedDir"] = "seed"
+		},
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			v := fixture(t)
+			change(v)
+			data, _ := json.Marshal(v)
+			if _, err := Parse(data, t.TempDir()); err == nil {
+				t.Fatal("accepted invalid configuration")
+			}
+		})
+	}
+}
+func TestExplicitZeroAndLegacyAliases(t *testing.T) {
+	v := fixture(t)
+	v["runtime"].(map[string]any)["mode"] = "local"
+	v["runtime"].(map[string]any)["idleMs"] = 0
+	p := v["projects"].([]any)[0].(map[string]any)
+	delete(p, "permissionMode")
+	p["autoApproveWorkspace"] = false
+	data, _ := json.Marshal(v)
+	c, err := Parse(data, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Runtime.IdleMS != 0 || c.Projects[0].PermissionMode != "default" {
+		t.Fatal("lost explicit legacy semantics")
+	}
+}
+func TestHeadersResolvedOnlyFromExplicitVariables(t *testing.T) {
+	v := fixture(t)
+	v["model"].(map[string]any)["extraHeaders"] = map[string]any{"X-Deployment": "env:FEISHU_TEST_HEADER"}
+	data, _ := json.Marshal(v)
+	c, err := Parse(data, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FEISHU_TEST_HEADER", "")
+	if _, err = ModelHeaders(c); err == nil {
+		t.Fatal("accepted missing header")
+	}
+	t.Setenv("FEISHU_TEST_HEADER", "actual")
+	h, err := ModelHeaders(c)
+	if err != nil || h["X-Deployment"] != "actual" {
+		t.Fatal(h, err)
+	}
+}
+
+func TestExactConfigurationFieldNamesAndSafeErrors(t *testing.T) {
+	for name, mutate := range map[string]func(map[string]any){
+		"permission casing": func(v map[string]any) {
+			v["projects"].([]any)[0].(map[string]any)["permissionmode"] = "bypassPermissions"
+		},
+		"nested casing":           func(v map[string]any) { v["limits"].(map[string]any)["approvalMS"] = 1000 },
+		"secret as unknown field": func(v map[string]any) { v["copied-private-key-not-for-diagnostics"] = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := fixture(t)
+			mutate(v)
+			data, _ := json.Marshal(v)
+			_, err := Parse(data, t.TempDir())
+			if err == nil {
+				t.Fatal("accepted field the legacy schema rejected")
+			}
+			if strings.Contains(err.Error(), "copied-private-key") {
+				t.Fatal("error exposed configuration content", err)
+			}
+		})
+	}
+	v := fixture(t)
+	v["runtime"].(map[string]any)["maxWorkers"] = 987654321123456.0
+	data, _ := json.Marshal(v)
+	_, err := Parse(data, t.TempDir())
+	if err == nil || strings.Contains(err.Error(), "987654321") {
+		t.Fatal("invalid numeric value was exposed", err)
+	}
+}
+
+func TestLegacyNullDefaultsAndIntegerNotation(t *testing.T) {
+	v := fixture(t)
+	for _, key := range []string{"runtime", "limits", "groups", "dms", "appSecretEnv"} {
+		v[key] = nil
+	}
+	m := v["model"].(map[string]any)
+	m["tokenEnv"] = nil
+	m["extraHeaders"] = nil
+	p := v["projects"].([]any)[0].(map[string]any)
+	p["allowedTools"] = nil
+	p["actions"] = nil
+	data, _ := json.Marshal(v)
+	c, err := Parse(data, t.TempDir())
+	if err != nil {
+		t.Fatal("rejected legacy null fallback", err)
+	}
+	if c.Runtime.MaxWorkers != 8 || c.Limits.ApprovalMS != 300000 || c.AppSecretEnv != "FEISHU_APP_SECRET" || c.Model.TokenEnv != "MODEL_AUTH_TOKEN" || len(c.Groups) != 0 || len(c.DMs) != 0 {
+		t.Fatalf("legacy defaults changed: %+v", c)
+	}
+	v = fixture(t)
+	data, _ = json.Marshal(v)
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(data, &raw)
+	raw["runtime"] = json.RawMessage(`{"maxWorkers":4.0,"idleMs":9e5}`)
+	data, _ = json.Marshal(raw)
+	c, err = Parse(data, t.TempDir())
+	if err != nil || c.Runtime.MaxWorkers != 4 || c.Runtime.IdleMS != 900000 {
+		t.Fatal("legacy integer representations rejected", c.Runtime, err)
+	}
+	for _, key := range []string{"permissionMode", "nativeConfig"} {
+		v = fixture(t)
+		v["projects"].([]any)[0].(map[string]any)[key] = nil
+		data, _ = json.Marshal(v)
+		if _, err = Parse(data, t.TempDir()); err == nil {
+			t.Fatal("permission field null silently defaulted", key)
+		}
+	}
+}
+
+func TestLegacyActionWorkingDirectoryRemainsProcessRelative(t *testing.T) {
+	v := fixture(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	processCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := v["projects"].([]any)[0].(map[string]any)
+	p["actions"] = []any{map[string]any{"id": "status", "description": "Read project status", "executable": exe, "cwd": "operations", "args": nil, "env": nil, "vars": nil, "parameters": nil, "readOnly": true}}
+	data, _ := json.Marshal(v)
+	c, err := Parse(data, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := c.Projects[0].Actions[0]
+	if action.CWD != filepath.Join(processCWD, "operations") || action.TimeoutMS != 60000 {
+		t.Fatalf("action cwd/defaults changed: %+v", action)
+	}
+}

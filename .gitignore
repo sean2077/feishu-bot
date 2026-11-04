@@ -1,3 +1,9 @@
+bin/
+/feishu-bot
+/feishu-bot.exe
+*.test
+*.test.exe
+*.prof
 node_modules/
 dist/
 state/

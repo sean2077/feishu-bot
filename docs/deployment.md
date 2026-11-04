@@ -1,6 +1,6 @@
 # 部署与配置
 
-Linux 和 Windows 直接运行同一个 Node.js 服务。需要 Node.js 22.16+、Git；Windows 使用 Git for Windows。
+Linux 和 Windows 运行同一个 Go 服务。源码构建需要 Go 1.25+；部署只需网关二进制、Git 和原生 Claude Code。Windows 使用 Git for Windows。协议测试固定使用 Claude Code 2.1.316，升级 CLI 后须重新验收。
 
 ## 飞书应用与授权
 
@@ -17,19 +17,19 @@ Linux 和 Windows 直接运行同一个 Node.js 服务。需要 Node.js 22.16+�
 ## 安装和启动
 
 ```sh
-npm ci --ignore-scripts
-npm run init
+go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
+./bin/feishu-bot init
 ```
 
-编辑 `config.json`。`init` 会构建程序并创建配置父目录，拒绝覆盖已有配置。更新代码后执行 `npm ci --ignore-scripts && npm run build`，再重启；测试使用 `npm run check`。
+编辑 `config.json`。`init` 创建配置父目录，拒绝覆盖已有配置。更新后重新构建二进制再重启；测试使用 `go test -race ./...` 和 `go vet ./...`。Windows 构建使用 `go build -trimpath -o ./bin/feishu-bot.exe ./cmd/feishu-bot`。
 
 Linux：
 
 ```sh
 export FEISHU_APP_SECRET='replace-with-app-secret'
 export MODEL_AUTH_TOKEN='replace-with-model-token'
-npm run doctor
-npm start
+./bin/feishu-bot doctor
+./bin/feishu-bot run
 ```
 
 PowerShell：
@@ -37,19 +37,19 @@ PowerShell：
 ```powershell
 $env:FEISHU_APP_SECRET = "replace-with-app-secret"
 $env:MODEL_AUTH_TOKEN = "replace-with-model-token"
-npm run doctor
-npm start
+.\bin\feishu-bot.exe doctor
+.\bin\feishu-bot.exe run
 ```
 
 不要提交密钥。`appSecretEnv` 和 `model.tokenEnv` 可显式指定其他变量，已有显式设置继续有效。模型默认变量是 `MODEL_AUTH_TOKEN`，不会扫描其他凭据。旧配置省略 `tokenEnv` 时，应补上实际变量名或设置新默认变量。
 
 ## 首次启动检查
 
-`npm run doctor` 检查本地配置和运行条件；`ready: true` 只表示报告列出的检查通过，不代表已验证飞书身份、模型工具调用或真实协作。
+`./bin/feishu-bot doctor` 检查本地配置和运行条件；`ready: true` 只表示报告列出的检查通过，不代表已验证飞书身份、模型工具调用或真实协作。
 
-模板中的示例 ID、保留示例域名、模型占位名和占位凭据必须替换。群与私聊至少配置一项；空列表不会接收任何请求。`run` 在连接飞书和打开运行状态前拒绝这些未完成配置。配置语法错误只报告位置，不回显可能含密钥的原文。
+模板中的示例 ID、保留示例域名、模型占位名和占位凭据必须替换。群与私聊至少配置一项；空列表不会接收任何请求。`run` 在连接飞书和打开运行状态前拒绝这些未完成配置。配置语法错误不回显可能含密钥的原文。
 
-使用独立配置时填写完整参数，例如 `node dist/cli.js doctor --config ./config.local.json`。缺少路径、重复 `--config` 或拼错参数会直接报错，不偷偷使用默认配置。
+使用独立配置时填写完整参数，例如 `./bin/feishu-bot doctor --config ./config.local.json`。缺少路径、重复 `--config` 或拼错参数会直接报错，不偷偷使用默认配置。
 
 数据目录检查使用独立临时 SQLite 文件，结束后删除，不打开现有 `gateway.sqlite`，也不留下固定 `doctor.sqlite`。目录不可写或配置的资料目录不存在时仍输出其余检查项；先处理报告中的失败项，再启动。
 
@@ -61,7 +61,7 @@ npm start
 
 地址支持路径前缀，末尾 `/v1` 去重。默认 HTTPS；`allowHttp` 仅用于明确选择的本地测试。`extraHeaders` 可引用 `env:VARIABLE_NAME`，缺失引用和头注入在运行前拒绝。
 
-HTTP_PROXY、HTTPS_PROXY、ALL_PROXY、NO_PROXY、NODE_EXTRA_CA_CERTS 等必要网络配置传入 CC。自定义 CA 应在 Node 启动前设置，不关闭证书校验。
+Go 飞书 HTTP／WebSocket 客户端使用系统证书及 Go 的代理环境规则（HTTP_PROXY、HTTPS_PROXY、NO_PROXY）；原生 Claude 还接收获准的代理和证书环境。为 Go 服务安装的系统 CA 与 Claude 的 NODE_EXTRA_CA_CERTS 等配置需要分别验证，不能以一方连接成功推断另一方成功。不要关闭证书校验。
 
 时区跟随环境，不绑定地区。需要一致的时间解释时可设置 `TZ=UTC`，同时影响原生进程与输入元数据；未设置时使用主机时区。模型回复跟随请求语言，内置提示主要为中文。
 
@@ -69,7 +69,7 @@ HTTP_PROXY、HTTPS_PROXY、ALL_PROXY、NO_PROXY、NODE_EXTRA_CA_CERTS 等必要�
 
 ## 常驻运行
 
-Linux 可使用 [systemd 示例](../deploy/feishu-bot.service)。按安装位置修改服务账户、工作目录和 Node 路径。使用专用非 root 账户，配置与环境文件仅授予必要读取权限。环境文件不写 `export`：
+Linux 可使用 [systemd 示例](../deploy/feishu-bot.service)。按安装位置修改服务账户、工作目录和二进制路径。使用专用非 root 账户，配置与环境文件仅授予必要读取权限。环境文件不写 `export`：
 
 ```text
 FEISHU_APP_SECRET=replace-with-app-secret
@@ -80,12 +80,12 @@ TZ=UTC
 `dataDir` 使用固定持久目录，例如 `/var/lib/feishu-bot`。数据库和其中原生 HOME／transcript 必须一起保留，不能只备份 session ID 而删除历史文件。服务启动不预开所有会话；首次任务才启动对应 CC。
 
 ```sh
-node dist/cli.js doctor --config /etc/feishu-bot/config.json
+./bin/feishu-bot doctor --config /etc/feishu-bot/config.json
 sudo systemctl enable --now feishu-bot
 journalctl -u feishu-bot -f
 ```
 
-Windows 先以前台模式检查配置与网络。CC 找不到 Git Bash 时，可设置 `CLAUDE_CODE_GIT_BASH_PATH` 指向实际 `bash.exe`；`doctor` 会执行已配置的程序并检查版本，不能只凭文件存在判断就绪。未显式设置该路径时不强制要求 Git Bash，原生工具支持情况仍需实际验证。JSON 路径用正斜杠或转义反斜杠，工具经 PATH 查找。Ctrl+C 请求关闭本实例的会话进程树；停止失败会记录 `shutdown_failed`，不能据此认为所有派生进程均已退出。
+Windows 先以前台模式检查配置与网络。CC 找不到 Git Bash 时，可设置 `CLAUDE_CODE_GIT_BASH_PATH` 指向实际 `bash.exe`；`doctor` 会执行已配置的程序并检查版本，不能只凭文件存在判断就绪。未显式设置该路径时不强制要求 Git Bash，原生工具支持情况仍需实际验证。JSON 路径用正斜杠或转义反斜杠，工具经 PATH 查找。Ctrl+C 请求关闭本实例的会话进程树；停止失败会记录 `shutdown_unconfirmed`，不能据此认为所有派生进程均已退出。
 
 ## 直接使用本地目录与原生配置
 
@@ -109,13 +109,13 @@ Windows 先以前台模式检查配置与网络。CC 找不到 Git Bash 时，�
 
 以上是合并到完整配置的项目片段。`bypassPermissions` 是显式选择的原生 YOLO 权限模式，仓库默认仍为 `acceptEdits`。它跳过常规工具权限确认，但不取消显式 deny／ask 规则或原生规则；追问仍需交互，网关的受控操作、发送文件等独立确认也不因此全部放行。不要把该选项理解为聊天成员获得管理员权限。
 
-可选 `runtime.claudeExecutable` 指定本地 Claude Code 可执行文件，相对路径以配置文件目录为基准；省略时使用锁定 SDK 自带的 CLI。`doctor` 仅对显式配置的程序执行 `--version`，确认其能启动并标识为 Claude Code，不展示私人路径。继承模式还检查真实原生配置目录存在，不执行 hooks、MCP 或插件，不证明它们已可用。自选 CLI 与 SDK 的版本组合必须另行验收。
+`runtime.claudeExecutable` 指定原生 Claude Code 可执行文件，相对路径以配置文件目录为基准；省略时使用服务账户 PATH 中的 `claude`。Go 版不再内置或自动下载 SDK 的 CLI。`doctor` 执行选定程序的 `--version`，确认其能启动并标识为 Claude Code。继承模式还检查原生配置目录存在，不执行 hooks、MCP 或插件，不证明它们已可用。协议回归固定版本与升级步骤见 [Go 迁移](go-migration.md)。
 
 隔离模式的原生历史随 `dataDir` 保存；继承模式的原生历史位于共享 Claude 配置目录的 `projects` 树中，按原生 cwd 归档。因此继承部署须同时备份网关状态与实际 Claude 历史目录。共享历史位置不代表其他聊天可以通过 `/sessions` 或 `/resume` 访问这些会话，也不会自动导入其他桥接服务的历史映射。
 
 会话首次创建后固定其工作目录与原生配置身份。修改 `cwd` 或 `nativeConfig` 后，应明确新建会话；已有会话不能通过重启或回收悄悄转到另一个目录或配置身份。恢复失败保留原映射并报错。
 
-Windows 常驻启动可使用任务计划程序，按需选择用户登录后触发，并明确 Node 路径、配置文件、工作目录及服务账户环境。需要继承配置时，应使用拥有该原生配置的账户；自动启动环境与交互终端可能不同。使用无窗口启动方式，先在前台完成诊断和验收；切换同一飞书应用前确认旧服务及其自动启动入口已停用，避免两个长连接分流事件。本项目不自动接管其他工具的计划任务。
+Windows 常驻启动可使用任务计划程序，按需选择用户登录后触发，并明确网关二进制路径、配置文件、工作目录及服务账户环境。需要继承配置时，应使用拥有该原生配置的账户；自动启动环境与交互终端可能不同。使用无窗口启动方式，先在前台完成诊断和验收；切换同一飞书应用前确认旧服务及其自动启动入口已停用，避免两个长连接分流事件。本项目不自动接管其他工具的计划任务。
 
 ## 容量与恢复
 
@@ -133,7 +133,7 @@ Windows 常驻启动可使用任务计划程序，按需选择用户登录后触
 
 ## 升级说明
 
-升级前备份 `dataDir` 并停止旧服务。SQLite 增量迁移保留会话映射，恢复阶段会重新授权待交付消息；不要删除数据库来完成升级。
+从 TypeScript 版切换时，先完成 [Go 迁移步骤](go-migration.md)。升级前备份 `dataDir` 并停止旧服务。SQLite 增量迁移保留会话映射，恢复阶段会重新授权待交付消息；不要删除数据库来完成升级。
 
 旧配置显式非零 `backgroundMessages` 不会自动变为 0，应按新行为设为 0。既有 CC 历史不会因关闭背景而消失；需要干净上下文时显式 `/new`。群 `members` 省略时不再默认放行所有人，普通成员须显式列出。
 
