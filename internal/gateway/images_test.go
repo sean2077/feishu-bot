@@ -26,7 +26,11 @@ func (f *fixture) image(id, sender string) core.Message {
 }
 
 func TestImageBatchKeepsEveryOriginalAndCompletesTogether(t *testing.T) {
-	f := newFixture(t, func(c *core.Config) { c.Limits.ImageBatchMS = 200; c.Limits.ImageBatchMaxImages = 2 })
+	f := newFixture(t, func(c *core.Config) {
+		// Keep the deadline beyond the fixture's 3s wait: the second image must close the batch.
+		c.Limits.ImageBatchMS = 5000
+		c.Limits.ImageBatchMaxImages = 2
+	})
 	f.send(f.image("first", "member"))
 	f.send(f.image("second", "member"))
 	w := f.worker()
@@ -50,7 +54,8 @@ func TestImageBatchKeepsEveryOriginalAndCompletesTogether(t *testing.T) {
 }
 func TestImageBatchOversizeRejectsAllBeforeNativeHandoff(t *testing.T) {
 	f := newFixture(t, func(c *core.Config) {
-		c.Limits.ImageBatchMS = 200
+		// Keep the deadline beyond the fixture's 3s wait: the second image must close the batch.
+		c.Limits.ImageBatchMS = 5000
 		c.Limits.ImageBatchMaxImages = 2
 		c.Limits.ImageBatchBytes = 15
 	})
