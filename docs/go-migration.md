@@ -22,15 +22,17 @@ Go JSON 解码保持旧版的字段大小写、默认值和整数校验；旧版
 2. **构建网关。**Linux 使用 `go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot`；Windows 输出 `./bin/feishu-bot.exe`。运行二进制不需要 Go 编译器、Node.js、npm 或 CGO 动态库。
 3. **停止旧服务及自动启动入口。**确认其原生子进程已退出。不要让旧版和 Go 版同时连接同一应用或使用同一数据目录。
 4. **备份完整状态。**保存配置、SQLite 及 WAL／SHM、工作区和原生历史；继承模式另保存实际 Claude 配置和历史目录。正常停止后再备份数据库能获得一致快照。
-5. **保留相同路径与账户。**保留 `dataDir`、项目绑定、cwd 和原生配置身份。若使用相对 `dataDir`，配置文件也应保持原位置。启动命令改为 `feishu-bot run --config <path>`。
-6. **先运行诊断。**`feishu-bot doctor --config <path>` 默认离线，使用独立临时数据库；按需显式添加 `--probe-feishu` 或 `--probe`。
-7. **在授权测试聊天验收。**检查会话 ID、工具审批、追问、图片／文件、同卡流式、停止续接和异常交付，再切换常驻服务。旧审批在恢复时过期；旧卡片不能继续授权操作。
+5. **保留相同路径与账户。**保留 `dataDir`、项目绑定、cwd 和原生配置身份。若使用相对 `dataDir`，配置文件也应保持原位置。启动方式改为 `feishu-bot daemon install --config <绝对路径>`：它会把二进制复制到安装目录的 `bin/`，生成或校验 `service.env`，并注册登录启动服务。安装目录默认是 config 所在目录，可用 `--work-dir` 覆盖；不需要再编写 launcher/stop 脚本。
+6. **先运行诊断。**`feishu-bot doctor --config <path>` 默认离线，使用独立临时数据库；`daemon install` 也会执行同一组离线检查并拒绝未通过的安装。按需显式添加 `--probe-feishu` 或 `--probe`。安装后用 `feishu-bot daemon status` 和 `feishu-bot daemon logs -n 50` 检查运行状态。
+7. **在授权测试聊天验收。**检查会话 ID、工具审批、追问、图片／文件、同卡流式、停止续接和异常交付，再切换常驻服务。旧审批在恢复时过期；旧卡片不能继续授权操作。用 `daemon stop`／`daemon start`／`daemon restart` 验证停止和重启后仍是同一原生 session ID。
 
 如果停止无法确认，网关保留 `gateway.lock`。必须先调查本实例的原生进程及派生工具，再决定是否清理锁；不要只根据网关 PID 已消失来删除。
 
 ## 回滚
 
 停止 Go 服务并确认所有派生进程已退出后，可切回原版启动命令。两版保持同一 schema 和持久字段，正常数据可以续用；切换前仍应保留完整备份。不要把较旧数据库单独覆盖回已产生新历史的目录。对未知外部结果先核实，回滚不代表外部写操作被撤销。
+
+回滚前先执行 `feishu-bot daemon stop`（或 `daemon uninstall` 删除任务/unit），确认旧 Go 进程及其原生子进程退出；不要让 Go 版和旧版同时连接同一飞书应用。`daemon uninstall` 保留 config、`service.env`、日志和 state，便于再次切回。
 
 ## 内存与性能结论的边界
 

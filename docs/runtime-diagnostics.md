@@ -1,6 +1,15 @@
 # 运行诊断
 
-Go 服务向 stderr 输出逐行 JSON，包含 UTC 时间和事件名。配置凭据、模型认证头和受控操作密钥通过统一 logger 脱敏。不要将 debug HTTP 转储、完整原始消息、模型请求或环境变量加入公共日志。
+前台 `run` 向 stderr 输出逐行 JSON；`daemon` 服务通过 `--log-file` 写入文件（默认 `<install-dir>/logs/service.log`，10 MB × 3），包含 UTC 时间和事件名。配置凭据、模型认证头和受控操作密钥通过统一 logger 脱敏。不要将 debug HTTP 转储、完整原始消息、模型请求或环境变量加入公共日志。
+
+## 服务状态与日志
+
+- `feishu-bot daemon status` 显示 Running/Stopped/Stopping/Stale lock、PID、配置、环境文件、日志和工作目录；`--json` 供脚本读取。
+- `feishu-bot daemon logs -n 100` 读取末尾日志，`-f` 跟随并在轮转后重新打开当前文件。
+- `~/.feishu-bot/daemon.json` 只保存绝对路径、平台、版本和安装时间，不保存密钥；`FEISHU_BOT_HOME` 可覆盖元数据目录。
+- `daemon stop` 写入 `<dataDir>/gateway.stop`，等待 `gateway.lock` 释放和进程退出。不要用 `schtasks /End`、`Stop-Process` 或重命名锁来“加速”停止。
+- 未确认关闭会保留 `gateway.lock`；`daemon status` 报告 stale lock。核实本实例 PID 及派生进程均已退出后，才使用 `daemon start --reclaim-stale-lock`。该命令只删除已无进程持有的锁，不杀进程、不重放外部写操作。
+- Windows 注销/关机可能直接终止任务进程并留下锁；下次登录后用同一显式恢复流程处理。
 
 ## 飞书连接
 

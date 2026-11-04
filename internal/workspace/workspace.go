@@ -440,6 +440,28 @@ func Snapshot(root, path, target string, limit int64) error {
 	return nil
 }
 
+type LockInfo struct {
+	PID       int    `json:"pid"`
+	Token     string `json:"token"`
+	StartedAt int64  `json:"startedAt"`
+}
+
+// ReadLock inspects gateway.lock without removing or modifying it.
+func ReadLock(dir string) (LockInfo, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "gateway.lock"))
+	if err != nil {
+		return LockInfo{}, err
+	}
+	var info LockInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return LockInfo{}, err
+	}
+	if info.PID <= 0 {
+		return LockInfo{}, errors.New("gateway.lock has no valid PID")
+	}
+	return info, nil
+}
+
 // Lock fails closed for live and stale locks. Release is called only after all
 // native descendants have been confirmed stopped.
 func Lock(dir string) (func() error, error) {

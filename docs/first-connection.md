@@ -10,6 +10,16 @@
 
 默认不访问飞书或模型。`ready` 继续表示本次请求的检查全部通过，不代表服务已完成真实验收。报告的 `verification` 分别列出 `passed`、`failed`、`blocked`、`not_checked`；不要把 `not_checked` 当作通过。
 
+本地检查通过后安装常驻服务：
+
+```sh
+./bin/feishu-bot daemon install --config ~/.feishu-bot/config.json
+./bin/feishu-bot daemon status
+./bin/feishu-bot daemon logs -n 50
+```
+
+`daemon install` 会执行同一组离线检查、复制二进制、生成或校验 `service.env`，注册当前用户的登录启动服务并默认启动；不需要编写 launcher 脚本。没有凭据时可用 `--env-file <KEY=VALUE 文件>`。`daemon status --json` 适合脚本；`daemon logs -f` 跟随日志。需要只安装不启动时加 `--no-start`。
+
 ## 2. 明确选择联网检查
 
 ```sh

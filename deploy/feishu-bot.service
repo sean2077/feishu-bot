@@ -1,7 +1,12 @@
+# Example system-wide deployment. For an ordinary per-user install, run
+# `feishu-bot daemon install`; it generates a user unit with absolute
+# --config/--env-file/--log-file arguments and does not use this file.
 [Unit]
 Description=Feishu Claude Code gateway
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -12,8 +17,8 @@ EnvironmentFile=/etc/feishu-bot/environment
 ExecStart=/opt/feishu-bot/bin/feishu-bot run --config /etc/feishu-bot/config.json
 Restart=on-failure
 RestartSec=5
-KillMode=control-group
-TimeoutStopSec=20
+KillMode=mixed
+TimeoutStopSec=60
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

@@ -43,6 +43,47 @@ $env:MODEL_AUTH_TOKEN = "replace-with-model-token"
 
 不要提交密钥。`appSecretEnv` 和 `model.tokenEnv` 可显式指定其他变量，已有显式设置继续有效。模型默认变量是 `MODEL_AUTH_TOKEN`，不会扫描其他凭据。旧配置省略 `tokenEnv` 时，应补上实际变量名或设置新默认变量。
 
+## 内置 daemon 服务
+
+前台 `run` 只用于调试。常驻部署使用内置命令，不生成任何启动脚本：
+
+```sh
+./bin/feishu-bot daemon install --config /etc/feishu-bot/config.json
+./bin/feishu-bot daemon status
+./bin/feishu-bot daemon logs -f
+./bin/feishu-bot daemon stop
+./bin/feishu-bot daemon restart
+./bin/feishu-bot daemon uninstall
+```
+
+Windows 将 `./bin/feishu-bot` 换成 `.\bin\feishu-bot.exe`。
+
+`daemon install` 的行为：
+
+1. 解析 `--config`；缺省时先找 `./config.json`，再找 `~/.feishu-bot/config.json`（Windows 为 `%USERPROFILE%\.feishu-bot\config.json`）。
+2. 安装目录默认为 config 所在目录，可用 `--work-dir` 覆盖；当前二进制复制到 `<install-dir>/bin/feishu-bot[.exe]`。可用 `--binary` 指定源二进制。
+3. 使用 `--env-file`（`KEY=VALUE`，0600）或已有 `<install-dir>/service.env`；都没有时从当前进程环境生成，只包含必需凭据和白名单运行变量（PATH/TZ/代理/Git Bash 等）。缺少必需凭据会拒绝安装。`service.env` 含凭据，不要提交或公开。
+4. 运行离线 `doctor` 本地检查；失败时打印脱敏报告并拒绝安装，不调用飞书或模型。
+5. 停止正在运行的旧实例（通过 `gateway.lock` 与控制文件），复制二进制，注册平台服务，并默认启动。
+6. 成功后写 `~/.feishu-bot/daemon.json`（schema 1），记录绝对 config/env/log/data 路径、平台、版本和安装时间。`daemon status/logs/stop/uninstall` 读取该文件，不需要重复传 `--config`。
+
+平台：
+
+- Windows：任务计划程序在当前用户登录时**直接运行安装目录中的二进制**；任务动作包含绝对 `run --service --config ... --env-file ... --log-file ...`，不经过 wscript、PowerShell 或 VBS。`run --service` 在日志打开后关闭控制台窗口。
+- Linux：root 使用 `/etc/systemd/system/feishu-bot.service`，非 root 使用 `~/.config/systemd/user/feishu-bot.service`；`ExecStart` 带绝对 config/env/log 参数。非 root 常驻建议执行 `loginctl enable-linger <user>`，否则用户注销后服务停止。
+
+日志与停止：
+
+- `--log-file` 默认 `<install-dir>/logs/service.log`，`--log-max-size` 默认 10 MB，`--log-max-backups` 默认 3；`daemon logs -n N` 查看末尾，`-f` 跟随并处理轮转。
+- `daemon stop` 写入 `<dataDir>/gateway.stop`，等待 `gateway.lock` 释放和进程退出（最多 45 秒），不使用强杀。停止会中断正在执行的前台任务，未确认的外部写操作不会自动重放。
+- 未确认关闭会保留 `gateway.lock`。核实派生进程后，才可显式使用 `daemon start --reclaim-stale-lock`；该命令只删除已无进程持有的锁，不杀进程。
+- `daemon uninstall` 删除任务/unit 和 `daemon.json`，保留 config、service.env、日志和 state。
+- Windows 注销/关机可能直接终止任务进程并留下 `gateway.lock`；下次登录任务会失败，使用上面的显式恢复命令。
+- `daemon install` 默认启动；`--no-start` 只安装。重复执行是幂等的：停止旧实例、替换二进制、重写服务定义并重新启动。同名任务/unit 若不属于本项目，需要显式 `--replace`。
+- `config path` 打印解析后的配置路径；`config example` 打印模板；`config format` 只格式化合法 JSON。
+
+Windows 登录启动不是 Windows SCM 服务：未登录不运行，且以当前交互用户身份运行。这是为了保留 `nativeConfig: inherit` 的原生配置和用户环境；需要开机即运行或独立服务账户时，另行使用 systemd/system 服务或专用部署，不能假设同一账户目录是安全沙箱。
+
 ## 首次启动检查
 
 `./bin/feishu-bot doctor` 检查本地配置和运行条件；`ready: true` 只表示报告列出的检查通过，不代表已验证飞书身份、模型工具调用或真实协作。
@@ -69,7 +110,7 @@ Go 飞书 HTTP／WebSocket 客户端使用系统证书及 Go 的代理环境规�
 
 ## 常驻运行
 
-Linux 可使用 [systemd 示例](../deploy/feishu-bot.service)。按安装位置修改服务账户、工作目录和二进制路径。使用专用非 root 账户，配置与环境文件仅授予必要读取权限。环境文件不写 `export`：
+Linux 可使用 `daemon install` 生成 user 或 system unit；下面的 [systemd 示例](../deploy/feishu-bot.service) 适合专用账户或开机即运行的 system 部署。按安装位置修改服务账户、工作目录和二进制路径。使用专用非 root 账户，配置与环境文件仅授予必要读取权限。环境文件不写 `export`：
 
 ```text
 FEISHU_APP_SECRET=replace-with-app-secret
@@ -115,7 +156,7 @@ Windows 先以前台模式检查配置与网络。CC 找不到 Git Bash 时，�
 
 会话首次创建后固定其工作目录与原生配置身份。修改 `cwd` 或 `nativeConfig` 后，应明确新建会话；已有会话不能通过重启或回收悄悄转到另一个目录或配置身份。恢复失败保留原映射并报错。
 
-Windows 常驻启动可使用任务计划程序，按需选择用户登录后触发，并明确网关二进制路径、配置文件、工作目录及服务账户环境。需要继承配置时，应使用拥有该原生配置的账户；自动启动环境与交互终端可能不同。使用无窗口启动方式，先在前台完成诊断和验收；切换同一飞书应用前确认旧服务及其自动启动入口已停用，避免两个长连接分流事件。本项目不自动接管其他工具的计划任务。
+Windows 常驻启动直接使用 `feishu-bot daemon install`（见上节），由程序注册当前用户登录任务并直接执行二进制，不需要手写任务脚本。需要继承配置时，应使用拥有该原生配置的账户；自动启动环境与交互终端可能不同。先在前台完成诊断和验收；切换同一飞书应用前确认旧服务及其自动启动入口已停用，避免两个长连接分流事件。发现同名但不是本项目安装的任务时，`daemon install` 会拒绝覆盖，需人工确认或显式 `--replace`。
 
 ## 容量与恢复
 
@@ -134,6 +175,8 @@ Windows 常驻启动可使用任务计划程序，按需选择用户登录后触
 ## 升级说明
 
 从 TypeScript 版切换时，先完成 [Go 迁移步骤](go-migration.md)。升级前备份 `dataDir` 并停止旧服务。SQLite 增量迁移保留会话映射，恢复阶段会重新授权待交付消息；不要删除数据库来完成升级。
+
+从旧的脚本式启动（VBS/PowerShell/Node launcher）迁移时，先停止旧服务、确认其原生子进程退出，并删除旧的自启动任务/脚本；然后运行 `feishu-bot daemon install`。服务命令不会猜测或接管其他工具的任务。升级二进制前先 `daemon stop`；可以直接用新二进制的 `daemon install --binary <new-binary>` 完成停止、替换、注册和重启。重复执行 `daemon install` 是幂等的。
 
 旧配置显式非零 `backgroundMessages` 不会自动变为 0，应按新行为设为 0。既有 CC 历史不会因关闭背景而消失；需要干净上下文时显式 `/new`。群 `members` 省略时不再默认放行所有人，普通成员须显式列出。
 

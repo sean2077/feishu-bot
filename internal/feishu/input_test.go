@@ -73,6 +73,23 @@ func TestPostContentV2LocalesMediaAndFiles(t *testing.T) {
 		t.Fatal("rich post must not enter standalone image batching")
 	}
 }
+func TestPostMentionKeyIsStrippedForCommands(t *testing.T) {
+	payload := rawEvent("oc_allowed", "ou_member", "post", `{"zh_cn":{"title":"","content":[[{"tag":"at","user_id":"@_user_1","user_name":"Fixture Bot","style":[]},{"tag":"text","text":" /status --json","style":[]}]]}}`, true)
+	var envelope struct {
+		Event json.RawMessage `json:"event"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	m, err := NormalizeEvent(envelope.Event, "ou_bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.Mentioned || m.Text != "/status --json" {
+		t.Fatalf("post mention key was not stripped: %+v", m)
+	}
+}
+
 func TestIncompleteContentNeverKeepsPartialResources(t *testing.T) {
 	cases := []struct{ kind, content, issue string }{
 		{"text", `{"text":42}`, invalidInput},
