@@ -128,4 +128,4 @@ go build ./cmd/feishu-bot
 
 模型回复跟随当前请求语言；内置命令和审批提示主要为中文。时区跟随运行环境，可在启动前设置 `TZ`。
 
-[架构](docs/architecture.md) · [部署](docs/deployment.md) · [使用场景](docs/usage.md) · [开发](CONTRIBUTING.md) · [运行基线](docs/runtime-baseline.md) · [依赖声明](THIRD_PARTY_NOTICES.md) · [公开发布检查](docs/publication.md)
+[文档索引](docs/README.md) · [架构](docs/architecture.md) · [部署](docs/deployment.md) · [使用场景](docs/usage.md) · [开发](CONTRIBUTING.md) · [运行基线](docs/runtime-baseline.md) · [依赖声明](THIRD_PARTY_NOTICES.md) · [公开发布检查](docs/publication.md)

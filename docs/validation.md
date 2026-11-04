@@ -12,6 +12,8 @@ go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 
 Go 1.25+ 可构建；CI 配置 Ubuntu／Windows 与 Go 1.25／1.27。生产构建支持 `CGO_ENABLED=0`，竞态检测使用 runner 的 C 工具链。Go 测试使用临时 SQLite／目录、虚构身份、本地 HTTP／WebSocket 和可控 Worker，不读取部署配置或调用真实服务。
 
+测试与被测包同目录，使用 `*_test.go`；平台专用测试使用 `_windows_test.go` 等文件名或构建约束。原生协议 fixture 位于 `internal/native`、`internal/integration` 和 `cmd/benchmark-native`。当前 CI 不设覆盖率门槛；新增行为应覆盖可观察的契约结果，而不是追求覆盖率数字。
+
 | 范围 | 检查重点 |
 |---|---|
 | config／cli | 严格字段与限制、默认值、配置路径、无覆盖 init、离线 doctor、显式探针、关闭顺序 |

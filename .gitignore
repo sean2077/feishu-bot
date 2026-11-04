@@ -24,3 +24,7 @@ config.*.json
 *.p12
 *.pfx
 coverage/
+.claude/settings.local.json
+.worktrees/
+.claude/allow-trunk-edit
+.agent-scaffold-symlink-*/
