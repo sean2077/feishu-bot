@@ -16,6 +16,7 @@ export function feishuTransport() {
     const channel = new EventEmitter();
     const keepAlive = setInterval(() => {}, 1000);
     channel.connect = async () => {
+        if (process.env.FEISHU_FIXTURE_FAIL_CONNECT === '1') throw new Error('fixture connection failure');
         // Match the Channel SDK event contract; the production adapter is not replaced.
         const message = { messageId: 'fixture-message', chatId: 'group1', chatType: 'group',
             senderId: 'alice', senderType: 'user', content: 'fixture', rawContentType: 'text',
@@ -38,7 +39,8 @@ export function runtimeFactory(config) {
     return async (_room, _session, emit) => ({
         send: async delivery => {
             emit({ type: 'accepted', uuid: delivery.uuid });
-            setImmediate(() => process.emit('SIGTERM'));
+            setImmediate(() => process.env.FEISHU_FIXTURE_IPC === '1'
+                ? process.send({ type: 'fixture-input-accepted' }) : process.emit('SIGTERM'));
         },
         respond: () => {},
         stop: async () => {
@@ -51,7 +53,14 @@ export function runtimeFactory(config) {
 `;
 async function run(entry, configPath, env) {
     const child = spawn(process.execPath, [entry, 'run', '--config', configPath], {
-        stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env
+        stdio: ['ignore', 'pipe', 'pipe', ...(env.FEISHU_FIXTURE_IPC === '1' ? ['ipc'] : [])], windowsHide: true, env
+    });
+    child.on('message', message => {
+        if (message?.type === 'fixture-input-accepted') {
+            child.send({ type: 'unrelated-message' });
+            child.send({ type: 'shutdown' });
+            child.send({ type: 'shutdown' });
+        }
     });
     let stdout = '', stderr = '', expired = false;
     child.stdout.setEncoding('utf8'); child.stdout.on('data', value => { stdout += value; });
@@ -67,8 +76,8 @@ async function run(entry, configPath, env) {
     } finally { clearTimeout(timer); }
 }
 
-for (const fail of [false, true]) {
-    test(`service CLI ${fail ? 'retains lock and fails' : 'releases lock'} after native shutdown`, { timeout: 40000 }, async () => {
+for (const [mode, fail] of [['signal', false], ['signal', true], ['ipc', false], ['ipc', true], ['ipc-startup-failure', false]]) {
+    test(`service CLI ${fail ? 'retains lock and fails' : 'releases lock'} after native ${mode} shutdown`, { timeout: 40000 }, async () => {
         const dir = await mkdtemp(join(root, '.cli-shutdown-'));
         try {
             const channelPath = join(dir, 'channel.mjs'), runtimePath = join(dir, 'runtime.mjs');
@@ -92,10 +101,12 @@ for (const fail of [false, true]) {
                 groups: [{ chatId: 'group1', projectId: 'p', members: ['alice'] }], dms: []
             }));
             const secret = 'fixture-credential-never-log';
+            const startupFailure = mode === 'ipc-startup-failure';
             const env = { ...process.env, FEISHU_SHUTDOWN_FIXTURE_SECRET: secret,
-                FEISHU_SHUTDOWN_FIXTURE_MODEL: secret, FEISHU_FIXTURE_FAIL_STOP: fail ? '1' : '0' };
+                FEISHU_SHUTDOWN_FIXTURE_MODEL: secret, FEISHU_FIXTURE_FAIL_STOP: fail ? '1' : '0', FEISHU_FIXTURE_IPC: mode.startsWith('ipc') ? '1' : '0',
+                FEISHU_FIXTURE_FAIL_CONNECT: startupFailure ? '1' : '0' };
             const result = await run(entry, configPath, env);
-            assert.equal(result.code, fail ? 1 : 0, result.stderr);
+            assert.equal(result.code, fail || startupFailure ? 1 : 0, result.stderr);
             assert.equal(result.signal, null, 'successful test path must not force-kill the service');
             assert.equal((result.stdout + result.stderr).includes(secret), false, 'credentials must not escape through shutdown diagnostics');
             const lock = join(dataDir, 'gateway.lock');
@@ -112,7 +123,8 @@ for (const fail of [false, true]) {
                 await assert.rejects(readFile(lock), { code: 'ENOENT' });
                 assert.doesNotMatch(result.stderr, /shutdown_failed/);
             }
-            assert.equal(await readFile(join(dataDir, 'fixture-stop.log'), 'utf8'), 'stop\n',
+            if (startupFailure) await assert.rejects(readFile(join(dataDir, 'fixture-stop.log')), { code: 'ENOENT' });
+            else assert.equal(await readFile(join(dataDir, 'fixture-stop.log'), 'utf8'), 'stop\n',
                 'failed restart must not create another worker or replay its input');
         } finally { await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
     });

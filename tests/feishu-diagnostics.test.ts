@@ -76,3 +76,19 @@ test('SDK logger keeps quiet levels silent and logging failures do not affect de
     assert.doesNotThrow(() => broken.warn({ code: 'unknown' }));
     assert.doesNotThrow(() => broken.error(null));
 });
+
+test('SDK connection and card drop signals survive wrapped logs without exposing their suffixes', () => {
+    const entries: { event: string; detail: object }[] = [];
+    const logger = feishuSdkLogger((event, detail) => entries.push({ event, detail }));
+    logger.debug(['safety: drop duplicate action PRIVATE_CARD_AND_VALUE']);
+    logger.debug(['safety: drop in-flight action PRIVATE_CARD_AND_VALUE']);
+    logger.info(['[ws]', 'reconnect']);
+    logger.warn(['[ws]', 'no pong/inbound within 30s of last ping, terminating to trigger reconnect']);
+    logger.warn(['no card.action.trigger handle']);
+    logger.debug(['[ws]', 'get connect config success, ws url: https://PRIVATE_ENDPOINT']);
+    logger.debug(['[ws]', 'receive message, data: PRIVATE_MESSAGE']);
+    logger.info('PRIVATE_INFO');
+    assert.deepEqual(entries.map(item => (item.detail as { signal: string }).signal),
+        ['card_duplicate_dropped', 'card_inflight_dropped', 'ws_reconnecting', 'ws_pong_timeout', 'card_handler_missing']);
+    assert.equal(JSON.stringify(entries).includes('PRIVATE_'), false);
+});

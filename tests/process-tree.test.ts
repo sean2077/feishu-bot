@@ -205,9 +205,19 @@ test('cancelled action reclaims a surviving child after its launcher exits', { t
             throw new Error(String(error) + ': ' + JSON.stringify(files));
         });
         await delay(250); // Allow the root exit to settle on Windows before cancellation.
-        const first = await readFile(join(dir, 'child.beat'), 'utf8');
-        await delay(150);
-        assert.notEqual(await readFile(join(dir, 'child.beat'), 'utf8'), first, 'Child was not actually running');
+        // writeFileSync truncates before writing: either sample can briefly be
+        // empty. Require two real increasing counters, rather than comparing
+        // two fixed-time reads that may both catch that truncation window.
+        let first = 0;
+        await eventually(async () => {
+            const text = await readFile(join(dir, 'child.beat'), 'utf8');
+            if (!/^\d+$/.test(text)) return false;
+            first = Number(text); return first > 0;
+        }, 'Child did not publish a valid heartbeat');
+        await eventually(async () => {
+            const text = await readFile(join(dir, 'child.beat'), 'utf8');
+            return /^\d+$/.test(text) && Number(text) > first && await live(childPid);
+        }, 'Child was not actually running');
         controller.abort();
         await assert.rejects(execution, /operation cancelled/);
         await eventually(async () => !(await live(childPid)), 'Cancelled action left its descendant running');

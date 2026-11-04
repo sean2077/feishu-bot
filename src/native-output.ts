@@ -5,36 +5,65 @@ export class NativeOutput {
     private currentMessage = '';
     private sequence = 0;
     private turnAnchor?: string;
-    private humanAnchor?: string;
+    private turnSource: 'foreground' | 'background' | 'unattributed' = 'unattributed';
+    private turnBackgroundId?: string;
     private taskAnchors = new Map<string, string>();
     private blocks = new Map<string, { index: number; kind: string; matched: boolean }[]>();
     readonly emit: (event: WorkerEvent) => void;
-    constructor(emit: (event: WorkerEvent) => void) { this.emit = emit; }
+    private readonly isHumanInput: (id: string) => boolean;
+    constructor(emit: (event: WorkerEvent) => void, isHumanInput: (id: string) => boolean = () => true) { this.emit = emit; this.isHumanInput = isHumanInput; }
     private stamp(event: Args): string | undefined {
         const origin = event.origin as Args | undefined;
         if (origin?.kind === 'task-notification' && typeof origin.runId === 'string') return this.taskAnchors.get(origin.runId);
         if (typeof origin?.senderTaskId === 'string') return this.taskAnchors.get(origin.senderTaskId);
-        const ids = Array.isArray(event.user_message_uuids) && event.user_message_uuids.length ? event.user_message_uuids : [event.user_message_uuid];
-        return ids.find((id): id is string => typeof id === 'string');
+        if (origin && origin.kind !== 'human') return undefined;
+        const ids = Array.isArray(event.user_message_uuids) && event.user_message_uuids.length ? event.user_message_uuids
+            : [event.user_message_uuid, ...(event.type === 'user' ? [event.uuid] : [])];
+        return ids.find((id): id is string => typeof id === 'string' && this.isHumanInput(id));
     }
-    origin(event: Args): string | undefined { return this.stamp(event) ?? this.turnAnchor; }
-    endTurn(): void { this.turnAnchor = undefined; this.currentMessage = ''; this.blocks.clear(); }
+    origin(event: Args): string | undefined {
+        const origin = event.origin as Args | undefined;
+        const stamp = this.stamp(event);
+        // Unknown background origins must never borrow a foreground anchor.
+        return origin && origin.kind !== 'human' ? stamp : stamp ?? this.turnAnchor;
+    }
+    source(event: Args): 'foreground' | 'background' | 'unattributed' {
+        const origin = event.origin as Args | undefined;
+        if (origin && (origin.kind !== 'human' || typeof origin.senderTaskId === 'string')) return 'background';
+        if (this.stamp(event) || origin?.kind === 'human') return 'foreground';
+        return this.turnSource;
+    }
+    backgroundId(event: Args): string | undefined {
+        const origin = event.origin as Args | undefined;
+        if (origin) {
+            if (typeof origin.runId === 'string' && origin.runId) return origin.runId;
+            if (typeof origin.senderTaskId === 'string' && origin.senderTaskId) return origin.senderTaskId;
+            return undefined;
+        }
+        return this.turnBackgroundId;
+    }
+    endTurn(): void { this.turnAnchor = undefined; this.turnSource = 'unattributed'; this.turnBackgroundId = undefined; this.currentMessage = ''; this.blocks.clear(); }
     handle(event: Args): void {
         if (event.parent_tool_use_id) return;
         const stamp = this.stamp(event);
-        if (stamp && ['assistant', 'stream_event', 'result'].includes(String(event.type))) {
-            this.turnAnchor = stamp;
-            if (!event.origin || (event.origin as Args).kind === 'human') this.humanAnchor = stamp;
+        // Native origins are declared on user trigger/result frames; assistant
+        // and token frames often inherit them without repeating any metadata.
+        // A synthetic tool_result user frame without origin is not a new turn.
+        if (['assistant', 'stream_event', 'result'].includes(String(event.type)) || (event.type === 'user' && (event.origin || stamp))) {
+            this.turnSource = this.source(event);
+            this.turnBackgroundId = this.turnSource === 'background' ? this.backgroundId(event) : undefined;
+            if (stamp) this.turnAnchor = stamp;
+            else if (event.origin && (event.origin as Args).kind !== 'human') this.turnAnchor = undefined;
         }
         if (event.type === 'system' && event.subtype === 'task_started') {
-            const anchor = typeof event.parent_task_id === 'string' ? this.taskAnchors.get(event.parent_task_id) : this.turnAnchor ?? this.humanAnchor;
+            const anchor = typeof event.parent_task_id === 'string' ? this.taskAnchors.get(event.parent_task_id) : this.turnAnchor;
             if (anchor) for (const id of [event.task_id, event.run_id]) if (typeof id === 'string') this.taskAnchors.set(id, anchor);
-            if (this.taskAnchors.size > 10000) this.taskAnchors.delete(this.taskAnchors.keys().next().value!);
+            while (this.taskAnchors.size > 10000) this.taskAnchors.delete(this.taskAnchors.keys().next().value!);
         }
         const turnId = this.origin(event);
         const send = (kind: string, text: unknown, partial: boolean, id: string) => {
             if ((kind === 'text' || kind === 'thinking') && typeof text === 'string')
-                this.emit({ type: kind, text, partial, blockId: id, turnId });
+                this.emit({ type: kind, text, partial, blockId: id, turnId, source: this.turnSource, backgroundId: this.turnBackgroundId });
         };
         if (event.type === 'stream_event') {
             const data = event.event as Args | undefined;

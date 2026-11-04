@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { hash } from './util.ts';
+import { hash, Serial } from './util.ts';
 import type { Args, Room, Transport } from './types.ts';
 import { Store } from './store.ts';
 import { authorizedAuthor } from './policy.ts';
@@ -28,6 +28,7 @@ interface Pending {
     forwarded: boolean;
     questions: Question[];
     selected: Map<string, Map<number, Set<number>>>;
+    revision: string;
     resolve: (value: Outcome) => void;
     timer: ReturnType<typeof setTimeout>;
     detach: () => void;
@@ -38,6 +39,7 @@ export function displayCard(title: string, text: string, buttons: object[] = [])
 function button(label: string, value: Args, style = 'default'): object { return { tag: 'button', text: { tag: 'plain_text', content: label.slice(0, 80) }, type: style, value }; }
 export class Approvals {
     private pending = new Map<string, Pending>();
+    private cardUpdates = new Serial();
     readonly store: Store;
     readonly transport: Transport;
     readonly ttl: number;
@@ -65,7 +67,7 @@ export class Approvals {
             const timer = setTimeout(() => this.settle(id, { approved: false, reason: 'expired' }), this.ttl);
             timer.unref();
             signal?.addEventListener('abort', cancel, { once: true });
-            const p: Pending = { room, session, kind, expires, name, summary, cards: new Map(), forwarded: kind === 'permission' && !!room.dmUser && !room.maintainers.includes(room.dmUser), questions: questions ?? [], selected: new Map(), resolve, timer, detach: () => signal?.removeEventListener('abort', cancel) };
+            const p: Pending = { room, session, kind, expires, name, summary, cards: new Map(), forwarded: kind === 'permission' && !!room.dmUser && !room.maintainers.includes(room.dmUser), questions: questions ?? [], selected: new Map(), revision: randomUUID(), resolve, timer, detach: () => signal?.removeEventListener('abort', cancel) };
             this.pending.set(id, p);
             const targets = p.forwarded ? room.maintainers.map(user => ({ ...room, chatId: user, dmUser: user })) : [room];
             if (p.forwarded)
@@ -107,11 +109,23 @@ export class Approvals {
             elements.push({ tag: 'markdown', content: `**${qi + 1}. ${q.header ? `${q.header} · ` : ''}${mode}**\n${q.question}` });
             q.options.forEach((o, oi) => {
                 if (o.description) elements.push({ tag: 'markdown', content: `${qi + 1}.${oi + 1} ${o.label}\n${o.description}` });
-                elements.push(button(`${qi + 1}. ${o.label}`, { request: id, question: qi, option: oi }));
+                elements.push(button(`${qi + 1}. ${o.label}`, { revision: p.revision, request: id, question: qi, option: oi }));
             });
         });
-        elements.push(button('提交选择', { request: id, decision: 'submit' }, 'primary'), button('取消', { request: id, decision: 'deny' }));
+        elements.push(button('提交选择', { revision: p.revision, request: id, decision: 'submit' }, 'primary'), button('取消', { revision: p.revision, request: id, decision: 'deny' }));
         return displayCard('需要补充信息', `回答所有问题后提交。每位成员独立选择，以操作提示为准，卡片不显示个人勾选。\n自由回答：\`/answer ${id} 你的回答\`。`, elements);
+    }
+    private async refreshQuestion(id: string, p: Pending, text: string): Promise<string> {
+        // The public SDK deduplicates by a truncated serialized button value.
+        // Rotate its leading opaque field; this is not an authorization token.
+        p.revision = randomUUID();
+        const card = this.render(id, p);
+        const results = await Promise.all([...p.cards.keys()].map(messageId => this.cardUpdates.run(messageId, async () => {
+            if (this.pending.get(id) !== p) return true;
+            try { await this.transport.update(messageId, card); return true; }
+            catch { return false; }
+        })));
+        return results.every(Boolean) ? text : `${text}；卡片刷新失败，请使用 /answer ${id} 回答，或稍后重试。`;
     }
     async click(chatId: string, operator: string, value: unknown, messageId?: string): Promise<string> {
         if (!value || typeof value !== 'object')
@@ -160,7 +174,7 @@ export class Approvals {
             for (let qi = 0; qi < p.questions.length; qi++) {
                 const q = p.questions[qi]!, selected = p.selected.get(operator)?.get(qi);
                 if (!selected?.size)
-                    return '请回答所有问题';
+                    return this.refreshQuestion(id, p, '请回答所有问题');
                 // fromEntries creates own data properties even for keys such as "__proto__".
                 entries.push([q.question, [...selected].map(i => q.options[i]!.label).join(', ')]);
             }
@@ -169,7 +183,7 @@ export class Approvals {
         }
         const qi = Number(v.question), oi = Number(v.option), q = p.questions[qi];
         if (!Number.isInteger(qi) || !Number.isInteger(oi) || !q?.options[oi])
-            return '无效选项';
+            return this.refreshQuestion(id, p, '无效选项');
         const choices = p.selected.get(operator) ?? new Map<number, Set<number>>();
         const selected = choices.get(qi) ?? new Set<number>();
         if (!q.multiSelect)
@@ -183,7 +197,7 @@ export class Approvals {
         choices.set(qi, selected);
         p.selected.set(operator, choices);
         const labels = [...selected].map(i => q.options[i]!.label).join(', ') || '未选择';
-        return `已记录你的选择：${q.question.slice(0, 50)} → ${labels.slice(0, 80)}`;
+        return this.refreshQuestion(id, p, `已记录你的选择：${q.question.slice(0, 50)} → ${labels.slice(0, 80)}`);
     }
     answer(room: Room, operator: string, id: string, text: string): string {
         const p = this.pending.get(id);
@@ -222,7 +236,7 @@ export class Approvals {
         this.store.audit(p.room.key, 'request_settled', { id, kind: p.kind, state, actor });
         p.resolve(value);
         for (const messageId of p.cards.keys())
-            void this.transport.update(messageId, displayCard(value.approved ? '已确认' : '请求已结束', value.approved ? '本次请求已确认，不再接受重复操作。' : `未执行：${value.reason ?? 'denied'}`)).catch(() => { });
+            void this.cardUpdates.run(messageId, () => this.transport.update(messageId, displayCard(value.approved ? '已确认' : '请求已结束', value.approved ? '本次请求已确认，不再接受重复操作。' : `未执行：${value.reason ?? 'denied'}`))).catch(() => { });
     }
     cancelSession(session: string): void { for (const [id, p] of this.pending)
         if (p.session === session)

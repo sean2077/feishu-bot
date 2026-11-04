@@ -43,13 +43,14 @@ export interface ActionSpec {
 }
 export interface Project {
     id: string; maintainers: string[]; seedDir?: string; trustedConfigDir?: string;
-    permissionMode: 'default' | 'acceptEdits';
+    cwd?: string; nativeConfig?: 'isolated' | 'inherit';
+    permissionMode: 'default' | 'acceptEdits' | 'bypassPermissions';
     allowedTools: string[];
     actions: ActionSpec[];
 }
 export interface Config {
     tenantId: string; appId: string; appSecretEnv: string; dataDir: string;
-    runtime: { maxWorkers: number; idleMs: number };
+    runtime: { maxWorkers: number; idleMs: number; claudeExecutable?: string };
     model: {
         baseUrl: string; tokenEnv: string; model: string; smallModel: string;
         extraHeaders: Record<string, string>; allowHttp: boolean;
@@ -86,12 +87,14 @@ export type WorkerEvent =
     /** Proof that the input was rejected before entering the native SDK queue. */
     { type: 'input_rejected'; uuid: string; reason: 'foreground_ended' } |
     { type: 'consumed'; uuid: string } |
-    { type: 'text' | 'thinking'; text: string; partial: boolean; blockId?: string; turnId?: string } |
+    { type: 'text' | 'thinking'; text: string; partial: boolean; blockId?: string; turnId?: string; source?: 'foreground' | 'background' | 'unattributed'; backgroundId?: string } |
     { type: 'compaction'; phase: 'start' | 'complete'; trigger: 'manual' | 'auto' } |
     { type: 'result'; text: string; success: boolean; uuid?: string; uuids?: string[]; usage?: Args;
+        /** Last main-loop request input and native-reported window; not cumulative usage or exact post-answer occupancy. */
+        context?: { inputTokens?: number; windowTokens?: number };
         /** Native result identity, distinct from the originating input UUID. */
-        resultId?: string; models?: string[];
-        replyToUuid?: string; compact?: 'compacted' | 'not_needed' | 'failed' } |
+        resultId?: string; models?: string[]; model?: string;
+        replyToUuid?: string; source?: 'foreground' | 'background' | 'unattributed'; backgroundId?: string; compact?: 'compacted' | 'not_needed' | 'failed' } |
     { type: 'activity'; tool?: string; background?: number; pinned?: boolean; state?: 'idle' | 'running' | 'requires_action' } |
     { type: 'request'; id: string; kind: 'permission' | 'question' | 'action' | 'send_file' | 'attachment' | 'history'; name: string; input: Args } |
     { type: 'error'; message: string } |
@@ -101,7 +104,7 @@ export interface Worker {
     respond(id: string, value: Args): void;
     stop(): Promise<void>;
 }
-export interface Workspace { root: string; work: string; home: string; inbound: string; }
+export interface Workspace { root: string; work: string; home: string; inbound: string; nativeConfig?: 'isolated' | 'inherit'; configDir?: string; configDirOverride?: boolean; }
 export type WorkerFactory = (
     room: Room, session: Session, onEvent: (event: WorkerEvent) => void, workspace?: Workspace
 ) => Promise<Worker>;

@@ -1,5 +1,6 @@
-import { mkdir, readdir, lstat, copyFile, chmod, writeFile, access, realpath } from 'node:fs/promises';
+import { mkdir, readdir, lstat, copyFile, chmod, writeFile, access, realpath, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { cleanEnv, runCommand } from './actions.ts';
 import { hash, inside } from './util.ts';
 import type { Config, Project, Room, Session, Workspace } from './types.ts';
@@ -19,6 +20,12 @@ async function seedTree(source: string, target: string, limit: { files: number; 
         }
     }
 }
+async function inheritedWorkspace(w: Workspace): Promise<Workspace> {
+    const home = await realpath(homedir());
+    const configDir = await realpath(process.env.CLAUDE_CONFIG_DIR || join(home, '.claude'));
+    if (!(await stat(configDir)).isDirectory()) throw new Error('Claude config directory must be an existing directory');
+    return { ...w, home, nativeConfig: 'inherit', configDir, configDirOverride: !!process.env.CLAUDE_CONFIG_DIR?.trim() };
+}
 export async function prepareWorkspace(config: Config, room: Room, _session: Session, project: Project): Promise<Workspace> {
     const requestedRoot = join(config.dataDir, 'rooms', hash(room.key).slice(0, 32));
     await mkdir(requestedRoot, { recursive: true, mode: 0o700 });
@@ -26,6 +33,19 @@ export async function prepareWorkspace(config: Config, room: Room, _session: Ses
     // temporary directories can contain 8.3 aliases which native permission checks
     // intentionally treat as suspicious. Resolve the alias; never bypass the check.
     const root = await realpath(requestedRoot);
+    if (project.cwd) {
+        const work = await realpath(project.cwd);
+        if (!(await stat(work)).isDirectory()) throw new Error('project cwd must be an existing directory');
+        if (inside(root, work) || inside(work, root)) throw new Error('project cwd and conversation state must not overlap');
+        const inbound = join(root, 'inbound');
+        await mkdir(inbound, { recursive: true, mode: 0o700 });
+        if (project.nativeConfig === 'inherit') {
+            return inheritedWorkspace({ root, work, home: '', inbound });
+        }
+        const home = join(root, 'home');
+        await mkdir(home, { recursive: true, mode: 0o700 });
+        return { root, work, home, inbound };
+    }
     const work = join(root, 'workspace'), home = join(root, 'home'), inbound = join(root, 'inbound');
     for (const p of [root, work, home, inbound]) await mkdir(p, { recursive: true, mode: 0o700 });
     const marker = join(root, 'seeded');
@@ -53,10 +73,25 @@ export async function prepareWorkspace(config: Config, room: Room, _session: Ses
         await writeFile(marker, '1\n', { mode: 0o600 });
     }
     // This is data organization under a shared service account, not an OS sandbox.
-    return { root, work, home, inbound };
+    const workspace = { root, work, home, inbound };
+    return project.nativeConfig === 'inherit' ? inheritedWorkspace(workspace) : workspace;
 }
 export function translateWorkerFile(_config: Config, w: Workspace, path: string): string {
     const result = resolve(w.work, path);
     if (!inside(w.work, result)) throw new Error('file outside worker workspace');
     return result;
+}
+/** File delivery can echo this chat's attachments without granting arbitrary exports. */
+export async function translateWorkerOutput(w: Workspace, path: string): Promise<{ root: string; path: string }> {
+    const result = resolve(w.work, path);
+    const root = [w.work, w.inbound].find(root => inside(root, result));
+    if (!root) throw new Error('file outside worker workspace or current conversation attachments');
+    if (root === w.inbound) {
+        const expected = resolve(w.root, 'inbound'), actual = await realpath(root);
+        // w.root is the canonical room identity captured when its workspace was
+        // prepared. Resolving an attacker-replaced inbound root must not grant
+        // that new directory ownership merely because its children are inside it.
+        if (!inside(expected, actual) || !inside(actual, expected)) throw new Error('conversation attachment directory was redirected');
+    }
+    return { root, path: result };
 }

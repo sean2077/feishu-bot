@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import type { Delivery, Origin, Room, Transport } from './types.ts';
 import { Store } from './store.ts';
 import { Outbox } from './outbox.ts';
-import { replyCard } from './reply-card.ts';
+import { replyCard, type ReplyDetails } from './reply-card.ts';
 import { hash } from './util.ts';
 
 /** Network updates never block CC's event reader. The known message ID is retained on errors. */
@@ -18,6 +18,8 @@ export class Render {
     private last = '';
     private status = '处理中';
     private legacy = 0;
+    private startedAt: number;
+    private details: ReplyDetails = {};
     replyTo?: string;
     threadId?: string;
     readonly room: Room;
@@ -33,11 +35,13 @@ export class Render {
         this.room = room; this.session = session; this.transport = transport;
         this.store = store; this.outbox = outbox; this.interval = interval; this.signal = signal; this.redactText = redactText;
         this.replyTo = anchor?.message.id; this.threadId = anchor?.message.threadId;
+        this.startedAt = anchor?.message.time ?? Date.now();
     }
     bindOrigin(anchor?: Delivery): void {
-        if (!this.messageId && anchor) { this.replyTo = anchor.message.id; this.threadId = anchor.message.threadId; }
+        if (!this.messageId && anchor) { this.replyTo = anchor.message.id; this.threadId = anchor.message.threadId; this.startedAt = anchor.message.time; }
     }
     setStatus(status: string): void { this.status = status; this.schedule(); }
+    setDetails(details: ReplyDetails): void { this.details = { ...this.details, ...details }; }
     update(text: string, partial: boolean, kind: 'text' | 'thinking' = 'text', blockId?: string): void {
         if (this.closed || this.signal?.aborted) return;
         const key = blockId ?? `${kind}:legacy:${this.legacy}`;
@@ -52,9 +56,15 @@ export class Render {
     private content(kind: 'text' | 'thinking'): string {
         return this.redactText([...this.blocks.values()].filter(b => b.kind === kind).map(b => b.text).join('\n\n').slice(0, kind === 'thinking' ? 32000 : 500000));
     }
+    private cardMeta(success?: boolean) {
+        return { ...this.details, model: this.details.model && this.redactText(this.details.model), projectPath: this.details.projectPath && this.redactText(this.details.projectPath),
+            thinkingSteps: [...this.blocks.values()].filter(block => block.kind === 'thinking').map(block => this.redactText(block.text)),
+            elapsedMs: Date.now() - this.startedAt, success };
+    }
     private schedule(): void {
         if (this.closed || this.timer) return;
-        this.timer = setTimeout(() => { this.timer = undefined; this.flush(); }, this.interval);
+        const first = !this.messageId && !this.createUncertain && !this.pendingPreviews && !!this.replyTo;
+        this.timer = setTimeout(() => { this.timer = undefined; this.flush(); }, first ? 0 : this.interval);
         this.timer.unref();
     }
     /** Release the local preview wait on stop; the provider may still accept the write. */
@@ -86,7 +96,7 @@ export class Render {
         this.pendingPreviews++;
         this.tail = this.tail.then(async () => {
             if (this.signal?.aborted || !this.replyTo) return; // Buffer unattributed background content until its result supplies an origin.
-            const card = replyCard(this.status, this.content('text'), this.content('thinking'));
+            const card = replyCard(this.status, this.content('text'), this.content('thinking'), false, this.cardMeta());
             const snapshot = JSON.stringify(card);
             if (snapshot === this.last || (!this.messageId && this.createUncertain)) return;
             try {
@@ -116,7 +126,7 @@ export class Render {
             // No database state is accessed after the network response.
             try {
                 void this.transport.update(this.messageId,
-                    replyCard(title, '以下为中断前输出，不代表任务完成。\n\n' + this.content('text'), this.content('thinking'), true)).catch(() => {});
+                    replyCard(title, '以下为中断前输出，不代表任务完成。\n\n' + this.content('text'), this.content('thinking'), true, this.cardMeta(false))).catch(() => {});
             } catch { /* Provider call failed before returning its promise. */ }
         }
     }
@@ -126,7 +136,7 @@ export class Render {
         const answer = this.redactText(text || this.content('text'));
         const thinking = this.content('thinking');
         const body = answer.length > 24000 ? answer.slice(0, 23800) + '\n\n（完整答案另附文件。）' : answer;
-        const card = replyCard(title ?? (success ? '回复' : '执行失败'), body, thinking, true);
+        const card = replyCard(title ?? (success ? '回复' : '执行失败'), body, thinking, true, this.cardMeta(success));
         // Persist before awaiting slow preview I/O. Recovery will never lose the final answer or blindly recreate an uncertain preview.
         const file = answer.length > 24000 ? { name: 'reply.md', directory: join(dataDir, 'exports', hash(this.room.key).slice(0, 32)) } : undefined;
         // Only an outstanding preview could be creating a card at this point.

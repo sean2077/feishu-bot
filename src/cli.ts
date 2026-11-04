@@ -75,7 +75,8 @@ async function main(): Promise<void> {
                 finally {
                     // A dead service PID does not prove its native descendants exited.
                     // Retain the existing lock for explicit investigation after a failed stop.
-                    if (terminationConfirmed) await unlock();
+                    try { if (terminationConfirmed) await unlock(); }
+                    finally { if (process.connected) process.disconnect(); }
                 }
             }
         })();
@@ -86,14 +87,22 @@ async function main(): Promise<void> {
         const { feishuTransport } = await import('./feishu.ts');
         const { runtimeFactory } = await import('./runtime.ts');
         const { Gateway } = await import('./gateway.ts');
-        const connected = feishuTransport(config, log);
+        const connected = feishuTransport(config, log, undefined, store);
         channel = connected.channel;
         gateway = new Gateway(config, store, connected.transport, runtimeFactory(config, secrets, log), secrets);
         const onSignal = () => { void shutdown().catch(error => {
             log('shutdown_failed', { error: errorText(error) }); process.exitCode = 1;
-        }); };
+        }).finally(() => { if (process.connected) process.disconnect(); }); };
         process.once('SIGINT', onSignal);
         process.once('SIGTERM', onSignal);
+        // A local parent can request graceful shutdown on Windows, where sending
+        // a Unix signal to another process does not provide graceful delivery.
+        if (process.send) {
+            process.on('message', message => {
+                if (message && typeof message === 'object' && 'type' in message && message.type === 'shutdown') onSignal();
+            });
+            process.once('disconnect', onSignal);
+        }
         bindFeishuInbound(channel, gateway, log, () => closed);
         channel.on('error', error => log('feishu_error', feishuDiagnostic(error)));
         channel.on('reconnecting', () => log('feishu_reconnecting'));

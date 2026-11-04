@@ -1,12 +1,17 @@
-import { createLarkChannel, normalize as normalizeEvent, LarkChannelError, type LarkChannel, type RawMessageEvent } from '@larksuite/channel';
+import { createRequire } from 'node:module';
+import type { LarkChannel, RawMessageEvent } from '@larksuite/channel';
 import { readFile, stat } from 'node:fs/promises';
 import { readable, roomFromKey } from './policy.ts';
 import { feishuSdkLogger } from './feishu-diagnostics.ts';
+import { createReplyCardStream } from './feishu-card-stream.ts';
+import type { Store } from './store.ts';
 import { normalizeFeishuMessage as normalize } from './feishu-input.ts';
 import type { Config, Message, Transport, Room, ReceiptState, ReceiptApplied } from './types.ts';
+// The public CommonJS export avoids the heavier ESM loading path for the same SDK.
+const { createLarkChannel, normalize: normalizeEvent, LarkChannelError } = createRequire(import.meta.url)('@larksuite/channel') as typeof import('@larksuite/channel');
 export { normalize };
 export function feishuTransport(config: Config, log: (event: string, detail: object) => void,
-    createChannel: typeof createLarkChannel = createLarkChannel): {
+    createChannel: typeof createLarkChannel = createLarkChannel, cardStore?: Store): {
     transport: Transport;
     channel: ReturnType<typeof createLarkChannel>;
 } {
@@ -16,6 +21,12 @@ export function feishuTransport(config: Config, log: (event: string, detail: obj
     const channel = createChannel({ appId: config.appId, appSecret: secret, resolveSenderNames: false,
         // Inspect completeness in memory, then discard raw data at normalize(). Never log or persist it.
         includeRawEvent: true, respectProxyEnv: true, httpTimeoutMs: 20000,
+        // Seconds after a ping with no inbound frame; server still owns ping cadence.
+        wsConfig: { pingTimeout: 30 }, handshakeTimeoutMs: 10000,
+        // Keepalive 0.7.1 can reconnect after disconnect during its HTTP probe.
+        // Use the native pong watchdog; do not enable that separate timer here.
+        // Pinned SDK LoggerLevel.debug: adapter emits only fixed safe signal labels.
+        loggerLevel: 4,
         policy: { requireMention: config.limits.backgroundMessages === 0, respondToMentionAll: false, groupAllowlist: config.groups.length ? config.groups.map(g => g.chatId) : ['__disabled__'], dmMode: 'allowlist', dmAllowlist: config.dms.map(d => d.userId) },
         safety: { chatQueue: { enabled: true, mergeWhileBusy: false, cardActions: 'separate' }, batch: { text: { delayMs: 0, longDelayMs: 0, maxMessages: 1 }, media: { delayMs: 0, maxItems: 1 } } },
         logger: feishuSdkLogger(log),
@@ -29,10 +40,12 @@ export function feishuTransport(config: Config, log: (event: string, detail: obj
     const scopedMessageGet = messageApi.get.bind(messageApi);
     messageApi.get = async () => { throw new LarkChannelError('not_supported', 'Automatic message expansion is disabled'); };
     const receipt = reactionHandler(channel, config.appId);
+    const replyStream = cardStore ? createReplyCardStream(channel, cardStore, log) : undefined;
     const transport: Transport = {
         send: async (room, text, replyTo, threadId) => (await channel.send(room.chatId, { markdown: text }, { replyTo, replyInThread: !!threadId })).messageId,
-        card: async (room, card, replyTo, threadId) => (await channel.send(room.chatId, { card }, { replyTo, replyInThread: !!threadId })).messageId,
-        update: async (id, card) => channel.updateCard(id, card),
+        card: async (room, card, replyTo, threadId) => replyStream ? replyStream.create(room, card, replyTo, threadId)
+            : (await channel.send(room.chatId, { card }, { replyTo, replyInThread: !!threadId })).messageId,
+        update: async (id, card) => replyStream ? replyStream.update(id, card) : channel.updateCard(id, card),
         download: async (id, resource, signal) => {
             if (signal?.aborted) throw new Error('attachment download cancelled');
             const response = await channel.rawClient.im.v1.messageResource.get({ path: { message_id: id, file_key: resource.key }, params: { type: resource.kind } });

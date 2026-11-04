@@ -24,7 +24,9 @@ test('old native template stays usable without silently granting more permission
     const config = parseConfig({ ...rawConfig('state'), projects: [{ id: 'p', maintainers: ['admin'], autoApproveWorkspace: false }] });
     assert.equal(config.projects[0]!.permissionMode, 'default');
     assert.throws(() => parseConfig({ ...rawConfig('state'), projects: [{ id: 'p', maintainers: ['admin'], autoApproveWorkspace: true }] }), /autoApproveWorkspace/);
-    assert.throws(() => parseConfig({ ...rawConfig('state'), projects: [{ id: 'p', maintainers: ['admin'], permissionMode: 'bypassPermissions' }] }), /permissionMode/);
+    assert.equal(parseConfig({ ...rawConfig('state'), projects: [{ id: 'p', maintainers: ['admin'], permissionMode: 'bypassPermissions' }] }).projects[0]!.permissionMode, 'bypassPermissions');
+    assert.equal(parseConfig(rawConfig('state')).projects[0]!.permissionMode, 'acceptEdits', 'YOLO remains an explicit opt-in');
+    assert.throws(() => parseConfig({ ...rawConfig('state'), projects: [{ id: 'p', maintainers: ['admin'], permissionMode: 'unknown-mode' }] }), /permissionMode/);
 });
 
 test('model headers resolve env references, fail closed on missing values and reject header injection', () => {

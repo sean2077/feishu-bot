@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Config, Room, Session, Worker, WorkerEvent, WorkerFactory, Workspace } from './types.ts';
 import { cleanEnv } from './actions.ts';
@@ -9,9 +9,19 @@ import { JsonLines, killTree, trackProcessTree } from './process.ts';
 import { prepareWorkspace } from './workspace.ts';
 import { hash, redact, Serial } from './util.ts';
 
-/** Only the required native toolchain/network settings cross into a session. */
-export function nativeEnv(w: Workspace): NodeJS.ProcessEnv {
-    const env = cleanEnv({ HOME: w.home, USERPROFILE: w.home, CLAUDE_CONFIG_DIR: join(w.home, '.claude') });
+/** Isolated sessions allowlist their environment; inherited sessions drop bridge/parent controls. */
+export function nativeEnv(w: Workspace, appSecretEnv = 'FEISHU_APP_SECRET'): NodeJS.ProcessEnv {
+    const env = w.nativeConfig === 'inherit' ? { ...process.env } : cleanEnv();
+    for (const key of Object.keys(env)) {
+        if (key.toUpperCase() === appSecretEnv.toUpperCase() || /^(?:FEISHU_ACTION_|CLAUDE_CODE_SESSION|CLAUDE_CODE_PARENT|CLAUDE_CODE_ENTRYPOINT|CLAUDE_CODE_SSE_PORT|CLAUDE_CODE_SDK|CLAUDE_AGENT_SDK|CLAUDE_CODE_TEAM|CLAUDE_CODE_AGENT|CLAUDE_CODE_TASK_LIST|CLAUDE_CODE_SUBAGENT|CLAUDECODE$)/i.test(key)) delete env[key];
+    }
+    Object.assign(env, { HOME: w.home, USERPROFILE: w.home });
+    if (w.nativeConfig === 'inherit') {
+        // An unset override has native meaning: global config remains at
+        // ~/.claude.json rather than ~/.claude/.claude.json.
+        if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = w.configDir ?? process.env.CLAUDE_CONFIG_DIR;
+        else delete env.CLAUDE_CONFIG_DIR;
+    } else env.CLAUDE_CONFIG_DIR = w.configDir ?? join(w.home, '.claude');
     for (const name of ['CLAUDE_CODE_GIT_BASH_PATH', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE']) {
         if (process.env[name]) env[name] = process.env[name];
     }
@@ -28,7 +38,7 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
         const w = prepared ?? await prepareWorkspace(config, room, session, project);
         const startedAt = performance.now(), bornAt = Date.now();
         const child = spawn(process.execPath, [fileURLToPath(new URL('./worker.js', import.meta.url))], {
-            cwd: w.work, env: nativeEnv(w), stdio: ['pipe', 'pipe', 'pipe'], shell: false,
+            cwd: w.work, env: nativeEnv(w, config.appSecretEnv), stdio: ['pipe', 'pipe', 'pipe'], shell: false,
             windowsHide: true, detached: process.platform !== 'win32'
         });
         trackProcessTree(child, bornAt);
@@ -48,12 +58,18 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
             await new Promise<void>((resolve, reject) => child.stdin.write(JSON.stringify(value) + '\n', error => error ? reject(error) : resolve()));
         });
         child.stdin.on('error', () => {});
+        const streamKinds = new Set<string>();
         const parser = new JsonLines(value => {
             const event = value as unknown as WorkerEvent;
             if (event.type === 'ready' && !reportedReady) {
                 reportedReady = true;
                 log('worker_ready', { room: hash(room.key).slice(0, 12), startupMs: Math.round(performance.now() - startedAt), resumed: !!session.ccId });
             }
+            if ((event.type === 'thinking' || event.type === 'text') && !streamKinds.has(event.type)) {
+                streamKinds.add(event.type);
+                log('worker_stream_started', { room: hash(room.key).slice(0, 12), kind: event.type, attributed: !!event.turnId });
+            }
+            if (event.type === 'result') streamKinds.clear();
             onEvent(event);
         });
         child.stdout.setEncoding('utf8');
@@ -87,6 +103,8 @@ export function runtimeFactory(config: Config, secrets: string[], log: (event: s
         try {
             await write({
                 type: 'init', sessionId: session.id, ccId: session.ccId, workDir: w.work, homeDir: w.home, attachmentDir: w.inbound,
+                nativeConfig: w.nativeConfig, configDir: w.configDir, roomsDir: dirname(w.root), claudeExecutable: config.runtime.claudeExecutable,
+                approvalMs: config.limits.approvalMs,
                 model: { url: config.model.baseUrl, token, model: config.model.model, smallModel: config.model.smallModel, headers },
                 permissionMode: project.permissionMode, allowedTools: project.allowedTools,
                 actions: project.actions.map(a => ({ id: a.id, description: a.description, parameters: a.parameters, readOnly: a.readOnly })),

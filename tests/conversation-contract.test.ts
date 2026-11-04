@@ -220,7 +220,9 @@ test('one card preserves reasoning and final answer, suppresses tools, and quote
         w.emit({ type: 'result', text: 'Final answer', success: true, uuids: w.sent.map(d => d.uuid) });
         await until(() => f.transport.updates.some(u => JSON.stringify(u.card).includes('Final answer')));
         assert.equal(f.transport.sent.filter(s => s.card).length, 1); assert.equal(card.replyTo, first.id);
-        const final = JSON.stringify(f.transport.updates.at(-1)!.card);
+        const finalCard = f.transport.updates.at(-1)!.card as { body: object; config: { summary: { content: string } } };
+        const final = JSON.stringify(finalCard.body);
+        assert.equal(finalCard.config.summary.content, 'Final answer');
         assert.equal(final.split('Reasoning summary').length, 2); assert.equal(final.split('Final answer').length, 2);
         assert.ok(final.includes('"expanded":false')); assert.ok(!final.includes('NEVER_DISPLAY_THIS_TOOL'));
         await f.gateway.receipts.drain();

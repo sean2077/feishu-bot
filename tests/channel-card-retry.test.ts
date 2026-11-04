@@ -42,8 +42,10 @@ async function questionHarness(questions: Question[]) {
     await until(() => f.transport.sent.some(s => title(s.card) === '需要补充信息'));
     const card = f.transport.sent.find(s => title(s.card) === '需要补充信息')!;
     await new Promise(resolve => setImmediate(resolve)); // remote card ID is registered in Approvals
-    const elements = (card.card as Card).body.elements;
-    const button = (predicate: (v: Record<string, unknown>) => boolean) => elements.find(e => e.value && predicate(e.value))!.value!;
+    const button = (predicate: (v: Record<string, unknown>) => boolean) => {
+        const current = f.transport.updates.filter(item => item.id === card.id).at(-1)?.card ?? card.card;
+        return (current as Card).body.elements.find(e => e.value && predicate(e.value))!.value!;
+    };
     const submit = button(v => v.decision === 'submit');
     const requestId = String(submit.request);
     const click = (value: unknown, token: string, operator = 'alice', chatId = room.chatId, messageId = card.id) =>
@@ -56,7 +58,7 @@ async function questionHarness(questions: Question[]) {
     };
 }
 
-test('pinned SDK 0.7.1 drops distinct-token repeat submit; scoped /answer restores the deferred question', async () => {
+test('refreshed same-card submit crosses pinned SDK dedup after an incomplete submit while ownership remains enforced', async () => {
     const h = await questionHarness([
         { question: 'Choose color', options: [{ label: 'red' }, { label: 'blue' }] },
         { question: 'Choose size', options: [{ label: 'small' }, { label: 'large' }] }
@@ -71,7 +73,7 @@ test('pinned SDK 0.7.1 drops distinct-token repeat submit; scoped /answer restor
         assert.match(JSON.stringify(await click(size, 'delivery-size')), /已记录你的选择/);
         assert.equal(await click(submit, 'delivery-early'), undefined, 'same delivery replay is dropped');
         assert.equal(await click(submit, 'delivery-new-after-completion'), undefined,
-            'KNOWN SDK LIMIT: a genuine new platform delivery is also dropped by the action-value dedup key');
+            'old button value remains deduplicated; current rendered buttons carry a new revision');
         assert.equal(f.store.db.prepare('SELECT state FROM requests WHERE id=?').get(requestId)!.state, 'pending');
         assert.equal(f.workers.length, 0, 'no new CC turn or implicit answer may be fabricated');
 
@@ -88,8 +90,7 @@ test('pinned SDK 0.7.1 drops distinct-token repeat submit; scoped /answer restor
         assert.equal(f.store.db.prepare('SELECT state FROM requests WHERE id=?').get(requestId)!.state, 'pending');
 
         const answers = { 'Choose color': 'red', 'Choose size': 'small' };
-        await f.gateway.message(message({ senderId: 'alice', chatId: room.chatId,
-            text: `/answer ${requestId} ${JSON.stringify(answers)}` }));
+        assert.deepEqual(await click(button(v => v.decision === 'submit'), 'current-submit'), { toast: { type: 'info', content: '已提交' } });
         const outcome = await h.pending;
         assert.equal(outcome.approved, true);
         assert.deepEqual(outcome.answers, answers);
@@ -99,18 +100,30 @@ test('pinned SDK 0.7.1 drops distinct-token repeat submit; scoped /answer restor
     } finally { await h.close(); }
 });
 
-test('pinned SDK 0.7.1 also drops a second multi-select option click even with a new token', async () => {
+test('refreshed multi-select buttons toggle through the pinned SDK without disabling duplicate suppression', async () => {
     const h = await questionHarness([{ question: 'Select letters', multiSelect: true,
         options: [{ label: 'A' }, { label: 'B' }] }]);
     try {
         const option = h.button(v => v.question === 0 && v.option === 0);
         assert.match(JSON.stringify(await h.click(option, 'first-select')), /已记录你的选择.*A/);
         assert.equal(await h.click(option, 'second-click-to-toggle-off'), undefined,
-            'KNOWN SDK LIMIT: new delivery of the same option cannot toggle the saved selection');
+            'old rendered button retains duplicate suppression');
+        assert.match(JSON.stringify(await h.click(h.button(v => v.question === 0 && v.option === 0), 'current-toggle-off')), /未选择/);
         assert.equal(h.f.store.db.prepare('SELECT state FROM requests WHERE id=?').get(h.requestId)!.state, 'pending');
-        const replacement = 'B instead of A';
-        await h.f.gateway.message(message({ senderId: 'alice',
-            text: `/answer ${h.requestId} ${replacement}` }));
-        assert.deepEqual((await h.pending).answers, { 'Select letters': replacement });
+        await h.click(h.button(v => v.question === 0 && v.option === 1), 'select-b');
+        await h.click(h.button(v => v.decision === 'submit'), 'submit-b');
+        assert.deepEqual((await h.pending).answers, { 'Select letters': 'B' });
+    } finally { await h.close(); }
+});
+
+test('refreshed single-select accepts blue then green then blue on the original card', async () => {
+    const h = await questionHarness([{ question: 'Color?', options: [{ label: 'Blue' }, { label: 'Green' }] }]);
+    try {
+        for (const [index, option] of [0, 1, 0].entries())
+            assert.match(JSON.stringify(await h.click(h.button(v => v.question === 0 && v.option === option), `color-${index}`)), /已记录你的选择/);
+        await h.click(h.button(v => v.decision === 'submit'), 'submit-color');
+        assert.deepEqual((await h.pending).answers, { 'Color?': 'Blue' });
+        assert.equal(h.f.transport.sent.length, 1);
+        assert.equal(h.f.store.session(h.room.key).id, h.session.id);
     } finally { await h.close(); }
 });

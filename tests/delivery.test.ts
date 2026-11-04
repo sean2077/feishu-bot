@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFile, mkdir, readFile, readdir, symlink } from 'node:fs/promises';
+import { writeFile, mkdir, readFile, readdir, symlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Outbox } from '../src/outbox.ts';
 import { ActionBroker } from '../src/actions.ts';
@@ -300,6 +300,87 @@ test('agent send_file request snapshots bytes and prevents a false completed tur
         await until(() => !!f.store.db.prepare("SELECT id FROM outbox WHERE kind='reply' AND state='pending' AND target IS NOT NULL").get());
         assert.ok(!f.transport.receiptStates.some(r => r.state === 'done'));
         assert.equal(f.gateway.outbox.pending(worker.room.key).find(r => r.id === id)?.stage, 'file');
+    } finally { await f.close(); }
+});
+
+test('send_file can echo this room inbound bytes without changing session or writing cwd', async () => {
+    const f = await fixture();
+    try {
+        const incoming = message({ resources: [{ key: 'fixture-file', kind: 'file', name: 'echo.txt' }] });
+        f.transport.downloads.set(incoming.id, Buffer.from('synthetic inbound nonce'));
+        await f.gateway.message(incoming);
+        await until(() => f.workers[0]?.sent.length === 1);
+        const worker = f.workers[0]!, sessionId = worker.session.id;
+        const source = worker.sent[0]!.attachments[0]!.path;
+        let sentBytes: Buffer | undefined, sentPath = '', sentRoom = '';
+        f.transport.file = async (room, path) => { sentBytes = await readFile(path); sentPath = path; sentRoom = room.key; return 'echo-file-message'; };
+        worker.emit({ type: 'request', id: 'inbound-echo', kind: 'send_file', name: 'send_file', input: { path: source, name: 'echo.txt' } });
+        await until(() => worker.responses.length === 1);
+        assert.equal(worker.responses[0]!.value.ok, true);
+        assert.equal(sentBytes!.toString(), 'synthetic inbound nonce');
+        assert.equal(sentRoom, worker.room.key);
+        assert.notEqual(sentPath, source, 'delivery must use a separate durable snapshot');
+        await writeFile(source, 'changed after snapshot');
+        assert.equal((await readFile(sentPath)).toString(), 'synthetic inbound nonce');
+        assert.equal(f.store.session(worker.room.key).id, sessionId);
+        const workspace = await prepareWorkspace(f.config, worker.room, worker.session, f.config.projects[0]!);
+        assert.deepEqual(await readdir(workspace.work), []);
+    } finally { await f.close(); }
+});
+
+test('send_file rejects another room inbound, arbitrary external paths and inbound junction escape', async () => {
+    const f = await fixture();
+    try {
+        await f.gateway.message(message());
+        await until(() => f.workers[0]?.sent.length === 1);
+        const worker = f.workers[0]!;
+        const workspace = await prepareWorkspace(f.config, worker.room, worker.session, f.config.projects[0]!);
+        const other = route(f.config, message({ chatId: 'group2' }))!;
+        const otherWorkspace = await prepareWorkspace(f.config, other, f.store.session(other.key), f.config.projects[0]!);
+        const otherFile = join(otherWorkspace.inbound, 'private.txt'), external = join(f.dir, 'external.txt');
+        await writeFile(otherFile, 'other chat'); await writeFile(external, 'external');
+        const link = join(workspace.inbound, 'escape');
+        await symlink(otherWorkspace.inbound, link, process.platform === 'win32' ? 'junction' : 'dir');
+        let uploads = 0;
+        f.transport.file = async () => { uploads++; return 'should-not-send'; };
+        for (const [index, path] of [otherFile, external, join(link, 'private.txt')].entries()) {
+            worker.emit({ type: 'request', id: `rejected-output-${index}`, kind: 'send_file', name: 'send_file', input: { path } });
+            await until(() => worker.responses.length === index + 1);
+            assert.equal(worker.responses[index]!.value.ok, false);
+        }
+        assert.equal(uploads, 0);
+        assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM outbox WHERE kind='file'").get()!.n, 0);
+    } finally { await f.close(); }
+});
+
+test('send_file rejects a replaced inbound root pointing to another room or an external directory', async () => {
+    const f = await fixture();
+    try {
+        await f.gateway.message(message());
+        await until(() => f.workers[0]?.sent.length === 1);
+        const worker = f.workers[0]!;
+        const workspace = await prepareWorkspace(f.config, worker.room, worker.session, f.config.projects[0]!);
+        const other = route(f.config, message({ chatId: 'group2' }))!;
+        const otherWorkspace = await prepareWorkspace(f.config, other, f.store.session(other.key), f.config.projects[0]!);
+        const external = join(f.dir, 'outside-attachments');
+        await mkdir(external);
+        for (const target of [otherWorkspace.inbound, external]) await writeFile(join(target, 'secret.txt'), 'must not export');
+        let uploads = 0;
+        f.transport.file = async () => { uploads++; return 'should-not-send'; };
+        for (const [index, target] of [otherWorkspace.inbound, external].entries()) {
+            await rm(workspace.inbound, { recursive: true, force: true });
+            await symlink(target, workspace.inbound, process.platform === 'win32' ? 'junction' : 'dir');
+            worker.emit({ type: 'request', id: `replaced-inbound-${index}`, kind: 'send_file', name: 'send_file', input: { path: join(workspace.inbound, 'secret.txt') } });
+            await until(() => worker.responses.length === index + 1);
+            assert.equal(worker.responses[index]!.value.ok, false);
+            assert.match(String(worker.responses[index]!.value.error), /redirected/);
+            assert.equal(await readFile(join(target, 'secret.txt'), 'utf8'), 'must not export');
+            // Remove the link itself rather than touching its target.
+            await rm(workspace.inbound, { recursive: true, force: true });
+            await mkdir(workspace.inbound);
+        }
+        assert.equal(uploads, 0);
+        assert.equal(f.store.db.prepare("SELECT count(*) AS n FROM outbox WHERE kind='file'").get()!.n, 0);
     } finally { await f.close(); }
 });
 

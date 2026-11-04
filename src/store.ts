@@ -1,17 +1,22 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import type { Delivery, Message, Session } from './types.ts';
+import { join, resolve } from 'node:path';
+import type { Delivery, Message, Session, Workspace } from './types.ts';
 export class Store {
     readonly db: DatabaseSync;
+    private closed = false;
+    get isOpen(): boolean { return !this.closed; }
     constructor(path: string) {
         this.db = new DatabaseSync(path);
         this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
         this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, room TEXT NOT NULL, cc TEXT, state TEXT NOT NULL, created INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_launch_identity(session TEXT PRIMARY KEY REFERENCES sessions(id), work TEXT NOT NULL, native_config TEXT NOT NULL, config_dir TEXT NOT NULL, config_override INTEGER NOT NULL DEFAULT 1);
       CREATE UNIQUE INDEX IF NOT EXISTS one_active ON sessions(room) WHERE state='open';
       CREATE TABLE IF NOT EXISTS inbox(room TEXT NOT NULL, id TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL, at INTEGER NOT NULL, uuid TEXT, session TEXT, payload TEXT, PRIMARY KEY(room,id));
       CREATE INDEX IF NOT EXISTS inbox_status ON inbox(room,status,at);
       CREATE TABLE IF NOT EXISTS outputs(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS feishu_cards(message TEXT PRIMARY KEY, card TEXT NOT NULL, room TEXT NOT NULL, sequence INTEGER NOT NULL DEFAULT 0, snapshot TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, room TEXT NOT NULL, event TEXT NOT NULL, detail TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, kind TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, expires INTEGER NOT NULL, actor TEXT);
       CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, text TEXT NOT NULL, target TEXT, reply_to TEXT, thread_id TEXT, success INTEGER NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL);
@@ -24,6 +29,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS usage_room_session ON usage_results(room,session,at);
     `);
         this.addColumn('receipts', 'sender', 'TEXT');
+        this.addColumn('session_launch_identity', 'config_override', 'INTEGER NOT NULL DEFAULT 1');
         this.addColumn('outbox', 'card', 'TEXT');
         this.addColumn('outbox', 'origins', "TEXT NOT NULL DEFAULT '[]'");
         this.addColumn('outbox', 'file_name', 'TEXT');
@@ -75,6 +81,27 @@ export class Store {
         return this.transaction(() => { this.db.prepare("UPDATE sessions SET state='archived' WHERE room=? AND state='open'").run(room); this.db.prepare("UPDATE sessions SET state='open' WHERE room=? AND id=?").run(room, id); return { ...this.sessionRow(r), state: 'open' }; });
     }
     setCc(id: string, cc: string): void { this.db.prepare('UPDATE sessions SET cc=? WHERE id=?').run(cc, id); }
+    bindLaunchIdentity(session: Session, workspace: Workspace, explicitCwd = false): void {
+        const identity = { work: workspace.work, mode: workspace.nativeConfig ?? 'isolated', config: workspace.configDir ?? join(workspace.home, '.claude'), override: workspace.configDirOverride !== false ? 1 : 0 };
+        const samePath = (a: string, b: string) => process.platform === 'win32'
+            ? resolve(a).toLowerCase() === resolve(b).toLowerCase() : resolve(a) === resolve(b);
+        this.transaction(() => {
+            const owner = this.db.prepare('SELECT room,cc FROM sessions WHERE id=?').get(session.id);
+            if (!owner || owner.room !== session.roomKey) throw new Error('会话不属于当前聊天');
+            const saved = this.db.prepare('SELECT * FROM session_launch_identity WHERE session=?').get(session.id);
+            if (saved) {
+                if (saved.native_config !== identity.mode || saved.config_override !== identity.override || !samePath(String(saved.work), identity.work) || !samePath(String(saved.config_dir), identity.config))
+                    throw new Error('会话启动身份与当前配置不匹配。请恢复原工作目录和 Claude 配置，或显式使用 /new 创建新会话；原会话已保留。');
+                return;
+            }
+            // Pre-identity releases only supported the room-owned isolated layout.
+            // Never adopt an existing native ID into a newly selected host profile.
+            if (owner.cc && (explicitCwd || identity.mode !== 'isolated'))
+                throw new Error('旧会话缺少本地接入身份记录，不能静默迁入现有目录或用户配置。请恢复旧配置，或显式使用 /new；原会话已保留。');
+            this.db.prepare('INSERT INTO session_launch_identity(session,work,native_config,config_dir,config_override) VALUES(?,?,?,?,?)')
+                .run(session.id, identity.work, identity.mode, identity.config, identity.override);
+        });
+    }
     stopSession(id: string): void { this.db.prepare("UPDATE inbox SET status='cancelled',payload=NULL WHERE session=? AND status IN ('queued','sent','consumed')").run(id); }
     insert(room: string, message: Message, status = 'background'): boolean { return this.db.prepare('INSERT OR IGNORE INTO inbox(room,id,message,status,at) VALUES(?,?,?,?,?)').run(room, message.id, JSON.stringify(message), status, message.time).changes > 0; }
     seen(room: string, id: string): boolean { return !!this.db.prepare('SELECT 1 FROM inbox WHERE room=? AND id=?').get(room, id); }
@@ -123,5 +150,5 @@ export class Store {
         this.db.prepare('DELETE FROM outputs WHERE at<?').run(now - 30 * 86400000);
         this.db.prepare("DELETE FROM outbox WHERE state IN ('done','cancelled') AND file_path IS NULL AND at<?").run(now - 7 * 86400000);
     }
-    close(): void { this.db.close(); }
+    close(): void { this.closed = true; this.db.close(); }
 }

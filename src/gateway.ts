@@ -12,7 +12,7 @@ export { route } from './policy.ts';
 import { Approvals, displayCard, type Question } from './approvals.ts';
 import { ActionBroker } from './actions.ts';
 import { hash, redact, safeFile, readBoundedFile, Serial, errorText } from './util.ts';
-import { prepareWorkspace, translateWorkerFile, type Workspace } from './workspace.ts';
+import { prepareWorkspace, translateWorkerFile, translateWorkerOutput, type Workspace } from './workspace.ts';
 import { managementReply } from './management.ts';
 import { imageBatchEligible, stageImageBatch, sealImageWindows, imageBatchMembers } from './image-batches.ts';
 import { recordUsage } from './usage.ts';
@@ -412,7 +412,9 @@ export class Gateway {
             this.waitingNotified.delete(room.key);
             const session = slot.session, captured = slot;
             try {
-                slot.workspace = await prepareWorkspace(this.config, room, session, this.config.projects.find(p => p.id === room.projectId)!);
+                const project = this.config.projects.find(p => p.id === room.projectId)!;
+                slot.workspace = await prepareWorkspace(this.config, room, session, project);
+                this.store.bindLaunchIdentity(session, slot.workspace, !!project.cwd);
                 slot.worker = await this.factory(room, session, event => this.event(captured, event), slot.workspace);
             } catch (e) {
                 if (!slot.stopUnconfirmed && this.slots.get(room.key) === slot) this.slots.delete(room.key);
@@ -533,14 +535,17 @@ export class Gateway {
             }
         }
     }
-    private renderFor(slot: Slot, uuid?: string): Render {
-        const human = !!uuid && slot.deliveries.has(uuid);
+    private backgroundRenderKey(uuid?: string, backgroundId?: string): string { return 'background:' + JSON.stringify([uuid ?? null, backgroundId ?? null]); }
+    private renderFor(slot: Slot, uuid?: string, source?: 'foreground' | 'background' | 'unattributed', backgroundId?: string): Render {
+        const human = source !== 'background' && !!uuid && slot.deliveries.has(uuid);
         const anchor = human ? slot.anchor ?? slot.deliveries.get(uuid!) : uuid ? slot.replyAnchors.get(uuid) : undefined;
-        const key = human ? 'human' : 'background:' + (uuid ?? 'unknown');
+        const key = human ? 'human' : uuid || source === 'background' ? this.backgroundRenderKey(uuid, backgroundId) : 'unbound:foreground';
         let render = slot.renders.get(key);
         if (!render) {
+            if (!anchor) this.store.audit(slot.room.key, 'reply_preview_unbound', { session: slot.session.id, hasOrigin: !!uuid });
             render = new Render(slot.room, slot.session.id, this.transport, this.store, this.outbox,
                 this.config.limits.updateMs, anchor, slot.abort.signal, text => redact(text, this.secrets));
+            render.setDetails({ model: this.config.model.model, projectPath: slot.workspace?.work });
             slot.renders.set(key, render);
         }
         return render;
@@ -594,7 +599,7 @@ export class Gateway {
                 break;
             case 'text':
             case 'thinking':
-                this.renderFor(slot, event.turnId).update(redact(event.text, this.secrets), event.partial, event.type, event.blockId);
+                this.renderFor(slot, event.turnId, event.source, event.backgroundId).update(redact(event.text, this.secrets), event.partial, event.type, event.blockId);
                 break;
             case 'compaction': {
                 const id = slot.compacting ?? slot.anchor?.uuid;
@@ -613,14 +618,40 @@ export class Gateway {
                     return result;
                 });
                 if (disposition === 'duplicate') break;
+                // Native results may confirm humans folded into a scheduled turn.
+                // Explicit consumed UUIDs outrank source classification; only
+                // unconfirmed background previews are excluded from late binding.
                 const nativeIds = event.uuids?.length ? event.uuids : event.uuid ? [event.uuid] : [];
                 const finished = [...new Set(nativeIds.flatMap(id => slot.inputGroups.get(id) ?? [id]))].filter(id => slot.deliveries.has(id));
                 const anchor = finished.length ? slot.deliveries.get(finished[0]!) : event.replyToUuid ? slot.replyAnchors.get(event.replyToUuid) : undefined;
-                const origins: Origin[] = finished.length ? finished.map(id => slot.deliveries.get(id)!.message) : anchor ? [anchor.message] : [];
-                const key = finished.length ? 'human' : 'background:' + (event.replyToUuid ?? 'unknown');
-                const unbound = !slot.renders.has(key) ? slot.renders.get('background:unknown') : undefined;
-                const render = unbound ?? this.renderFor(slot, finished[0] ?? event.replyToUuid);
-                if (unbound) { unbound.bindOrigin(anchor); slot.renders.delete('background:unknown'); }
+                const ownsReceipt = !(event.source === 'background' && !!event.replyToUuid && slot.deliveries.has(event.replyToUuid));
+                const origins: Origin[] = finished.length ? finished.map(id => slot.deliveries.get(id)!.message) : anchor && ownsReceipt ? [anchor.message] : [];
+                const key = finished.length ? 'human' : event.replyToUuid || event.source === 'background'
+                    ? this.backgroundRenderKey(event.replyToUuid, event.backgroundId) : 'unbound:foreground';
+                const foldedBackgroundKey = finished.length && event.source === 'background' && event.backgroundId && event.replyToUuid &&
+                    slot.replyAnchors.has(event.replyToUuid) ? this.backgroundRenderKey(event.replyToUuid, event.backgroundId) : undefined;
+                const backgroundPreview = foldedBackgroundKey ? slot.renders.get(foldedBackgroundKey) : undefined;
+                const foldedBackground = !slot.renders.has('human') ? backgroundPreview : undefined;
+                // A missing stamp can be filled by a confirmed foreground result;
+                // an explicitly background stream never becomes that candidate.
+                const unbound = event.source !== 'background' && !slot.renders.has(key) ? slot.renders.get('unbound:foreground') : undefined;
+                const render = foldedBackground ?? unbound ?? this.renderFor(slot, finished[0] ?? event.replyToUuid, finished.length ? 'foreground' : event.source, event.backgroundId);
+                render.setDetails({ model: event.model ?? event.models?.join(' / ') ?? this.config.model.model, projectPath: slot.workspace?.work, context: event.context, usage: event.usage });
+                if (unbound) { unbound.bindOrigin(anchor); slot.renders.delete('unbound:foreground'); }
+                if (foldedBackgroundKey && backgroundPreview) {
+                    slot.renders.delete(foldedBackgroundKey);
+                    if (!foldedBackground) {
+                        // Two previews were already sent before native consumption
+                        // became known. Preserve both immutable reply targets but
+                        // close the old excerpt without claiming the human receipt.
+                        slot.activeRequests++;
+                        void this.track(backgroundPreview.finish('本轮后台片段已结束；后续消息的答复见本轮另一张回复卡片。', true,
+                            this.config.dataDir, [], '后台续轮已结束')).catch(() => {
+                                try { if (this.store.isOpen) this.store.audit(slot.room.key, 'background_excerpt_finalization_failed', { session: slot.session.id }); }
+                                catch { /* Storage failure must not create an unhandled rejection. */ }
+                            }).finally(() => { slot.activeRequests--; this.kickWaiting(); });
+                    }
+                }
                 slot.renders.delete(key);
                 for (const id of finished) { slot.deliveries.delete(id); slot.acceptedSupplements.delete(id); }
                 for (const id of nativeIds) slot.inputGroups.delete(id);
@@ -632,7 +663,12 @@ export class Gateway {
                 const compactText = event.compact === 'compacted' ? '上下文已由 Claude Code 原生压缩，会话保持不变。'
                     : event.compact === 'not_needed' ? '原生压缩未执行（例如历史不足），会话保持不变。'
                     : event.compact === 'failed' ? '原生压缩失败，未新建或重置会话。' : undefined;
-                const text = compactText ? compactText + (event.text ? '\n\n' + event.text : '') : event.text;
+                const answer = compactText ? compactText + (event.text ? '\n\n' + event.text : '') : event.text;
+                // Feishu cannot change a sent message's reply target. Keep that
+                // original binding honest while only completing the raw-confirmed
+                // later human inputs consumed by this same native background turn.
+                const text = foldedBackground && event.replyToUuid && !finished.includes(event.replyToUuid)
+                    ? '本轮后台工作已处理后续消息；卡片仍引用最初触发后台工作的消息。\n\n' + answer : answer;
                 slot.activeRequests++;
                 void this.track(render.finish(redact(text, this.secrets), event.success, this.config.dataDir, origins,
                     event.compact ? '上下文整理' : undefined, () => {
@@ -723,10 +759,10 @@ export class Gateway {
         }
         if (event.kind === 'send_file') {
             const w = slot.workspace!;
-            const translated = translateWorkerFile(this.config, w, String(event.input.path ?? ''));
-            const path = await safeFile(w.work, translated);
+            const translated = await translateWorkerOutput(w, String(event.input.path ?? ''));
+            const path = await safeFile(translated.root, translated.path);
             if ((await stat(path)).size > this.config.limits.attachmentBytes) throw new Error('file exceeds send limit');
-            const bytes = await readBoundedFile(w.work, path, this.config.limits.attachmentBytes);
+            const bytes = await readBoundedFile(translated.root, path, this.config.limits.attachmentBytes);
             const dir = join(this.config.dataDir, 'exports', hash(slot.room.key).slice(0, 32));
             await mkdir(dir, { recursive: true, mode: 0o700 });
             const snapshot = join(dir, randomUUID());

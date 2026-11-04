@@ -78,7 +78,7 @@ export function parseConfig(value: unknown, baseDir = process.cwd()): Config {
     const r = obj(c.runtime ?? {}, 'runtime');
     // Only the old native template is accepted; never silently reinterpret a Docker deployment.
     if (r.mode !== undefined && r.mode !== 'local') throw new Error('Container runtime removed. Remove runtime.mode/image/memory/cpus and run the service directly.');
-    keys(r, ['mode', 'maxWorkers', 'idleMs'], 'runtime');
+    keys(r, ['mode', 'maxWorkers', 'idleMs', 'claudeExecutable'], 'runtime');
     const m = obj(c.model, 'model');
     if (m.maxConcurrent !== undefined) throw new Error('model.maxConcurrent was removed with the proxy. Configure model request quotas in the configured model service; runtime.maxWorkers limits live sessions.');
     keys(m, ['baseUrl', 'tokenEnv', 'model', 'smallModel', 'extraHeaders', 'allowHttp'], 'model');
@@ -92,17 +92,21 @@ export function parseConfig(value: unknown, baseDir = process.cwd()): Config {
     }
     const projects: Project[] = list(c.projects, 'projects').map(value => {
         const p = obj(value, 'project');
-        keys(p, ['id', 'maintainers', 'seedDir', 'trustedConfigDir', 'permissionMode', 'allowedTools', 'autoApproveWorkspace', 'actions'], 'project');
+        keys(p, ['id', 'maintainers', 'seedDir', 'trustedConfigDir', 'cwd', 'nativeConfig', 'permissionMode', 'allowedTools', 'autoApproveWorkspace', 'actions'], 'project');
         const maintainers = strings(p.maintainers, 'maintainers');
         if (!maintainers.length || maintainers.includes('*')) throw new Error('explicit maintainers required');
         if (p.autoApproveWorkspace !== undefined && p.autoApproveWorkspace !== false) throw new Error('autoApproveWorkspace was removed in local mode. Use native permissionMode and explicit allowedTools; unrestricted automatic tool approval is not a default.');
         const permissionMode = text(p.permissionMode, 'permissionMode', p.autoApproveWorkspace === false ? 'default' : 'acceptEdits');
-        if (permissionMode !== 'default' && permissionMode !== 'acceptEdits') throw new Error('permissionMode must be default or acceptEdits');
+        if (permissionMode !== 'default' && permissionMode !== 'acceptEdits' && permissionMode !== 'bypassPermissions') throw new Error('permissionMode must be default, acceptEdits or bypassPermissions');
+        if (p.cwd !== undefined && (p.seedDir !== undefined || p.trustedConfigDir !== undefined)) throw new Error('project.cwd cannot be combined with seedDir or trustedConfigDir');
+        const nativeConfig = text(p.nativeConfig, 'nativeConfig', 'isolated');
+        if (nativeConfig !== 'isolated' && nativeConfig !== 'inherit') throw new Error('nativeConfig must be isolated or inherit');
         const allowedTools = strings(p.allowedTools ?? [], 'allowedTools');
         const actions = list(p.actions ?? [], 'actions').map(action);
         unique(actions.map(a => a.id), 'actions');
         return {
             id: identifier(p.id, 'project.id'), maintainers,
+            cwd: p.cwd === undefined ? undefined : resolve(baseDir, text(p.cwd, 'cwd')), nativeConfig,
             seedDir: p.seedDir === undefined ? undefined : resolve(baseDir, text(p.seedDir, 'seedDir')),
             trustedConfigDir: p.trustedConfigDir === undefined ? undefined : resolve(baseDir, text(p.trustedConfigDir, 'trustedConfigDir')),
             permissionMode, allowedTools, actions
@@ -127,7 +131,8 @@ export function parseConfig(value: unknown, baseDir = process.cwd()): Config {
     return {
         tenantId: identifier(c.tenantId, 'tenantId'), appId: identifier(c.appId, 'appId'),
         appSecretEnv: identifier(c.appSecretEnv ?? 'FEISHU_APP_SECRET', 'appSecretEnv'), dataDir: resolve(baseDir, text(c.dataDir, 'dataDir', 'state')),
-        runtime: { maxWorkers: integer(r.maxWorkers, 'maxWorkers', 8, 1, 128), idleMs: integer(r.idleMs, 'idleMs', 900000, 0, 86400000) },
+        runtime: { maxWorkers: integer(r.maxWorkers, 'maxWorkers', 8, 1, 128), idleMs: integer(r.idleMs, 'idleMs', 900000, 0, 86400000),
+            ...(r.claudeExecutable === undefined ? {} : { claudeExecutable: resolve(baseDir, text(r.claudeExecutable, 'claudeExecutable')) }) },
         model: {
             baseUrl: baseUrl.toString().replace(/\/$/, '').replace(/\/v1$/, ''), tokenEnv: identifier(m.tokenEnv ?? 'MODEL_AUTH_TOKEN', 'tokenEnv'),
             model: text(m.model, 'model.model'), smallModel: text(m.smallModel, 'smallModel', text(m.model, 'model.model')), extraHeaders, allowHttp

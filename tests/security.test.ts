@@ -95,7 +95,13 @@ test('group question selections belong to the submitting author, not the shared 
         // Alice's selections must not allow Bob to submit an answer that Bob never chose.
         await f.gateway.approvals.click('group1', 'alice', { request: id, question: 0, option: 0 }, cardId);
         await f.gateway.approvals.click('group1', 'alice', { request: id, question: 1, option: 0 }, cardId);
-        assert.equal(f.transport.updates.length, 0, 'do not expose an individual selection on the shared card');
+        assert.ok(f.transport.updates.length > 0, 'rotate opaque button identities on the same card');
+        for (const update of f.transport.updates) {
+            const elements = (update.card as { body: { elements: { tag: string; type?: string; text?: { content?: string }; content?: string }[] } }).body.elements;
+            assert.ok(elements.filter(element => element.tag === 'button').every(element => element.type !== 'primary' || element.text?.content === '提交选择'),
+                'never highlight one member\'s personal option on a shared card');
+            assert.ok(elements.every(element => !element.content?.includes('已记录你的选择')), 'private selection confirmation belongs only in the operator toast');
+        }
         assert.equal(await f.gateway.approvals.click('group1', 'bob', { request: id, decision: 'submit' }, cardId), '请回答所有问题');
         assert.equal(w.responses.length, 0);
         await f.gateway.approvals.click('group1', 'bob', { request: id, question: 0, option: 1 }, cardId);

@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
+import { homedir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import type { Config } from './types.ts';
 import { modelHeaders, secretsFor } from './config.ts';
@@ -93,6 +94,15 @@ export async function runDoctor(config: Config, probe = false, probeFeishu = fal
             return 'Configured Git Bash launches and reports its version.';
         });
     }
+    if (config.runtime.claudeExecutable) await check('configured Claude Code', async () => {
+        const invalid = 'runtime.claudeExecutable must point to a working Claude Code executable.';
+        try {
+            if (!(await stat(config.runtime.claudeExecutable!)).isFile()) throw new Error(invalid);
+            const result = await runCommand(config.runtime.claudeExecutable!, ['--version'], { timeoutMs: 5000, maxBytes: 4096 });
+            if (result.code !== 0 || !/\bClaude Code\b/i.test(result.output)) throw new Error(invalid);
+        } catch { throw new Error(invalid); }
+        return 'Configured executable launches and identifies itself as Claude Code; native features still require validation.';
+    });
     await check('data directory / SQLite', async () => {
         // Never open or migrate the live database, or reuse another diagnostic's filename.
         let dir: string | undefined, db: DatabaseSync | undefined;
@@ -109,11 +119,18 @@ export async function runDoctor(config: Config, probe = false, probeFeishu = fal
         return 'Writable; temporary SQLite probe was removed. Existing state was not opened.';
     });
     for (const project of config.projects) {
-        for (const [name, path] of [['seedDir', project.seedDir], ['trustedConfigDir', project.trustedConfigDir]] as const) if (path) {
+        for (const [name, path] of [['cwd', project.cwd], ['seedDir', project.seedDir], ['trustedConfigDir', project.trustedConfigDir]] as const) if (path) {
             await check(`${project.id} ${name}`, async () => {
-                if (!(await stat(path)).isDirectory()) throw new Error(`${name} must be an existing directory.`);
+                if (!(await stat(path).then(s => s.isDirectory()).catch(() => false))) throw new Error(`${name} must be an existing directory.`);
             });
         }
+        if (project.nativeConfig === 'inherit') await check(`${project.id} inherited native configuration`, async () => {
+            const configured = process.env.CLAUDE_CONFIG_DIR?.trim();
+            const path = configured || join(homedir(), '.claude');
+            if (!(await stat(path).then(s => s.isDirectory()).catch(() => false)))
+                throw new Error('Inherited Claude configuration directory must exist in the service account environment.');
+            return `${configured ? 'CLAUDE_CONFIG_DIR' : 'Service account default Claude directory'} exists; configuration contents, hooks, skills, MCP and plugins were not executed or validated.`;
+        });
         for (const action of project.actions) {
             await check(`action ${project.id}/${action.id}`, async () => {
                 if (!(await stat(action.executable)).isFile()) throw new Error('Action executable must be an existing file.');
@@ -153,7 +170,9 @@ export async function runDoctor(config: Config, probe = false, probeFeishu = fal
                 method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(30000),
                 headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01',
                     authorization: `Bearer ${process.env[config.model.tokenEnv]}`, ...modelHeaders(config) },
-                body: JSON.stringify({ model: config.model.model, max_tokens: 16, messages: [{ role: 'user', content: 'Reply OK.' }] })
+                // [1m] selects native Claude context capacity, not an upstream
+                // Messages model ID. Keep the deployment setting unchanged.
+                body: JSON.stringify({ model: config.model.model.replace(/\[1m\]$/i, ''), max_tokens: 256, messages: [{ role: 'user', content: 'Reply OK.' }] })
             });
             if (!response.ok) {
                 await response.body?.cancel();

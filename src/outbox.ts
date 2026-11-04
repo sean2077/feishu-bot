@@ -201,9 +201,9 @@ export class Outbox {
         const current = this.get(row.id);
         if (!current || !['pending', 'uncertain'].includes(current.state) || !this.permitted(current, room)) return;
         const card = structuredClone(row.card ?? displayCard('回复', row.text.slice(0, 23800))) as {
-            header?: { title?: object }; body?: { elements?: object[] };
+            header?: { title?: object; template?: string }; body?: { elements?: object[] };
         };
-        card.header = { ...card.header, title: { tag: 'plain_text', content: '回复尚未完整送达' } };
+        card.header = { ...card.header, template: 'orange', title: { tag: 'plain_text', content: '回复尚未完整送达' } };
         card.body = { ...card.body, elements: [...(card.body?.elements ?? []), { tag: 'markdown',
             content: `完整文件尚未确认送达；未标记完成。可用 /outputs 查看状态，或 /retry-output ${row.id} 明确补发（可能重复已送达的文件）。` }] };
         try { await this.providerIO(() => this.transport.update(target, card)); }
@@ -213,9 +213,9 @@ export class Outbox {
         const current = this.get(row.id);
         if (!current || current.state !== 'pending' || !this.permitted(current, room)) return;
         const card = structuredClone(row.card ?? displayCard('回复', row.text.slice(0, 23800))) as {
-            header?: { title?: object }; body?: { elements?: object[] };
+            header?: { title?: object; template?: string }; body?: { elements?: object[] };
         };
-        card.header = { ...card.header, title: { tag: 'plain_text', content: '回复附件尚未完整送达' } };
+        card.header = { ...card.header, template: 'orange', title: { tag: 'plain_text', content: '回复附件尚未完整送达' } };
         card.body = { ...card.body, elements: [...(card.body?.elements ?? []), { tag: 'markdown',
             content: '主动发送的文件尚未确认送达；本轮未标记完成。可用 /outputs 查看待交付记录，必要时由维护者明确补发。' }] };
         try { await this.providerIO(() => this.transport.update(target, card)); }

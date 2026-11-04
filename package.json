@@ -1,6 +1,6 @@
 {
   "name": "@sean2077/feishu-bot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A Feishu interface for native Claude Code conversations and tools",
   "private": true,
   "type": "module",
