@@ -1,0 +1,507 @@
+{
+  "scope": "Single warm conversation; local deterministic model and in-memory Feishu transport; not live deployment acceptance.",
+  "claudeVersion": "2.1.316",
+  "typescriptBaseCommit": "26c4858b9460739e0ccb8712932224609ce22e47",
+  "goCodeState": "Go rewrite working tree before final lifecycle review; source and tests are in this PR.",
+  "measurementCorrection": "TypeScript production code is unchanged. Its measurement-only collector was changed from ps with namespace-mismatched PIDs to direct /proc VmRSS, matching the Go collector. The patch is stored alongside this report.",
+  "statistics": "Three sequential samples per implementation; each sample has one cold turn, two warm turns and 1000ms idle. RSS sums may double-count shared pages. Host includes fixture server and benchmark. Uncontrolled background build activity means latency is descriptive only, not an isolated performance claim.",
+  "typescript": {
+    "schema": 1,
+    "fixture": "deterministic-text-v1",
+    "startedAt": "2026-11-04T05:05:15.087Z",
+    "environment": {
+      "platform": "linux",
+      "release": "6.18.57",
+      "arch": "x64",
+      "node": "v24.22.1",
+      "logicalCpus": 8,
+      "revision": "26c4858b9460739e0ccb8712932224609ce22e47",
+      "sdk": "0.3.316"
+    },
+    "settings": {
+      "samples": 3,
+      "warmTurns": 2,
+      "idleMs": 1000
+    },
+    "scope": {
+      "model": "Local deterministic HTTP fixture; reported token values are synthetic, not billing or context size.",
+      "transport": "In-memory Feishu substitute; mockDeliveryMs is not network delivery latency.",
+      "cold": "Fresh native process/session/workspace per sample, not a cold OS or cold module/filesystem cache.",
+      "memory": "Host includes benchmark, Gateway, SQLite and fixture HTTP server. Descendants include visible worker/CC processes. RSS/working-set sums can double-count shared pages, not unique physical RAM.",
+      "collection": "One post-idle read-only snapshot, excluded from turn timings; observer processes excluded. Failed collection is unavailable, never zero.",
+      "liveServiceAccepted": false,
+      "cost": null,
+      "contextOccupancy": null
+    },
+    "samples": [
+      {
+        "index": 1,
+        "status": "passed",
+        "failures": [],
+        "serviceInitMs": 19.58,
+        "workerStartupMs": 574,
+        "workersStarted": 1,
+        "sessionStable": true,
+        "turns": [
+          {
+            "kind": "cold-native",
+            "index": 0,
+            "success": true,
+            "firstOutputMs": 640.17,
+            "nativeResultMs": 657.15,
+            "mockDeliveryMs": 665.26,
+            "usage": {
+              "input_tokens": 500,
+              "output_tokens": 30,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 0
+            }
+          },
+          {
+            "kind": "warm-native",
+            "index": 1,
+            "success": true,
+            "firstOutputMs": 30.73,
+            "nativeResultMs": 37.05,
+            "mockDeliveryMs": 43.11,
+            "usage": {
+              "input_tokens": 500,
+              "output_tokens": 30,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 0
+            }
+          },
+          {
+            "kind": "warm-native",
+            "index": 2,
+            "success": true,
+            "firstOutputMs": 25.64,
+            "nativeResultMs": 30.84,
+            "mockDeliveryMs": 38.07,
+            "usage": {
+              "input_tokens": 500,
+              "output_tokens": 30,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 0
+            }
+          }
+        ],
+        "idle": {
+          "elapsedMs": 1001.03,
+          "hostCpuMs": 0.52,
+          "memory": {
+            "status": "observed",
+            "method": "/proc VmRSS (KiB converted to bytes)",
+            "collectionMs": 97,
+            "hostBytes": 49664000,
+            "descendantBytes": 293072896,
+            "descendantCount": 2
+          }
+        },
+        "stopMs": 98.74,
+        "cleanupConfirmed": true,
+        "modelRequests": {
+          "messages": 3,
+          "countTokens": 0,
+          "rejected": 0
+        }
+      },
+      {
+        "index": 2,
+        "status": "passed",
+        "failures": [],
+        "serviceInitMs": 48.71,
+        "workerStartupMs": 1172,
+        "workersStarted": 1,
+        "sessionStable": true,
+        "turns": [
+          {
+            "kind": "cold-native",
+            "index": 0,
+            "success": true,
+            "firstOutputMs": 1285.18,
+            "nativeResultMs": 1330.75,
+            "mockDeliveryMs": 1341.81,
+            "usage": {
+              "input_tokens": 500,
+              "output_tokens": 30,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 0
+            }
+          },
+          {
+            "kind": "warm-native",
+            "index": 1,
+            "success": true,
+            "firstOutputMs": 87.31,
+            "nativeResultMs": 102.61,
+            "mockDeliveryMs": 113.08,
+            "usage": {
+              "input_tokens": 500,
+              "output_tokens": 30,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 0
+            }
+          },
+          {
+            "kind": "warm-native",
+            "index": 2,
+            "success": true,
+            "firstOutputMs": 43.5,
+            "nativeResultMs": 47.87,
+            "mockDeliveryMs": 54.55,
+            "usage": {
+              "input_tokens": 500,
+              "output_tokens": 30,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 0
+            }
+          }
+        ],
+        "idle": {
+          "elapsedMs": 1001.44,
+          "hostCpuMs": 0.43,
+          "memory": {
+            "status": "observed",
+            "method": "/proc VmRSS (KiB converted to bytes)",
+            "collectionMs": 5,
+            "hostBytes": 52887552,
+            "descendantBytes": 286781440,
+            "descendantCount": 2
+          }
+        },
+        "stopMs": 62,
+        "cleanupConfirmed": true,
+        "modelRequests": {
+          "messages": 3,
+          "countTokens": 0,
+          "rejected": 0
+        }
+      },
+      {
+        "index": 3,
+        "status": "passed",
+        "failures": [],
+        "serviceInitMs": 21.89,
+        "workerStartupMs": 637,
+        "workersStarted": 1,
+        "sessionStable": true,
+        "turns": [
+          {
+            "kind": "cold-native",
+            "index": 0,
+            "success": true,
+            "firstOutputMs": 688.27,
+            "nativeResultMs": 714.33,
+            "mockDeliveryMs": 721.55,
+            "usage": {
+              "input_tokens": 500,
+              "output_tokens": 30,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 0
+            }
+          },
+          {
+            "kind": "warm-native",
+            "index": 1,
+            "success": true,
+            "firstOutputMs": 35.04,
+            "nativeResultMs": 42.93,
+            "mockDeliveryMs": 49.2,
+            "usage": {
+              "input_tokens": 500,
+              "output_tokens": 30,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 0
+            }
+          },
+          {
+            "kind": "warm-native",
+            "index": 2,
+            "success": true,
+            "firstOutputMs": 26.88,
+            "nativeResultMs": 33.16,
+            "mockDeliveryMs": 39.11,
+            "usage": {
+              "input_tokens": 500,
+              "output_tokens": 30,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 0
+            }
+          }
+        ],
+        "idle": {
+          "elapsedMs": 1001.22,
+          "hostCpuMs": 0.38,
+          "memory": {
+            "status": "observed",
+            "method": "/proc VmRSS (KiB converted to bytes)",
+            "collectionMs": 22,
+            "hostBytes": 55050240,
+            "descendantBytes": 292888576,
+            "descendantCount": 2
+          }
+        },
+        "stopMs": 32.99,
+        "cleanupConfirmed": true,
+        "modelRequests": {
+          "messages": 3,
+          "countTokens": 0,
+          "rejected": 0
+        }
+      }
+    ],
+    "summary": {
+      "attemptedSamples": 3,
+      "passedSamples": 3,
+      "failedSamples": 0,
+      "attemptedTurns": 9,
+      "failedTurns": 0,
+      "coldFirstOutputMs": {
+        "count": 3,
+        "min": 640.17,
+        "median": 688.27,
+        "max": 1285.18
+      },
+      "warmFirstOutputMs": {
+        "count": 6,
+        "min": 25.64,
+        "median": 32.885,
+        "max": 87.31
+      },
+      "stopMs": {
+        "count": 3,
+        "min": 32.99,
+        "median": 62,
+        "max": 98.74
+      }
+    }
+  },
+  "go": {
+    "environment": {
+      "arch": "amd64",
+      "go": "go1.27.3",
+      "logicalCpus": 9,
+      "platform": "linux"
+    },
+    "fixture": "deterministic-text-v1",
+    "samples": [
+      {
+        "index": 1,
+        "status": "passed",
+        "failures": [],
+        "serviceInitMs": 8.298,
+        "workersStarted": 1,
+        "sessionStable": true,
+        "turns": [
+          {
+            "kind": "cold-native",
+            "success": true,
+            "firstOutputMs": 473.058,
+            "nativeResultMs": 498.837,
+            "mockDeliveryMs": 507.612,
+            "usage": {
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 500,
+              "output_tokens": 30
+            }
+          },
+          {
+            "kind": "warm-native",
+            "success": true,
+            "firstOutputMs": 35.968,
+            "nativeResultMs": 42.819,
+            "mockDeliveryMs": 49.453,
+            "usage": {
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 500,
+              "output_tokens": 30
+            }
+          },
+          {
+            "kind": "warm-native",
+            "success": true,
+            "firstOutputMs": 28.921,
+            "nativeResultMs": 35.086,
+            "mockDeliveryMs": 41.148,
+            "usage": {
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 500,
+              "output_tokens": 30
+            }
+          }
+        ],
+        "idleMemory": {
+          "status": "observed",
+          "method": "/proc VmRSS (KiB converted to bytes)",
+          "hostBytes": 18186240,
+          "descendantBytes": 209817600,
+          "descendantCount": 1,
+          "collectionMs": 0.745
+        },
+        "stopMs": 19.201,
+        "cleanupConfirmed": true,
+        "modelRequests": 3
+      },
+      {
+        "index": 2,
+        "status": "passed",
+        "failures": [],
+        "serviceInitMs": 8.044,
+        "workersStarted": 1,
+        "sessionStable": true,
+        "turns": [
+          {
+            "kind": "cold-native",
+            "success": true,
+            "firstOutputMs": 436.191,
+            "nativeResultMs": 461.642,
+            "mockDeliveryMs": 469.701,
+            "usage": {
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 500,
+              "output_tokens": 30
+            }
+          },
+          {
+            "kind": "warm-native",
+            "success": true,
+            "firstOutputMs": 35.463,
+            "nativeResultMs": 42.513,
+            "mockDeliveryMs": 48.851,
+            "usage": {
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 500,
+              "output_tokens": 30
+            }
+          },
+          {
+            "kind": "warm-native",
+            "success": true,
+            "firstOutputMs": 29.937,
+            "nativeResultMs": 46.483,
+            "mockDeliveryMs": 58.579,
+            "usage": {
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 500,
+              "output_tokens": 30
+            }
+          }
+        ],
+        "idleMemory": {
+          "status": "observed",
+          "method": "/proc VmRSS (KiB converted to bytes)",
+          "hostBytes": 19079168,
+          "descendantBytes": 209448960,
+          "descendantCount": 1,
+          "collectionMs": 0.684
+        },
+        "stopMs": 17.115,
+        "cleanupConfirmed": true,
+        "modelRequests": 3
+      },
+      {
+        "index": 3,
+        "status": "passed",
+        "failures": [],
+        "serviceInitMs": 6.735,
+        "workersStarted": 1,
+        "sessionStable": true,
+        "turns": [
+          {
+            "kind": "cold-native",
+            "success": true,
+            "firstOutputMs": 377.981,
+            "nativeResultMs": 400.833,
+            "mockDeliveryMs": 406.981,
+            "usage": {
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 500,
+              "output_tokens": 30
+            }
+          },
+          {
+            "kind": "warm-native",
+            "success": true,
+            "firstOutputMs": 26.981,
+            "nativeResultMs": 33.071,
+            "mockDeliveryMs": 37.829,
+            "usage": {
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 500,
+              "output_tokens": 30
+            }
+          },
+          {
+            "kind": "warm-native",
+            "success": true,
+            "firstOutputMs": 23.522,
+            "nativeResultMs": 28.939,
+            "mockDeliveryMs": 34.274,
+            "usage": {
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 500,
+              "output_tokens": 30
+            }
+          }
+        ],
+        "idleMemory": {
+          "status": "observed",
+          "method": "/proc VmRSS (KiB converted to bytes)",
+          "hostBytes": 19927040,
+          "descendantBytes": 209883136,
+          "descendantCount": 1,
+          "collectionMs": 0.623
+        },
+        "stopMs": 25.206,
+        "cleanupConfirmed": true,
+        "modelRequests": 3
+      }
+    ],
+    "schema": 1,
+    "scope": {
+      "cold": "Fresh native session, not cold OS caches.",
+      "liveServiceAccepted": false,
+      "memory": "Host includes benchmark, Gateway, SQLite and fixture server. RSS sums can double-count shared pages; unavailable is not zero.",
+      "model": "Local deterministic HTTP fixture; tokens are synthetic.",
+      "transport": "In-memory Feishu substitute; no live acceptance."
+    },
+    "settings": {
+      "samples": 3,
+      "warmTurns": 2,
+      "idleMs": 1000
+    },
+    "summary": {
+      "attemptedSamples": 3,
+      "coldFirstOutputMs": {
+        "count": 3,
+        "max": 473.058,
+        "median": 436.191,
+        "min": 377.981
+      },
+      "failedSamples": 0,
+      "passedSamples": 3,
+      "stopMs": {
+        "count": 3,
+        "max": 25.206,
+        "median": 19.201,
+        "min": 17.115
+      },
+      "warmFirstOutputMs": {
+        "count": 6,
+        "max": 35.968,
+        "median": 29.429000000000002,
+        "min": 23.522
+      }
+    }
+  }
+}

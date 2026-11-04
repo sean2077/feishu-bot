@@ -1,3 +1,5 @@
+> 历史记录：本页保留 TypeScript 版本的迭代证据，不计作 Go 重构的测试结果。当前运行方式见 [Go 迁移](go-migration.md) 与 [验证](validation.md)。
+
 # 迭代状态
 
 ### 图片等待窗口重启验收的 Windows 时序竞态

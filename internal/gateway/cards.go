@@ -1,0 +1,114 @@
+package gateway
+
+import (
+	"fmt"
+	"github.com/sean2077/feishu-bot/internal/core"
+	"strings"
+	"time"
+)
+
+func DisplayCard(title, text string, buttons ...any) core.Args {
+	elements := []any{core.Args{"tag": "markdown", "content": text}}
+	elements = append(elements, buttons...)
+	return core.Args{"schema": "2.0", "config": core.Args{"wide_screen_mode": true}, "header": core.Args{"title": core.Args{"tag": "plain_text", "content": title}}, "body": core.Args{"elements": elements}}
+}
+func button(label string, value core.Args, style string) core.Args {
+	if style == "" {
+		style = "default"
+	}
+	return core.Args{"tag": "button", "text": core.Args{"tag": "plain_text", "content": cut(label, 80)}, "type": style, "value": value}
+}
+
+type replyDetails struct {
+	Model, ProjectPath string
+	Context, Usage     core.Args
+}
+
+func tokenLabel(n int64) string {
+	if n < 1000 {
+		return fmt.Sprint(n)
+	}
+	if n < 1000000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%.1fM", float64(n)/1000000)
+}
+func statusLine(d replyDetails) string {
+	var s []string
+	if d.Model != "" {
+		s = append(s, strings.NewReplacer("\r", " ", "\n", " ").Replace(d.Model))
+	}
+	for _, f := range []struct{ k, label string }{{"output_tokens", "out"}, {"input_tokens", "in"}, {"cache_creation_input_tokens", "cw"}, {"cache_read_input_tokens", "cr"}} {
+		if n, ok := numberArg(d.Usage, f.k); ok && n > 0 {
+			s = append(s, f.label+" "+tokenLabel(n))
+		}
+	}
+	input, ok := numberArg(d.Context, "inputTokens")
+	window, wok := numberArg(d.Context, "windowTokens")
+	if ok && wok && window > 0 {
+		s = append(s, fmt.Sprintf("ctx %d%%（末次输入 %s / %s）", input*100/window, tokenLabel(input), tokenLabel(window)))
+	} else if ok {
+		s = append(s, "ctx "+tokenLabel(input)+" / 未知（末次输入）")
+	} else {
+		s = append(s, "ctx 未知")
+	}
+	return strings.Join(s, " · ")
+}
+func replyCard(title, answer string, thinking []string, total int, final bool, d replyDetails, elapsed time.Duration, success bool) core.Args {
+	elements := []any{}
+	if total > 0 {
+		steps := []any{}
+		if total > len(thinking) {
+			steps = append(steps, core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "text_size": "notation", "text_color": "grey", "content": fmt.Sprintf("... %d earlier steps hidden", total-len(thinking))}})
+		}
+		for _, t := range thinking {
+			snippet := cut(strings.TrimSpace(t), 180)
+			if len([]rune(strings.TrimSpace(t))) > 180 {
+				snippet += "..."
+			}
+			steps = append(steps, core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "text_size": "notation", "text_color": "grey", "content": snippet}, "icon": core.Args{"tag": "standard_icon", "token": "mindmap_outlined"}})
+		}
+		elements = append(elements, core.Args{"tag": "collapsible_panel", "expanded": !final, "background_color": "grey", "border": core.Args{"color": "grey"}, "vertical_spacing": "8px", "padding": "4px 8px", "header": core.Args{"title": core.Args{"tag": "plain_text", "content": fmt.Sprintf("Reasoning (%d)", total)}}, "elements": steps})
+	}
+	body := cut(answer, 24000)
+	if body == "" {
+		if final {
+			body = "本轮已结束。"
+		} else if total > 0 {
+			body = "\u200b"
+		} else {
+			body = "处理中…"
+		}
+	}
+	elements = append(elements, core.Args{"tag": "markdown", "element_id": "reply_answer", "content": body})
+	if final {
+		elements = append(elements, core.Args{"tag": "hr"}, core.Args{"tag": "markdown", "text_size": "notation", "content": fmt.Sprintf("⏱ 用时 %.1f 秒", elapsed.Seconds())}, core.Args{"tag": "markdown", "text_size": "notation", "content": statusLine(d)})
+		if d.ProjectPath != "" {
+			elements = append(elements, core.Args{"tag": "markdown", "text_size": "notation", "content": strings.NewReplacer("\r", " ", "\n", " ").Replace(d.ProjectPath)})
+		}
+	}
+	color := "blue"
+	if final {
+		color = "green"
+		if strings.Contains(title, "停止") || strings.Contains(title, "取消") {
+			color = "grey"
+		} else if !success || strings.Contains(title, "失败") || strings.Contains(title, "中断") {
+			color = "red"
+		}
+	}
+	if title == "处理中" && total > 0 {
+		title = "思考中"
+	}
+	summary := "正在生成回复…"
+	if final {
+		summary = cut(answer, 80)
+		if summary == "" {
+			summary = title
+		}
+	}
+	cfg := core.Args{"width_mode": "default", "update_multi": true, "streaming_mode": !final, "summary": core.Args{"content": summary}}
+	if !final {
+		cfg["streaming_config"] = core.Args{"print_frequency_ms": core.Args{"default": 70}, "print_step": core.Args{"default": 1}, "print_strategy": "fast"}
+	}
+	return core.Args{"schema": "2.0", "config": cfg, "header": core.Args{"template": color, "title": core.Args{"tag": "plain_text", "content": title}}, "body": core.Args{"elements": elements}}
+}

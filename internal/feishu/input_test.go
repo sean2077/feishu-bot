@@ -1,0 +1,135 @@
+package feishu
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/sean2077/feishu-bot/internal/core"
+)
+
+func TestRawEventJourneyAuthorChatAndMentionGate(t *testing.T) {
+	c, _ := fixtureClient(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("rejected input performed HTTP: %s", r.URL.Path)
+	})
+	var received []core.Message
+	c.onMessage = func(_ context.Context, m core.Message) error { received = append(received, m); return nil }
+	for _, payload := range [][]byte{
+		rawEvent("oc_forbidden", "ou_member", "text", `{"text":"@_user_1 hello"}`, true),
+		rawEvent("oc_allowed", "ou_stranger", "merge_forward", `{"message_ids":["om_other"]}`, true),
+		rawEvent("oc_allowed", "ou_member", "text", `{"text":"@Fixture Bot hello"}`, false),
+		rawEvent("oc_allowed", "ou_member", "text", `{"text":"@_all hello"}`, false),
+	} {
+		if _, err := c.HandleEvent(context.Background(), payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(received) != 0 {
+		t.Fatalf("rejected messages reached gateway: %d", len(received))
+	}
+	payload := rawEvent("oc_allowed", "ou_member", "text", `{"text":"@_user_1 analyse @Fixture Bot literally"}`, true)
+	if _, err := c.HandleEvent(context.Background(), payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(received) != 1 || received[0].Text != "analyse @Fixture Bot literally" || !received[0].Mentioned {
+		t.Fatalf("normalization: %+v", received)
+	}
+	if received[0].ReplyTo != "om_parent" || received[0].ThreadID != "omt_thread" || received[0].Time != 1700000000123 {
+		t.Fatal("lost origin/thread/time")
+	}
+	encoded, _ := json.Marshal(received[0])
+	if strings.Contains(string(encoded), "raw") || strings.Contains(string(encoded), "event_id") {
+		t.Fatal("raw provider payload retained")
+	}
+	if _, err := c.HandleEvent(context.Background(), rawEvent("oc_allowed", "ou_owner", "merge_forward", `{"message_ids":["om_other"]}`, true)); err != nil {
+		t.Fatal(err)
+	}
+	if len(received) != 2 || received[1].InputIssue != forwardedInput || len(received[1].Resources) != 0 {
+		t.Fatal("merged forward should be refused without expansion")
+	}
+}
+func TestPostContentV2LocalesMediaAndFiles(t *testing.T) {
+	payload := rawEvent("oc_allowed", "ou_member", "post", `{"zh_cn":{"title":"报告","content":[[{"tag":"text","text":"obsolete"}]],"content_v2":[[{"tag":"at","user_id":"ou_bot","user_name":"Fixture Bot"},{"tag":"text","text":"请分析"},{"tag":"img","image_key":"img_one"},{"tag":"media","file_key":"file_video","file_name":"clip.mp4"}],[{"tag":"a","text":"来源","href":"https://example.com"},{"tag":"code_block","language":"go","text":"x := 1"}]]},"en_us":{"title":"DO NOT DUPLICATE"},"files":[{"file_key":"file_report","file_name":"report.csv"}]}`, true)
+	var envelope struct {
+		Event json.RawMessage `json:"event"`
+	}
+	_ = json.Unmarshal(payload, &envelope)
+	m, err := NormalizeEvent(envelope.Event, "ou_bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.InputIssue != "" || strings.Contains(m.Text, "obsolete") || strings.Contains(m.Text, "DO NOT") || strings.Contains(m.Text, "Fixture Bot") {
+		t.Fatalf("rendered incorrect locale/body: %+v", m)
+	}
+	if !strings.Contains(m.Text, "请分析") || !strings.Contains(m.Text, "```go") || !strings.Contains(m.Text, "https://example.com") {
+		t.Fatal("rich content dropped")
+	}
+	if len(m.Resources) != 3 || m.Resources[0].Key != "img_one" || m.Resources[1].Key != "file_video" || m.Resources[2].Key != "file_report" {
+		t.Fatalf("resources: %+v", m.Resources)
+	}
+	if m.ImageOnly {
+		t.Fatal("rich post must not enter standalone image batching")
+	}
+}
+func TestIncompleteContentNeverKeepsPartialResources(t *testing.T) {
+	cases := []struct{ kind, content, issue string }{
+		{"text", `{"text":42}`, invalidInput},
+		{"image", `{"image_key":""}`, invalidInput},
+		{"file", `{"file_key":"file_one","file_name":23}`, invalidInput},
+		{"post", `{"content":[[{"tag":"img","image_key":"img_one"},{"tag":"table","text":"lost data"}]]}`, unsupportedInput},
+		{"post", `{"content":[[{"tag":"text","text":"partial"}]],"files":[{"file_key":"file_folder","is_folder":true}]}`, folderInput},
+		{"post", `{"content":[[{"tag":"img","image_key":"img_one"},{"tag":"media"}]]}`, invalidInput},
+		{"merge_forward", `{}`, forwardedInput},
+		{"share_chat", `{}`, unsupportedInput},
+	}
+	for _, tc := range cases {
+		t.Run(tc.kind, func(t *testing.T) {
+			e := messageEvent{}
+			e.Message.Type = tc.kind
+			e.Message.Content = tc.content
+			m := normalizeMessage(e, "ou_bot", true)
+			if m.InputIssue != tc.issue || len(m.Resources) != 0 || !strings.Contains(m.Text, tc.issue) {
+				t.Fatalf("partial content passed: %+v", m)
+			}
+		})
+	}
+}
+func TestCardActionRawPayloadPreservesOriginAndForm(t *testing.T) {
+	c, _ := fixtureClient(t, nil, func(http.ResponseWriter, *http.Request) { t.Error("card callback unexpectedly accessed HTTP") })
+	calls := 0
+	c.onAction = func(_ context.Context, a core.CardAction) (string, error) {
+		calls++
+		if a.UserID != "ou_owner" || a.ChatID != "oc_allowed" || a.MessageID != "om_approval" || a.Value["requestId"] != "request_fixture" || a.FormValue["answer"] != "scope" {
+			t.Errorf("action boundary: %+v", a)
+		}
+		return "已确认", nil
+	}
+	payload := []byte(`{"schema":"2.0","header":{"event_type":"card.action.trigger"},"event":{"operator":{"open_id":"ou_owner"},"context":{"open_chat_id":"oc_allowed","open_message_id":"om_approval"},"action":{"value":{"requestId":"request_fixture","choice":"approve"},"form_value":{"answer":"scope"}}}}`)
+	result, err := c.HandleEvent(context.Background(), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(result)
+	if calls != 1 || !strings.Contains(string(encoded), "已确认") {
+		t.Fatal("missing callback result")
+	}
+	payload = []byte(strings.ReplaceAll(string(payload), "ou_owner", "ou_stranger"))
+	_, err = c.HandleEvent(context.Background(), payload)
+	if err != nil || calls != 1 {
+		t.Fatal("unauthorized callback reached gateway")
+	}
+}
+func TestStandaloneImageAndDMTrigger(t *testing.T) {
+	c, _ := fixtureClient(t, nil, func(http.ResponseWriter, *http.Request) { t.Fatal("unexpected HTTP") })
+	var received core.Message
+	c.onMessage = func(_ context.Context, m core.Message) error { received = m; return nil }
+	payload := strings.ReplaceAll(string(rawEvent("oc_dm", "ou_dm", "image", `{"image_key":"img_fixture"}`, false)), `"chat_type":"group"`, `"chat_type":"p2p"`)
+	if _, err := c.HandleEvent(context.Background(), []byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	if !received.ImageOnly || received.Mentioned || received.ChatType != "p2p" {
+		t.Fatalf("DM image event: %+v", received)
+	}
+}

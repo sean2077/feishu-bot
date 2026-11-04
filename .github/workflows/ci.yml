@@ -1,4 +1,4 @@
-name: Verify gateway
+name: Verify Go gateway
 on:
   push:
     branches: [main]
@@ -14,17 +14,39 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node: ['22.16.0', '24']
+        go: ['1.25.x', '1.27.x']
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: npm run check
-      - run: node dist/cli.js --help
-      - name: Native fixture baseline (not live model or Feishu)
-        run: node scripts/benchmark-native.mjs --samples 3 --warm-turns 2 --idle-ms 1000
+          go-version: ${{ matrix.go }}
+          cache: true
+      - name: Verify Go source
+        run: go test -race -count=1 -timeout 180s ./...
+      - run: go vet ./...
+      - name: Build production binary without CGO
+        shell: pwsh
+        run: |
+          $env:CGO_ENABLED = '0'
+          $binary = if ($IsWindows) { './bin/feishu-bot.exe' } else { './bin/feishu-bot' }
+          go build -trimpath -o $binary ./cmd/feishu-bot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $binary --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install pinned native CLI fixture (test dependency only)
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'claude-fixture'
+          npm install --prefix $fixture --ignore-scripts --no-audit --no-fund @anthropic-ai/claude-agent-sdk@0.3.316
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $platform = if ($IsWindows) { 'win32-x64' } else { 'linux-x64' }
+          $file = if ($IsWindows) { 'claude.exe' } else { 'claude' }
+          $native = Join-Path $fixture "node_modules/@anthropic-ai/claude-agent-sdk-$platform/$file"
+          if (-not (Test-Path $native)) { throw 'Pinned native fixture executable was not installed' }
+          "CLAUDE_NATIVE_PATH=$native" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & $native --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Real native CLI with local deterministic model
+        run: go test -race -count=1 -timeout 180s ./internal/native ./internal/integration ./cmd/benchmark-native

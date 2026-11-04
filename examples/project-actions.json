@@ -1,8 +1,7 @@
 [
   {
-    "executable": "/usr/bin/node",
+    "executable": "/opt/feishu-bot/bin/project-operations",
     "args": [
-      "/opt/feishu-bot/examples/actions/project-operations.mjs",
       "jenkins-status"
     ],
     "env": {
@@ -20,9 +19,8 @@
     "description": "读取指定 Jenkins 项目的最近构建状态"
   },
   {
-    "executable": "/usr/bin/node",
+    "executable": "/opt/feishu-bot/bin/project-operations",
     "args": [
-      "/opt/feishu-bot/examples/actions/project-operations.mjs",
       "jenkins-build",
       "{{revision}}"
     ],
@@ -46,9 +44,8 @@
     "description": "以指定 revision 触发该项目构建"
   },
   {
-    "executable": "/usr/bin/node",
+    "executable": "/opt/feishu-bot/bin/project-operations",
     "args": [
-      "/opt/feishu-bot/examples/actions/project-operations.mjs",
       "gitlab-publish",
       "{{patch}}",
       "{{title}}"
@@ -77,9 +74,8 @@
     "description": "发布已批准补丁到新分支并创建 MR，不合并"
   },
   {
-    "executable": "/usr/bin/node",
+    "executable": "/opt/feishu-bot/bin/project-operations",
     "args": [
-      "/opt/feishu-bot/examples/actions/project-operations.mjs",
       "feishu-doc-read"
     ],
     "env": {
@@ -97,9 +93,8 @@
     "description": "读取项目指定飞书文档"
   },
   {
-    "executable": "/usr/bin/node",
+    "executable": "/opt/feishu-bot/bin/project-operations",
     "args": [
-      "/opt/feishu-bot/examples/actions/project-operations.mjs",
       "feishu-doc-append",
       "{{text}}"
     ],
@@ -122,9 +117,8 @@
     "description": "在指定项目文档末尾添加文字"
   },
   {
-    "executable": "/usr/bin/node",
+    "executable": "/opt/feishu-bot/bin/project-operations",
     "args": [
-      "/opt/feishu-bot/examples/actions/project-operations.mjs",
       "feishu-table-list"
     ],
     "env": {
@@ -143,9 +137,8 @@
     "description": "读取指定多维表格第一页，最多 50 条"
   },
   {
-    "executable": "/usr/bin/node",
+    "executable": "/opt/feishu-bot/bin/project-operations",
     "args": [
-      "/opt/feishu-bot/examples/actions/project-operations.mjs",
       "feishu-table-update",
       "{{record}}",
       "{{fields}}"

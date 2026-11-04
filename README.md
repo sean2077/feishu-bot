@@ -2,18 +2,18 @@
 
 在飞书群聊和私聊中使用 Claude Code。可用于个人助手、资料整理、协作开发，以及经授权的外部系统操作。支持 Linux 和 Windows 原生运行。
 
-一个常驻服务接收消息，按需启动并复用会话。任务理解、子代理、上下文压缩和后台工作由 Claude Code 完成；feishu-bot 负责聊天路由、消息交付、权限交互和运行状态。
+一个 Go 常驻服务接收消息，通过双向 `stream-json` 协议直接启动并复用 Claude Code 原生进程。任务理解、子代理、上下文压缩和后台工作由 Claude Code 完成；feishu-bot 负责聊天路由、消息交付、权限交互和运行状态。运行时不依赖 Node.js 或 TypeScript Agent SDK。
 
 ## 快速开始
 
-需要 Node.js 22.16+ 和 Git。Windows 使用 Git for Windows。克隆本仓库后，在仓库目录执行：
+需要 Git 和原生 Claude Code；从源码构建需要 Go 1.25+。Windows 使用 Git for Windows。协议回归固定使用 Claude Code 2.1.316，其他版本须另行验收。克隆本仓库后，在仓库目录执行：
 
 ```sh
-npm ci --ignore-scripts
-npm run init
+go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
+./bin/feishu-bot init
 ```
 
-`init` 会构建程序并生成 `config.json`，不会覆盖已有文件。填写飞书应用、允许接入的群、群内获准使用者、私聊用户、维护者 ID，以及模型服务配置。只使用私聊时可将 `groups` 设为 `[]`，无需建立群组或绑定代码仓库。
+Windows 构建使用 `go build -trimpath -o ./bin/feishu-bot.exe ./cmd/feishu-bot`。`init` 生成 `config.json`，不会覆盖已有文件。填写飞书应用、允许接入的群、群内获准使用者、私聊用户、维护者 ID，以及模型服务配置。只使用私聊时可将 `groups` 设为 `[]`，无需建立群组或绑定代码仓库。
 
 模型入口需要兼容 Anthropic Messages；`baseUrl` 对应 Claude Code 的 `ANTHROPIC_BASE_URL`，模型 ID 按服务实际支持的值配置。项目不绑定特定供应商，也不提供协议转换层。兼容接口不等于所有模型能力均已验证。
 
@@ -22,8 +22,8 @@ Linux：
 ```sh
 export FEISHU_APP_SECRET='replace-with-app-secret'
 export MODEL_AUTH_TOKEN='replace-with-model-token'
-npm run doctor
-npm start
+./bin/feishu-bot doctor
+./bin/feishu-bot run
 ```
 
 Windows PowerShell：
@@ -31,13 +31,13 @@ Windows PowerShell：
 ```powershell
 $env:FEISHU_APP_SECRET = "replace-with-app-secret"
 $env:MODEL_AUTH_TOKEN = "replace-with-model-token"
-npm run doctor
-npm start
+.\bin\feishu-bot.exe doctor
+.\bin\feishu-bot.exe run
 ```
 
 模型凭据的环境变量名可通过 `model.tokenEnv` 指定；已有显式配置保持有效。未配置时默认读取 `MODEL_AUTH_TOKEN`，不会尝试其他账号或凭据。
 
-[部署与配置](docs/deployment.md) · [不同使用场景](docs/usage.md)
+[部署与配置](docs/deployment.md) · [不同使用场景](docs/usage.md) · [从 TypeScript 版迁移](docs/go-migration.md)
 
 ## 对话与会话
 
@@ -60,9 +60,9 @@ npm start
 | `/stop` | 停止运行和待交付输入，保留当前会话供下次继续 |
 | `/answer <请求ID> <回答>` | 回答指定追问 |
 | `/outputs`、`/retry-output <ID>` | 查看未确认送达的回复；明确补发 |
-| `/usage`、`/usage --json` | 查看所选会话最近结果及累计观测的 SDK 用量；缺失值未知，不估造费用 |
+| `/usage`、`/usage --json` | 查看所选会话最近结果及累计观测的原生用量；缺失值未知，不估造费用 |
 
-**追问卡片：** 每次选择或未完整提交后，网关刷新同一卡片的按钮版本，以兼容 Channel SDK 0.7.1 的重复按钮去重。等待操作提示及卡片刷新后可以继续选择或提交；客户端缓存旧按钮或刷新失败时，使用获准聊天内的 `/answer <请求ID> <回答>`，多题使用问题原文为键的 JSON。[处理方式与验证边界](docs/usage.md#追问卡片重复点击)
+**追问卡片：** 每次选择或未完整提交后，网关刷新同一卡片的按钮版本。回调独立检查请求、消息、会话和操作者归属；多选状态按操作者分别保存。客户端缓存旧按钮或刷新失败时，使用获准聊天内的 `/answer <请求ID> <回答>`，多题使用问题原文为键的 JSON。[处理方式与验证边界](docs/usage.md#追问卡片重复点击)
 
 群内命令也须 @；影响共享会话的管理操作限维护者，私聊本人可管理自己的会话。网关不增加自动压缩策略，CC 自带的原生压缩照常工作。`/compact` 会区分实际压缩、无需压缩和失败。恢复历史不会复活旧后台进程，`/stop` 也不能撤销已经发生的外部操作。
 
@@ -70,7 +70,7 @@ npm start
 
 ## 图片、附件与用量
 
-文本、富文本、独立图片和文件经锁定的真实 Channel SDK 解析，保留作者、引用、线程及资源信息。不完整或未支持的主输入明确提示，不静默当作完整任务执行；合并转发不自动展开。[格式支持边界](docs/raw-messages.md)
+文本、富文本、独立图片和文件经 Go 入站适配层解析，保留作者、引用、线程及资源信息。不完整或未支持的主输入明确提示，不静默当作完整任务执行；合并转发不自动展开。[格式支持边界](docs/raw-messages.md)
 
 连续多图合批默认关闭：`limits.imageBatchMs = 0`。显式配置有界窗口后，只合并同聊天、同作者、同会话且引用／线程一致的连续独立图片，每条群图片仍须独立明确 @。每张原消息及截止时间先持久化；发送前下载失败或超限则整批取消，不以部分图片执行。窗口最大 5000 ms，图片上限 2–12；单文件与批次总量分别限制。[配置与恢复规则](docs/image-batches.md)
 
@@ -106,11 +106,13 @@ Jenkins、GitLab、飞书文档和多维表格只是[可选操作示例](docs/pr
 原生进程使用服务账户的系统权限。不同聊天的目录和路由是逻辑分离，不是相互不信任租户之间的安全沙箱。按实际需要授予文件、网络和外部 API 权限。
 
 ```sh
-npm run check
+go test -race ./...
+go vet ./...
+go build ./cmd/feishu-bot
 ```
 
-测试包括类型检查、交互回放、构建，以及真实 CC 进程配合本地模拟模型的测试。原始 SDK 入口用户旅程覆盖多人补充、审批、compact、完整交付、停止续接与图片批次重启。真实飞书应用、手机／桌面客户端、所选模型和外部服务仍需分别验证。[验证清单](docs/validation.md)
+测试覆盖配置与旧数据库、授权与交付、协议事件、飞书 HTTP／WebSocket 替身及并发竞态。设置 `CLAUDE_NATIVE_PATH` 后运行真实 CC 进程配合本地模拟模型的协议回归；普通测试没有配置该变量时明确跳过真实 CLI 测试。CI 单独安装固定版本的测试 CLI。真实飞书应用、手机／桌面客户端、所选模型和外部服务仍需分别验证。[验证清单](docs/validation.md)
 
 模型回复跟随当前请求语言；内置命令和审批提示主要为中文。时区跟随运行环境，可在启动前设置 `TZ`。
 
-[架构](docs/architecture.md) · [部署](docs/deployment.md) · [使用场景](docs/usage.md) · [开发](CONTRIBUTING.md) · [公开发布检查](docs/publication.md)
+[架构](docs/architecture.md) · [部署](docs/deployment.md) · [使用场景](docs/usage.md) · [开发](CONTRIBUTING.md) · [运行基线](docs/runtime-baseline.md) · [依赖声明](THIRD_PARTY_NOTICES.md) · [公开发布检查](docs/publication.md)
