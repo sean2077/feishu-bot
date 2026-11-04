@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/process"
 	"github.com/sean2077/feishu-bot/internal/workspace"
 	"io"
 	"os"
@@ -21,6 +22,7 @@ import (
 )
 
 var parameterTemplate = regexp.MustCompile(`\{\{([^}]+)\}\}`)
+var fileParameterName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$`)
 
 // ActionArguments performs value substitution only after policy validation; it
 // never passes user-controlled shell syntax to an interpreter.
@@ -127,17 +129,17 @@ func runActionCommand(ctx context.Context, executable string, args []string, cwd
 	output := &boundedOutput{max: 1024 * 1024, overflow: make(chan struct{})}
 	cmd.Stdout = output
 	cmd.Stderr = output
-	prepareProcess(cmd)
+	process.Prepare(cmd)
 	if e := cmd.Start(); e != nil {
 		return 0, "", e
 	}
-	tree, e := attachProcess(cmd)
+	tree, e := process.Attach(cmd)
 	if e != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return 0, "", e
+		return 0, "", fmt.Errorf("process termination unconfirmed after ownership attachment failure: %w", e)
 	}
-	defer tree.close()
+	defer tree.Close()
 	done := make(chan struct{})
 	waited := make(chan error, 1)
 	go func() { err := cmd.Wait(); waited <- err; close(done) }()
@@ -177,7 +179,7 @@ func runActionCommand(ctx context.Context, executable string, args []string, cwd
 	case <-output.overflow:
 		reason = "output size limit"
 	}
-	if err := tree.terminate(done); err != nil {
+	if err := tree.Terminate(done); err != nil {
 		return 0, output.String(), fmt.Errorf("%s; process termination unconfirmed: %w", reason, err)
 	}
 	select {
@@ -211,7 +213,7 @@ func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string
 		if !param.WorkspaceFile {
 			continue
 		}
-		if !regexp.MustCompile(`^[a-zA-Z0-9_]+$`).MatchString(name) {
+		if !fileParameterName.MatchString(name) {
 			return nil, errors.New("invalid file parameter name")
 		}
 		path, e := workspace.TranslateFile(w, stringArg(input, name))
@@ -278,7 +280,7 @@ func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string
 	code, output, e := g.actionRunner(ctx, spec.Executable, args, spec.CWD, env, spec.TimeoutMS)
 	if e != nil {
 		_, _ = g.store.DB.Exec("UPDATE action_runs SET state='uncertain' WHERE id=?", run)
-		if strings.Contains(e.Error(), "process termination unconfirmed") {
+		if errors.Is(e, process.ErrUnconfirmed) || strings.Contains(e.Error(), "process termination unconfirmed") {
 			unconfirmed = true
 			g.audit(r.Key, "action_termination_unconfirmed", core.Args{"run": run, "action": id})
 		}

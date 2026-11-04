@@ -246,3 +246,43 @@ func TestUsageDeduplicatesActualResultIDsWithoutInventingTotals(t *testing.T) {
 		t.Fatalf("incorrect token semantics: %s", raw)
 	}
 }
+
+func TestApprovalCardArrivingAfterStopIsDisabled(t *testing.T) {
+	f := newFixture(t, nil)
+	entered, release, disabled := make(chan struct{}), make(chan struct{}), make(chan struct{}, 2)
+	f.tr.cardHook = func(_ context.Context, _ core.Room, _ core.Args) (string, error) {
+		close(entered)
+		<-release
+		return "late-approval", nil
+	}
+	f.tr.updateHook = func(_ context.Context, id string, card core.Args) error {
+		if id == "late-approval" && strings.Contains(jsonText(card), "不再接受操作") {
+			disabled <- struct{}{}
+		}
+		return nil
+	}
+	f.send(f.message("one", "task", "member"))
+	w := f.worker()
+	_ = f.delivery(w)
+	w.emit(core.WorkerEvent{Type: "request", ID: "permission", Kind: "permission", Name: "Bash", Input: core.Args{}})
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("approval not sent")
+	}
+	if e := f.g.Message(context.Background(), f.message("stop", "/stop", "owner")); e != nil {
+		t.Fatal(e)
+	}
+	close(release)
+	select {
+	case <-disabled:
+	case <-time.After(time.Second):
+		t.Fatal("late approval card stayed visually actionable")
+	}
+	f.g.approvalMu.Lock()
+	remaining := len(f.g.approvals)
+	f.g.approvalMu.Unlock()
+	if remaining != 0 {
+		t.Fatal("stopped request retained callback binding")
+	}
+}

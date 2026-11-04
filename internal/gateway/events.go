@@ -183,6 +183,13 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		}
 		g.task(func() {
 			defer func() { s.mu.Lock(); s.activeRequests--; s.mu.Unlock(); g.kickWaiting() }()
+			// Native initialization hooks can emit controls before the factory
+			// hands back its handle. Do not lose an early permission response.
+			select {
+			case <-s.workerReady:
+			case <-s.ctx.Done():
+				return
+			}
 			answer, e := g.request(s, ev)
 			if e != nil {
 				answer = core.Args{"approved": false, "ok": false, "error": core.Redact(e.Error(), g.secrets)}

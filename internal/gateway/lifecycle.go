@@ -109,6 +109,12 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 	if s != nil {
 		s.mu.Lock()
 		worker := s.worker
+		// Startup may have failed with unknown process ownership while
+		// stop waited for dispatch. A nil handle cannot verify its cleanup.
+		if worker == nil && s.stopUnconfirmed {
+			s.mu.Unlock()
+			return errors.New("native worker termination remains unconfirmed")
+		}
 		renders := make([]*render, 0, len(s.renders))
 		for _, r := range s.renders {
 			renders = append(renders, r)

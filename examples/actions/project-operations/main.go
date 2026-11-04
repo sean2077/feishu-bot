@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -133,6 +134,12 @@ func jenkins(ctx context.Context, operation string, args []string) (any, error) 
 	return core.Args{"queued": true, "queueUrl": r.Location}, nil
 }
 func gitlabPublish(ctx context.Context, args []string) (any, error) {
+	return gitlabPublishWith(ctx, args, func(cmd *exec.Cmd) error { return cmd.Run() })
+}
+
+// The runner is an internal test seam. Operation, repository, branch and every
+// command argument are still constructed here from the configured fixed scope.
+func gitlabPublishWith(ctx context.Context, args []string, execute func(*exec.Cmd) error) (any, error) {
 	if len(args) != 2 || args[0] == "" || strings.TrimSpace(args[1]) == "" || len([]rune(args[1])) > 200 {
 		return nil, errors.New("expected a snapshotted patch and short MR title")
 	}
@@ -200,7 +207,7 @@ func gitlabPublish(ctx context.Context, args []string) (any, error) {
 		for k, v := range env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
-		if err := cmd.Run(); err != nil {
+		if err := execute(cmd); err != nil {
 			return fmt.Errorf("git operation failed; inspect branch %s before retrying", branch)
 		}
 		return nil
@@ -212,9 +219,15 @@ func gitlabPublish(ctx context.Context, args []string) (any, error) {
 	}
 	r, e := request(ctx, "POST", base+"/api/v4/projects/"+url.PathEscape(v["GITLAB_PROJECT_ID"])+"/merge_requests", map[string]string{"PRIVATE-TOKEN": v["GITLAB_TOKEN"]}, core.Args{"source_branch": branch, "target_branch": v["GITLAB_BASE_BRANCH"], "title": args[1], "remove_source_branch": true})
 	if e != nil {
-		return nil, e
+		return nil, fmt.Errorf("merge request creation unconfirmed for branch %s; inspect that existing branch before retrying: %w", branch, e)
 	}
-	return core.Args{"url": r.Data["web_url"], "iid": r.Data["iid"], "branch": branch}, nil
+	webURL, _ := r.Data["web_url"].(string)
+	u, parseErr := url.Parse(webURL)
+	iid, validIID := r.Data["iid"].(float64)
+	if parseErr != nil || u.Host != a.Host || u.Scheme != a.Scheme || u.User != nil || u.Path == "" || !validIID || iid < 1 || math.Trunc(iid) != iid {
+		return nil, fmt.Errorf("merge request acknowledgement invalid for branch %s; inspect that existing branch before retrying", branch)
+	}
+	return core.Args{"url": webURL, "iid": iid, "branch": branch}, nil
 }
 func feishu(ctx context.Context, operation string, args []string) (any, error) {
 	method, path := "GET", ""

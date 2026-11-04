@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -145,7 +147,7 @@ func TestFileSendRequiresDurableSendingTransition(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = f.s.DB.Exec("CREATE TRIGGER stop_before_file_handoff BEFORE UPDATE OF file_state ON outbox WHEN NEW.file_state='sending' BEGIN SELECT RAISE(IGNORE); END")
+	_, e = f.s.DB.Exec("CREATE TRIGGER stop_before_file_handoff BEFORE UPDATE OF file_state ON outbox WHEN NEW.file_state='sending' BEGIN UPDATE outbox SET state='cancelled' WHERE id=NEW.id; SELECT RAISE(IGNORE); END")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -159,4 +161,54 @@ func TestFileSendRequiresDurableSendingTransition(t *testing.T) {
 	if calls != 0 {
 		t.Fatal("provider called without durable file sending state")
 	}
+}
+
+func TestUncertainAttachmentBlocksDoneUntilExplicitRetry(t *testing.T) {
+	f := newFixture(t, nil)
+	f.tr.fileHook = func(context.Context, string) (string, error) { return "", context.DeadlineExceeded }
+	f.send(f.message("one", "produce attachment", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	s := f.g.getSlot(f.room().Key)
+	s.mu.Lock()
+	work := s.workspace.Work
+	s.mu.Unlock()
+	path := filepath.Join(work, "report.txt")
+	if e := os.WriteFile(path, []byte("generated report"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	w.emit(core.WorkerEvent{Type: "request", ID: "export", Kind: "send_file", Input: core.Args{"path": "report.txt"}})
+	a := response(t, w)
+	if boolArg(a, "ok") {
+		t.Fatal("lost attachment acknowledgement reported success")
+	}
+	fileID := stringArg(a, "deliveryId")
+	if fileID == "" {
+		t.Fatal("attachment has no durable delivery identity", a)
+	}
+	f.finish(w, d, "report generated")
+	var replyID string
+	eventually(t, func() bool {
+		return f.s.DB.QueryRow("SELECT id FROM outbox WHERE kind='reply' AND state='pending' AND target IS NOT NULL").Scan(&replyID) == nil
+	})
+	if f.tr.receiptDone("one") {
+		t.Fatal("incomplete attachment delivery marked Done")
+	}
+	if ok, e := f.g.deliverOutput(context.Background(), fileID, f.room(), false); e != nil || ok {
+		t.Fatal("uncertain attachment automatically replayed", ok, e)
+	}
+	f.tr.mu.Lock()
+	calls := len(f.tr.files)
+	f.tr.fileHook = nil
+	f.tr.mu.Unlock()
+	if calls != 1 {
+		t.Fatal("attachment replayed before explicit retry", calls)
+	}
+	if ok, e := f.g.deliverOutput(context.Background(), fileID, f.room(), true); e != nil || !ok {
+		t.Fatal("explicit attachment retry failed", ok, e)
+	}
+	if ok, e := f.g.deliverOutput(context.Background(), replyID, f.room(), false); e != nil || !ok {
+		t.Fatal("final reply could not settle", ok, e)
+	}
+	eventually(t, func() bool { return f.tr.receiptDone("one") })
 }

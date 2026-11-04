@@ -23,6 +23,7 @@ flowchart TD
 | `internal/workspace` | 稳定工作目录、原生配置身份、安全文件快照与独占锁 |
 | `internal/feishu` | REST、长连接、原始内容解析、CardKit 和本应用表情 |
 | `internal/native` | 双向 stream-json、初始化、MCP、权限／hooks、输入归属和进程树 |
+| `internal/process` | 原生会话、固定操作和诊断共用的进程组／Job Object 所有权与终止确认 |
 | `internal/gateway` | 聊天授权、调度、审批、历史、图片批次、回复与 outbox |
 | `internal/cli` | init／doctor／run、信号、恢复和有序关闭 |
 

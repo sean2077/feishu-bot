@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/sean2077/feishu-bot/internal/core"
@@ -133,5 +134,39 @@ func TestYoloQuestionHookKeepsHumanInteraction(t *testing.T) {
 	result := object((<-done)["hookSpecificOutput"])
 	if result["permissionDecision"] != "allow" || object(object(result["updatedInput"])["answers"])["Select?"] != "A" {
 		t.Fatal(result)
+	}
+}
+
+func TestFileScopePinsCanonicalRootsAndRejectsInboundRedirection(t *testing.T) {
+	root := t.TempDir()
+	room := filepath.Join(root, "room")
+	other := filepath.Join(root, "other", "inbound")
+	for _, p := range []string{filepath.Join(room, "work"), filepath.Join(room, "home"), filepath.Join(room, "inbound"), other} {
+		if err := os.MkdirAll(p, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := &worker{workspace: core.Workspace{Root: room, Work: filepath.Join(room, "work"), Home: filepath.Join(room, "home"), Inbound: filepath.Join(room, "inbound"), NativeConfig: "inherit"}, events: make(chan core.WorkerEvent, 4), eventsDone: make(chan struct{})}
+	if _, err := w.fileScope(); err != nil {
+		t.Fatal(err)
+	}
+	// Replace the initially authorized path after scope capture. The new physical
+	// target must not become authorized merely because the logical prefix matches.
+	if err := os.Remove(w.workspace.Inbound); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, w.workspace.Inbound); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows symlink privilege unavailable")
+		}
+		t.Fatal(err)
+	}
+	result, err := w.hook(context.Background(), "tool", args{"hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": args{"file_path": filepath.Join(w.workspace.Inbound, "other-chat.txt")}})
+	if err != nil || object(result["hookSpecificOutput"])["permissionDecision"] != "deny" {
+		t.Fatal("redirected inbound was authorized", result, err)
+	}
+	fresh := &worker{workspace: w.workspace}
+	if _, err := fresh.fileScope(); err == nil {
+		t.Fatal("preexisting inbound redirection was admitted")
 	}
 }

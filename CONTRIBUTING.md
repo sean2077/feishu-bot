@@ -25,7 +25,7 @@ go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 
 ## 模块
 
-`internal/core` 是跨模块的消息和运行时接口；`config` 负责严格配置；`store` 负责兼容 SQLite；`workspace` 负责目录身份和文件快照；`native` 负责 Claude 双向协议和进程生命周期；`feishu` 负责平台 HTTP、长连接和 CardKit；`gateway` 负责会话、授权、审批和持久交付；`cli` 只负责启动、诊断和关闭。
+`internal/core` 是跨模块的消息和运行时接口；`config` 负责严格配置；`store` 负责兼容 SQLite；`workspace` 负责目录身份和文件快照；`native` 负责 Claude 双向协议；`process` 为会话、固定操作和诊断提供统一的进程生命周期；`feishu` 负责平台 HTTP、长连接和 CardKit；`gateway` 负责会话、授权、审批和持久交付；`cli` 只负责启动、诊断和关闭。
 
 不要在数据库事务内再次通过 Store 调用数据库；当前使用单连接来保持事务顺序。网络操作不应持有入站锁或 SQLite 事务。增加异步操作时同时处理取消、迟到返回、授权变化及结果未知的情形。
 

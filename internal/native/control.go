@@ -62,6 +62,43 @@ func clone(in args) args {
 func denyHook(reason string) args {
 	return args{"hookSpecificOutput": args{"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}
 }
+
+type nativeFileScope struct{ work, home, inbound, rooms string }
+
+// Resolve spelling/8.3 aliases once, before a native process can change files.
+// Comparing a canonical tool target with a short-path root rejects legitimate
+// Windows paths; resolving roots on every hook would instead follow later
+// symlink replacements and silently enlarge the conversation's file scope.
+func (w *worker) fileScope() (nativeFileScope, error) {
+	w.scopeOnce.Do(func() {
+		var root string
+		root, w.scopeErr = physicalPath(w.workspace.Root)
+		if w.scopeErr != nil {
+			return
+		}
+		w.scope.rooms = filepath.Dir(root)
+		w.scope.work, w.scopeErr = physicalPath(w.workspace.Work)
+		if w.scopeErr != nil {
+			return
+		}
+		w.scope.home, w.scopeErr = physicalPath(w.workspace.Home)
+		if w.scopeErr != nil {
+			return
+		}
+		if w.workspace.Inbound != "" {
+			w.scope.inbound, w.scopeErr = physicalPath(w.workspace.Inbound)
+			if w.scopeErr != nil {
+				return
+			}
+			expected := filepath.Join(root, "inbound")
+			if !core.Inside(expected, w.scope.inbound) || !core.Inside(w.scope.inbound, expected) {
+				w.scopeErr = fmt.Errorf("conversation attachment directory was redirected")
+			}
+		}
+	})
+	return w.scope, w.scopeErr
+}
+
 func (w *worker) hook(ctx context.Context, id string, input args) (args, error) {
 	switch id {
 	case "compact":
@@ -101,6 +138,10 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 		}
 		name := text(input["tool_name"])
 		w.emit(core.WorkerEvent{Type: "activity", Tool: name})
+		scope, err := w.fileScope()
+		if err != nil {
+			return denyHook("Unable to verify conversation file scope"), nil
+		}
 		toolInput := object(input["tool_input"])
 		keys := []string{"file_path", "notebook_path"}
 		if name == "Grep" || name == "Glob" {
@@ -119,8 +160,8 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			if err != nil {
 				return denyHook("Unable to verify conversation file scope"), nil
 			}
-			attachment := w.workspace.Inbound != "" && core.Inside(w.workspace.Inbound, physical)
-			rooms := filepath.Dir(w.workspace.Root)
+			attachment := w.workspace.Inbound != "" && core.Inside(scope.inbound, physical)
+			rooms := scope.rooms
 			otherAttachment := false
 			if core.Inside(rooms, physical) {
 				relative, err := filepath.Rel(rooms, physical)
@@ -129,7 +170,7 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 					otherAttachment = len(parts) >= 2 && strings.EqualFold(parts[1], "inbound") && !attachment
 				}
 			}
-			if otherAttachment || w.workspace.NativeConfig != "inherit" && !core.Inside(w.workspace.Work, physical) && !core.Inside(w.workspace.Home, physical) && !attachment || attachment && name != "Read" && name != "Grep" && name != "Glob" {
+			if otherAttachment || w.workspace.NativeConfig != "inherit" && !core.Inside(scope.work, physical) && !core.Inside(scope.home, physical) && !attachment || attachment && name != "Read" && name != "Grep" && name != "Glob" {
 				return denyHook("Outside conversation file scope or attempting to edit an incoming attachment"), nil
 			}
 		}

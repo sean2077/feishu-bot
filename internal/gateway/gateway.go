@@ -18,6 +18,7 @@ import (
 
 	"github.com/sean2077/feishu-bot/internal/config"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/process"
 	"github.com/sean2077/feishu-bot/internal/store"
 	"github.com/sean2077/feishu-bot/internal/workspace"
 )
@@ -27,6 +28,7 @@ type slot struct {
 	events                              sync.Mutex
 	room                                core.Room
 	session                             core.Session
+	workerReady                         chan struct{}
 	worker                              core.Worker
 	ctx                                 context.Context
 	cancel                              context.CancelFunc
@@ -142,6 +144,7 @@ func (g *Gateway) audit(room, event string, a core.Args) {
 func (g *Gateway) getSlot(room string) *slot { g.mu.Lock(); defer g.mu.Unlock(); return g.slots[room] }
 func (g *Gateway) removeSlot(s *slot) {
 	g.mu.Lock()
+	defer g.mu.Unlock()
 	if g.slots[s.room.Key] == s {
 		for _, a := range g.actions {
 			if a.room == s.room.Key {
@@ -150,7 +153,6 @@ func (g *Gateway) removeSlot(s *slot) {
 		}
 		delete(g.slots, s.room.Key)
 	}
-	g.mu.Unlock()
 }
 func (g *Gateway) allSlots() []*slot {
 	g.mu.Lock()
@@ -603,7 +605,7 @@ func (g *Gateway) reserve(r core.Room) (*slot, error) {
 		return nil, e
 	}
 	ctx, cancel := context.WithCancel(g.ctx)
-	s := &slot{room: r, session: ss, ctx: ctx, cancel: cancel, live: true, background: -1, lastActivity: time.Now().UnixMilli(), deliveries: map[string]core.Delivery{}, inputGroups: map[string][]string{}, accepted: map[string]bool{}, renders: map[string]*render{}, replyAnchors: map[string]core.Delivery{}, requests: map[string]bool{}}
+	s := &slot{room: r, session: ss, ctx: ctx, cancel: cancel, live: true, workerReady: make(chan struct{}), background: -1, lastActivity: time.Now().UnixMilli(), deliveries: map[string]core.Delivery{}, inputGroups: map[string][]string{}, accepted: map[string]bool{}, renders: map[string]*render{}, replyAnchors: map[string]core.Delivery{}, requests: map[string]bool{}}
 	g.mu.Lock()
 	if g.closing {
 		g.mu.Unlock()
@@ -679,9 +681,15 @@ func (g *Gateway) dispatch(r core.Room) error {
 		if err != nil {
 			s.mu.Lock()
 			s.live = false
+			if errors.Is(err, process.ErrUnconfirmed) {
+				s.stopUnconfirmed = true
+			}
+			keep := s.stopUnconfirmed
 			s.mu.Unlock()
 			s.cancel()
-			g.removeSlot(s)
+			if !keep {
+				g.removeSlot(s)
+			}
 			return err
 		}
 		s.mu.Lock()
@@ -691,6 +699,9 @@ func (g *Gateway) dispatch(r core.Room) error {
 		if err != nil {
 			s.mu.Lock()
 			s.live = false
+			if errors.Is(err, process.ErrUnconfirmed) {
+				s.stopUnconfirmed = true
+			}
 			keep := s.stopUnconfirmed
 			s.mu.Unlock()
 			s.cancel()
@@ -701,6 +712,7 @@ func (g *Gateway) dispatch(r core.Room) error {
 		}
 		s.mu.Lock()
 		s.worker = worker
+		close(s.workerReady)
 		live := s.live
 		s.mu.Unlock()
 		if !live || g.isClosing() {

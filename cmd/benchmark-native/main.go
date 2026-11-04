@@ -36,6 +36,7 @@ type settings struct {
 type turn struct {
 	Kind     string    `json:"kind"`
 	Success  bool      `json:"success"`
+	Matched  bool      `json:"fixtureReplyMatched"`
 	First    *float64  `json:"firstOutputMs"`
 	Result   *float64  `json:"nativeResultMs"`
 	Delivery *float64  `json:"mockDeliveryMs"`
@@ -59,8 +60,12 @@ type observation struct {
 	started             time.Time
 	first, result, done *float64
 	success             bool
+	matched             bool
 	usage               core.Args
 }
+
+const fixtureReply = "BENCHMARK_OK"
+const fixtureToken = "local-fixture-not-a-real-credential"
 
 func elapsed(t time.Time) float64    { return float64(time.Since(t).Microseconds()) / 1000 }
 func timestamp(t time.Time) *float64 { v := elapsed(t); return &v }
@@ -102,8 +107,12 @@ func (*transport) File(context.Context, core.Room, string, string) (string, erro
 func modelFixture() (*httptest.Server, *atomic.Int64) {
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || !strings.HasPrefix(r.URL.Path, "/v1/messages") {
+		if r.Method != "POST" || (r.URL.Path != "/v1/messages" && r.URL.Path != "/v1/messages/count_tokens") {
 			http.Error(w, "fixture endpoint only", 404)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+fixtureToken {
+			http.Error(w, "fixture authorization required", http.StatusUnauthorized)
 			return
 		}
 		data, err := io.ReadAll(io.LimitReader(r.Body, (8<<20)+1))
@@ -117,13 +126,17 @@ func modelFixture() (*httptest.Server, *atomic.Int64) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "count_tokens") {
+		if b["model"] != "fixture-model" {
+			http.Error(w, "fixture model required", http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path == "/v1/messages/count_tokens" {
 			_, _ = io.WriteString(w, `{"input_tokens":500}`)
 			return
 		}
 		n := calls.Add(1)
 		u := core.Args{"input_tokens": 500, "output_tokens": 30, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
-		message := core.Args{"id": fmt.Sprintf("msg_fixture_%d", n), "type": "message", "role": "assistant", "model": "fixture-model", "content": []core.Args{{"type": "text", "text": "BENCHMARK_OK"}}, "stop_reason": "end_turn", "stop_sequence": nil, "usage": u}
+		message := core.Args{"id": fmt.Sprintf("msg_fixture_%d", n), "type": "message", "role": "assistant", "model": "fixture-model", "content": []core.Args{{"type": "text", "text": fixtureReply}}, "stop_reason": "end_turn", "stop_sequence": nil, "usage": u}
 		if stream, _ := b["stream"].(bool); !stream {
 			_ = json.NewEncoder(w).Encode(message)
 			return
@@ -139,7 +152,7 @@ func modelFixture() (*httptest.Server, *atomic.Int64) {
 		message["usage"] = core.Args{"input_tokens": 500, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
 		event("message_start", core.Args{"message": message})
 		event("content_block_start", core.Args{"index": 0, "content_block": core.Args{"type": "text", "text": ""}})
-		event("content_block_delta", core.Args{"index": 0, "delta": core.Args{"type": "text_delta", "text": "BENCHMARK_OK"}})
+		event("content_block_delta", core.Args{"index": 0, "delta": core.Args{"type": "text_delta", "text": fixtureReply}})
 		event("content_block_stop", core.Args{"index": 0})
 		event("message_delta", core.Args{"delta": core.Args{"stop_reason": "end_turn", "stop_sequence": nil}, "usage": core.Args{"output_tokens": 30}})
 		event("message_stop", core.Args{})
@@ -148,7 +161,7 @@ func modelFixture() (*httptest.Server, *atomic.Int64) {
 }
 
 func runSample(index int, o settings) (result sample) {
-	result = sample{Index: index, Status: "failed", Stable: true, Failures: []string{}, Turns: []turn{}}
+	result = sample{Index: index, Status: "failed", Stable: true, Cleanup: true, Failures: []string{}, Turns: []turn{}}
 	dir, err := os.MkdirTemp("", "feishu-go-baseline-")
 	if err != nil {
 		result.Failures = append(result.Failures, "temporary-directory")
@@ -160,7 +173,13 @@ func runSample(index int, o settings) (result sample) {
 	var g *gateway.Gateway
 	var mu sync.Mutex
 	var current *observation
+	var shuttingDown atomic.Bool
+	var nativeFailure atomic.Bool
 	defer func() {
+		shuttingDown.Store(true)
+		if nativeFailure.Load() {
+			result.Failures = append(result.Failures, "native-failed-or-exited-before-cleanup")
+		}
 		start := time.Now()
 		if g != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -180,6 +199,9 @@ func runSample(index int, o settings) (result sample) {
 			}
 		}
 		result.ModelRequests = calls.Load()
+		if result.ModelRequests < int64(len(result.Turns)) {
+			result.Failures = append(result.Failures, "fixture-model-request-missing")
+		}
 		if result.Cleanup {
 			_ = os.RemoveAll(dir)
 		}
@@ -218,7 +240,6 @@ func runSample(index int, o settings) (result sample) {
 	}}
 	factory := native.NewFactory(c, func(string, core.Args) {})
 	var workers atomic.Int64
-	var nativeFailure atomic.Bool
 	wrapped := func(ctx context.Context, room core.Room, session core.Session, w core.Workspace, emit func(core.WorkerEvent)) (core.Worker, error) {
 		workers.Add(1)
 		return factory(ctx, room, session, w, func(e core.WorkerEvent) {
@@ -230,10 +251,11 @@ func runSample(index int, o settings) (result sample) {
 				if e.Type == "result" {
 					current.result = timestamp(current.started)
 					current.success = e.Success
+					current.matched = strings.TrimSpace(e.Text) == fixtureReply
 					current.usage = usage(e.Usage)
 				}
 			}
-			if e.Type == "error" {
+			if (e.Type == "error" || e.Type == "exit") && !shuttingDown.Load() {
 				nativeFailure.Store(true)
 			}
 			mu.Unlock()
@@ -282,8 +304,8 @@ func runSample(index int, o settings) (result sample) {
 		if i > 0 {
 			kind = "warm-native"
 		}
-		result.Turns = append(result.Turns, turn{Kind: kind, Success: observed.success && observed.done != nil, First: observed.first, Result: observed.result, Delivery: observed.done, Usage: observed.usage})
-		if observed.done == nil || observed.first == nil || !observed.success {
+		result.Turns = append(result.Turns, turn{Kind: kind, Success: observed.success && observed.done != nil && observed.matched, Matched: observed.matched, First: observed.first, Result: observed.result, Delivery: observed.done, Usage: observed.usage})
+		if observed.done == nil || observed.first == nil || !observed.success || !observed.matched {
 			result.Failures = append(result.Failures, "turn-not-delivered")
 			break
 		}
@@ -320,6 +342,21 @@ func distribution(v []float64) core.Args {
 	}
 	return core.Args{"count": len(v), "min": v[0], "median": median, "max": v[len(v)-1]}
 }
+
+// An unconfirmed shutdown can leave descendants alive. Starting another sample
+// would then mix those processes into its memory total and is not independent.
+func collectSamples(o settings, run func(int, settings) sample) []sample {
+	samples := make([]sample, 0, o.Samples)
+	for i := 1; i <= o.Samples; i++ {
+		s := run(i, o)
+		samples = append(samples, s)
+		if !s.Cleanup {
+			break
+		}
+	}
+	return samples
+}
+
 func main() {
 	var o settings
 	flag.IntVar(&o.Samples, "samples", 3, "independent native sessions (1..10)")
@@ -334,19 +371,17 @@ func main() {
 	if o.Claude == "" {
 		o.Claude = "claude"
 	}
-	if err := os.Setenv("FEISHU_BASELINE_FIXTURE_TOKEN", "local-fixture-not-a-real-credential"); err != nil {
+	if err := os.Setenv("FEISHU_BASELINE_FIXTURE_TOKEN", fixtureToken); err != nil {
 		os.Exit(1)
 	}
-	samples := []sample{}
+	samples := collectSamples(o, runSample)
 	var cold, warm, stops []float64
 	passed := 0
-	for i := 1; i <= o.Samples; i++ {
-		s := runSample(i, o)
-		samples = append(samples, s)
+	for _, s := range samples {
 		if s.Status == "passed" {
 			passed++
 		}
-		if s.Cleanup {
+		if s.Status == "passed" && s.Cleanup {
 			stops = append(stops, s.Stop)
 		}
 		for _, t := range s.Turns {
@@ -359,7 +394,7 @@ func main() {
 			}
 		}
 	}
-	report := core.Args{"schema": 1, "fixture": "deterministic-text-v1", "settings": o, "environment": core.Args{"platform": runtime.GOOS, "arch": runtime.GOARCH, "go": runtime.Version(), "logicalCpus": runtime.NumCPU()}, "scope": core.Args{"model": "Local deterministic HTTP fixture; tokens are synthetic.", "transport": "In-memory Feishu substitute; no live acceptance.", "memory": "Host includes benchmark, Gateway, SQLite and fixture server. RSS sums can double-count shared pages; unavailable is not zero.", "cold": "Fresh native session, not cold OS caches.", "liveServiceAccepted": false}, "samples": samples, "summary": core.Args{"attemptedSamples": o.Samples, "passedSamples": passed, "failedSamples": o.Samples - passed, "coldFirstOutputMs": distribution(cold), "warmFirstOutputMs": distribution(warm), "stopMs": distribution(stops)}}
+	report := core.Args{"schema": 1, "fixture": "deterministic-text-v1", "settings": o, "environment": core.Args{"platform": runtime.GOOS, "arch": runtime.GOARCH, "go": runtime.Version(), "logicalCpus": runtime.NumCPU()}, "scope": core.Args{"model": "Local deterministic HTTP fixture; tokens are synthetic.", "transport": "In-memory Feishu substitute; no live acceptance.", "memory": "Host includes benchmark, Gateway, SQLite and fixture server. RSS sums can double-count shared pages; unavailable is not zero.", "cold": "Fresh native session, not cold OS caches.", "liveServiceAccepted": false}, "samples": samples, "summary": core.Args{"attemptedSamples": len(samples), "passedSamples": passed, "failedSamples": len(samples) - passed, "unattemptedSamples": o.Samples - len(samples), "coldFirstOutputMs": distribution(cold), "warmFirstOutputMs": distribution(warm), "stopMs": distribution(stops)}}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if enc.Encode(report) != nil || passed != o.Samples {

@@ -35,6 +35,9 @@ type worker struct {
 	project                core.Project
 	session                core.Session
 	workspace              core.Workspace
+	scopeOnce              sync.Once
+	scope                  nativeFileScope
+	scopeErr               error
 	log                    core.Logger
 	secrets                []string
 	ctx                    context.Context
@@ -107,6 +110,10 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 		}
 		w := &worker{config: c, project: project, session: session, workspace: workspace, log: log, secrets: config.Secrets(c), ctx: workerCtx, cancel: cancel, known: map[string]bool{}, modelSet: map[string]bool{}, requests: map[string]chan args{}, controls: map[string]context.CancelFunc{}, controlSeen: map[string]bool{}, pending: make(chan args, queueLimit), initialized: make(chan struct{}), events: make(chan core.WorkerEvent, 256), eventsDone: make(chan struct{}), exited: make(chan struct{}), done: make(chan struct{}), stdoutDone: make(chan struct{}), stderrDone: make(chan struct{}), cleanupDone: make(chan struct{}), started: time.Now(), initID: core.NewID()}
 		w.output = newOutput(func(id string) bool { return w.known[id] })
+		if _, err := w.fileScope(); err != nil {
+			cancel()
+			return nil, err
+		}
 		modelEnv := modelEnvironment(c, token, headers)
 		w.settings, err = privateSettings(workspace, modelEnv)
 		if err != nil {
@@ -194,6 +201,12 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 			_ = w.stderr.Close()
 			_ = w.stdin.Close()
 			rollback()
+			// The root is reaped, but registration failed before descendant ownership
+			// could be verified. Do not free the conversation/deployment lock.
+			if onEvent != nil {
+				confirmed := false
+				onEvent(core.WorkerEvent{Type: "exit", CleanupConfirmed: &confirmed})
+			}
 			return nil, err
 		}
 		go func() {

@@ -1,6 +1,6 @@
 //go:build windows
 
-package native
+package process
 
 import (
 	"fmt"
@@ -47,7 +47,7 @@ type jobAccounting struct {
 	TotalUserTime, TotalKernelTime, PeriodUserTime, PeriodKernelTime               int64
 	TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses uint32
 }
-type processTree struct{ job uintptr }
+type platformTree struct{ job uintptr }
 
 func winError(name string, err error) error {
 	if err == syscall.Errno(0) {
@@ -55,18 +55,18 @@ func winError(name string, err error) error {
 	}
 	return fmt.Errorf("%s: %w", name, err)
 }
-func prepareProcess(cmd *exec.Cmd) {
+func prepareCommand(cmd *exec.Cmd) {
 	// Suspend before the first instruction: all descendants enter the owned Job,
 	// including a CLI that exits immediately after spawning a child.
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000004 | 0x00000200}
 }
-func attachProcess(cmd *exec.Cmd) (tree *processTree, err error) {
+func attachCommand(cmd *exec.Cmd) (tree *platformTree, err error) {
 	job, _, e := createJob.Call(0, 0)
 	if job == 0 {
 		_ = cmd.Process.Kill()
 		return nil, winError("CreateJobObject", e)
 	}
-	tree = &processTree{job: job}
+	tree = &platformTree{job: job}
 	defer func() {
 		if err != nil {
 			_ = cmd.Process.Kill()
@@ -112,11 +112,11 @@ func attachProcess(cmd *exec.Cmd) (tree *processTree, err error) {
 		r, _, _ = nextThread.Call(snap, uintptr(unsafe.Pointer(&entry)))
 	}
 	if !resumed {
-		return tree, fmt.Errorf("Claude startup thread not found; process remained suspended")
+		return tree, fmt.Errorf("Child startup thread not found; process remained suspended")
 	}
 	return tree, nil
 }
-func (t *processTree) terminate(_ <-chan struct{}) error {
+func (t *platformTree) terminate(_ <-chan struct{}) error {
 	if t == nil || t.job == 0 {
 		return nil
 	}
@@ -140,7 +140,7 @@ func (t *processTree) terminate(_ <-chan struct{}) error {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
-func (t *processTree) close() {
+func (t *platformTree) close() {
 	if t != nil && t.job != 0 {
 		closeHandle.Call(t.job)
 		t.job = 0
