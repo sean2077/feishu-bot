@@ -96,6 +96,17 @@ func TestForwardedApprovalCannotBeClaimedByOriginalDMUser(t *testing.T) {
 		t.Fatalf("not forwarded to maintainer: %#v", card.room)
 	}
 	value := cardValue(card.card, "批准一次")
+	if value == nil {
+		t.Fatal("permission card missing button")
+	}
+	// The fake transport records the card before Card returns. Wait for ask
+	// to bind that delivery before testing callback authorization.
+	eventually(t, func() bool {
+		f.g.approvalMu.Lock()
+		defer f.g.approvalMu.Unlock()
+		p := f.g.approvals[stringArg(value, "request")]
+		return p != nil && p.cards[card.id] == "owner"
+	})
 	text, _ := f.g.Action(context.Background(), core.CardAction{UserID: "member", ChatID: "dm-member", MessageID: card.id, Value: value})
 	if text != "" {
 		t.Fatal("requesting DM user claimed forwarded approval")
@@ -105,8 +116,11 @@ func TestForwardedApprovalCannotBeClaimedByOriginalDMUser(t *testing.T) {
 		t.Fatal("maintainer approved unobserved forwarded card")
 	}
 	text, e := f.g.Action(context.Background(), core.CardAction{UserID: "owner", ChatID: "dm-owner", MessageID: card.id, Value: value})
-	if e != nil || text != "已批准一次" || !boolArg(response(t, w), "approved") {
-		t.Fatal("correct forwarded approval rejected")
+	if e != nil || text != "已批准一次" {
+		t.Fatalf("correct forwarded approval rejected: text=%q error=%v", text, e)
+	}
+	if answer := response(t, w); !boolArg(answer, "approved") {
+		t.Fatalf("forwarded approval response was not approved: %#v", answer)
 	}
 }
 func TestQuestionSelectionsRemainPerActorAndStaleCardsCannotSettle(t *testing.T) {
