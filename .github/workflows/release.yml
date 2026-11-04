@@ -43,9 +43,11 @@ jobs:
           release_commit="$(git rev-parse HEAD)"
           python .github/scripts/release.py prepare \
             --tag "$RELEASE_TAG" --commit "$release_commit" --output release-meta
-          printf 'commit=%s\n' "$release_commit" >> "$GITHUB_OUTPUT"
-          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          printf 'version=%s\n' "${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          {
+            printf 'commit=%s\n' "$release_commit"
+            printf 'tag=%s\n' "$RELEASE_TAG"
+            printf 'version=%s\n' "${RELEASE_TAG#v}"
+          } >> "$GITHUB_OUTPUT"
       - name: Retain validated release metadata
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

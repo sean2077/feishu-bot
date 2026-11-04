@@ -47,7 +47,7 @@ func (t *platformTree) terminate(exited <-chan struct{}) error {
 	if !alive {
 		return nil
 	}
-	err = syscall.Kill(-t.pid, syscall.SIGTERM)
+	err = t.signal(syscall.SIGTERM)
 	if err != nil && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
@@ -66,7 +66,7 @@ func (t *platformTree) terminate(exited <-chan struct{}) error {
 	if !alive {
 		return nil
 	}
-	err = syscall.Kill(-t.pid, syscall.SIGKILL)
+	err = t.signal(syscall.SIGKILL)
 	if err != nil && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
