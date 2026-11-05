@@ -22,24 +22,31 @@
 
 ## 发布产物
 
-每次发布必须包含下列五个压缩包：
+每次发布必须包含下列五个便携压缩包和三个安装包：
 
-| 目标 | 文件 |
-|---|---|
-| Linux amd64 | `feishu-bot-vX.Y.Z-linux-amd64.tar.gz` |
-| Linux arm64 | `feishu-bot-vX.Y.Z-linux-arm64.tar.gz` |
-| Windows amd64 | `feishu-bot-vX.Y.Z-windows-amd64.zip` |
-| macOS Intel | `feishu-bot-vX.Y.Z-darwin-amd64.tar.gz` |
-| macOS Apple Silicon | `feishu-bot-vX.Y.Z-darwin-arm64.tar.gz` |
+| 目标 | 便携版 | 安装版 |
+|---|---|---|
+| Linux amd64 | `feishu-bot-vX.Y.Z-linux-amd64.tar.gz` | `feishu-bot-vX.Y.Z-linux-amd64.deb` |
+| Linux arm64 | `feishu-bot-vX.Y.Z-linux-arm64.tar.gz` | `feishu-bot-vX.Y.Z-linux-arm64.deb` |
+| Windows amd64 | `feishu-bot-vX.Y.Z-windows-amd64.zip` | `feishu-bot-vX.Y.Z-windows-amd64.msi` |
+| macOS Intel | `feishu-bot-vX.Y.Z-darwin-amd64.tar.gz` | 不提供 |
+| macOS Apple Silicon | `feishu-bot-vX.Y.Z-darwin-arm64.tar.gz` | 不提供 |
 
-包内只有一个同名根目录 `feishu-bot-vX.Y.Z-OS-ARCH/`，包含：
+便携包内只有一个同名根目录 `feishu-bot-vX.Y.Z-OS-ARCH/`，包含：
 
 - `feishu-bot` 或 `feishu-bot.exe`；
 - `config.example.json` 和 `INSTALL.md`；
 - `LICENSE` 和 `THIRD_PARTY_NOTICES.md`；
 - `BUILDINFO.json`，记录 `tag`、`version`、`commit`、`os`、`arch`、提交时间 `source_date_epoch` 以及二进制校验和 `binary_sha256`。
 
-Release 另外附带 `SHA256SUMS.txt` 和 `release-manifest.json`，用于核对完整文件清单、校验和及同一次发布的身份。生产二进制使用 `CGO_ENABLED=0`；压缩包不包含部署配置、凭据、状态库、原生 Claude Code 或 Git。
+安装包只复制同样的程序和文档，不注册后台服务：
+
+- Windows MSI 按当前用户安装到 `%LOCALAPPDATA%\feishu-bot`，不需要管理员权限；卸载通过 Windows“设置 > 应用”。当前 MSI 没有代码签名，SmartScreen 可能提示。
+- Linux deb 把二进制安装到 `/usr/bin/feishu-bot`，文档安装到 `/usr/share/doc/feishu-bot/`；使用 `dpkg -i` 和 `dpkg -r` 安装、卸载。
+- 常驻服务仍由 `feishu-bot daemon install` 单独注册；安装器不创建 systemd unit、任务计划或启动项。
+- 安装包使用 `source_date_epoch` 固定文件时间戳；工作流在相同输入下重复构建并逐字节比较，避免同一 tag 的重跑产生不同附件。
+
+Release 另外附带 `SHA256SUMS.txt` 和 `release-manifest.json`，用于核对完整文件清单、校验和及同一次发布的身份。生产二进制使用 `CGO_ENABLED=0`；发布包不包含部署配置、凭据、状态库、原生 Claude Code 或 Git。
 
 macOS 包提供原生网关和前台 `run`，内置 `daemon` 管理仍限 Linux／Windows。当前发布不包含 Apple Developer ID 签名和公证，也不生成 DMG、PKG 或自动安装服务；首次运行说明见[部署文档](deployment.md#发布包安装)。
 
@@ -47,8 +54,8 @@ macOS 包提供原生网关和前台 `run`，内置 `daemon` 管理仍限 Linux�
 
 1. **绑定发布身份。** 检出 tag 对应的准确提交，验证 tag、commit 和 CHANGELOG，生成发布元数据与说明。
 2. **在各目标上检查。** 五个平台使用匹配架构的原生 runner，执行 `go test -race`、`go vet` 及固定 Claude CLI 配合本地确定性模型的协议回归。检查 CLI 文件确实存在、平台和版本匹配；缺失不能作为 skip 放行。竞态检测保留平台 C 工具链，`CGO_ENABLED=0` 仅用于生产构建。
-3. **验证最终压缩包。** 注入版本，构建、打包后解压；实际执行其中二进制的 `--version`、`--help`、临时目录 `init` 等检查。编译成功不代表另一个架构的可执行文件已经运行过。
-4. **汇总完整产物。** 所有目标成功后才进入唯一发布 job，核对预期文件集合、构建身份和 SHA-256。构建 job 只有只读权限，发布 job 获得 `contents: write`，发布令牌只传给发布步骤。
+3. **验证最终包。** 注入版本，构建、打包后解压；实际执行其中二进制的 `--version`、`--help`、临时目录 `init` 等检查。安装包还要重复构建并逐字节比较，然后在原生平台实际安装、运行并卸载。编译成功不代表另一个架构或安装包已经实际运行过。
+4. **汇总完整产物。** 所有目标成功后才进入唯一发布 job，核对五个便携包、三个安装包、构建身份和 SHA-256。构建 job 只有只读权限，发布 job 获得 `contents: write`，发布令牌只传给发布步骤。
 5. **先草稿，后公开。** 创建该 tag 的 draft Release，上传附件，重新下载逐一验证，再确认远端 tag 仍指向原提交，最后公开。发布说明使用已校验的 CHANGELOG 内容。
 
 同一 tag 的工作流串行处理，不取消正在进行的发布。构建或验证失败时不会公开缺少附件的版本；上传阶段失败可以留下草稿，以便按下节规则继续。
@@ -66,7 +73,7 @@ macOS 包提供原生网关和前台 `run`，内置 `daemon` 管理仍限 Linux�
    git push origin "$release_tag"
    ```
 
-3. 查看该 tag 的 Release 工作流。完成后核对公开 Release 页面、tag／commit、五个压缩包及两个清单文件，记录实际的工作流与 Release URL。
+3. 查看该 tag 的 Release 工作流。完成后核对公开 Release 页面、tag／commit、五个便携压缩包、三个安装包及两个清单文件，记录实际的工作流与 Release URL。
 
 推送 tag 是启动发布；完成边界是工作流成功、Release 已公开且完整附件验证通过。PR、合并、tag 已存在或 Actions 里有临时 artifact，都不能单独作为发布成功的证据。本地离线测试也不能替代 GitHub 上传及公开步骤的真实执行。
 
@@ -78,4 +85,4 @@ macOS 包提供原生网关和前台 `run`，内置 `daemon` 管理仍限 Linux�
 - **草稿已存在：** 只有 tag、完整 commit SHA 与发布清单一致，才补上传缺失文件。已有附件必须内容一致；未知附件、相同名字的不同内容或 tag 已移动均使流程失败。GitHub 上传失败可能留下 `state=starter`、大小为零的占位附件；仅当名称属于本次预期文件集合时，脚本才会删除该失败占位并重传。已上传或非空附件不会自动删除、覆盖。
 - **版本已公开：** 相同版本的重跑只读核对已有页面和附件。内容一致则结束；有差异则报告失败，保留公开附件，修正通过新版本交付。
 
-确认每个平台的原生检查与压缩包冒烟已经完成，且发布 job 的下载核验成功后，才能把一次中断的发布视为恢复完成。真实飞书、客户端及模型服务的验收仍按[验证清单](validation.md)单独记录。
+确认每个平台的原生检查、便携包与安装包冒烟已经完成，且发布 job 的下载核验成功后，才能把一次中断的发布视为恢复完成。真实飞书、客户端及模型服务的验收仍按[验证清单](validation.md)单独记录。

@@ -70,30 +70,35 @@ jobs:
             native-platform: linux-x64
             binary: bin/feishu-bot
             extension: tar.gz
+            installer-extension: deb
           - runner: ubuntu-24.04-arm
             goos: linux
             goarch: arm64
             native-platform: linux-arm64
             binary: bin/feishu-bot
             extension: tar.gz
+            installer-extension: deb
           - runner: windows-2022
             goos: windows
             goarch: amd64
             native-platform: win32-x64
             binary: bin/feishu-bot.exe
             extension: zip
+            installer-extension: msi
           - runner: macos-15-intel
             goos: darwin
             goarch: amd64
             native-platform: darwin-x64
             binary: bin/feishu-bot
             extension: tar.gz
+            installer-extension: ''
           - runner: macos-15
             goos: darwin
             goarch: arm64
             native-platform: darwin-arm64
             binary: bin/feishu-bot
             extension: tar.gz
+            installer-extension: ''
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     env:
@@ -102,6 +107,8 @@ jobs:
       RELEASE_ARCH: ${{ matrix.goarch }}
       RELEASE_BINARY: ${{ matrix.binary }}
       RELEASE_ARCHIVE: feishu-bot-${{ needs.prepare.outputs.tag }}-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.extension }}
+      RELEASE_INSTALLER: feishu-bot-${{ needs.prepare.outputs.tag }}-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.installer-extension }}
+      RELEASE_INSTALLER_EXTENSION: ${{ matrix.installer-extension }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -111,6 +118,19 @@ jobs:
         with:
           go-version: '1.27.x'
           cache: true
+      - name: Install the pinned WiX toolset
+        if: matrix.installer-extension == 'msi'
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "wix314-binaries.zip"
+          curl.exe -L --fail --silent --show-error -o $zip "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = "6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31"
+          if ($actual -ne $expected) { throw "WiX archive checksum mismatch" }
+          $wix = Join-Path $env:RUNNER_TEMP "wix314"
+          Expand-Archive -Path $zip -DestinationPath $wix -Force
+          if (-not (Test-Path (Join-Path $wix "candle.exe"))) { throw "WiX candle.exe is missing" }
+          "WIX_BIN=$wix" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - uses: ./.github/actions/verify
         with:
           native-platform: ${{ matrix.native-platform }}
@@ -153,6 +173,35 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+      - name: Build and reverify the platform installer
+        if: matrix.installer-extension != ''
+        shell: bash
+        run: |
+          installer=(--metadata release-meta/release.json --binary "$RELEASE_BINARY"
+                     --os "$RELEASE_OS" --arch "$RELEASE_ARCH")
+          if [[ "$RELEASE_INSTALLER_EXTENSION" == "msi" ]]; then
+            installer+=(--wix-bin "$WIX_BIN")
+          fi
+          python .github/scripts/release.py package-installer "${installer[@]}" --output dist
+          python .github/scripts/release.py package-installer "${installer[@]}" --output dist-repro
+          cmp "dist/$RELEASE_INSTALLER" "dist-repro/$RELEASE_INSTALLER"
+      - name: Run the installer on its native platform
+        if: matrix.installer-extension != ''
+        shell: bash
+        run: |
+          python .github/scripts/release.py smoke-installer \
+            --metadata release-meta/release.json --installer "dist/$RELEASE_INSTALLER" \
+            --os "$RELEASE_OS" --arch "$RELEASE_ARCH"
+      - name: Retain the verified platform installer
+        if: matrix.installer-extension != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-installers-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/${{ env.RELEASE_INSTALLER }}
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
 
   publish:
     name: Publish the complete GitHub Release
@@ -178,6 +227,12 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: release-assets-*
+          path: dist
+          merge-multiple: true
+      - name: Download every verified platform installer
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-installers-*
           path: dist
           merge-multiple: true
       - name: Verify the complete payload and create checksums

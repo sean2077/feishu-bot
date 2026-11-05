@@ -64,7 +64,7 @@ Linux 进一步运行本地 TLS／WebSocket／REST 飞书替身与真实原生 C
 
 ## 发布包验证
 
-版本 tag 对应的提交在 Linux amd64／arm64、Windows amd64、macOS amd64／arm64 原生 runner 上分别运行竞态测试、vet 和固定原生 CLI 回归。随后用 `CGO_ENABLED=0` 构建生产二进制，对将要上传的压缩包解压并执行 `--version`、`--help`、隔离目录中的 `init` 等冒烟检查。交叉编译成功不能代替目标架构的实际执行。
+版本 tag 对应的提交在 Linux amd64／arm64、Windows amd64、macOS amd64／arm64 原生 runner 上分别运行竞态测试、vet 和固定原生 CLI 回归。随后用 `CGO_ENABLED=0` 构建生产二进制，对将要上传的便携包解压并执行 `--version`、`--help`、隔离目录中的 `init` 等冒烟检查；安装包还须重复构建并逐字节比较，在原生平台实际安装、运行和卸载。交叉编译成功不能代替目标架构或安装包的实际执行。
 
 常规 CI 通过 `python -m unittest discover -s .github/scripts -p 'test_*.py'` 检查版本、发布说明、打包与发布状态机；这些测试不上传附件。发布 job 再核对完整文件集合、构建身份与 SHA-256，上传草稿后重新下载验证，最后公开 Release。具体契约与重跑方式见[版本发布](releasing.md)。
 

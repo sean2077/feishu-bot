@@ -47,11 +47,15 @@ def payload(metadata: Path, notes: Path, artifacts: Path) -> dict:
     expected_names = {
         f"feishu-bot-{tag}-{target}.{'zip' if target.startswith('windows') else 'tar.gz'}"
         for target in ("linux-amd64", "linux-arm64", "windows-amd64", "darwin-amd64", "darwin-arm64")
+    } | {
+        f"feishu-bot-{tag}-windows-amd64.msi",
+        f"feishu-bot-{tag}-linux-amd64.deb",
+        f"feishu-bot-{tag}-linux-arm64.deb",
     }
     assets = manifest.get("assets", [])
     if (not isinstance(assets, list) or len(assets) != len(expected_names) or
             {item.get("name") for item in assets} != expected_names):
-        raise PublishError("Manifest must contain exactly the five platform archives")
+        raise PublishError("Manifest must contain exactly the five portable archives and three installers")
     hashes = {}
     for item in assets:
         name = item["name"]

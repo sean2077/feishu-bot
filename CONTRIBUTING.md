@@ -37,9 +37,9 @@ go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 
 ## 版本与发布
 
-`CHANGELOG.md` 是版本记录权威，`Unreleased` 汇总尚未打标签的变更。标签使用 `vMAJOR.MINOR.PATCH`，当前已有 `v0.2.0`。Go 模块没有单独的包版本文件；当前发布以 `CHANGELOG.md` 和标签为准。
+`CHANGELOG.md` 是版本记录权威，`Unreleased` 汇总尚未打标签的变更。标签使用 `vMAJOR.MINOR.PATCH`，当前已有 `v0.3.0`。Go 模块没有单独的包版本文件；当前发布以 `CHANGELOG.md` 和标签为准。
 
-独立的 [release 工作流](.github/workflows/release.yml) 只监听稳定版本 tag；在精确的 tag 提交上完成五个平台的原生测试、构建和压缩包冒烟，完整附件上传并校验后才公开 GitHub Release。普通 push／PR 验证不会发布版本。版本映射、发布步骤、重跑规则和完成证据以[版本发布](docs/releasing.md)为准。
+独立的 [release 工作流](.github/workflows/release.yml) 只监听稳定版本 tag；在精确的 tag 提交上完成五个平台的原生测试、构建、便携包与安装包冒烟，完整附件上传并校验后才公开 GitHub Release。普通 push／PR 验证不会发布版本。版本映射、发布步骤、重跑规则和完成证据以[版本发布](docs/releasing.md)为准。
 
 公开范围、可见性和发布材料按[公开发布检查](docs/publication.md)由维护者确认。区分本地测试、平台 CI 与真实飞书／模型验收；新增发布工作流或合并 PR 不等于已发布新版本。
 

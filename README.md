@@ -8,7 +8,7 @@
 
 需要 Git 和原生 Claude Code；Windows 使用 Git for Windows。协议回归固定使用 Claude Code 2.1.316，其他版本须另行验收。
 
-预编译 Go 版本从 [Releases](https://github.com/sean2077/feishu-bot/releases) 选择文件名带系统和架构的附件，例如 `feishu-bot-vX.Y.Z-darwin-arm64.tar.gz`，按[发布包安装](docs/deployment.md#发布包安装)核对 SHA-256 后使用，无需安装 Go。历史 `v0.2.0` 的通用 ZIP 是旧 TypeScript 版本；若尚无对应平台的 Go 附件，请按下文从源码构建。发布矩阵覆盖 Linux／macOS 的 amd64、arm64，以及 Windows amd64。macOS 使用前台 `run` 或自行配置服务管理，内置 `daemon` 仅支持 Linux／Windows。
+预编译 Go 版本从 [Releases](https://github.com/sean2077/feishu-bot/releases) 选择文件名带系统和架构的附件，例如 `feishu-bot-vX.Y.Z-darwin-arm64.tar.gz`，按[发布包安装](docs/deployment.md#发布包安装)核对 SHA-256 后使用，无需安装 Go。同一版本也提供 Windows MSI 与 Linux deb 安装版；安装器只复制程序和文档，不注册后台服务。历史 `v0.2.0` 的通用 ZIP 是旧 TypeScript 版本；若尚无对应平台的 Go 附件，请按下文从源码构建。发布矩阵覆盖 Linux／macOS 的 amd64、arm64，以及 Windows amd64。macOS 使用前台 `run` 或自行配置服务管理，内置 `daemon` 仅支持 Linux／Windows。
 
 从源码构建需要 Go 1.25+。克隆本仓库后，在仓库目录执行：
 
