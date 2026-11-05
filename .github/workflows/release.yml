@@ -1,0 +1,194 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+# A retry must not interrupt another publisher for the same immutable version.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  prepare:
+    name: Validate the tagged release
+    if: github.event.deleted != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.identity.outputs.commit }}
+      tag: ${{ steps.identity.outputs.tag }}
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Validate the exact tag, commit and release notes
+        id: identity
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          release_commit="$(git rev-parse HEAD)"
+          python .github/scripts/release.py prepare \
+            --tag "$RELEASE_TAG" --commit "$release_commit" --output release-meta
+          {
+            printf 'commit=%s\n' "$release_commit"
+            printf 'tag=%s\n' "$RELEASE_TAG"
+            printf 'version=%s\n' "${RELEASE_TAG#v}"
+          } >> "$GITHUB_OUTPUT"
+      - name: Retain validated release metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-metadata
+          path: release-meta/
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+            native-platform: linux-x64
+            binary: bin/feishu-bot
+            extension: tar.gz
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            native-platform: linux-arm64
+            binary: bin/feishu-bot
+            extension: tar.gz
+          - runner: windows-2022
+            goos: windows
+            goarch: amd64
+            native-platform: win32-x64
+            binary: bin/feishu-bot.exe
+            extension: zip
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            native-platform: darwin-x64
+            binary: bin/feishu-bot
+            extension: tar.gz
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+            native-platform: darwin-arm64
+            binary: bin/feishu-bot
+            extension: tar.gz
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_OS: ${{ matrix.goos }}
+      RELEASE_ARCH: ${{ matrix.goarch }}
+      RELEASE_BINARY: ${{ matrix.binary }}
+      RELEASE_ARCHIVE: feishu-bot-${{ needs.prepare.outputs.tag }}-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.extension }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.x'
+          cache: true
+      - uses: ./.github/actions/verify
+        with:
+          native-platform: ${{ matrix.native-platform }}
+      - name: Download the validated release identity
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-metadata
+          path: release-meta
+      - name: Build the native production binary
+        shell: bash
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          test "$(go env GOOS)" = "$RELEASE_OS"
+          test "$(go env GOARCH)" = "$RELEASE_ARCH"
+          mkdir -p bin
+          # BUILDINFO in the archive records the exact commit. Generated release
+          # metadata must not change Go's automatic VCS dirty marker between runs.
+          go build -trimpath -buildvcs=false \
+            -ldflags "-X github.com/sean2077/feishu-bot/internal/cli.Version=$RELEASE_VERSION" \
+            -o "$RELEASE_BINARY" ./cmd/feishu-bot
+      - name: Package the release binary
+        shell: bash
+        run: |
+          python .github/scripts/release.py package \
+            --metadata release-meta/release.json --binary "$RELEASE_BINARY" \
+            --os "$RELEASE_OS" --arch "$RELEASE_ARCH" --output dist
+      - name: Run the unpacked archive on its native platform
+        shell: bash
+        run: |
+          python .github/scripts/release.py smoke \
+            --metadata release-meta/release.json --archive "dist/$RELEASE_ARCHIVE" \
+            --os "$RELEASE_OS" --arch "$RELEASE_ARCH"
+      - name: Retain the verified platform archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/${{ env.RELEASE_ARCHIVE }}
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    name: Publish the complete GitHub Release
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Download release metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-metadata
+          path: release-meta
+      - name: Download every verified platform archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-assets-*
+          path: dist
+          merge-multiple: true
+      - name: Verify the complete payload and create checksums
+        run: |
+          python .github/scripts/release.py verify \
+            --metadata release-meta/release.json --artifacts dist
+      - name: Upload, verify and publish the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          python .github/scripts/publish_release.py \
+            --metadata release-meta/release.json --notes release-meta/release-notes.md \
+            --artifacts dist --repository "$GITHUB_REPOSITORY"

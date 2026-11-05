@@ -19,6 +19,7 @@
 | [运行诊断](runtime-diagnostics.md) | 运行诊断 | 当前 |
 | [运行基线](runtime-baseline.md) | 性能与内存比较口径 | 当前 |
 | [验证与验收](validation.md) | 测试、平台 CI 和真实验收边界 | 当前 |
+| [版本发布](releasing.md) | tag 触发、版本与产物、发布验证和失败重跑 | 当前 |
 | [公开发布检查](publication.md) | 公开发布前检查 | 当前 |
 | [Go 迁移](go-migration.md) | TypeScript 到 Go 的迁移、部署调整和回滚 | 当前迁移说明 |
 | [术语](terminology.md) | 项目术语的唯一定义位置 | 当前 |

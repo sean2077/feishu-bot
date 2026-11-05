@@ -1,12 +1,16 @@
 # feishu-bot
 
-在飞书群聊和私聊中使用 Claude Code。可用于个人助手、资料整理、协作开发，以及经授权的外部系统操作。支持 Linux 和 Windows 原生运行。
+在飞书群聊和私聊中使用 Claude Code。可用于个人助手、资料整理、协作开发，以及经授权的外部系统操作。支持 Linux、macOS 和 Windows 原生运行。
 
 一个 Go 常驻服务接收消息，通过双向 `stream-json` 协议直接启动并复用 Claude Code 原生进程。任务理解、子代理、上下文压缩和后台工作由 Claude Code 完成；feishu-bot 负责聊天路由、消息交付、权限交互和运行状态。运行时不依赖 Node.js 或 TypeScript Agent SDK。
 
 ## 快速开始
 
-需要 Git 和原生 Claude Code；从源码构建需要 Go 1.25+。Windows 使用 Git for Windows。协议回归固定使用 Claude Code 2.1.316，其他版本须另行验收。克隆本仓库后，在仓库目录执行：
+需要 Git 和原生 Claude Code；Windows 使用 Git for Windows。协议回归固定使用 Claude Code 2.1.316，其他版本须另行验收。
+
+预编译 Go 版本从 [Releases](https://github.com/sean2077/feishu-bot/releases) 选择文件名带系统和架构的附件，例如 `feishu-bot-vX.Y.Z-darwin-arm64.tar.gz`，按[发布包安装](docs/deployment.md#发布包安装)核对 SHA-256 后使用，无需安装 Go。历史 `v0.2.0` 的通用 ZIP 是旧 TypeScript 版本；若尚无对应平台的 Go 附件，请按下文从源码构建。发布矩阵覆盖 Linux／macOS 的 amd64、arm64，以及 Windows amd64。macOS 使用前台 `run` 或自行配置服务管理，内置 `daemon` 仅支持 Linux／Windows。
+
+从源码构建需要 Go 1.25+。克隆本仓库后，在仓库目录执行：
 
 ```sh
 go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
@@ -17,7 +21,7 @@ Windows 构建使用 `go build -trimpath -o ./bin/feishu-bot.exe ./cmd/feishu-bo
 
 模型入口需要兼容 Anthropic Messages；`baseUrl` 对应 Claude Code 的 `ANTHROPIC_BASE_URL`，模型 ID 按服务实际支持的值配置。项目不绑定特定供应商，也不提供协议转换层。兼容接口不等于所有模型能力均已验证。
 
-Linux：
+Linux／macOS：
 
 ```sh
 export FEISHU_APP_SECRET='replace-with-app-secret'
@@ -35,7 +39,7 @@ $env:MODEL_AUTH_TOKEN = "replace-with-model-token"
 .\bin\feishu-bot.exe run
 ```
 
-前台 `run` 适合调试。常驻运行使用内置服务命令，不需要编写 `.ps1`、`.vbs` 或 `.cmd` 启动脚本：
+Linux／Windows 的常驻运行可使用内置服务命令，不需要编写 `.ps1`、`.vbs` 或 `.cmd` 启动脚本：
 
 ```sh
 ./bin/feishu-bot daemon install --config ~/.feishu-bot/config.json
@@ -128,4 +132,4 @@ go build ./cmd/feishu-bot
 
 模型回复跟随当前请求语言；内置命令和审批提示主要为中文。时区跟随运行环境，可在启动前设置 `TZ`。
 
-[文档索引](docs/README.md) · [架构](docs/architecture.md) · [部署](docs/deployment.md) · [使用场景](docs/usage.md) · [开发](CONTRIBUTING.md) · [运行基线](docs/runtime-baseline.md) · [依赖声明](THIRD_PARTY_NOTICES.md) · [公开发布检查](docs/publication.md)
+[文档索引](docs/README.md) · [架构](docs/architecture.md) · [部署](docs/deployment.md) · [使用场景](docs/usage.md) · [开发](CONTRIBUTING.md) · [版本发布](docs/releasing.md) · [运行基线](docs/runtime-baseline.md) · [依赖声明](THIRD_PARTY_NOTICES.md) · [公开发布检查](docs/publication.md)
