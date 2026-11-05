@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -137,6 +138,43 @@ func TestQuickSupplementDeduplicatesAndOldStopCannotStopLaterTurn(t *testing.T) 
 	}
 	if w.stops.Load() != 0 {
 		t.Fatal("old button stopped a later foreground turn")
+	}
+}
+
+func TestCancelledQuickSupplementRepliesToRealCardMessage(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	s, err := f.s.Session(r.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := core.Delivery{
+		UUID:         core.NewID(),
+		RoomKey:      r.Key,
+		SessionID:    s.ID,
+		SupplementTo: core.NewID(),
+		Message: core.Message{
+			ID:                   "card:" + core.NewID(),
+			InteractionMessageID: "om_real_card",
+			ChatID:               r.ChatID,
+			ChatType:             "group",
+			SenderID:             "member",
+			Mentioned:            true,
+			Text:                 "supplement",
+		},
+	}
+	if err := f.g.queueInput(d, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if !f.g.cancelSupplement(r, d, "测试", false, "queued") {
+		t.Fatal("supplement was not cancelled")
+	}
+	var reply string
+	if err := f.s.DB.QueryRow("SELECT reply_to FROM outbox WHERE room=? AND kind='recovery'", r.Key).Scan(&reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply != d.Message.InteractionMessageID {
+		t.Fatalf("cancellation notice replies to %q, want the delivered card %q", reply, d.Message.InteractionMessageID)
 	}
 }
 

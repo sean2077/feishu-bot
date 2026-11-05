@@ -311,6 +311,19 @@ func artifactButton(value any, label string) core.Args {
 		text, _ := v["text"].(map[string]any)
 		if v["tag"] == "button" && text["content"] == label {
 			result, _ := v["value"].(map[string]any)
+			if result == nil {
+				// Card JSON 2.0 declares click callbacks under behaviors; main
+				// emits that form and older fixtures still emit a top-level value.
+				if behaviors, ok := v["behaviors"].([]any); ok {
+					for _, raw := range behaviors {
+						if behavior, ok := raw.(map[string]any); ok {
+							if result, _ = behavior["value"].(map[string]any); result != nil {
+								break
+							}
+						}
+					}
+				}
+			}
 			return result
 		}
 		for _, child := range v {

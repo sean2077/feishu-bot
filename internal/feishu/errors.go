@@ -54,6 +54,11 @@ func localRejection(operation string, err error) error {
 	if errors.As(err, &failure) {
 		return err
 	}
+	// Cancellation before dispatch is not a provider rejection; the caller can
+	// retry once the environment is available again.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return &APIError{Operation: operation, Retryable: true, cause: err}
+	}
 	return &APIError{Operation: operation, cause: err}
 }
 

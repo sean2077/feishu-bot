@@ -425,6 +425,7 @@ func (g *Gateway) command(ctx context.Context, r core.Room, m core.Message) erro
 		if _, e := g.store.Resume(r.Key, arg); e != nil {
 			return e
 		}
+		g.clearProfileWait(r.Key)
 		g.notify(r, "已选择历史会话，旧运行未交付的补充已取消。下一条消息会恢复上下文；旧后台进程不会自动重启。", &m)
 	case "/new":
 		if _, e := g.store.DB.Exec("DELETE FROM inbox WHERE room=? AND status='background'", r.Key); e != nil {
@@ -433,6 +434,7 @@ func (g *Gateway) command(ctx context.Context, r core.Room, m core.Message) erro
 		if _, e := g.store.NewSession(r.Key); e != nil {
 			return e
 		}
+		g.clearProfileWait(r.Key)
 		g.notify(r, "已新建本聊天会话，旧运行未交付的补充已取消。", &m)
 	case "/stop":
 		g.notify(r, "已停止本聊天运行、后台进程和待交付输入；未交付的补充已取消。上下文和会话 ID 保留，下条消息继续原会话；只有 /new 新建会话。", &m)

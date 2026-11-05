@@ -303,6 +303,26 @@ func TestCrashBetweenMessageAcknowledgementAndCardMappingRecoversWithoutPost(t *
 	}
 }
 
+func TestRecoverCardsTreatsNullSnapshotAsInvalidWithoutPanic(t *testing.T) {
+	db := fixtureDB(t)
+	c, _ := fixtureClient(t, db, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("recovery made a network request")
+		apiResponse(w, core.Args{})
+	})
+	room := fixtureRoom(t, c)
+	now := time.Now().UnixMilli()
+	if _, err := db.Exec(`INSERT INTO feishu_cards(message,card,room,sequence,snapshot) VALUES('om_null','card_null',?,0,'null')`, room.Key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO feishu_card_lifecycle(message,updated_at,terminal_at) VALUES('om_null',?,0)`, now); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := c.RecoverCards(context.Background())
+	if err == nil || recovered != 0 {
+		t.Fatalf("null snapshot was not reported as invalid: recovered=%d err=%v", recovered, err)
+	}
+}
+
 func TestRetainedCardCannotBeResurrectedFromCreationJournal(t *testing.T) {
 	db := fixtureDB(t)
 	writes := 0

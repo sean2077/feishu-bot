@@ -406,6 +406,87 @@ func TestExplicitKnownTargetRetryHonorsProviderDeadline(t *testing.T) {
 	}
 }
 
+func TestDefinitePreviewCreateRejectionDoesNotFreezePreviewIdentity(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("reject-preview", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	s := f.g.getSlot(f.room().Key)
+	r := newRender(f.g, s, &d)
+	f.tr.cardHook = func(context.Context, core.Room, core.Args) (string, error) { return "", classifiedFailure{} }
+	r.flushing = true
+	r.done = make(chan struct{})
+	r.flush()
+	if !r.createRejected || r.initialCard == nil {
+		t.Fatalf("definite preview rejection was not tracked: rejected=%t initial=%t", r.createRejected, r.initialCard != nil)
+	}
+	drain, err := r.persist("final answer", true, origin(d.Message), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := f.g.output(r.finalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.InitialCard != nil || o.DeliveryKey != "output:"+o.ID {
+		t.Fatalf("rejected preview identity was frozen into the final delivery: %+v", o)
+	}
+	var delivered core.Args
+	f.tr.mu.Lock()
+	f.tr.cardHook = func(_ context.Context, _ core.Room, card core.Args) (string, error) {
+		delivered = card
+		return "om-final", nil
+	}
+	f.tr.mu.Unlock()
+	drain()
+	if !strings.Contains(jsonText(delivered), "final answer") {
+		t.Fatalf("final card was not created from the final answer: %s", jsonText(delivered))
+	}
+	if done, err := f.g.output(r.finalID); err != nil || done.State != "done" {
+		t.Fatalf("final delivery state: %+v %v", done, err)
+	}
+}
+
+func TestFileCompletingDuringCardUpdateStillDefersReply(t *testing.T) {
+	f := newFixture(t, nil)
+	s, err := f.s.Session(f.room().Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(f.c.DataDir, "exports", "attachment.txt")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("attachment"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := f.g.saveOutput(f.s.DB, f.room(), s.ID, "", true, "", "", "", nil, nil, "attachment.txt", path, "file", "pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := f.g.saveOutput(f.s.DB, f.room(), s.ID, "answer", true, "", "", "", replyCard("回复", "answer", nil, 0, true, replyDetails{}, time.Second, true), nil, "", "", "reply", "pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.tr.updateHook = func(context.Context, string, core.Args) error {
+		_, e := f.s.DB.Exec("UPDATE outbox SET state='done',file_state='done',file_target='file-confirmed' WHERE id=?", file)
+		return e
+	}
+	if ok, err := f.g.deliverOutput(context.Background(), id, f.room(), false); ok || err != nil {
+		t.Fatalf("reply delivery before attachment acknowledgement: ok=%t err=%v", ok, err)
+	}
+	if pending, err := f.g.output(id); err != nil || pending.State != "pending" {
+		t.Fatalf("reply finalized while its card announced a pending attachment: %+v %v", pending, err)
+	}
+	f.tr.updateHook = nil
+	if ok, err := f.g.deliverOutput(context.Background(), id, f.room(), false); !ok || err != nil {
+		t.Fatalf("reply did not finalize after attachment acknowledgement: ok=%t err=%v", ok, err)
+	}
+	if done, err := f.g.output(id); err != nil || done.State != "done" {
+		t.Fatalf("reply state after attachment acknowledgement: %+v %v", done, err)
+	}
+}
+
 func TestLegacyOversizedMetadataStillDeliversTheCompleteAnswer(t *testing.T) {
 	f := newFixture(t, nil)
 	s, err := f.s.Session(f.room().Key)
@@ -439,4 +520,94 @@ func TestLegacyOversizedMetadataStillDeliversTheCompleteAnswer(t *testing.T) {
 	if f.starts.Load() != 0 {
 		t.Fatal("delivery woke the model")
 	}
+}
+
+func TestBlockedAttachmentFromEarlierTurnDoesNotDeferLaterReply(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	s, err := f.s.Session(r.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(f.c.DataDir, "exports", "old.txt")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.g.saveOutput(f.s.DB, r, s.ID, "", true, "", "", "", nil, []core.Origin{{ID: "old-message", SenderID: "member"}}, "old.txt", path, "file", "blocked"); err != nil {
+		t.Fatal(err)
+	}
+	card := replyCard("回复", "answer", nil, 0, true, replyDetails{}, time.Second, true)
+	id, err := f.g.saveOutput(f.s.DB, r, s.ID, "answer", true, "", "", "", card, []core.Origin{{ID: "new-message", SenderID: "member"}}, "", "", "reply", "pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, candidate := range f.g.retryable(r.Key) {
+		found = found || candidate == id
+	}
+	if !found {
+		t.Fatal("reply stayed filtered by an earlier turn's blocked attachment")
+	}
+	if ok, err := f.g.deliverOutput(context.Background(), id, r, false); !ok || err != nil {
+		t.Fatalf("later reply delivery: ok=%t err=%v", ok, err)
+	}
+	if done, err := f.g.output(id); err != nil || done.State != "done" {
+		t.Fatalf("later reply state: %+v %v", done, err)
+	}
+}
+
+func TestPendingAttachmentFromSameTurnDefersReply(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	s, err := f.s.Session(r.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(f.c.DataDir, "exports", "same.txt")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("same"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.g.saveOutput(f.s.DB, r, s.ID, "", true, "", "", "", nil, []core.Origin{{ID: "same-message", SenderID: "member"}}, "same.txt", path, "file", "pending"); err != nil {
+		t.Fatal(err)
+	}
+	card := replyCard("回复", "answer", nil, 0, true, replyDetails{}, time.Second, true)
+	id, err := f.g.saveOutput(f.s.DB, r, s.ID, "answer", true, "", "", "", card, []core.Origin{{ID: "same-message", SenderID: "member"}}, "", "", "reply", "pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := f.g.deliverOutput(context.Background(), id, r, false); ok || err != nil {
+		t.Fatalf("same-turn attachment did not defer reply: ok=%t err=%v", ok, err)
+	}
+	if pending, err := f.g.output(id); err != nil || pending.State != "pending" {
+		t.Fatalf("reply state: %+v %v", pending, err)
+	}
+}
+
+func TestApprovalWaitRefreshesCardAfterBlockedPreview(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("blocked-preview", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	s := f.g.getSlot(f.room().Key)
+	r := newRender(f.g, s, &d)
+	r.messageID = "om_card"
+	r.last = jsonText(r.cardLocked("处理中", "", false, false))
+	r.blocked = true
+	r.waitForAnswer(true, "等待审批")
+	eventually(t, func() bool {
+		f.tr.mu.Lock()
+		defer f.tr.mu.Unlock()
+		for _, update := range f.tr.updates {
+			if update.id == "om_card" && strings.Contains(jsonText(update.card), "等待审批") {
+				return true
+			}
+		}
+		return false
+	})
 }

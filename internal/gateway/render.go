@@ -22,30 +22,31 @@ type renderBlock struct {
 // A render has at most one provider request and one dirty snapshot. Slow card
 // updates cannot accumulate closures or copies of every streamed token.
 type render struct {
-	mu                                                  sync.Mutex
-	g                                                   *Gateway
-	room                                                core.Room
-	session                                             string
-	ctx                                                 context.Context
-	blocks                                              map[string]*renderBlock
-	order                                               []string
-	totalChars                                          int
-	thinking                                            map[string]string
-	thinkingOrder                                       []string
-	thinkingCount                                       int
-	legacy                                              int
-	messageID, finalID, replyTo, threadID, status, last string
-	started                                             int64
-	details                                             replyDetails
-	createUncertain, closed, flushing, dirty            bool
-	timer                                               *time.Timer
-	deliveryID                                          string
-	turn                                                string
-	initialCard                                         core.Args
-	waiting, failures                                   int
-	retryAt                                             time.Time
-	blocked, urgent                                     bool
-	done                                                chan struct{}
+	mu                                                       sync.Mutex
+	g                                                        *Gateway
+	room                                                     core.Room
+	session                                                  string
+	ctx                                                      context.Context
+	blocks                                                   map[string]*renderBlock
+	order                                                    []string
+	totalChars                                               int
+	thinking                                                 map[string]string
+	thinkingOrder                                            []string
+	thinkingCount                                            int
+	legacy                                                   int
+	messageID, finalID, replyTo, threadID, status, last      string
+	started                                                  int64
+	details                                                  replyDetails
+	createUncertain, createRejected, closed, flushing, dirty bool
+	timer                                                    *time.Timer
+	deliveryID                                               string
+	turn                                                     string
+	initialCard                                              core.Args
+	boundTarget, boundKey                                    string
+	waiting, failures                                        int
+	retryAt                                                  time.Time
+	blocked, urgent                                          bool
+	done                                                     chan struct{}
 }
 
 func newRender(g *Gateway, s *slot, anchor *core.Delivery) *render {
@@ -191,6 +192,12 @@ func (r *render) waitForAnswer(wait bool, title string) {
 	}
 	if wait {
 		r.waiting++
+		// A permanent preview error must not hide an approval/question state. The
+		// card still exists, so retry one status update; another permanent error
+		// latches the preview again without touching the final delivery path.
+		if r.blocked && r.messageID != "" {
+			r.blocked = false
+		}
 	} else if r.waiting > 0 {
 		r.waiting--
 	}
@@ -225,6 +232,13 @@ func (r *render) scheduleLocked() {
 		r.mu.Lock()
 		r.timer = nil
 		if r.closed || r.ctx.Err() != nil || r.replyTo == "" || r.createUncertain && r.messageID == "" {
+			r.mu.Unlock()
+			return
+		}
+		if r.flushing {
+			// A timer that fired before Stop() can race with a newer timer. Only
+			// one flush may own r.done; the running flush will reschedule.
+			r.dirty = true
 			r.mu.Unlock()
 			return
 		}
@@ -263,7 +277,9 @@ func (r *render) flush() {
 				err = errors.New("provider did not return message ID")
 			}
 		} else {
-			err = providerVoid(ctx, func() error { return r.g.transport.Update(ctx, target, card) })
+			// Serialize updates with outbox writers on the same message so a
+			// cancellation status cannot be overwritten by a late preview flush.
+			err = r.g.withOutputCard(ctx, target, func() error { return r.g.transport.Update(ctx, target, card) })
 		}
 	}
 	r.mu.Lock()
@@ -280,7 +296,15 @@ func (r *render) flush() {
 			r.dirty = true
 		}
 		if target != "" {
-			_ = r.g.bindQuickControls(target, card)
+			// The signed controls depend only on the target and turn/output
+			// identity; rebinding an unchanged revision every flush would add a
+			// SQLite transaction to the streaming hot path.
+			key := r.turn + "\x00" + r.finalID
+			if target != r.boundTarget || key != r.boundKey {
+				if e := r.g.bindQuickControls(target, card); e == nil {
+					r.boundTarget, r.boundKey = target, key
+				}
+			}
 		}
 		if r.ctx.Err() == nil {
 			r.last = snapshot
@@ -292,6 +316,12 @@ func (r *render) flush() {
 		uncertain := !classified || failure.DeliveryUncertain()
 		if r.messageID == "" && uncertain {
 			r.createUncertain = true
+		}
+		if target == "" && classified && !failure.DeliveryRetryable() && !failure.DeliveryUncertain() {
+			// The provider definitively rejected this preview create. Its frozen
+			// payload and delivery key must not be reused for the final answer;
+			// the outbox will create a card from the final snapshot instead.
+			r.createRejected = true
 		}
 		retry := r.messageID != "" || classified && failure.DeliveryRetryable()
 		if classified && !failure.DeliveryRetryable() && !failure.DeliveryUncertain() {
@@ -370,7 +400,7 @@ func (r *render) persist(text string, success bool, who []core.Origin, title str
 		if e != nil {
 			return e
 		}
-		if r.initialCard != nil {
+		if r.initialCard != nil && !r.createRejected {
 			if _, e = tx.Exec("UPDATE outbox SET delivery_key=?,initial_card=? WHERE id=?", r.deliveryID, jsonText(r.initialCard), id); e != nil {
 				return e
 			}

@@ -44,6 +44,10 @@ func validateProfiles(c *core.Config) error {
 	return nil
 }
 
+// ErrModelProfileUnavailable reports a persisted session selection whose
+// profile is no longer declared. Callers must not silently switch models.
+var ErrModelProfileUnavailable = errors.New("selected model profile is unavailable; select a configured profile or default")
+
 // ResolveSessionModel returns a value copy. A worker must never mutate the
 // factory's shared config when another conversation selects a profile.
 func ResolveSessionModel(c core.Config, name string) (core.Config, error) {
@@ -52,7 +56,7 @@ func ResolveSessionModel(c core.Config, name string) (core.Config, error) {
 	}
 	profile, ok := c.ModelProfiles[name]
 	if !ok || strings.TrimSpace(profile.Model) == "" {
-		return c, errors.New("selected model profile is unavailable; select a configured profile or default")
+		return c, ErrModelProfileUnavailable
 	}
 	c.Model.Model = profile.Model
 	c.Model.SmallModel = profile.SmallModel

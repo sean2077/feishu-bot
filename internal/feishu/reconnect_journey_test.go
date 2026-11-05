@@ -103,14 +103,14 @@ func TestReconnectDispatchesMessagesAnswersAndStop(t *testing.T) {
 			defer mu.Unlock()
 			seen[m.ID] = m.Text
 			return nil
-		}, func(_ context.Context, a core.CardAction) (string, error) {
+		}, func(_ context.Context, a core.CardAction) (core.Args, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			if a.MessageID != "om_question" || a.UserID != "ou_owner" || a.FormValue["answer"] != "continued after reconnect" {
 				t.Error("reconnected callback lost origin or answer")
 			}
 			answers++
-			return "已确认", nil
+			return core.Args{"toast": core.Args{"type": "info", "content": "已确认"}}, nil
 		})
 	}()
 	await(t, finished, "post-reconnect message, answer and stop acknowledgements")

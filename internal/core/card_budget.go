@@ -1,10 +1,18 @@
 package core
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"errors"
+)
 
 // CardPayloadLimit is deliberately below 30 KiB. The same conservative budget
 // applies to inline IM cards and CardKit so a permission fallback is safe.
 const CardPayloadLimit = 30000
+
+// ErrCardTooLarge distinguishes a card that exceeds the platform budget from a
+// malformed card. Callers can report a readable reason instead of auto-denying
+// an interaction whose card could not be delivered.
+var ErrCardTooLarge = errors.New("card payload exceeds the platform limit")
 
 // CardPayloadBytes measures the serialized card nested in a JSON string, as
 // used by both IM content and CardKit data. The reservation covers recipient,

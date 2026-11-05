@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
@@ -45,8 +46,11 @@ func cardTexts(value any) map[string]string {
 func normalizedCard(card core.Args) (core.Args, string, error) {
 	encoded, err := canonicalJSON(card)
 	budget, budgetErr := core.CardPayloadBytes(card)
-	if err != nil || budgetErr != nil || budget > core.CardPayloadLimit {
-		return nil, "", errors.New("feishu: invalid or oversized card")
+	if err != nil || budgetErr != nil {
+		return nil, "", errors.New("feishu: invalid card")
+	}
+	if budget > core.CardPayloadLimit {
+		return nil, "", fmt.Errorf("%w: %d bytes", core.ErrCardTooLarge, budget)
 	}
 	// Canonicalize []Args and other typed application slices into the same JSON
 	// representation as snapshots restored from SQLite.
@@ -152,7 +156,7 @@ func (c *Client) nextCardSequence(ctx context.Context, id string) (int64, error)
 	// risking reuse of an already accepted write after a restart.
 	err := c.db.QueryRowContext(ctx, "UPDATE feishu_cards SET sequence=sequence+1 WHERE message=? RETURNING sequence", id).Scan(&seq)
 	if err != nil {
-		return 0, errors.New("feishu: card sequence reservation failed")
+		return 0, &APIError{Operation: "card sequence reservation", Retryable: true, cause: err}
 	}
 	return seq, nil
 }
@@ -176,7 +180,7 @@ func (c *Client) Update(ctx context.Context, id string, card core.Args) (resultE
 		return c.plainUpdate(ctx, id, normalized)
 	}
 	if err != nil {
-		return errors.New("feishu: card state is unavailable")
+		return &APIError{Operation: "card state lookup", Retryable: true, cause: err}
 	}
 	// Saved native cards retain their original room even if a callback supplies a
 	// different target. Revoked configuration may no longer mutate that room.
@@ -190,7 +194,7 @@ func (c *Client) Update(ctx context.Context, id string, card core.Args) (resultE
 	}
 	var streamClosed int
 	if e := c.db.QueryRowContext(ctx, "SELECT stream_closed FROM feishu_card_lifecycle WHERE message=?", id).Scan(&streamClosed); e != nil && !errors.Is(e, sql.ErrNoRows) {
-		return errors.New("feishu: card lifecycle is unavailable")
+		return &APIError{Operation: "card lifecycle lookup", Retryable: true, cause: e}
 	}
 	if streamClosed != 0 {
 		disableStreaming(normalized)

@@ -77,7 +77,7 @@ type verifierFixture struct {
 	cards, files, updates int
 }
 
-func (f *verifierFixture) Start(ctx context.Context, onMessage func(context.Context, core.Message) error, onAction func(context.Context, core.CardAction) (string, error)) error {
+func (f *verifierFixture) Start(ctx context.Context, onMessage func(context.Context, core.Message) error, onAction func(context.Context, core.CardAction) (core.Args, error)) error {
 	_ = onMessage(ctx, core.Message{ID: "om_input", ChatID: "oc_test", ChatType: "group", SenderID: "member", Mentioned: true, Text: "/verify nonce"})
 	select {
 	case <-f.fileSent:
@@ -116,6 +116,43 @@ func (f *verifierFixture) File(_ context.Context, r core.Room, path, _ string) (
 	}
 	return "om_file", nil
 }
+func TestVerificationCardButtonsUseCallbackBehaviors(t *testing.T) {
+	card := verificationCard("nonce", "status", true)
+	buttons := 0
+	var walk func(any)
+	walk = func(value any) {
+		switch item := value.(type) {
+		case map[string]any:
+			if item["tag"] == "button" {
+				buttons++
+				if _, exists := item["value"]; exists {
+					t.Fatalf("card 2.0 button uses a top-level value: %#v", item)
+				}
+				behaviors, ok := item["behaviors"].([]any)
+				if !ok || len(behaviors) != 1 {
+					t.Fatalf("button is missing a callback behavior: %#v", item)
+				}
+				behavior, _ := behaviors[0].(map[string]any)
+				callback, _ := behavior["value"].(map[string]any)
+				if behavior["type"] != "callback" || callback["nonce"] != "nonce" {
+					t.Fatalf("button callback behavior is invalid: %#v", item)
+				}
+			}
+			for _, child := range item {
+				walk(child)
+			}
+		case []any:
+			for _, child := range item {
+				walk(child)
+			}
+		}
+	}
+	walk(card)
+	if buttons != 2 {
+		t.Fatalf("verification card buttons=%d", buttons)
+	}
+}
+
 func TestExplicitChatVerificationConfirmsScopedCardAndFile(t *testing.T) {
 	c := verificationConfig(t)
 	f := &verifierFixture{t: t, fileSent: make(chan struct{}), closed: make(chan struct{})}

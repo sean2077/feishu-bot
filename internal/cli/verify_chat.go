@@ -27,7 +27,7 @@ type ChatVerification struct {
 }
 
 type chatVerifier interface {
-	Start(context.Context, func(context.Context, core.Message) error, func(context.Context, core.CardAction) (string, error)) error
+	Start(context.Context, func(context.Context, core.Message) error, func(context.Context, core.CardAction) (core.Args, error)) error
 	Close() error
 	Card(context.Context, core.Room, core.Args, string, string) (string, error)
 	Update(context.Context, string, core.Args) error
@@ -114,12 +114,23 @@ func VerifyConfiguredChat(parent context.Context, c core.Config, target string, 
 	return verifyChatSession(ctx, c, target, core.NewID(), dir, out, client)
 }
 
+// Card callbacks return the response payload sent back to Feishu. Verification
+// only needs a toast; the card itself is refreshed by the verification flow.
+func verificationToast(text string) core.Args {
+	if text == "" {
+		return core.Args{}
+	}
+	return core.Args{"toast": core.Args{"type": "info", "content": text}}
+}
+
 func verificationCard(nonce, status string, active bool) core.Args {
 	elements := []any{core.Args{"tag": "markdown", "content": status}}
 	if active {
 		columns := []any{}
 		for _, choice := range []struct{ key, label string }{{"card", "确认看到了卡片"}, {"file", "确认已打开测试文件"}} {
-			button := core.Args{"tag": "button", "text": core.Args{"tag": "plain_text", "content": choice.label}, "type": "default", "value": core.Args{"diagnostic": "first-connection", "nonce": nonce, "choice": choice.key}}
+			// Card JSON 2.0 declares click callbacks on the component's behaviors;
+			// a top-level value is the card 1.0 form and produces no callback.
+			button := core.Args{"tag": "button", "text": core.Args{"tag": "plain_text", "content": choice.label}, "type": "default", "behaviors": []any{core.Args{"type": "callback", "value": core.Args{"diagnostic": "first-connection", "nonce": nonce, "choice": choice.key}}}}
 			columns = append(columns, core.Args{"tag": "column", "width": "weighted", "weight": 1, "elements": []any{button}})
 		}
 		elements = append(elements, core.Args{"tag": "column_set", "flex_mode": "stretch", "columns": columns})
@@ -151,42 +162,42 @@ func verifyChatSession(ctx context.Context, c core.Config, target, nonce, dir st
 				}
 			}
 			return nil
-		}, func(_ context.Context, a core.CardAction) (string, error) {
+		}, func(_ context.Context, a core.CardAction) (core.Args, error) {
 			if runCtx.Err() != nil {
-				return "验证已结束", nil
+				return verificationToast("验证已结束"), nil
 			}
 			value, _ := a.Value["nonce"].(string)
 			if a.Value["diagnostic"] != "first-connection" || subtle.ConstantTimeCompare([]byte(value), []byte(nonce)) != 1 {
-				return "验证请求无效", nil
+				return verificationToast("验证请求无效"), nil
 			}
 			select {
 			case <-cardReady:
 			default:
-				return "验证卡仍在发送，请稍后确认", nil
+				return verificationToast("验证卡仍在发送，请稍后确认"), nil
 			}
 			mu.Lock()
 			defer mu.Unlock()
 			if runCtx.Err() != nil {
-				return "验证已结束", nil
+				return verificationToast("验证已结束"), nil
 			}
 			if cardID == "" || a.MessageID != cardID || a.ChatID != selected.ChatID || !gateway.AuthorizedAuthor(selected, a.UserID) {
-				return "验证请求不属于当前聊天或操作者", nil
+				return verificationToast("验证请求不属于当前聊天或操作者"), nil
 			}
 			switch a.Value["choice"] {
 			case "card":
 				cardConfirmed = true
 			case "file":
 				if !filesSent {
-					return "测试文件仍在发送，请稍后确认", nil
+					return verificationToast("测试文件仍在发送，请稍后确认"), nil
 				}
 				fileConfirmed = true
 			default:
-				return "验证操作无效", nil
+				return verificationToast("验证操作无效"), nil
 			}
 			if cardConfirmed && fileConfirmed {
 				completedOnce.Do(func() { close(completed) })
 			}
-			return "已记录确认", nil
+			return verificationToast("已记录确认"), nil
 		})
 	}()
 	defer func() {

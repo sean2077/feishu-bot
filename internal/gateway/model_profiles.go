@@ -216,6 +216,7 @@ func (g *Gateway) modelCommand(r core.Room, m core.Message, arg string) error {
 	if err := g.store.RequestProfile(r.Key, s.ID, arg); err != nil {
 		return err
 	}
+	g.clearProfileWait(r.Key)
 	g.kick(r)
 	g.notify(r, "已选择 "+profileLabel(arg)+"；将于本会话下一安全轮次边界生效。当前前台、审批和后台工作保留；不会影响其他聊天或更换原生会话 ID。", &m)
 	return nil

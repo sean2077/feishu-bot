@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/sean2077/feishu-bot/internal/core"
 	"sort"
@@ -116,6 +117,7 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 	}
 	g.task(func() {
 		success := false
+		var lastErr error
 		for _, target := range targets {
 			if waitCtx.Err() != nil {
 				break
@@ -130,6 +132,7 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 				return mid, e
 			})
 			if e != nil || mid == "" {
+				lastErr = e
 				continue
 			}
 			g.approvalMu.Lock()
@@ -159,7 +162,11 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 			}
 		}
 		if !success {
-			g.settleApproval(id, core.Args{"approved": false, "reason": "card delivery failed"}, "system")
+			reason := "card delivery failed"
+			if errors.Is(lastErr, core.ErrCardTooLarge) {
+				reason = "approval card exceeds the platform size limit; ask fewer questions or shorter option text"
+			}
+			g.settleApproval(id, core.Args{"approved": false, "reason": reason}, "system")
 		}
 	})
 	if ctx.Err() != nil {
@@ -178,8 +185,43 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 	}
 }
 func approvalCard(id string, p *approval, actor string) core.Args {
+	card := approvalCardText(id, p, actor, -1)
+	if interactionCardFits(card) {
+		return card
+	}
+	// Shrink model-supplied text until the card fits the platform budget. Option
+	// entries, their values and the submit controls are preserved; only display
+	// text is bounded so a long question cannot make approval impossible.
+	lo, hi := 0, core.CardPayloadLimit
+	for lo < hi {
+		mid := lo + (hi-lo+1)/2
+		if interactionCardFits(approvalCardText(id, p, actor, mid)) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return approvalCardText(id, p, actor, lo)
+}
+
+func interactionCardFits(card core.Args) bool {
+	size, err := core.CardPayloadBytes(card)
+	return err == nil && size <= core.CardPayloadLimit
+}
+
+func capInteractionText(text string, limit int) string {
+	if limit < 0 || len(text) <= limit {
+		return text
+	}
+	if limit == 0 {
+		return "…"
+	}
+	return bytePrefix(text, limit) + "…"
+}
+
+func approvalCardText(id string, p *approval, actor string, limit int) core.Args {
 	if p.kind == "permission" {
-		return DisplayCard("需要维护者批准", p.summary+"\n\n仅批准这一次操作，超时或停止后失效。\n请求：`"+id+"`", button("批准一次", core.Args{"request": id, "decision": "allow"}, "primary"), button("拒绝", core.Args{"request": id, "decision": "deny"}, "danger"))
+		return DisplayCard("需要维护者批准", capInteractionText(p.summary, limit)+"\n\n仅批准这一次操作，超时或停止后失效。\n请求：`"+id+"`", button("批准一次", core.Args{"request": id, "decision": "allow"}, "primary"), button("拒绝", core.Args{"request": id, "decision": "deny"}, "danger"))
 	}
 	intro := "每题标注单选/多选；群内每位成员独立选择，第一位提交者生效。"
 	if p.room.DMUser != "" {
@@ -188,28 +230,29 @@ func approvalCard(id string, p *approval, actor string) core.Args {
 	if line := selectionSummary(p, actor); line != "" {
 		intro += "\n\n" + line
 	}
+	intro = capInteractionText(intro, limit)
 	elements := []any{}
 	for qi, q := range p.questions {
 		mode := "单选"
 		if q.MultiSelect {
 			mode = "多选"
 		}
-		header := q.Header
+		header := capInteractionText(q.Header, limit)
 		if header != "" {
 			header += " · "
 		}
-		elements = append(elements, core.Args{"tag": "markdown", "content": fmt.Sprintf("**%d. %s%s**\n%s", qi+1, header, mode, q.Question)})
+		elements = append(elements, core.Args{"tag": "markdown", "content": fmt.Sprintf("**%d. %s%s**\n%s", qi+1, header, mode, capInteractionText(q.Question, limit))})
 		for oi, o := range q.Options {
 			selected := actor != "" && p.room.DMUser != "" && p.selected[actor][qi][oi]
-			label := o.Label
+			label := capInteractionText(o.Label, limit)
 			style := "default"
 			if selected {
 				label = "✓ " + label
 				style = "primary"
 			}
 			value := core.Args{"revision": p.revision, "request": id, "question": qi, "option": oi}
-			if o.Description != "" {
-				elements = append(elements, optionRow(label, o.Description, value, style))
+			if o.Description != "" && limit != 0 {
+				elements = append(elements, optionRow(label, capInteractionText(o.Description, limit), value, style))
 			} else {
 				elements = append(elements, button(label, value, style))
 			}
@@ -360,7 +403,7 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 	}
 	defer g.wg.Done()
 	if text, handled, err := g.quickAction(ctx, a); handled {
-		return text, err
+		return actionToast(text), err
 	}
 	id := stringArg(a.Value, "request")
 	if id == "" {

@@ -434,7 +434,7 @@ func (c *Client) RecoverCards(ctx context.Context) (int64, error) {
 				continue
 			}
 			var snapshot core.Args
-			if json.Unmarshal([]byte(card.snapshot), &snapshot) != nil {
+			if json.Unmarshal([]byte(card.snapshot), &snapshot) != nil || snapshot == nil {
 				failures = append(failures, errors.New("feishu: invalid interrupted card snapshot"))
 				continue
 			}

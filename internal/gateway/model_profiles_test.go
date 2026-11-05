@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -200,5 +201,52 @@ func TestProfileSwitchKeepsCapacityWhenStopIsUnconfirmed(t *testing.T) {
 	p, err := f.s.Preferences(f.room().Key, d.SessionID)
 	if err != nil || p.Profile != "" || p.RequestedProfile == nil || *p.RequestedProfile != "careful" || f.starts.Load() != 1 || f.status("later") != "queued" {
 		t.Fatal("unconfirmed process was replaced or profile prematurely applied", p, err)
+	}
+}
+
+func TestRemovedProfileStopsDispatchAfterOneNotice(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	s, err := f.s.Session(r.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.RequestProfile(r.Key, s.ID, "removed"); err != nil {
+		t.Fatal(err)
+	}
+	p, err := f.s.Preferences(r.Key, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := f.s.ApplyProfile(r.Key, s.ID, p.Revision); err != nil || !changed {
+		t.Fatalf("apply removed profile: changed=%t err=%v", changed, err)
+	}
+	f.send(f.message("queued", "work", "member"))
+	notices := func() int {
+		f.tr.mu.Lock()
+		defer f.tr.mu.Unlock()
+		n := 0
+		for _, text := range f.tr.notices {
+			if strings.Contains(text, "模型配置不可用") {
+				n++
+			}
+		}
+		return n
+	}
+	eventually(t, func() bool { return notices() == 1 })
+	for i := 0; i < 3; i++ {
+		f.g.kickWaiting()
+	}
+	f.g.Sweep(context.Background(), time.Now().UnixMilli())
+	if n := notices(); n != 1 {
+		t.Fatalf("removed profile produced %d notices after sweeps", n)
+	}
+	if f.status("queued") != "queued" || f.starts.Load() != 0 {
+		t.Fatalf("removed profile dispatched or dropped the saved input: status=%s starts=%d", f.status("queued"), f.starts.Load())
+	}
+	f.send(f.message("recover", "/model default", "owner"))
+	eventually(t, func() bool { return f.starts.Load() == 1 })
+	if n := notices(); n != 1 {
+		t.Fatalf("explicit recovery produced another notice: %d", n)
 	}
 }

@@ -124,10 +124,51 @@ func (g *Gateway) outputSending(id string, r core.Room) bool {
 	o, e := g.output(id)
 	return e == nil && o.State == "sending" && g.permittedOutput(o, r)
 }
-func (g *Gateway) unfinishedFiles(room, session string) int {
-	var n int
-	_ = g.store.DB.QueryRow(`SELECT count(*) FROM outbox WHERE room=? AND session=? AND kind='file' AND state NOT IN ('done','cancelled')`, room, session).Scan(&n)
-	return n
+
+// filesPendingFor reports whether an unfinished file belongs to the same turn
+// as o. File and reply rows persist the triggering origins, so a permanently
+// failed attachment from an earlier turn must not defer later replies in the
+// same session. A reply without origins keeps the conservative session-wide
+// behavior because its turn cannot be attributed.
+func (g *Gateway) filesPendingFor(o outgoing) (bool, error) {
+	if o.Kind != "reply" || !o.Success {
+		return false, nil
+	}
+	rows, err := g.store.DB.Query(`SELECT origins FROM outbox WHERE room=? AND session=? AND kind='file' AND state NOT IN ('done','cancelled')`, o.Room, o.Session)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	replyOrigins := originIDs(o.Origins)
+	for rows.Next() {
+		var raw sql.NullString
+		if err := rows.Scan(&raw); err != nil {
+			return false, err
+		}
+		if len(replyOrigins) == 0 {
+			return true, nil
+		}
+		var fileOrigins []core.Origin
+		if raw.Valid && raw.String != "" && raw.String != "null" {
+			_ = json.Unmarshal([]byte(raw.String), &fileOrigins)
+		}
+		for _, origin := range fileOrigins {
+			if _, ok := replyOrigins[origin.ID]; ok {
+				return true, nil
+			}
+		}
+	}
+	return false, rows.Err()
+}
+
+func originIDs(origins []core.Origin) map[string]struct{} {
+	ids := make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		if origin.ID != "" {
+			ids[origin.ID] = struct{}{}
+		}
+	}
+	return ids
 }
 func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, explicit bool) (bool, error) {
 	if ctx.Err() != nil {
@@ -179,15 +220,29 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 		phase = "file_prepare"
 	}
 	perform := func() error {
+		// Capture the pending-attachment decision once. Re-querying after the
+		// card update could observe a file that completed mid-update and skip
+		// both the deferral and the terminal card update.
+		otherFilesPending, e := g.filesPendingFor(o)
+		if e != nil {
+			return e
+		}
 		if !o.fileOnly() {
-			filesPending := (o.FileName != "" && !knownFile) || o.Kind == "reply" && o.Success && g.unfinishedFiles(r.Key, o.Session) > 0
+			filesPending := (o.FileName != "" && !knownFile) || otherFilesPending
 			card := g.outputCard(o, r, filesPending)
 			if target == "" {
 				if o.InitialCard == nil {
 					o.InitialCard = card
-					if _, e := g.store.DB.Exec("UPDATE outbox SET initial_card=? WHERE id=? AND state='sending'", jsonText(card), id); e != nil {
+					res, e := g.store.DB.Exec("UPDATE outbox SET initial_card=? WHERE id=? AND state='sending'", jsonText(card), id)
+					if e != nil {
 						return e
 					}
+					if n, _ := res.RowsAffected(); n != 1 {
+						return errCancelledDelivery
+					}
+				}
+				if !g.outputSending(id, r) {
+					return errCancelledDelivery
 				}
 				target, err = provider(ctx, func() (string, error) { return g.transport.Card(ctx, r, o.InitialCard, o.ReplyTo, o.ThreadID) })
 				if err != nil {
@@ -289,7 +344,7 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 		if !g.outputSending(id, r) {
 			return errCancelledDelivery
 		}
-		if o.Kind == "reply" && o.Success && g.unfinishedFiles(r.Key, o.Session) > 0 {
+		if otherFilesPending {
 			_, e := g.store.DB.Exec(`UPDATE outbox SET state='pending',delivery_error=? WHERE id=? AND state='sending'`, "Attachment delivery remains pending.", id)
 			if e != nil {
 				return e
@@ -436,7 +491,7 @@ func (g *Gateway) updateOutputCard(ctx context.Context, id string, room core.Roo
 	})
 }
 func (g *Gateway) retryable(room string) []string {
-	const query = `SELECT o.id,o.at FROM outbox o WHERE o.room=? AND o.state='pending' AND o.retry_after<=? AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR o.kind IN ('reply','recovery') OR (o.kind IN ('file','artifact') AND o.file_state IN ('pending','done'))) AND (o.kind IN ('file','artifact','recovery') OR NOT EXISTS (SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session AND f.kind='file' AND f.state NOT IN ('done','cancelled')))`
+	const query = `SELECT o.id,o.at FROM outbox o WHERE o.room=? AND o.state='pending' AND o.retry_after<=? AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR o.kind IN ('reply','recovery') OR (o.kind IN ('file','artifact') AND o.file_state IN ('pending','done')))`
 	g.outMu.Lock()
 	cur, ok := g.outCursor[room]
 	g.outMu.Unlock()
@@ -473,7 +528,26 @@ func (g *Gateway) retryable(room string) []string {
 		delete(g.outCursor, room)
 	}
 	g.outMu.Unlock()
-	return ids
+	return g.readyForDelivery(ids)
+}
+
+// readyForDelivery drops replies whose own-turn attachments are still pending.
+// The cursor still advances over the raw batch so filtered rows cannot starve
+// later candidates; once the attachment finishes the reply is selected again.
+func (g *Gateway) readyForDelivery(ids []string) []string {
+	ready := make([]string, 0, len(ids))
+	for _, id := range ids {
+		o, err := g.output(id)
+		if err != nil {
+			continue
+		}
+		pending, err := g.filesPendingFor(o)
+		if err != nil || pending {
+			continue
+		}
+		ready = append(ready, id)
+	}
+	return ready
 }
 
 type outputCursor struct {
@@ -566,7 +640,7 @@ func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 		o.Card = fitCardBudget(card, budget, suffix)
 	}
 	if o.Kind == "status" {
-		_, err = g.store.DB.Exec("UPDATE outbox SET card=? WHERE id=?", jsonText(o.Card), o.ID)
+		_, err = g.store.DB.Exec("UPDATE outbox SET card=? WHERE id=? AND state NOT IN ('done','cancelled')", jsonText(o.Card), o.ID)
 		return err
 	}
 	if o.FilePath == "" {
@@ -574,7 +648,7 @@ func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 		o.FilePath = filepath.Join(g.config.DataDir, "exports", core.Hash(o.Room)[:32], core.NewID()+".md")
 		o.FileState = "pending"
 	}
-	_, err = g.store.DB.Exec("UPDATE outbox SET card=?,file_name=?,file_path=?,file_state=? WHERE id=?", jsonText(o.Card), o.FileName, o.FilePath, o.FileState, o.ID)
+	_, err = g.store.DB.Exec("UPDATE outbox SET card=?,file_name=?,file_path=?,file_state=? WHERE id=? AND state NOT IN ('done','cancelled')", jsonText(o.Card), o.FileName, o.FilePath, o.FileState, o.ID)
 	return err
 }
 
