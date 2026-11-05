@@ -80,6 +80,8 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 	if questions != nil {
 		kind = "question"
 	}
+	resumeReplies := g.pauseReplies(r.Key, session, kind)
+	defer resumeReplies()
 	id := core.NewID()
 	expires := time.Now().UnixMilli() + g.config.Limits.ApprovalMS
 	waitCtx, cancel := context.WithCancel(ctx)
@@ -320,6 +322,7 @@ func (g *Gateway) Action(ctx context.Context, a core.CardAction) (string, error)
 		return "", nil
 	}
 	defer g.wg.Done()
+	if text, handled, err := g.quickAction(ctx, a); handled { return text, err }
 	id := stringArg(a.Value, "request")
 	if id == "" {
 		return "", nil

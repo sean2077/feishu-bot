@@ -90,7 +90,11 @@ func modelEnvironment(c core.Config, token string, headers map[string]string) ma
 	for _, key := range keys {
 		lines = append(lines, key+": "+headers[key])
 	}
-	return map[string]string{"ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": token, "ANTHROPIC_BASE_URL": c.Model.BaseURL, "ANTHROPIC_CUSTOM_HEADERS": strings.Join(lines, "\n"), "ANTHROPIC_MODEL": c.Model.Model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": c.Model.SmallModel, "ANTHROPIC_DEFAULT_SONNET_MODEL": c.Model.Model, "ANTHROPIC_DEFAULT_OPUS_MODEL": c.Model.Model, "ANTHROPIC_DEFAULT_FABLE_MODEL": c.Model.Model, "CLAUDE_CODE_SUBAGENT_MODEL": c.Model.Model, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+	result := map[string]string{"ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": token, "ANTHROPIC_BASE_URL": c.Model.BaseURL, "ANTHROPIC_CUSTOM_HEADERS": strings.Join(lines, "\n"), "ANTHROPIC_MODEL": c.Model.Model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": c.Model.SmallModel, "ANTHROPIC_DEFAULT_SONNET_MODEL": c.Model.Model, "ANTHROPIC_DEFAULT_OPUS_MODEL": c.Model.Model, "ANTHROPIC_DEFAULT_FABLE_MODEL": c.Model.Model, "CLAUDE_CODE_SUBAGENT_MODEL": c.Model.Model, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+	if c.Model.Effort != "" {
+		result["CLAUDE_CODE_EFFORT_LEVEL"] = c.Model.Effort
+	}
+	return result
 }
 func privateSettings(w core.Workspace, modelEnv map[string]string) (string, error) {
 	if w.NativeConfig != "inherit" {

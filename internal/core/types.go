@@ -22,6 +22,7 @@ type Message struct {
 	Time         int64      `json:"time"`
 	Mentioned    bool       `json:"mentioned"`
 	ReplyTo      string     `json:"replyTo,omitempty"`
+	InteractionMessageID string `json:"interactionMessageId,omitempty"`
 	ThreadID     string     `json:"threadId,omitempty"`
 	Resources    []Resource `json:"resources"`
 	InputIssue   string     `json:"inputIssue,omitempty"`
@@ -41,6 +42,7 @@ type Session struct {
 	RoomKey   string `json:"roomKey"`
 	CCID      string `json:"ccId,omitempty"`
 	State     string `json:"state"`
+	Profile   string `json:"profile,omitempty"`
 	CreatedAt int64  `json:"createdAt"`
 }
 type ImageBatch struct {
@@ -111,8 +113,16 @@ type ModelConfig struct {
 	TokenEnv     string            `json:"tokenEnv"`
 	Model        string            `json:"model"`
 	SmallModel   string            `json:"smallModel"`
+	Effort       string            `json:"effort,omitempty"`
 	ExtraHeaders map[string]string `json:"extraHeaders"`
 	AllowHTTP    bool              `json:"allowHttp"`
+}
+// ModelProfile changes only native model selection. Credentials, endpoints and
+// permission policy remain deployment settings, never chat-controlled values.
+type ModelProfile struct {
+	Model      string `json:"model"`
+	SmallModel string `json:"smallModel,omitempty"`
+	Effort     string `json:"effort,omitempty"`
 }
 type Group struct {
 	ChatID          string   `json:"chatId"`
@@ -144,6 +154,7 @@ type Config struct {
 	DataDir      string        `json:"dataDir"`
 	Runtime      RuntimeConfig `json:"runtime"`
 	Model        ModelConfig   `json:"model"`
+	ModelProfiles map[string]ModelProfile `json:"modelProfiles,omitempty"`
 	Projects     []Project     `json:"projects"`
 	Groups       []Group       `json:"groups"`
 	DMs          []DM          `json:"dms"`

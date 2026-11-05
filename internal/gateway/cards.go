@@ -5,6 +5,7 @@ import (
 	"github.com/sean2077/feishu-bot/internal/core"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 func DisplayCard(title, text string, buttons ...any) core.Args {
@@ -55,6 +56,16 @@ func statusLine(d replyDetails) string {
 	return strings.Join(s, " · ")
 }
 func replyCard(title, answer string, thinking []string, total int, final bool, d replyDetails, elapsed time.Duration, success bool) core.Args {
+	card, _ := boundedReplyCard(title, answer, thinking, total, final, d, elapsed, success, nil)
+	return card
+}
+
+// The answer is the only large variable field. Bound metadata separately so
+// even a hostile model label or project path cannot consume the answer budget.
+func buildReplyCard(title, answer string, thinking []string, total int, final bool, d replyDetails, elapsed time.Duration, success bool) core.Args {
+	title = cut(title, 120)
+	d.Model = cut(d.Model, 256)
+	d.ProjectPath = cut(d.ProjectPath, 512)
 	elements := []any{}
 	if total > 0 {
 		steps := []any{}
@@ -70,7 +81,7 @@ func replyCard(title, answer string, thinking []string, total int, final bool, d
 		}
 		elements = append(elements, core.Args{"tag": "collapsible_panel", "expanded": !final, "background_color": "grey", "border": core.Args{"color": "grey"}, "vertical_spacing": "8px", "padding": "4px 8px", "header": core.Args{"title": core.Args{"tag": "plain_text", "content": fmt.Sprintf("Reasoning (%d)", total)}}, "elements": steps})
 	}
-	body := cut(answer, 24000)
+	body := answer
 	if body == "" {
 		if final {
 			body = "本轮已结束。"
@@ -111,4 +122,42 @@ func replyCard(title, answer string, thinking []string, total int, final bool, d
 		cfg["streaming_config"] = core.Args{"print_frequency_ms": core.Args{"default": 70}, "print_step": core.Args{"default": 1}, "print_strategy": "fast"}
 	}
 	return core.Args{"schema": "2.0", "config": cfg, "header": core.Args{"template": color, "title": core.Args{"tag": "plain_text", "content": title}}, "body": core.Args{"elements": elements}}
+}
+
+// bytePrefix never splits a UTF-8 code point and avoids allocating []rune for
+// every preview. JSON is still measured after escaping, not estimated by bytes.
+func bytePrefix(s string, n int) string {
+	if n >= len(s) { return s }
+	if n < 0 { n = 0 }
+	for n > 0 && !utf8.RuneStart(s[n]) { n-- }
+	return s[:n]
+}
+
+func boundedReplyCard(title, answer string, thinking []string, total int, final bool, d replyDetails, elapsed time.Duration, success bool, actions []any) (core.Args, bool) {
+	makeCard := func(body string) core.Args {
+		card := buildReplyCard(title, body, thinking, total, final, d, elapsed, success)
+		if len(actions) > 0 {
+			body := argsOf(card["body"])
+			elements, _ := body["elements"].([]any)
+			body["elements"] = append(elements, actions...)
+			card["body"] = body
+		}
+		return card
+	}
+	preview := bytePrefix(answer, core.CardPayloadLimit)
+	card := makeCard(preview)
+	n, err := core.CardPayloadBytes(card)
+	if len(preview) == len(answer) && err == nil && n <= core.CardPayloadLimit {
+		return card, false
+	}
+	suffix := "\n\n（预览已截断，完成后附完整答案文件。）"
+	if final { suffix = "\n\n（完整答案另附文件。）" }
+	low, high := 0, len(preview)
+	for low < high {
+		mid := low + (high-low+1)/2
+		candidate := makeCard(bytePrefix(preview, mid) + suffix)
+		size, e := core.CardPayloadBytes(candidate)
+		if e == nil && size <= core.CardPayloadLimit { low = mid } else { high = mid-1 }
+	}
+	return makeCard(bytePrefix(preview, low) + suffix), true
 }

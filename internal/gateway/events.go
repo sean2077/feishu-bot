@@ -316,9 +316,6 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	if model == "" {
 		model = strings.Join(ev.Models, " / ")
 	}
-	if model == "" {
-		model = g.config.Model.Model
-	}
 	r.setDetails(replyDetails{Model: model, ProjectPath: s.workspace.Work, Context: ev.Context, Usage: ev.Usage})
 	answer := ev.Text
 	compact := map[string]string{"compacted": "上下文已由 Claude Code 原生压缩，会话保持不变。", "not_needed": "原生压缩未执行（例如历史不足），会话保持不变。", "failed": "原生压缩失败，未新建或重置会话。"}[ev.Compact]

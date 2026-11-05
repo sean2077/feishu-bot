@@ -310,6 +310,9 @@ func absolute(base, path string) string {
 	return p
 }
 func validate(c *core.Config, base string) error {
+	if err := validateProfiles(c); err != nil {
+		return err
+	}
 	for k, v := range map[string]string{"tenantId": c.TenantID, "appId": c.AppID, "appSecretEnv": c.AppSecretEnv, "model.tokenEnv": c.Model.TokenEnv} {
 		if !idPattern.MatchString(v) {
 			return fmt.Errorf("%s: invalid id", k)

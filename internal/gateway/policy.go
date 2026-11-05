@@ -115,11 +115,12 @@ func cut(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	r := []rune(s)
-	if len(r) <= n {
-		return s
+	count := 0
+	for at := range s {
+		if count == n { return s[:at] }
+		count++
 	}
-	return string(r[:n])
+	return s
 }
 func jsonText(v any) string                  { b, _ := json.Marshal(v); return string(b) }
 func stringArg(a core.Args, k string) string { s, _ := a[k].(string); return s }

@@ -34,7 +34,7 @@ func (g *Gateway) notice(ctx context.Context, r core.Room, text string, m *core.
 	}
 	reply, thread := "", ""
 	if m != nil {
-		reply = m.ID
+		reply = messageReply(*m)
 		thread = m.ThreadID
 	}
 	id, e := provider(ctx, func() (string, error) { return g.transport.Send(ctx, r, text, reply, thread) })
@@ -86,7 +86,7 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 			}
 			return e
 		}
-		if _, e := g.store.DB.Exec("UPDATE outbox SET state='cancelled' WHERE session=? AND state IN ('pending','uncertain','sending','preparing')", session); e != nil {
+		if _, e := g.store.DB.Exec("UPDATE outbox SET state='cancelled' WHERE session=? AND state IN ('pending','uncertain','blocked','sending','preparing')", session); e != nil {
 			if s != nil {
 				s.events.Unlock()
 			}
@@ -209,6 +209,7 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 	g.kickWaiting()
 	g.pruneExports(now)
 	_ = g.store.Trim(now, g.config.Limits.BackgroundMS)
+	g.retainCards(ctx, now)
 	g.retryReceipts()
 	g.mu.Lock()
 	for key, values := range g.rates {

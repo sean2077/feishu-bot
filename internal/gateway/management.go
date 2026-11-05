@@ -100,6 +100,15 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 	view := core.Args{"project": r.ProjectID, "state": state, "phase": phase, "background": background, "monitorPinned": pinned, "pendingOrUnconfirmed": total, "inputs": inputs, "approvals": approvals, "pendingOutputs": outputs}
 	if saved != nil {
 		view["session"] = saved.ID
+		p, err := g.store.Preferences(r.Key, saved.ID)
+		if err != nil {
+			return nil, err
+		}
+		view["sessionName"] = p.Name
+		view["profile"] = profileLabel(p.Profile)
+		if p.RequestedProfile != nil {
+			view["requestedProfile"] = profileLabel(*p.RequestedProfile)
+		}
 		if saved.CCID != "" {
 			view["nativeSessionId"] = saved.CCID
 		}
@@ -125,7 +134,8 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 		} else {
 			text += "新建、恢复、停止、压缩和补发限项目维护者；私聊本人可管理自己的会话。"
 		}
-		return text + "\n\n排障需要机器数据时，可用 /status --json、/sessions --json、/outputs --json、/usage --json。", true, nil
+		text += "\n/model [配置名] 查看或选择管理员定义的模型 / effort 配置（/profile 同义）\n/rename 名称 命名当前会话；/rename - 清除\n/resume 名称或唯一短ID 恢复本聊天的会话\n/artifacts [文件ID] 查看或重新取得已完成的文件，不启动模型\n"
+		return text + "\n\n排障需要机器数据时，可用 /status --json、/sessions --json、/outputs --json、/usage --json、/model --json、/artifacts --json。", true, nil
 	}
 	if cmd == "/usage" {
 		text, e := g.usageReply(r, arg)
@@ -158,6 +168,15 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 			pin = "是"
 		}
 		text := fmt.Sprintf("**本聊天状态**\n状态：%s\n项目：%s\n当前会话：`%s`\n原生会话：`%s`\n\n输入 · 排队：%v · 已交给原生：%v · 已消费待结果：%v · 结果未知：%v\n等待审批或回答：%v · 待交付输出：%v\n后台活动：%s · 监控保留：%s", phases[phase], r.ProjectID, session, native, inputs["queued"], inputs["sent"], inputs["consumed"], inputs["uncertain"], v["approvals"], v["pendingOutputs"], background, pin)
+		if name := stringArg(v, "sessionName"); name != "" {
+			text += "\n会话名称：" + name
+		}
+		if profile := stringArg(v, "profile"); profile != "" {
+			text += "\n模型配置：" + profile
+		}
+		if profile := stringArg(v, "requestedProfile"); profile != "" {
+			text += "\n待切换配置：" + profile + "（等待安全轮次边界）"
+		}
 		if phase == "termination_unconfirmed" {
 			text += "\n\n不会启动替代进程或切换会话；请维护者核实服务诊断与进程状态。"
 		}
@@ -191,8 +210,14 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 			}
 		}
 		items := []core.Args{}
+		names := map[string]string{}
 		for _, s := range list {
-			items = append(items, core.Args{"id": s.ID, "state": s.State, "createdAt": s.CreatedAt, "current": s.ID == current})
+			p, err := g.store.Preferences(r.Key, s.ID)
+			if err != nil {
+				return "", true, err
+			}
+			names[s.ID] = p.Name
+			items = append(items, core.Args{"id": s.ID, "shortId": cut(s.ID, 8), "name": p.Name, "profile": profileLabel(p.Profile), "state": s.State, "createdAt": s.CreatedAt, "current": s.ID == current})
 		}
 		if arg == "--json" {
 			v := core.Args{"total": total, "recentLimit": 20, "sessions": items}
@@ -210,10 +235,13 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 			if s.ID == current {
 				label = "当前会话"
 			}
+			if name := names[s.ID]; name != "" {
+				label += " · " + name
+			}
 			lines = append(lines, "", label+" · "+timeLabel(s.CreatedAt)+"\n`"+s.ID+"`")
 		}
 		if manage {
-			lines = append(lines, "", "恢复：/resume 会话ID。仅下条消息恢复上下文，旧后台工作不会自动重启。")
+			lines = append(lines, "", "恢复：/resume 名称、完整 ID 或唯一短 ID（至少 6 位）。/rename 名称 可命名当前会话。仅下条消息恢复上下文，旧后台工作不会自动重启。")
 		} else {
 			lines = append(lines, "", "恢复历史会话请联系项目维护者。")
 		}
@@ -254,12 +282,15 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 		if item["stage"] == "file" {
 			stage = "文件"
 		}
-		state := map[string]string{"pending": "等待交付", "uncertain": "结果未知", "sending": "正在发送", "preparing": "正在准备"}[stringArg(item, "state")]
+		state := map[string]string{"pending": "等待交付", "uncertain": "结果未知", "blocked": "自动重试已暂停", "sending": "正在发送", "preparing": "正在准备"}[stringArg(item, "state")]
 		lines = append(lines, "", stage+" · "+state+"\n`"+stringArg(item, "id")+"`")
 		if boolArg(item, "uncertain") {
 			lines = append(lines, "先核实是否已经收到；明确补发可能重复，不会自动重放未知写入。")
 		}
-		if manage && contains([]string{"pending", "uncertain"}, stringArg(item, "state")) {
+		if stringArg(item, "state") == "blocked" {
+			lines = append(lines, "交付遇到明确失败或已达到自动重试上限；请先检查服务诊断并处理原因，再明确补发。")
+		}
+		if manage && contains([]string{"pending", "uncertain", "blocked"}, stringArg(item, "state")) {
 			lines = append(lines, "明确补发：`/retry-output "+stringArg(item, "id")+"`")
 		}
 	}
@@ -268,6 +299,15 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 }
 func (g *Gateway) command(ctx context.Context, r core.Room, m core.Message) error {
 	cmd, arg := splitCommand(m.Text)
+	if cmd == "/model" || cmd == "/profile" {
+		return g.modelCommand(r, m, arg)
+	}
+	if cmd == "/rename" {
+		return g.renameCommand(r, m, arg)
+	}
+	if cmd == "/artifacts" {
+		return g.artifactCommand(ctx, r, m, arg)
+	}
 	if view, ok, e := g.management(cmd, arg, r, m.SenderID); ok {
 		if e != nil {
 			return e
@@ -297,11 +337,12 @@ func (g *Gateway) command(ctx context.Context, r core.Room, m core.Message) erro
 		return nil
 	}
 	if cmd == "/resume" {
-		var n int
-		if e := g.store.DB.QueryRow("SELECT 1 FROM sessions WHERE room=? AND id=?", r.Key, arg).Scan(&n); e != nil {
-			g.notify(r, "只能恢复本聊天列出的会话。", &m)
+		id, err := g.store.ResolveSession(r.Key, arg)
+		if err != nil {
+			g.notify(r, "未切换会话："+err.Error()+"。用 /sessions 查看本聊天会话。", &m)
 			return nil
 		}
+		arg = id
 	}
 	if e := g.stopRoom(ctx, r); e != nil {
 		g.notify(r, "原生进程停止失败，尚未确认退出。当前会话保留，不能启动替代进程或切换会话；请先检查服务诊断并核实进程。", &m)

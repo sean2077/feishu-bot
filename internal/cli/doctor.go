@@ -19,6 +19,7 @@ import (
 
 	"github.com/sean2077/feishu-bot/internal/config"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/native"
 	"github.com/sean2077/feishu-bot/internal/process"
 	"github.com/sean2077/feishu-bot/internal/store"
 )
@@ -28,6 +29,7 @@ type Diagnostic struct {
 	OK      bool   `json:"ok"`
 	Detail  string `json:"detail,omitempty"`
 	Skipped bool   `json:"skipped,omitempty"`
+	Remedy  string `json:"remedy,omitempty"`
 }
 type DoctorReport struct {
 	Platform     string            `json:"platform"`
@@ -37,6 +39,9 @@ type DoctorReport struct {
 	Checks       []Diagnostic      `json:"checks"`
 	Verification map[string]string `json:"verification"`
 	NextSteps    []string          `json:"nextSteps"`
+	Native       native.VersionCompatibility `json:"native"`
+	Storage      StorageDiagnostic `json:"storage"`
+	LiveChat *ChatVerification `json:"liveChat,omitempty"`
 }
 
 var placeholderPattern = regexp.MustCompile(`(?i)^(your[-_ ]|replace[-_ ]with[-_ ]|<[^>]+>$|(tenant|cli|oc|ou)_example(_|$))`)
@@ -142,7 +147,7 @@ func versionCommand(ctx context.Context, program string, args ...string) (string
 	return strings.TrimSpace(b.String()), nil
 }
 func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) DoctorReport {
-	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: deploymentChecks(c), Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made."}
+	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: deploymentChecks(c), Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made.", Native: native.Compatibility("")}
 	add := func(name string, fn func() (string, error)) {
 		if ctx.Err() != nil {
 			r.Checks = append(r.Checks, Diagnostic{Name: name, Skipped: true, Detail: "Diagnostic cancelled."})
@@ -161,10 +166,11 @@ func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) Doct
 			program = "claude"
 		}
 		v, e := versionCommand(ctx, program, "--version")
-		if e != nil || !strings.Contains(strings.ToLower(v), "claude code") {
+		r.Native = native.Compatibility(v)
+		if e != nil || r.Native.Status == "unavailable" {
 			return "", errors.New("install native Claude Code or set runtime.claudeExecutable to a working executable")
 		}
-		return v, nil
+		return fmt.Sprintf("Actual %s; protocol fixture %s; compatibility %s. Version identity only; native protocol was not executed.", r.Native.Actual, r.Native.Tested, r.Native.Status), nil
 	})
 	if runtime.GOOS == "windows" && os.Getenv("CLAUDE_CODE_GIT_BASH_PATH") != "" {
 		add("configured Git Bash", func() (string, error) {
@@ -244,13 +250,24 @@ func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) Doct
 	for _, c := range r.Checks {
 		localOK = localOK && c.OK
 	}
-	for _, key := range []string{"local", "model", "feishuAuth", "feishuIdentity", "messageDelivery", "cardCallbacks", "fileDelivery", "nativeTools"} {
+	for _, key := range []string{"local", "configuration", "nativeExecutable", "nativeProtocol", "model", "modelStreaming", "modelTools", "feishuAuth", "feishuIdentity", "messageDelivery", "cardCallbacks", "fileDelivery", "nativeTools", "feishuReconnect", "storageRows"} {
 		r.Verification[key] = "not_checked"
 	}
 	r.Verification["local"] = "failed"
 	if localOK {
 		r.Verification["local"] = "passed"
 	}
+	r.Verification["configuration"] = "passed"
+	for _, check := range deploymentChecks(c) {
+		if !check.OK {
+			r.Verification["configuration"] = "failed"
+		}
+	}
+	r.Verification["nativeExecutable"] = "failed"
+	if r.Native.Actual != "" {
+		r.Verification["nativeExecutable"] = "passed"
+	}
+	r.Storage = inspectStorage(ctx, c.DataDir)
 	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	if probeFeishu {
 		secret := os.Getenv(c.AppSecretEnv)
@@ -294,7 +311,12 @@ func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) Doct
 	for _, check := range r.Checks {
 		r.Ready = r.Ready && check.OK
 	}
-	r.NextSteps = []string{"Correct failed local checks before starting.", "Verify messages, card callbacks, file delivery, approvals and native tools in an authorized test chat."}
+	for i := range r.Checks {
+		if !r.Checks[i].OK {
+			r.Checks[i].Remedy = diagnosticRemedy(r.Checks[i].Name)
+		}
+	}
+	r.NextSteps = diagnosticNextSteps(r, probe, probeFeishu)
 	return r
 }
 func decodeProbe(resp *http.Response, dst any) error {

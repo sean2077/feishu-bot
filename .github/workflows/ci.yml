@@ -3,6 +3,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      candidate_sdk_version:
+        description: Optional official Claude Agent SDK package version for a candidate native CLI run
+        required: false
+        type: string
+      candidate_native_version:
+        description: Exact native --version identity expected from that candidate package
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -54,9 +64,36 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             binary+=.exe
           fi
-          go build -trimpath -o "$binary" ./cmd/feishu-bot
+          artifact_version="0.0.0-ci.$GITHUB_SHA"
+          go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/internal/cli.Version=$artifact_version" -o "$binary" ./cmd/feishu-bot
           "$binary" --help
           "$binary" --version
+          binary_absolute="$(python -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$binary")"
+          {
+            printf 'FEISHU_ARTIFACT_PATH=%s\n' "$binary_absolute"
+            printf 'FEISHU_ARTIFACT_VERSION=%s\n' "$artifact_version"
+          } >> "$GITHUB_ENV"
+      - name: Verify the actual built artifact against local providers
+        shell: bash
+        run: go test -race -count=1 -timeout 180s ./internal/cli -run '^TestBuiltArtifact'
+      - name: Record rendering allocation observations
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
+        shell: bash
+        run: go test ./internal/gateway -run '^$' -bench 'BenchmarkRender|BenchmarkReplyCard' -benchmem -benchtime=1x
+      - name: Record native resource scenarios
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
+        shell: bash
+        run: |
+          go build -trimpath -o ./bin/benchmark-native ./cmd/benchmark-native
+          ./bin/benchmark-native --samples 1 --warm-turns 0 --idle-ms 100 --scenario matrix > native-resource-observations.json
+      - name: Retain resource observations
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-resource-observations
+          path: native-resource-observations.json
+          if-no-files-found: warn
+          retention-days: 7
 
   release-tools:
     name: Check release tooling and workflows
@@ -84,3 +121,46 @@ jobs:
             "$actionlint_dir/actionlint.tar.gz" | sha256sum --check -
           tar -xzf "$actionlint_dir/actionlint.tar.gz" -C "$actionlint_dir" actionlint
           "$actionlint_dir/actionlint" -color
+
+  candidate-native:
+    name: Explicit candidate native compatibility
+    if: github.event_name == 'workflow_dispatch' && inputs.candidate_sdk_version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.x'
+          cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Install and verify the explicitly selected candidate
+        shell: python
+        env:
+          CANDIDATE_SDK_VERSION: ${{ inputs.candidate_sdk_version }}
+          CANDIDATE_NATIVE_VERSION: ${{ inputs.candidate_native_version }}
+        run: |
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          sdk = os.environ['CANDIDATE_SDK_VERSION']
+          expected = os.environ['CANDIDATE_NATIVE_VERSION']
+          if not re.fullmatch(r'0\.\d+\.\d+', sdk) or not re.fullmatch(r'\d+\.\d+\.\d+', expected):
+              raise SystemExit('Explicit numeric SDK and native versions are required')
+          fixture = Path(os.environ['RUNNER_TEMP']) / 'claude-candidate'
+          subprocess.run(['npm', 'install', '--prefix', str(fixture), '--ignore-scripts', '--no-audit', '--no-fund', '@anthropic-ai/claude-agent-sdk@' + sdk], check=True)
+          native = fixture / 'node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude'
+          actual = subprocess.check_output([str(native), '--version'], text=True).strip()
+          print('Candidate actual identity:', actual)
+          print('Repository tested native fixture: 2.1.316')
+          if actual != expected + ' (Claude Code)':
+              raise SystemExit('Candidate package/native identity mismatch')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              output.write(f'CLAUDE_NATIVE_PATH={native}\n')
+      - name: Candidate protocol journey with deterministic local providers
+        run: go test -race -count=1 -timeout 180s -v ./internal/native ./internal/integration ./cmd/benchmark-native

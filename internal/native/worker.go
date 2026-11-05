@@ -85,6 +85,11 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 		log = func(string, core.Args) {}
 	}
 	return func(ctx context.Context, room core.Room, session core.Session, workspace core.Workspace, onEvent func(core.WorkerEvent)) (core.Worker, error) {
+		selected, err := config.ResolveSessionModel(c, session.Profile)
+		if err != nil {
+			return nil, err
+		}
+		c := selected
 		project, ok := c.Project(room.ProjectID)
 		if !ok {
 			return nil, fmt.Errorf("unknown conversation project")

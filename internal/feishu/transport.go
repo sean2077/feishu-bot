@@ -2,6 +2,8 @@ package feishu
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -48,18 +50,15 @@ func (c *Client) sendContent(ctx context.Context, room core.Room, kind string, c
 		}
 		body["receive_id"] = room.ChatID
 	}
-	var data struct {
-		ID string `json:"message_id"`
+	ctx = c.deliveryContext(ctx)
+	id, err := c.sendJournaledJSON(ctx, room.Key, "message", http.MethodPost, path, query, body, "message_id", true)
+	if err == nil {
+		err = c.linkDeliveryMessage(ctx, id)
 	}
-	if err = c.api(ctx, http.MethodPost, path, query, body, &data); err != nil {
-		return "", err
-	}
-	if !validID(data.ID) {
-		return "", &APIError{Operation: "message acknowledgement", Uncertain: true}
-	}
-	return data.ID, nil
+	return id, err
 }
-func (c *Client) Send(ctx context.Context, room core.Room, text, replyTo, threadID string) (string, error) {
+func (c *Client) Send(ctx context.Context, room core.Room, text, replyTo, threadID string) (messageID string, resultErr error) {
+	defer func() { resultErr = localRejection("message request validation", resultErr) }()
 	// Feishu post markdown retains multiline content without placing user text in
 	// the card schema, and does not introduce a new application-level planner.
 	return c.sendContent(ctx, room, "post", core.Args{"zh_cn": core.Args{"content": []any{[]any{core.Args{"tag": "md", "text": text}}}}}, replyTo, threadID)
@@ -320,7 +319,8 @@ func (c *Client) Download(ctx context.Context, messageID string, r core.Resource
 	return nil
 }
 
-func (c *Client) File(ctx context.Context, room core.Room, path, name string) (string, error) {
+func (c *Client) File(ctx context.Context, room core.Room, path, name string) (messageID string, resultErr error) {
+	defer func() { resultErr = localRejection("file request validation", resultErr) }()
 	if _, err := c.validatedRoom(room); err != nil {
 		return "", err
 	}
@@ -343,6 +343,37 @@ func (c *Client) File(ctx context.Context, room core.Room, path, name string) (s
 	if !validID(name) || strings.ContainsAny(name, "/\\") {
 		return "", errors.New("feishu: invalid output filename")
 	}
+	ctx = c.deliveryContext(ctx)
+	// Copy once to a private bounded snapshot. Its digest binds retries to the
+	// same bytes even if the caller later replaces the original output file.
+	snapshot, err := os.CreateTemp("", "feishu-upload-*")
+	if err != nil {
+		return "", errors.New("feishu: upload snapshot is unavailable")
+	}
+	defer func() { _ = snapshot.Close(); _ = os.Remove(snapshot.Name()) }()
+	digest := sha256.New()
+	n, err := io.Copy(io.MultiWriter(snapshot, digest), io.LimitReader(file, limit+1))
+	if err != nil || n > limit {
+		return "", errors.New("feishu: upload snapshot failed or exceeded byte limit")
+	}
+	if err = ctx.Err(); err != nil {
+		return "", err
+	}
+	hash := hex.EncodeToString(digest.Sum(nil))
+	payload := core.Args{"name": name, "size": n, "sha256": hash}
+	key, err := c.deliveryStep(ctx, room.Key, "file-upload", payload, false, func(attemptCtx context.Context, frozen core.Args, _ string) (string, error) {
+		if _, seekErr := snapshot.Seek(0, io.SeekStart); seekErr != nil {
+			return "", errors.New("feishu: upload snapshot cannot be read")
+		}
+		return c.uploadFile(attemptCtx, snapshot, stringValue(frozen, "name"), "feishu_"+hash[:48], limit)
+	})
+	if err != nil {
+		return "", err
+	}
+	return c.sendContent(ctx, room, "file", core.Args{"file_key": key}, "", "")
+}
+
+func (c *Client) uploadFile(ctx context.Context, file io.Reader, name, boundary string, limit int64) (string, error) {
 	token, err := c.accessToken(ctx)
 	if err != nil {
 		return "", err
@@ -353,6 +384,11 @@ func (c *Client) File(ctx context.Context, room core.Room, path, name string) (s
 	// transparent replay is possible for this stream.
 	reader, writer := io.Pipe()
 	multipartWriter := multipart.NewWriter(writer)
+	if err = multipartWriter.SetBoundary(boundary); err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
+		return "", errors.New("feishu: invalid upload boundary")
+	}
 	done := make(chan error, 1)
 	go func() {
 		e := multipartWriter.WriteField("file_type", "stream")
@@ -396,13 +432,13 @@ func (c *Client) File(ctx context.Context, room core.Room, path, name string) (s
 	if uploadErr != nil || !validID(data.Key) {
 		return "", &APIError{Operation: "upload acknowledgement", Uncertain: true}
 	}
-	return c.sendContent(ctx, room, "file", core.Args{"file_key": data.Key}, "", "")
+	return data.Key, nil
 }
 
 func formatSafeError(err error) core.Args {
 	var e *APIError
 	if errors.As(err, &e) {
-		return core.Args{"code": e.Code, "status": e.Status, "uncertain": e.Uncertain}
+		return core.Args{"code": e.Code, "status": e.Status, "uncertain": e.Uncertain, "retryable": e.DeliveryRetryable(), "retryAfterMs": e.DeliveryRetryAfter().Milliseconds(), "requestId": e.RequestID}
 	}
 	if errors.Is(err, context.Canceled) {
 		return core.Args{"category": "cancelled"}
