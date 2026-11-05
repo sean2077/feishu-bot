@@ -434,7 +434,7 @@ func TestCompactWaitsForTurnAndKeepsApprovals(t *testing.T) {
 	default:
 	}
 	card := approvalCard
-	id := stringArg(argsOf(argsOf(card.card["body"])["elements"].([]any)[1])["value"].(map[string]any), "request")
+	id := stringArg(cardValue(card.card, "拒绝"), "request")
 	msg, e := f.g.Action(context.Background(), core.CardAction{UserID: "owner", ChatID: "group", MessageID: card.id, Value: core.Args{"request": id, "decision": "deny"}})
 	if e != nil || msg != "已拒绝" {
 		t.Fatalf("deny: %q %v", msg, e)

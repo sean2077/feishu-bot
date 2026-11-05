@@ -116,12 +116,12 @@ func TestIncompleteContentNeverKeepsPartialResources(t *testing.T) {
 func TestCardActionRawPayloadPreservesOriginAndForm(t *testing.T) {
 	c, _ := fixtureClient(t, nil, func(http.ResponseWriter, *http.Request) { t.Error("card callback unexpectedly accessed HTTP") })
 	calls := 0
-	c.onAction = func(_ context.Context, a core.CardAction) (string, error) {
+	c.onAction = func(_ context.Context, a core.CardAction) (core.Args, error) {
 		calls++
 		if a.UserID != "ou_owner" || a.ChatID != "oc_allowed" || a.MessageID != "om_approval" || a.Value["requestId"] != "request_fixture" || a.FormValue["answer"] != "scope" {
 			t.Errorf("action boundary: %+v", a)
 		}
-		return "已确认", nil
+		return core.Args{"toast": core.Args{"type": "info", "content": "已确认"}}, nil
 	}
 	payload := []byte(`{"schema":"2.0","header":{"event_type":"card.action.trigger"},"event":{"operator":{"open_id":"ou_owner"},"context":{"open_chat_id":"oc_allowed","open_message_id":"om_approval"},"action":{"value":{"requestId":"request_fixture","choice":"approve"},"form_value":{"answer":"scope"}}}}`)
 	result, err := c.HandleEvent(context.Background(), payload)

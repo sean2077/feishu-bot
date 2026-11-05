@@ -60,18 +60,31 @@ func (c *Client) prepareEvent(payload []byte) (pendingEvent, error) {
 			} `json:"action"`
 		}
 		if json.Unmarshal(envelope.Event, &event) != nil {
+			c.emit("feishu_card_action_dropped", core.Args{"reason": "malformed"})
 			return pendingEvent{}, errors.New("feishu: malformed card event")
 		}
+		eventType := kind
+		if eventType == "" {
+			eventType = envelope.Type
+		}
+		c.emit("feishu_card_action_received", core.Args{
+			"type": eventType, "hasOperator": event.Operator.ID != "",
+			"hasChat": event.Context.Chat != "", "hasMessage": event.Context.Message != "",
+			"valueType": cardActionValueType(event.Action.Value),
+		})
 		if !validID(event.Operator.ID) || !validID(event.Context.Chat) || !validID(event.Context.Message) {
+			c.emit("feishu_card_action_dropped", core.Args{"reason": "identity"})
 			return pendingEvent{}, nil
 		}
 		room, ok := roomFor(c.config, event.Context.Chat, "")
 		if ok {
 			if !authorizedAuthor(room, event.Operator.ID) {
+				c.emit("feishu_card_action_dropped", core.Args{"reason": "unauthorized"})
 				return pendingEvent{}, nil
 			}
 		} else {
 			if _, ok = roomFor(c.config, event.Context.Chat, event.Operator.ID); !ok && !c.configuredMaintainer(event.Operator.ID) {
+				c.emit("feishu_card_action_dropped", core.Args{"reason": "unauthorized"})
 				return pendingEvent{}, nil
 			}
 		}
@@ -83,16 +96,36 @@ func (c *Client) prepareEvent(payload []byte) (pendingEvent, error) {
 		if json.Unmarshal(event.Action.Value, &value) != nil {
 			var raw string
 			if json.Unmarshal(event.Action.Value, &raw) != nil || json.Unmarshal([]byte(raw), &value) != nil {
+				c.emit("feishu_card_action_dropped", core.Args{"reason": "invalid_value"})
 				return pendingEvent{}, errors.New("feishu: invalid card action value")
 			}
 		}
 		if value == nil {
+			c.emit("feishu_card_action_dropped", core.Args{"reason": "missing_value"})
 			return pendingEvent{}, nil
 		}
 		action := core.CardAction{UserID: event.Operator.ID, ChatID: event.Context.Chat, MessageID: event.Context.Message, Value: value, FormValue: event.Action.Form}
 		return pendingEvent{action: &action}, nil
 	}
 	return pendingEvent{}, nil
+}
+
+func cardActionValueType(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "missing"
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return "invalid"
+	}
+	switch value.(type) {
+	case map[string]any:
+		return "object"
+	case string:
+		return "string"
+	default:
+		return "other"
+	}
 }
 func (c *Client) runEvent(ctx context.Context, event pendingEvent) (reply any, err error) {
 	defer func() {
@@ -111,15 +144,15 @@ func (c *Client) runEvent(ctx context.Context, event pendingEvent) (reply any, e
 	if event.action != nil && c.onAction != nil {
 		callbackCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 		defer cancel()
-		text, e := c.onAction(callbackCtx, *event.action)
+		reply, e := c.onAction(callbackCtx, *event.action)
 		if e != nil {
 			c.emit("feishu_card_handler_error", formatSafeError(e))
 			return nil, e
 		}
-		if text == "" {
+		if reply == nil {
 			return core.Args{}, nil
 		}
-		return core.Args{"toast": core.Args{"type": "info", "content": text}}, nil
+		return reply, nil
 	}
 	return nil, nil
 }

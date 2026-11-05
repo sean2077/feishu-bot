@@ -151,8 +151,10 @@ func (g *fakeGateway) Recover(ctx context.Context) error {
 	}
 	return nil
 }
-func (g *fakeGateway) Message(context.Context, core.Message) error             { return nil }
-func (g *fakeGateway) Action(context.Context, core.CardAction) (string, error) { return "", nil }
+func (g *fakeGateway) Message(context.Context, core.Message) error { return nil }
+func (g *fakeGateway) ActionResponse(context.Context, core.CardAction) (core.Args, error) {
+	return core.Args{}, nil
+}
 func (g *fakeGateway) Close(ctx context.Context) error {
 	g.closed = true
 	if !g.st.IsOpen() {
@@ -169,7 +171,7 @@ type fakeChannel struct {
 	start           func(context.Context) error
 }
 
-func (c *fakeChannel) Start(ctx context.Context, _ func(context.Context, core.Message) error, _ func(context.Context, core.CardAction) (string, error)) error {
+func (c *fakeChannel) Start(ctx context.Context, _ func(context.Context, core.Message) error, _ func(context.Context, core.CardAction) (core.Args, error)) error {
 	c.started = true
 	if c.start != nil {
 		return c.start(ctx)

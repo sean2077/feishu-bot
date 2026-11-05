@@ -12,13 +12,30 @@ import (
 func cardValue(card core.Args, label string) core.Args {
 	body := argsOf(card["body"])
 	elements, _ := body["elements"].([]any)
-	for _, value := range elements {
-		element := argsOf(value)
-		if stringArg(argsOf(element["text"]), "content") == label {
-			return argsOf(element["value"])
+	var find func([]any) core.Args
+	find = func(children []any) core.Args {
+		for _, value := range children {
+			element := argsOf(value)
+			if stringArg(element, "tag") == "button" && stringArg(argsOf(element["text"]), "content") == label {
+				behaviors, _ := element["behaviors"].([]any)
+				for _, raw := range behaviors {
+					behavior := argsOf(raw)
+					if stringArg(behavior, "type") == "callback" {
+						return argsOf(behavior["value"])
+					}
+				}
+			}
+			columns, _ := element["columns"].([]any)
+			for _, rawColumn := range columns {
+				children, _ := argsOf(rawColumn)["elements"].([]any)
+				if value := find(children); value != nil {
+					return value
+				}
+			}
 		}
+		return nil
 	}
-	return nil
+	return find(elements)
 }
 func (t *fakeTransport) latestCard(id string) core.Args {
 	t.mu.Lock()
@@ -123,7 +140,7 @@ func TestForwardedApprovalCannotBeClaimedByOriginalDMUser(t *testing.T) {
 		t.Fatalf("forwarded approval response was not approved: %#v", answer)
 	}
 }
-func TestQuestionSelectionsRemainPerActorAndStaleCardsCannotSettle(t *testing.T) {
+func TestQuestionSelectionsRemainPerActor(t *testing.T) {
 	f := newFixture(t, nil)
 	f.send(f.message("one", "task", "member"))
 	w := f.worker()
@@ -132,7 +149,6 @@ func TestQuestionSelectionsRemainPerActorAndStaleCardsCannotSettle(t *testing.T)
 	w.emit(core.WorkerEvent{Type: "request", ID: "q", Kind: "question", Name: "AskUserQuestion", Input: core.Args{"questions": questions}})
 	eventually(t, func() bool { return f.tr.cardCount() == 1 })
 	card := f.tr.cardLast()
-	oldSubmit := cardValue(card.card, "提交选择")
 	click := func(actor, label string) string {
 		t.Helper()
 		value := cardValue(f.tr.latestCard(card.id), label)
@@ -142,18 +158,25 @@ func TestQuestionSelectionsRemainPerActorAndStaleCardsCannotSettle(t *testing.T)
 		}
 		return text
 	}
-	if !strings.Contains(click("member", "1. A"), "已记录") {
+	if !strings.Contains(click("member", "A"), "已记录") {
 		t.Fatal("choice not recorded")
 	}
-	text, _ := f.g.Action(context.Background(), core.CardAction{UserID: "member", ChatID: "group", MessageID: card.id, Value: oldSubmit})
-	if !strings.Contains(text, "卡片已刷新") {
-		t.Fatal("stale revision accepted")
+	// Re-clicking the selected single-choice option keeps it selected. A group
+	// card is not refreshed, so the next click uses the same card values.
+	if !strings.Contains(click("member", "A"), "第 1 题已记录：A") {
+		t.Fatal("single choice was toggled off")
 	}
-	_ = click("second", "2. Y")
-	if click("member", "提交选择") != "请回答所有问题" {
-		t.Fatal("another actor completed member's answer")
+	_ = click("second", "Y")
+	if text := click("member", "提交选择"); text != "请先回答第 2 题，再提交。" {
+		t.Fatalf("another actor completed member's answer: %q", text)
 	}
-	_ = click("member", "2. X")
+	_ = click("member", "X")
+	// Multi-select toggles independently.
+	_ = click("member", "X")
+	if text := click("member", "提交选择"); text != "请先回答第 2 题，再提交。" {
+		t.Fatalf("multi-select toggle was not applied: %q", text)
+	}
+	_ = click("member", "X")
 	if click("member", "提交选择") != "已提交" {
 		t.Fatal("complete answers failed")
 	}
@@ -163,6 +186,54 @@ func TestQuestionSelectionsRemainPerActorAndStaleCardsCannotSettle(t *testing.T)
 		t.Fatalf("mixed actor choices: %#v", values)
 	}
 }
+func TestPrivateQuestionSelectionReturnsUpdatedCard(t *testing.T) {
+	f := newFixture(t, nil)
+	m := f.message("dm", "task", "member")
+	m.ChatType = "p2p"
+	m.ChatID = "dm-member"
+	m.Mentioned = false
+	f.send(m)
+	w := f.worker()
+	_ = f.delivery(w)
+	w.emit(core.WorkerEvent{Type: "request", ID: "q", Kind: "question", Name: "AskUserQuestion", Input: core.Args{"questions": []any{core.Args{"question": "Pick", "options": []any{core.Args{"label": "A"}, core.Args{"label": "B"}}}}}})
+	eventually(t, func() bool { return f.tr.cardCount() == 1 })
+	card := f.tr.cardLast()
+	response, e := f.g.ActionResponse(context.Background(), core.CardAction{UserID: "member", ChatID: "dm-member", MessageID: card.id, Value: cardValue(card.card, "A")})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if stringArg(argsOf(response["toast"]), "content") == "" {
+		t.Fatal("private selection returned no toast")
+	}
+	raw, ok := response["card"].(core.Args)
+	if !ok || stringArg(raw, "type") != "raw" {
+		t.Fatalf("private selection returned no raw card: %#v", response)
+	}
+	body := argsOf(argsOf(raw["data"])["body"])
+	elements, _ := body["elements"].([]any)
+	intro := stringArg(argsOf(elements[0]), "content")
+	if !strings.Contains(intro, "当前选择") || !strings.Contains(intro, "1. A") {
+		t.Fatalf("private card did not show the selection: %q", intro)
+	}
+}
+
+func TestGroupQuestionSelectionReturnsNoCard(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("group", "task", "member"))
+	w := f.worker()
+	_ = f.delivery(w)
+	w.emit(core.WorkerEvent{Type: "request", ID: "q", Kind: "question", Name: "AskUserQuestion", Input: core.Args{"questions": []any{core.Args{"question": "Pick", "options": []any{core.Args{"label": "A"}, core.Args{"label": "B"}}}}}})
+	eventually(t, func() bool { return f.tr.cardCount() == 1 })
+	card := f.tr.cardLast()
+	response, e := f.g.ActionResponse(context.Background(), core.CardAction{UserID: "member", ChatID: "group", MessageID: card.id, Value: cardValue(card.card, "A")})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, exists := response["card"]; exists {
+		t.Fatalf("group selection returned a card update: %#v", response)
+	}
+}
+
 func TestStoppedApprovalAndOldCardCannotRunCommand(t *testing.T) {
 	f := newFixture(t, nil)
 	f.send(f.message("one", "task", "member"))
