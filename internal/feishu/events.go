@@ -38,7 +38,7 @@ func (c *Client) prepareEvent(payload []byte) (pendingEvent, error) {
 		if !allowed {
 			return pendingEvent{}, nil
 		}
-		if event.Message.ChatType == "group" && c.config.Limits.BackgroundMessages == 0 && !botMentioned(event.Message, c.botOpenID()) {
+		if event.Message.ChatType == "group" && c.config.Limits.BackgroundMessages == 0 && !room.MentionOptional && !botMentioned(event.Message, c.botOpenID()) {
 			return pendingEvent{}, nil
 		}
 		message := normalizeMessage(event, c.botOpenID(), true)

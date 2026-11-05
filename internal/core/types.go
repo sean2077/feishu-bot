@@ -28,12 +28,13 @@ type Message struct {
 	ImageOnly    bool       `json:"imageOnly,omitempty"`
 }
 type Room struct {
-	Key         string   `json:"key"`
-	ChatID      string   `json:"chatId"`
-	ProjectID   string   `json:"projectId"`
-	DMUser      string   `json:"dmUser,omitempty"`
-	Maintainers []string `json:"maintainers"`
-	Members     []string `json:"members,omitempty"`
+	Key             string   `json:"key"`
+	ChatID          string   `json:"chatId"`
+	ProjectID       string   `json:"projectId"`
+	DMUser          string   `json:"dmUser,omitempty"`
+	Maintainers     []string `json:"maintainers"`
+	Members         []string `json:"members,omitempty"`
+	MentionOptional bool     `json:"mentionOptional"`
 }
 type Session struct {
 	ID        string `json:"id"`
@@ -114,9 +115,10 @@ type ModelConfig struct {
 	AllowHTTP    bool              `json:"allowHttp"`
 }
 type Group struct {
-	ChatID    string   `json:"chatId"`
-	ProjectID string   `json:"projectId"`
-	Members   []string `json:"members,omitempty"`
+	ChatID          string   `json:"chatId"`
+	ProjectID       string   `json:"projectId"`
+	Members         []string `json:"members,omitempty"`
+	MentionOptional bool     `json:"mentionOptional"`
 }
 type DM struct {
 	UserID    string `json:"userId"`

@@ -34,6 +34,30 @@ func TestExistingConfigurationDefaults(t *testing.T) {
 	if c.Projects[0].PermissionMode != "acceptEdits" || c.Projects[0].NativeConfig != "isolated" || c.DataDir != filepath.Join(base, "state") {
 		t.Fatal("existing configuration semantics changed")
 	}
+	if len(c.Groups) != 1 || c.Groups[0].MentionOptional {
+		t.Fatal("mentionOptional must default to false")
+	}
+}
+func TestMentionOptionalGroupConfig(t *testing.T) {
+	v := fixture(t)
+	v["groups"].([]any)[0].(map[string]any)["mentionOptional"] = true
+	data, _ := json.Marshal(v)
+	c, err := Parse(data, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Groups[0].MentionOptional {
+		t.Fatal("mentionOptional was not applied")
+	}
+}
+func TestEmbeddedExampleMatchesRepositoryExample(t *testing.T) {
+	data, err := os.ReadFile("../../examples/config.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != Example {
+		t.Fatal("examples/config.example.json and config.Example differ")
+	}
 }
 func TestConfigRejectsInvalidAndUnknownValues(t *testing.T) {
 	cases := map[string]func(map[string]any){
@@ -48,6 +72,9 @@ func TestConfigRejectsInvalidAndUnknownValues(t *testing.T) {
 		},
 		"wildcard maintainer": func(v map[string]any) { v["projects"].([]any)[0].(map[string]any)["maintainers"] = []string{"*"} },
 		"duplicate group":     func(v map[string]any) { g := v["groups"].([]any); v["groups"] = append(g, g[0]) },
+		"mention null":        func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["mentionOptional"] = nil },
+		"mention wrong type":  func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["mentionOptional"] = "true" },
+		"mention casing":      func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["mentionoptional"] = true },
 		"cwd seed conflict": func(v map[string]any) {
 			p := v["projects"].([]any)[0].(map[string]any)
 			p["cwd"] = "existing"

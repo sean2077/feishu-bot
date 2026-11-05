@@ -9,6 +9,7 @@ import (
 func RoomFor(c core.Config, chat, dm string) (core.Room, bool) {
 	project := ""
 	var members []string
+	mentionOptional := false
 	if dm != "" {
 		for _, b := range c.DMs {
 			if b.UserID == dm {
@@ -21,6 +22,7 @@ func RoomFor(c core.Config, chat, dm string) (core.Room, bool) {
 			if b.ChatID == chat {
 				project = b.ProjectID
 				members = b.Members
+				mentionOptional = b.MentionOptional
 				break
 			}
 		}
@@ -36,7 +38,7 @@ func RoomFor(c core.Config, chat, dm string) (core.Room, bool) {
 		user = dm
 	}
 	key, _ := json.Marshal([]any{c.TenantID, c.AppID, project, kind, chat, user})
-	return core.Room{Key: string(key), ChatID: chat, ProjectID: project, DMUser: dm, Maintainers: p.Maintainers, Members: members}, true
+	return core.Room{Key: string(key), ChatID: chat, ProjectID: project, DMUser: dm, Maintainers: p.Maintainers, Members: members, MentionOptional: mentionOptional}, true
 }
 func RoomFromKey(c core.Config, key string) (core.Room, bool) {
 	var a []any
@@ -89,7 +91,9 @@ func Route(c core.Config, m core.Message) (core.Room, bool) {
 	r, ok := RoomFor(c, m.ChatID, dm)
 	return r, ok && AuthorizedAuthor(r, m.SenderID)
 }
-func Triggers(m core.Message) bool { return m.ChatType == "p2p" || m.Mentioned }
+func Triggers(r core.Room, m core.Message) bool {
+	return m.ChatType == "p2p" || m.Mentioned || r.MentionOptional
+}
 func Readable(r core.Room, m core.Message) bool {
 	kind := "group"
 	if r.DMUser != "" {
