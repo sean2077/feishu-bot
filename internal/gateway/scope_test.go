@@ -12,19 +12,30 @@ import (
 func cardValue(card core.Args, label string) core.Args {
 	body := argsOf(card["body"])
 	elements, _ := body["elements"].([]any)
-	for _, value := range elements {
-		element := argsOf(value)
-		if stringArg(argsOf(element["text"]), "content") == label {
-			behaviors, _ := element["behaviors"].([]any)
-			for _, raw := range behaviors {
-				behavior := argsOf(raw)
-				if stringArg(behavior, "type") == "callback" {
-					return argsOf(behavior["value"])
+	var find func([]any) core.Args
+	find = func(children []any) core.Args {
+		for _, value := range children {
+			element := argsOf(value)
+			if stringArg(element, "tag") == "button" && stringArg(argsOf(element["text"]), "content") == label {
+				behaviors, _ := element["behaviors"].([]any)
+				for _, raw := range behaviors {
+					behavior := argsOf(raw)
+					if stringArg(behavior, "type") == "callback" {
+						return argsOf(behavior["value"])
+					}
+				}
+			}
+			columns, _ := element["columns"].([]any)
+			for _, rawColumn := range columns {
+				children, _ := argsOf(rawColumn)["elements"].([]any)
+				if value := find(children); value != nil {
+					return value
 				}
 			}
 		}
+		return nil
 	}
-	return nil
+	return find(elements)
 }
 func (t *fakeTransport) latestCard(id string) core.Args {
 	t.mu.Lock()
@@ -129,7 +140,7 @@ func TestForwardedApprovalCannotBeClaimedByOriginalDMUser(t *testing.T) {
 		t.Fatalf("forwarded approval response was not approved: %#v", answer)
 	}
 }
-func TestQuestionSelectionsRemainPerActorAndStaleCardsCannotSettle(t *testing.T) {
+func TestQuestionSelectionsRemainPerActor(t *testing.T) {
 	f := newFixture(t, nil)
 	f.send(f.message("one", "task", "member"))
 	w := f.worker()
@@ -138,7 +149,6 @@ func TestQuestionSelectionsRemainPerActorAndStaleCardsCannotSettle(t *testing.T)
 	w.emit(core.WorkerEvent{Type: "request", ID: "q", Kind: "question", Name: "AskUserQuestion", Input: core.Args{"questions": questions}})
 	eventually(t, func() bool { return f.tr.cardCount() == 1 })
 	card := f.tr.cardLast()
-	oldSubmit := cardValue(card.card, "提交选择")
 	click := func(actor, label string) string {
 		t.Helper()
 		value := cardValue(f.tr.latestCard(card.id), label)
@@ -151,13 +161,20 @@ func TestQuestionSelectionsRemainPerActorAndStaleCardsCannotSettle(t *testing.T)
 	if !strings.Contains(click("member", "1. A"), "已记录") {
 		t.Fatal("choice not recorded")
 	}
-	text, _ := f.g.Action(context.Background(), core.CardAction{UserID: "member", ChatID: "group", MessageID: card.id, Value: oldSubmit})
-	if !strings.Contains(text, "卡片已刷新") {
-		t.Fatal("stale revision accepted")
+	// Re-clicking the selected single-choice option keeps it selected. A group
+	// card is not refreshed, so the next click uses the same card values.
+	if !strings.Contains(click("member", "1. A"), "第 1 题已记录：A") {
+		t.Fatal("single choice was toggled off")
 	}
 	_ = click("second", "2. Y")
-	if click("member", "提交选择") != "请回答所有问题" {
-		t.Fatal("another actor completed member's answer")
+	if text := click("member", "提交选择"); text != "请先回答第 2 题，再提交。" {
+		t.Fatalf("another actor completed member's answer: %q", text)
+	}
+	_ = click("member", "2. X")
+	// Multi-select toggles independently.
+	_ = click("member", "2. X")
+	if text := click("member", "提交选择"); text != "请先回答第 2 题，再提交。" {
+		t.Fatalf("multi-select toggle was not applied: %q", text)
 	}
 	_ = click("member", "2. X")
 	if click("member", "提交选择") != "已提交" {

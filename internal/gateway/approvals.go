@@ -99,7 +99,7 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 	g.approvals[id] = p
 	p.timer = time.AfterFunc(time.Duration(g.config.Limits.ApprovalMS)*time.Millisecond, func() { g.settleApproval(id, core.Args{"approved": false, "reason": "expired"}, "system") })
 	p.detach = context.AfterFunc(ctx, func() { g.settleApproval(id, core.Args{"approved": false, "reason": "cancelled"}, "system") })
-	card := g.redactArgs(approvalCard(id, p))
+	card := g.redactArgs(approvalCard(id, p, ""))
 	g.approvalMu.Unlock()
 	targets := []core.Room{r}
 	if p.forwarded {
@@ -175,9 +175,16 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 		return core.Args{"approved": false, "reason": "cancelled"}, nil
 	}
 }
-func approvalCard(id string, p *approval) core.Args {
+func approvalCard(id string, p *approval, actor string) core.Args {
 	if p.kind == "permission" {
 		return DisplayCard("需要维护者批准", p.summary+"\n\n仅批准这一次操作，超时或停止后失效。\n请求：`"+id+"`", button("批准一次", core.Args{"request": id, "decision": "allow"}, "primary"), button("拒绝", core.Args{"request": id, "decision": "deny"}, "danger"))
+	}
+	intro := "每题标注单选/多选。群内每位成员独立选择，第一位提交者生效，卡片不显示个人勾选。\n自由回答：`/answer " + id + " 你的回答`。"
+	if p.room.DMUser != "" {
+		intro = "每题标注单选/多选；选择后卡片会显示你的当前选择。\n自由回答：`/answer " + id + " 你的回答`。"
+	}
+	if line := selectionSummary(p, actor); line != "" {
+		intro += "\n\n" + line
 	}
 	elements := []any{}
 	for qi, q := range p.questions {
@@ -192,13 +199,46 @@ func approvalCard(id string, p *approval) core.Args {
 		elements = append(elements, core.Args{"tag": "markdown", "content": fmt.Sprintf("**%d. %s%s**\n%s", qi+1, header, mode, q.Question)})
 		for oi, o := range q.Options {
 			if o.Description != "" {
-				elements = append(elements, core.Args{"tag": "markdown", "content": fmt.Sprintf("%d.%d %s\n%s", qi+1, oi+1, o.Label, o.Description)})
+				elements = append(elements, core.Args{"tag": "markdown", "content": fmt.Sprintf("%d.%d %s", qi+1, oi+1, o.Description)})
 			}
 			elements = append(elements, button(fmt.Sprintf("%d. %s", qi+1, o.Label), core.Args{"revision": p.revision, "request": id, "question": qi, "option": oi}, "default"))
 		}
 	}
-	elements = append(elements, button("提交选择", core.Args{"revision": p.revision, "request": id, "decision": "submit"}, "primary"), button("取消", core.Args{"revision": p.revision, "request": id, "decision": "deny"}, "default"))
-	return DisplayCard("需要补充信息", "回答所有问题后提交。每位成员独立选择，以操作提示为准，卡片不显示个人勾选。\n自由回答：`/answer "+id+" 你的回答`。", elements...)
+	elements = append(elements, actionRow(
+		button("提交选择", core.Args{"revision": p.revision, "request": id, "decision": "submit"}, "primary"),
+		button("取消", core.Args{"revision": p.revision, "request": id, "decision": "deny"}, "default"),
+	))
+	return DisplayCard("需要补充信息", intro, elements...)
+}
+
+// selectionSummary is only rendered into a private card. A shared group card
+// must not disclose which options one member picked to the other members.
+func selectionSummary(p *approval, actor string) string {
+	if actor == "" || p.room.DMUser == "" {
+		return ""
+	}
+	choices := p.selected[actor]
+	lines := []string{}
+	for qi, q := range p.questions {
+		selected := choices[qi]
+		if len(selected) == 0 {
+			continue
+		}
+		indices := make([]int, 0, len(selected))
+		for oi := range selected {
+			indices = append(indices, oi)
+		}
+		sort.Ints(indices)
+		labels := make([]string, 0, len(indices))
+		for _, oi := range indices {
+			labels = append(labels, q.Options[oi].Label)
+		}
+		lines = append(lines, fmt.Sprintf("%d. %s", qi+1, strings.Join(labels, ", ")))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "**当前选择**\n" + strings.Join(lines, "\n")
 }
 func (g *Gateway) settleApproval(id string, value core.Args, actor string) bool {
 	g.approvalMu.Lock()
@@ -280,15 +320,16 @@ func (g *Gateway) closeApprovals() {
 		g.settleApproval(id, core.Args{"approved": false, "reason": "shutdown"}, "system")
 	}
 }
-func (g *Gateway) refreshQuestion(ctx context.Context, id string, p *approval, text string) (string, error) {
+func (g *Gateway) refreshQuestion(ctx context.Context, id string, p *approval, actor, text string) (string, error) {
 	g.approvalMu.Lock()
 	if g.approvals[id] != p {
 		g.approvalMu.Unlock()
 		return "请求已结束或过期", nil
 	}
-	p.revision = core.NewID()
-	card := g.redactArgs(approvalCard(id, p))
-	revision := p.revision
+	// Re-rendering is feedback for the private card owner. It deliberately does
+	// not invalidate other card instances: a shared group card stays stable, and
+	// a stale private card still submits the option indices it already carries.
+	card := g.redactArgs(approvalCard(id, p, actor))
 	var cards []string
 	for mid := range p.cards {
 		cards = append(cards, mid)
@@ -298,7 +339,7 @@ func (g *Gateway) refreshQuestion(ctx context.Context, id string, p *approval, t
 	for _, mid := range cards {
 		unlock := g.approvalUpdateLocks.lock(mid)
 		g.approvalMu.Lock()
-		alive := g.approvals[id] == p && p.revision == revision
+		alive := g.approvals[id] == p
 		g.approvalMu.Unlock()
 		if alive {
 			if e := providerVoid(ctx, func() error { return g.transport.Update(ctx, mid, card) }); e != nil {
@@ -363,10 +404,6 @@ func (g *Gateway) Action(ctx context.Context, a core.CardAction) (string, error)
 		return "仅维护者可以审批", nil
 	}
 	decision := stringArg(a.Value, "decision")
-	if p.kind == "question" && stringArg(a.Value, "revision") != p.revision {
-		g.approvalMu.Unlock()
-		return "卡片已刷新，请使用最新卡片或 /answer 回答。", nil
-	}
 	if decision == "deny" {
 		g.approvalMu.Unlock()
 		if g.settleApproval(id, core.Args{"approved": false, "reason": "denied"}, a.UserID) {
@@ -386,11 +423,12 @@ func (g *Gateway) Action(ctx context.Context, a core.CardAction) (string, error)
 	}
 	if decision == "submit" {
 		answers := map[string]string{}
+		missing := []string{}
 		for qi, q := range p.questions {
 			selected := p.selected[a.UserID][qi]
 			if len(selected) == 0 {
-				g.approvalMu.Unlock()
-				return g.refreshQuestion(ctx, id, p, "请回答所有问题")
+				missing = append(missing, fmt.Sprint(qi+1))
+				continue
 			}
 			indices := []int{}
 			for oi := range selected {
@@ -404,6 +442,9 @@ func (g *Gateway) Action(ctx context.Context, a core.CardAction) (string, error)
 			answers[q.Question] = strings.Join(labels, ", ")
 		}
 		g.approvalMu.Unlock()
+		if len(missing) > 0 {
+			return "请先回答第 " + strings.Join(missing, "、") + " 题，再提交。", nil
+		}
 		if g.settleApproval(id, core.Args{"approved": true, "answers": answers}, a.UserID) {
 			return "已提交", nil
 		}
@@ -413,7 +454,7 @@ func (g *Gateway) Action(ctx context.Context, a core.CardAction) (string, error)
 	oi, ook := numberArg(a.Value, "option")
 	if !qok || !ook || qi >= int64(len(p.questions)) || oi >= int64(len(p.questions[qi].Options)) {
 		g.approvalMu.Unlock()
-		return g.refreshQuestion(ctx, id, p, "无效选项")
+		return "无效选项，请使用最新卡片或 /answer 回答。", nil
 	}
 	q := p.questions[qi]
 	choices := p.selected[a.UserID]
@@ -424,7 +465,7 @@ func (g *Gateway) Action(ctx context.Context, a core.CardAction) (string, error)
 	if selected == nil || !q.MultiSelect {
 		selected = map[int]bool{}
 	}
-	if selected[int(oi)] {
+	if q.MultiSelect && selected[int(oi)] {
 		delete(selected, int(oi))
 	} else {
 		selected[int(oi)] = true
@@ -445,7 +486,17 @@ func (g *Gateway) Action(ctx context.Context, a core.CardAction) (string, error)
 		label = "未选择"
 	}
 	g.approvalMu.Unlock()
-	return g.refreshQuestion(ctx, id, p, "已记录你的选择："+cut(q.Question, 50)+" → "+cut(label, 80))
+	hint := "点击「提交选择」生效"
+	if q.MultiSelect {
+		hint = "可继续选择，选好后提交"
+	}
+	text := fmt.Sprintf("第 %d 题已记录：%s（%s）", qi+1, cut(label, 80), hint)
+	// A shared group card must not expose one member's choices. Private cards
+	// update in place so the owner can see the current selection.
+	if p.room.DMUser != "" {
+		return g.refreshQuestion(ctx, id, p, a.UserID, text)
+	}
+	return text, nil
 }
 func (g *Gateway) answer(r core.Room, actor, id, text string) string {
 	g.approvalMu.Lock()

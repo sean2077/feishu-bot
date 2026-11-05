@@ -22,6 +22,16 @@ func button(label string, value core.Args, style string) core.Args {
 	return core.Args{"tag": "button", "text": core.Args{"tag": "plain_text", "content": cut(label, 80)}, "type": style, "behaviors": []any{core.Args{"type": "callback", "value": value}}}
 }
 
+// actionRow places buttons side by side and makes each fill its column.
+func actionRow(buttons ...core.Args) core.Args {
+	columns := make([]any, 0, len(buttons))
+	for _, b := range buttons {
+		b["width"] = "fill"
+		columns = append(columns, core.Args{"tag": "column", "width": "weighted", "weight": 1, "elements": []any{b}})
+	}
+	return core.Args{"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "medium", "columns": columns}
+}
+
 type replyDetails struct {
 	Model, ProjectPath string
 	Context, Usage     core.Args
