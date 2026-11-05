@@ -75,7 +75,7 @@ func TestBuiltArtifactNativeApprovalFileReconnectAndResumeJourney(t *testing.T){
 	c.Model.TokenEnv,c.Model.Model,c.Model.SmallModel="ARTIFACT_NATIVE_MODEL_TOKEN","fixture-model","fixture-model"
 	c.Projects=[]core.Project{{ID:"fixture",CWD:work,NativeConfig:"isolated",PermissionMode:"default",Maintainers:[]string{"ou_owner"}}}
 	c.Groups=[]core.Group{{ChatID:"oc_artifact",ProjectID:"fixture",Members:[]string{"ou_member"}}};c.DMs=nil
-	c.Limits.UpdateMS,c.Limits.ApprovalMS=50,60000
+	c.Limits.UpdateMS,c.Limits.ApprovalMS=250,60000
 	configPath:=filepath.Join(dir,"config.json");encoded,_:=json.Marshal(c)
 	if err:=os.WriteFile(configPath,encoded,0600);err!=nil{t.Fatal(err)}
 	env:=append(os.Environ(),"ARTIFACT_NATIVE_APP_SECRET=artifact-native-app","ARTIFACT_NATIVE_MODEL_TOKEN=artifact-native-model","HTTPS_PROXY="+proxy.URL,"HTTP_PROXY="+proxy.URL,"ALL_PROXY="+proxy.URL,"NO_PROXY=127.0.0.1,localhost","https_proxy="+proxy.URL,"http_proxy="+proxy.URL,"all_proxy="+proxy.URL,"no_proxy=127.0.0.1,localhost","SSL_CERT_FILE="+certPath)
@@ -94,7 +94,16 @@ func TestBuiltArtifactNativeApprovalFileReconnectAndResumeJourney(t *testing.T){
 			select{case err:=<-done:if err!=nil{t.Error("artifact service stop",err,logs.String())};case<-time.After(15*time.Second):serviceCancel();select{case<-done:case<-time.After(8*time.Second):t.Error("artifact process cleanup unconfirmed")};t.Error("artifact did not stop through its production control file")}
 			serviceCancel()
 		})}
-		return platform.connected(t,ctx)
+		select {
+		case wire := <-platform.connections:
+			return wire
+		case err := <-done:
+			once.Do(serviceCancel)
+			t.Fatalf("artifact exited before its WS connection: %v\n%s", err, logs.String())
+		case <-ctx.Done():
+			t.Fatalf("artifact WS startup timed out: %v\n%s", ctx.Err(), logs.String())
+		}
+		return nil
 	}
 	defer func(){platform.releaseFile();if stopService!=nil{stopService()};if t.Failed(){t.Log(logs.String())}}()
 	wire:=start()
@@ -122,10 +131,10 @@ func TestBuiltArtifactNativeApprovalFileReconnectAndResumeJourney(t *testing.T){
 	if platform.isDone("om_initial"){t.Fatal("artifact marked Done before full file acknowledgement")}
 	platform.releaseFile()
 	platform.wait(t,ctx,"final Done",func()bool{return platform.isDone("om_initial")})
-	platform.mu.Lock();replyCards,files:=0,platform.fileMessages
+	platform.mu.Lock();replyCards,files,earlyDone:=0,platform.fileMessages,platform.doneBeforeFileAck
 	for _,card:=range platform.cards{if card.ReplyTo=="om_initial"{replyCards++}}
 	platform.mu.Unlock()
-	if replyCards!=1||files!=1{t.Fatalf("artifact duplicated reply/file delivery: cards=%d files=%d",replyCards,files)}
+	if replyCards!=1||files!=1||earlyDone{t.Fatalf("artifact duplicated or prematurely confirmed reply/file delivery: cards=%d files=%d earlyDone=%t",replyCards,files,earlyDone)}
 	platform.message(t,ctx,wire,"om_stop","/stop","ou_owner")
 	stopService()
 	original,cc:=artifactSession(t,c.DataDir)

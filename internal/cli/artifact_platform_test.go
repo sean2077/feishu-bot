@@ -32,6 +32,7 @@ type artifactPlatform struct {
 	changed chan struct{}
 	connections chan *artifactWire
 	cards map[string]artifactCard
+	cardObjects map[string]core.Args
 	sequences map[string]int64
 	acks map[string]larkws.Response
 	done map[string]bool
@@ -40,9 +41,10 @@ type artifactPlatform struct {
 	releaseOnce sync.Once
 	counter atomic.Int64
 	fileMessages int
+	doneBeforeFileAck bool
 }
 func newArtifactPlatform(t *testing.T)*artifactPlatform{
-	return &artifactPlatform{t:t,changed:make(chan struct{},1),connections:make(chan *artifactWire,8),cards:map[string]artifactCard{},sequences:map[string]int64{},acks:map[string]larkws.Response{},done:map[string]bool{},fileSeen:make(chan string,2),fileRelease:make(chan struct{})}
+	return &artifactPlatform{t:t,changed:make(chan struct{},1),connections:make(chan *artifactWire,8),cards:map[string]artifactCard{},cardObjects:map[string]core.Args{},sequences:map[string]int64{},acks:map[string]larkws.Response{},done:map[string]bool{},fileSeen:make(chan string,2),fileRelease:make(chan struct{})}
 }
 func(f *artifactPlatform)signal(){select{case f.changed<-struct{}{}:default:}}
 func(f *artifactPlatform)releaseFile(){f.releaseOnce.Do(func(){close(f.fileRelease)})}
@@ -67,13 +69,26 @@ func(f *artifactPlatform)serveHTTP(w http.ResponseWriter,r *http.Request){
 	if r.Header.Get("Authorization")!="Bearer artifact-token"{http.Error(w,"fixture authorization",403);return}
 	if path=="/open-apis/cardkit/v1/cards"&&r.Method==http.MethodPost{
 		body:=artifactBody(f.t,r)
-		if decodeArtifactCard(body["data"])==nil{f.t.Error("invalid CardKit create payload")}
-		artifactJSON(w,core.Args{"card_id":fmt.Sprintf("card_%d",f.counter.Add(1))});return
+		card:=decodeArtifactCard(body["data"])
+		if card==nil{f.t.Error("invalid CardKit create payload")}
+		id:=fmt.Sprintf("card_%d",f.counter.Add(1))
+		f.mu.Lock();f.cardObjects[id]=card;f.mu.Unlock()
+		artifactJSON(w,core.Args{"card_id":id});return
 	}
 	if strings.HasPrefix(path,"/open-apis/cardkit/v1/cards/")&&r.Method==http.MethodPut{
-		id:=strings.Split(strings.TrimPrefix(path,"/open-apis/cardkit/v1/cards/"),"/")[0]
+		parts:=strings.Split(strings.TrimPrefix(path,"/open-apis/cardkit/v1/cards/"),"/");id:=parts[0]
 		body:=artifactBody(f.t,r);sequence,_:=body["sequence"].(float64)
-		f.mu.Lock();if int64(sequence)<=f.sequences[id]{f.t.Error("artifact reused a card sequence")};f.sequences[id]=int64(sequence);f.mu.Unlock()
+		f.mu.Lock()
+		if _,known:=f.cardObjects[id];!known{f.t.Error("artifact updated an unknown CardKit entity")}
+		if sequence!=float64(int64(sequence))||int64(sequence)<=f.sequences[id]{f.t.Error("artifact reused or invalidated a card sequence")}
+		f.sequences[id]=int64(sequence)
+		if len(parts)==1{
+			card,_:=body["card"].(map[string]any);snapshot:=decodeArtifactCard(card["data"])
+			if snapshot==nil{f.t.Error("invalid full CardKit update")};f.cardObjects[id]=snapshot
+		}else if len(parts)==4&&parts[1]=="elements"&&parts[3]=="content"{
+			artifactSetElement(f.cardObjects[id],parts[2],artifactString(body,"content"))
+		}else{f.t.Error("unexpected CardKit update route",path)}
+		f.mu.Unlock()
 		artifactJSON(w,core.Args{});return
 	}
 	if path=="/open-apis/im/v1/files"&&r.Method==http.MethodPost{
@@ -97,7 +112,11 @@ func(f *artifactPlatform)serveHTTP(w http.ResponseWriter,r *http.Request){
 		if len(parts)>=2&&parts[1]=="reactions"{
 			if r.Method==http.MethodPost{
 				body:=artifactBody(f.t,r);reaction,_:=body["reaction_type"].(map[string]any)
-				if reaction["emoji_type"]=="Done"{f.mu.Lock();f.done[parts[0]]=true;f.mu.Unlock();f.signal()}
+				if reaction["emoji_type"]=="Done"{
+					f.mu.Lock()
+					if parts[0]=="om_initial"&&f.fileMessages==0{f.doneBeforeFileAck=true;f.t.Error("artifact marked Done before the full file message was acknowledged")}
+					f.done[parts[0]]=true;f.mu.Unlock();f.signal()
+				}
 				artifactJSON(w,core.Args{"reaction_id":fmt.Sprintf("reaction_%d",f.counter.Add(1))});return
 			}
 			artifactJSON(w,core.Args{"items":[]any{},"has_more":false});return
@@ -112,7 +131,7 @@ func(f *artifactPlatform)serveHTTP(w http.ResponseWriter,r *http.Request){
 			content:=decodeArtifactCard(body["content"])
 			f.mu.Lock()
 			if body["msg_type"]=="interactive"{
-				cardID:="";if content["type"]=="card"{ref,_:=content["data"].(map[string]any);cardID=artifactString(ref,"card_id")}
+				cardID:="";if content["type"]=="card"{ref,_:=content["data"].(map[string]any);cardID=artifactString(ref,"card_id");if _,known:=f.cardObjects[cardID];!known{f.t.Error("artifact sent an unknown CardKit reference")}}
 				f.cards[id]=artifactCard{ID:id,ReplyTo:replyTo,CardID:cardID,Body:content}
 			}
 			if body["msg_type"]=="file"{f.fileMessages++}
@@ -185,3 +204,13 @@ func(f *artifactPlatform)action(t *testing.T,ctx context.Context,wire *artifactW
 	var body struct{Toast struct{Content string}};_ = json.Unmarshal(response.Data,&body);return body.Toast.Content
 }
 func(f *artifactPlatform)isDone(id string)bool{f.mu.Lock();defer f.mu.Unlock();return f.done[id]}
+
+func artifactSetElement(value any,id,content string){
+	switch v:=value.(type){
+	case map[string]any:
+		if v["element_id"]==id{v["content"]=content}
+		for _,child:=range v{artifactSetElement(child,id,content)}
+	case []any:
+		for _,child:=range v{artifactSetElement(child,id,content)}
+	}
+}

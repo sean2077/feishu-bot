@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -127,15 +128,24 @@ func artifactFeishuProxy(t *testing.T, custom ...http.Handler)(*httptest.Server,
 	server:=httptest.NewUnstartedServer(handler)
 	server.TLS=&tls.Config{Certificates:[]tls.Certificate{pair},MinVersion:tls.VersionTLS12}
 	server.StartTLS();t.Cleanup(server.Close)
+	var tunnelMu sync.Mutex
+	tunnels:=map[net.Conn]bool{}
 	proxy:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
 		if r.Method!=http.MethodConnect || r.Host!="open.feishu.cn:443" {http.Error(w,"fixture destination denied",403);return}
 		upstream,err:=net.DialTimeout("tcp",server.Listener.Addr().String(),time.Second);if err!=nil{http.Error(w,"fixture unavailable",502);return}
 		downstream,buffer,err:=w.(http.Hijacker).Hijack();if err!=nil{upstream.Close();return}
 		defer upstream.Close();defer downstream.Close()
+		tunnelMu.Lock();tunnels[upstream],tunnels[downstream]=true,true;tunnelMu.Unlock()
+		defer func(){tunnelMu.Lock();delete(tunnels,upstream);delete(tunnels,downstream);tunnelMu.Unlock()}()
 		_,_=buffer.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n");_=buffer.Flush()
 		done:=make(chan struct{})
 		go func(){_,_=io.Copy(upstream,buffer);_=upstream.Close();close(done)}()
 		_,_=io.Copy(downstream,upstream);_=downstream.Close();<-done
 	}))
+	t.Cleanup(func(){
+		tunnelMu.Lock();active:=make([]net.Conn,0,len(tunnels));for conn:=range tunnels{active=append(active,conn)};tunnelMu.Unlock()
+		for _,conn:=range active{_ = conn.Close()}
+		proxy.Close()
+	})
 	return proxy,cert,&calls
 }

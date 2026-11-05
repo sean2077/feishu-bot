@@ -78,8 +78,26 @@ jobs:
         run: go test -race -count=1 -timeout 180s ./internal/cli -run '^TestBuiltArtifact'
       - name: Record advisory Go formatting patch
         if: always() && matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
-        shell: bash
-        run: git ls-files -z '*.go' | xargs -0 gofmt -d > gofmt.patch
+        shell: python
+        run: |
+          import os
+          import subprocess
+          import sys
+          files = subprocess.check_output(['git', 'ls-files', '-z', '--', '*.go']).split(b'\0')
+          failed = False
+          with open('gofmt.patch', 'wb') as patch:
+              for raw_path in files:
+                  if not raw_path:
+                      continue
+                  path = os.fsdecode(raw_path)
+                  result = subprocess.run(['gofmt', '-d', path], capture_output=True)
+                  patch.write(result.stdout)
+                  # A diff may use exit 1; syntax/tool errors must still fail.
+                  if result.stderr or result.returncode not in (0, 1) or (result.returncode == 1 and not result.stdout):
+                      failed = True
+                      print(f'gofmt failed for {path} (exit {result.returncode})', file=sys.stderr)
+                      sys.stderr.write(result.stderr.decode('utf-8', errors='replace'))
+          raise SystemExit(failed)
       - name: Retain advisory Go formatting patch
         if: always() && matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
