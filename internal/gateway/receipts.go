@@ -7,6 +7,9 @@ import (
 )
 
 func (g *Gateway) acceptReceipt(r core.Room, session string, m core.Message) {
+	if m.InteractionMessageID != "" {
+		return
+	}
 	_, e := g.store.DB.Exec("INSERT INTO receipts(id,room,session,desired,at,sender) VALUES(?,?,?,'processing',?,?) ON CONFLICT(id) DO UPDATE SET desired='processing',at=excluded.at WHERE receipts.room=excluded.room AND receipts.session=excluded.session AND receipts.desired!='done'", m.ID, r.Key, session, time.Now().UnixMilli(), m.SenderID)
 	if e == nil {
 		g.kickReceipt(m.ID)

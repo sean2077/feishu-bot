@@ -84,3 +84,35 @@ func TestRealNativeBenchmarkUsesLocalModelAndOneWarmWorker(t *testing.T) {
 		}
 	}
 }
+
+func TestBenchmarkMatrixCoversResourceBoundaries(t *testing.T) {
+	matrix := scenarios(settings{Scenario: "matrix", Samples: 1})
+	if len(matrix) != 9 || matrix[0].Sessions != 0 || matrix[2].Sessions != 4 || matrix[7].TextBytes != 100<<10 || !matrix[7].Attachments || !matrix[8].Reclaim {
+		t.Fatalf("incomplete resource scenarios: %#v", matrix)
+	}
+	for _, size := range []int{20 << 10, 100 << 10} {
+		reply := benchmarkReply(size)
+		if len(reply) != size || !strings.HasPrefix(reply, "中") {
+			t.Fatal("reply budget must measure UTF-8 bytes", len(reply), size)
+		}
+	}
+}
+
+func TestNoSessionBenchmarkDoesNotStartNativeCLI(t *testing.T) {
+	s := runSample(1, settings{Scenario: "no-session", Sessions: 0, IdleMS: 1, Claude: "not-a-real-executable"})
+	if s.Status != "passed" || s.Workers != 0 || s.ModelRequests != 0 || len(s.Turns) != 0 || !s.Cleanup {
+		t.Fatalf("idle gateway started a model or failed cleanup: %#v", s)
+	}
+}
+
+func TestRealNativeLongChineseAttachmentAndOriginalSessionResume(t *testing.T) {
+	path := os.Getenv("CLAUDE_NATIVE_PATH")
+	if path == "" {
+		t.Skip("set CLAUDE_NATIVE_PATH for the long-answer/reclaim native contract")
+	}
+	t.Setenv("FEISHU_BASELINE_FIXTURE_TOKEN", fixtureToken)
+	s := runSample(1, settings{Scenario: "long-and-resume", Sessions: 1, TextBytes: 100 << 10, Attachments: true, Reclaim: true, UpdateMS: 20, IdleMS: 100, Claude: path})
+	if s.Status != "passed" || !s.Reclaimed || !s.Stable || s.Workers != 2 || len(s.Turns) != 2 || s.Transport.Downloads != 1 || s.Transport.Files < 2 {
+		t.Fatalf("long answer/attachment/resume failed: %#v", s)
+	}
+}

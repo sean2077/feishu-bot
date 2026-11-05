@@ -13,6 +13,7 @@ const Example = `{
     "model": "your-model-id",
     "smallModel": "your-model-id"
   },
+  "modelProfiles": {},
   "projects": [{
     "id": "assistant",
     "maintainers": ["ou_example_owner"],

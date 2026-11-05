@@ -7,7 +7,7 @@ go build -trimpath -o ./bin/benchmark-native ./cmd/benchmark-native
 ./bin/benchmark-native --claude /absolute/path/to/claude --samples 3 --warm-turns 2 --idle-ms 1000
 ```
 
-命令只使用临时状态、本地确定性模型与内存飞书替身，不读取部署配置。每样本启动一个原生会话并执行一冷两热轮次，确认同一进程／原生 ID 和最终 Done。输出 JSON 包含每次结果与失败阶段；交付或退出确认失败会返回非零退出码。内存采样目前支持 Linux `/proc`，其他平台明确 unavailable；它不影响原生功能验证的成功与失败。
+命令只使用临时状态、本地确定性模型与内存飞书替身，不读取部署配置。每样本启动一个原生会话并执行一冷两热轮次，确认同一进程／原生 ID 和最终 Done。输出 JSON 包含每次结果与失败阶段；交付或退出确认失败会返回非零退出码。内存采样支持 Linux `/proc`（RSS 与可读时的私有页）和 Windows Win32 Working Set／Private Bytes；macOS 当前明确 `unavailable`。不可观察内存不记作 0，也不影响原生功能验证本身的成功与失败。
 
 ## Go 迁移的本地观察
 
@@ -49,3 +49,61 @@ Linux 可采集 `/proc/<pid>/status` 和 `smaps_rollup`；Windows 使用 Working
 容器中的 `process.pid`／`os.Getpid()` 与挂载的 `/proc` 可能属于不同 PID 命名空间。必须先核对 `/proc/self/status` 的 Pid／NSpid 与采样器视图，再关联后代。无法识别主进程时标记 **unavailable**，不得记为 0 或悄悄换一个同名进程。
 
 真实模型的延迟、飞书网络、工具执行和 CLI 初始化应分别记录。本地 fixture 只提供确定性回复，其合成 token 不代表真实成本或上下文规模。测量工具不加入生产服务的定时循环。
+
+
+## 可执行资源矩阵
+
+```sh
+./bin/benchmark-native --claude /absolute/path/to/claude --samples 3 --warm-turns 2 --idle-ms 1000 --scenario matrix
+```
+
+矩阵依次运行无会话、1 个热会话、4 个同时保留的热会话、20 KiB／100 KiB 中文回答的快／慢卡片更新、1 MiB 入站附件和完整回答导出、空闲回收后恢复原生会话 ID。长文本按 **UTF-8 字节** 构造；慢卡片场景使用本地替身延迟，不代表真实飞书网络。多会话逐个完成冷／热轮次后同时保留进程，用于稳定的容量比较，并非并发模型吞吐测试。
+
+单独定位场景可用以下参数：
+
+```sh
+./bin/benchmark-native --samples 1 --warm-turns 0 --sessions 0 --idle-ms 100
+./bin/benchmark-native --samples 3 --sessions 4 --idle-ms 1000
+./bin/benchmark-native --samples 3 --text-bytes 102400 --update-ms 20 --transport-ms 100 --attachments --reclaim
+```
+
+`--sessions` 为 0–8，`--text-bytes` 最大 102400，`--update-ms` 为 20–5000，`--transport-ms` 为 0–1000。20 ms 是基准驱动的压力测试参数；生产配置 `limits.updateMs` 仍要求至少 250 ms。`--reclaim` 使用网关已有 `Sweep`，确认原进程释放后再发消息；网关会话 ID 和原生 ID 必须同时保持，恢复失败不会新建会话。没有会话时不应产生 CLI 或模型请求。
+
+JSON schema 2 记录每阶段进程树、100 ms 间隔观察到的完整进程树采样峰值及采集开销、宿主／原生 CLI／其余工具或 MCP 后代分项、每轮首字／原生结果／模拟交付耗时、卡片创建与更新次数、序列化卡片字节、入站文件与导出文件字节，以及进程级 Go 分配。采样峰值保留同一次完整快照，不把不同时刻各分项的最大值拼成一个峰值；100 ms 之间的瞬时峰值仍可能漏测。宿主分项包含网关、SQLite、采样器和本地服务；任意工具与 MCP 无法仅靠 PID 可靠区分，因此合并保留，不能把全部后代都记成 Claude 本体。Linux 私有页与 Windows Private Bytes 含义不同，跨操作系统不直接相减。
+
+渲染细项使用生产渲染路径的 Go 分配基准：
+
+```sh
+go test ./internal/gateway -run '^$' -bench 'BenchmarkRender|BenchmarkReplyCard' -benchmem
+```
+
+CI 在 Linux／Windows 的 Go 1.27 记录资源矩阵，并保留带平台后缀的 `native-resource-observations-*` artifact；Linux 另记录三组、每组重复三次的有界渲染分配观察。单次 CI 观察用于发现回归与核对机制，不用于承诺性能比例；正式比较仍需固定机器、多样本和相同输入。进程树退出未确认时，采样器停止后续样本，避免把残留进程计入下一组。
+
+### 2026-11-05 的 CI 观察
+
+以下来自提交 `9eb43e8ea39676513290b0d9e4b920d1dae98385` 的 [Linux amd64 CI 日志](https://github.com/sean2077/feishu-bot/actions/runs/41988792550/job/127115808957)：Go 1.27.3、Claude Code 2.1.316、4 个逻辑 CPU。它是该提交的限定测试证据，不代表后续提交，也没有与 cc-connect 在同机、同配置下比较。
+
+生产文本累积路径与测试中保留的旧算法，在同一次任务内使用相同的小块中文输入；每组执行 3 次，重复 3 组。基准以 24 字节增量块补齐最后一块，两个标称规模的实际文本分别为 20,016／100,008 字节。下面是各组观察到的范围，`B/op` 是每次操作分配的字节数，不是常驻内存或完整服务峰值：
+
+| 基准标称 UTF-8 字节数 | 旧算法 B/op | 缓冲实现 B/op | 旧算法 allocs/op | 缓冲实现 allocs/op |
+|---:|---:|---:|---:|---:|
+| 20,000 | 8,802,744–8,804,608 | 85,336 | 833–836 | 26 |
+| 100,000 | 405,976,296–405,976,818 | 515,416 | 5,838–5,843 | 32 |
+
+这说明反复拼接和扫描已有文本的分配开销已经减少；不据此推断模型耗时、飞书网络、整套服务 RSS 或其他工具的性能。
+
+同一任务的资源矩阵使用 `--samples 1 --warm-turns 0 --idle-ms 100`，9 个场景全部通过，进程树观察全部为 `observed`。其中 0／1／4 会话在空闲 100 ms 后的快照如下，单位均为字节：
+
+| 已完成首轮并保留的会话 | 宿主 RSS（含 fixture／SQLite／采样器） | 原生 CLI RSS 合计 | 宿主私有页 |
+|---:|---:|---:|---:|
+| 0 | 20,078,592 | 0 | 18,722,816 |
+| 1 | 21,262,336 | 220,418,048 | 19,595,264 |
+| 4 | 21,729,280 | 866,336,768 | 20,062,208 |
+
+这次矩阵没有测热续轮延迟，四会话也不是并发吞吐测试。100 KiB 中文快／慢场景均保持一张回复卡，并各导出完整 102,400 字节文件；附件场景确认 1,048,576 字节入站和 102,400 字节导出；回收后保持网关与原生会话 ID。未运行外部工具或 MCP 子进程，因此该分项为 0。单场景仅一个样本，RSS 合计还会重复共享页，不能据此给出生产容量、跨系统差值或性能承诺。
+
+## 原生版本与实际产物
+
+普通 CI 使用固定 Claude Code 2.1.316。`Verify Go gateway` 的手动运行可同时指定 `candidate_sdk_version` 与 `candidate_native_version`，安装官方测试包、核对实际 `--version` 身份，再运行权限／追问、持续输入、MCP、compact、停止、恢复和长文本附件回归。候选成功不会自动改写仓库已测版本。
+
+CI 还给无 CGO 生产二进制写入当前提交身份，直接运行该文件的 `version`、`init`、`doctor` 和本地模型探针；Linux 通过严格限定到本地 TLS 服务的代理验证飞书认证／身份探针。Windows／macOS 使用系统证书存储，因此这段假 CA 飞书探针明确不执行；其他实际二进制步骤仍运行。Linux 的实际生产二进制另执行完整本地替身旅程：真实 TLS／WebSocket／REST 适配层、真实 Claude Code、MCP 历史、维护者审批 Write（普通成员被拒绝）、断线重连后的 `/answer`、同卡长回答、完整文件确认后 Done、`/stop`、服务进程重启及原生会话 ID／历史保持。测试只替换平台和模型服务，不链接替代 service factory，也不向生产代码加入测试开关。这些测试与各平台源码内的真实 CLI 网关旅程共同提供发布前证据，但不是实际飞书或真实模型验收。

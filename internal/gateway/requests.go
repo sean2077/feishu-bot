@@ -86,7 +86,7 @@ func (g *Gateway) request(s *slot, ev core.WorkerEvent) (core.Args, error) {
 		}
 		reply := ""
 		if d, ok := s.deliveries[s.anchor]; ok {
-			reply = d.Message.ID
+			reply = messageReply(d.Message)
 		}
 		s.mu.Unlock()
 		id, e := g.saveOutput(g.store.DB, current, s.session.ID, "", true, "", reply, "", nil, who, name, snapshot, "file", "")

@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -104,24 +103,16 @@ func New(config core.Config, db *sql.DB, log core.Logger, options ...Options) (*
 		if err != nil {
 			return nil, errors.New("feishu: card-state initialization failed")
 		}
+		if err = c.initDeliveryState(); err != nil {
+			return nil, err
+		}
 	}
 	return c, nil
 }
 
-// APIError deliberately excludes provider text, URLs, request bodies and tokens.
-// Uncertain indicates that a mutation must not be blindly repeated.
-type APIError struct {
-	Operation    string
-	Status, Code int
-	Uncertain    bool
-}
-
-func (e *APIError) Error() string {
-	return fmt.Sprintf("feishu: %s failed (HTTP %d, code %d, uncertain %t)", e.Operation, e.Status, e.Code, e.Uncertain)
-}
 func permissionDenied(err error) bool {
 	var e *APIError
-	return errors.As(err, &e) && (e.Status == http.StatusForbidden || e.Code == 99991672)
+	return errors.As(err, &e) && !e.Uncertain && !e.DeliveryRetryable() && (e.Status == http.StatusForbidden || e.Code == 99991672)
 }
 func safeFailure(op string, err error) error {
 	if errors.Is(err, context.Canceled) {
@@ -164,38 +155,73 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 		return c.token, nil
 	}
 	body, _ := json.Marshal(map[string]string{"app_id": c.config.AppID, "app_secret": c.secret})
+	for attempt := 0; ; attempt++ {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		token, expire, err := c.requestToken(ctx, body)
+		if err == nil {
+			ttl := min(7200, max(1, expire-60))
+			c.token = token
+			c.tokenUntil = time.Now().Add(time.Duration(ttl) * time.Second)
+			return c.token, nil
+		}
+		var failure *APIError
+		if !errors.As(err, &failure) || !failure.DeliveryRetryable() || attempt+1 >= apiMaxAttempts {
+			return "", err
+		}
+		delay := failure.DeliveryRetryAfter()
+		if delay == 0 {
+			delay = retryBackoff(attempt)
+		}
+		if delay > apiMaxInlineWait {
+			return "", err
+		}
+		if e := waitRetry(ctx, delay); e != nil {
+			failure.cause = e
+			return "", failure
+		}
+	}
+}
+
+func (c *Client) requestToken(ctx context.Context, body []byte) (string, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
 	if err != nil {
-		return "", safeFailure("auth", err)
+		return "", 0, safeFailure("auth", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", safeFailure("auth", err)
+		// Refreshing this private credential cannot send a visible message. A
+		// connection failure here is safely retryable, unlike message creation.
+		return "", 0, &APIError{Operation: "auth", Retryable: true, cause: ctx.Err()}
 	}
 	defer resp.Body.Close()
 	var result struct {
-		Code   int    `json:"code"`
+		Code   *int   `json:"code"`
 		Token  string `json:"tenant_access_token"`
 		Expire int    `json:"expire"`
 	}
-	if err = readJSON(resp.Body, &result, 64<<10); err != nil || resp.StatusCode != http.StatusOK || result.Code != 0 || result.Token == "" {
-		return "", &APIError{Operation: "auth", Status: resp.StatusCode, Code: result.Code}
+	decodeErr := readJSON(resp.Body, &result, 64<<10)
+	code := 0
+	if result.Code != nil {
+		code = *result.Code
 	}
-	ttl := result.Expire - 60
-	if ttl < 1 {
-		ttl = 1
+	if decodeErr != nil || resp.StatusCode != http.StatusOK || result.Code == nil || code != 0 || result.Token == "" {
+		failure := c.responseFailure(req, resp, code, decodeErr == nil && result.Code != nil, false)
+		failure.Operation = "auth"
+		if code != 99991403 && (resp.StatusCode >= 500 || resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusOK && (decodeErr != nil || result.Code == nil || code == 0 && result.Token == "")) {
+			failure.Retryable = true
+			failure.RetryAfter = responseRetryAfter(resp.Header, time.Now())
+		}
+		return "", 0, failure
 	}
-	if ttl > 7200 {
-		ttl = 7200
-	}
-	c.token = result.Token
-	c.tokenUntil = time.Now().Add(time.Duration(ttl) * time.Second)
-	return c.token, nil
+	return result.Token, result.Expire, nil
 }
 
-// api sends each operation once. In particular, a token error or lost response
-// never transparently replays a message, upload, reaction or card creation.
+// api retries only explicit, temporary API rejections. Network failures and
+// ambiguous responses never transparently replay a mutation. A serialized JSON
+// body is reused verbatim; streamed uploads use doAPI once instead.
 func (c *Client) api(ctx context.Context, method, path string, query url.Values, body any, dst any) error {
 	if c.isClosed() {
 		return errors.New("feishu: transport is closed")
@@ -204,30 +230,54 @@ func (c *Client) api(ctx context.Context, method, path string, query url.Values,
 	if err != nil {
 		return err
 	}
-	var reader io.Reader
+	var data []byte
 	if body != nil {
-		data, e := json.Marshal(body)
+		var e error
+		data, e = json.Marshal(body)
 		if e != nil {
 			return errors.New("feishu: invalid request")
 		}
-		reader = bytes.NewReader(data)
 	}
 	target := c.base + "/open-apis" + path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, method, target, reader)
-	if err != nil {
-		return safeFailure("request", err)
+	for attempt := 0; ; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		req, e := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(data))
+		if e != nil {
+			return safeFailure("request", e)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		err = c.doAPI(req, dst, method != http.MethodGet && method != http.MethodHead)
+		var failure *APIError
+		if !errors.As(err, &failure) || !failure.DeliveryRetryable() || attempt+1 >= apiMaxAttempts {
+			return err
+		}
+		delay := failure.RetryAfter
+		if delay <= 0 {
+			delay = retryBackoff(attempt)
+		}
+		// Longer provider backoffs belong in the durable gateway queue, not in a
+		// sleeping render or an HTTP handler. Never shorten a provider deadline.
+		if delay > apiMaxInlineWait {
+			return err
+		}
+		if e = waitRetry(ctx, delay); e != nil {
+			// The last attempt was explicitly rejected. Cancellation while waiting
+			// must not turn a known non-write into an uncertain write.
+			failure.cause = e
+			return failure
+		}
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	return c.doAPI(req, dst, method != http.MethodGet && method != http.MethodHead)
 }
 func (c *Client) doAPI(req *http.Request, dst any, mutation bool) error {
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return &APIError{Operation: "request", Uncertain: mutation}
+		return &APIError{Operation: requestOperation(req), Uncertain: mutation, cause: req.Context().Err()}
 	}
 	defer resp.Body.Close()
 	var envelope struct {
@@ -235,14 +285,12 @@ func (c *Client) doAPI(req *http.Request, dst any, mutation bool) error {
 		Data json.RawMessage `json:"data"`
 		Bot  json.RawMessage `json:"bot"`
 	}
-	if err = readJSON(resp.Body, &envelope, maxJSONBytes); err != nil {
-		return &APIError{Operation: "response", Status: resp.StatusCode, Uncertain: mutation}
-	}
+	decodeErr := readJSON(resp.Body, &envelope, maxJSONBytes)
 	code := 0
 	if envelope.Code != nil {
 		code = *envelope.Code
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 || envelope.Code == nil || code != 0 {
+	if decodeErr != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 || envelope.Code == nil || code != 0 {
 		// Invalid/expired token can be refreshed on a later independent operation.
 		if code == 99991663 || code == 99991668 || resp.StatusCode == 401 {
 			c.tokenMu.Lock()
@@ -250,7 +298,7 @@ func (c *Client) doAPI(req *http.Request, dst any, mutation bool) error {
 			c.tokenUntil = time.Time{}
 			c.tokenMu.Unlock()
 		}
-		return &APIError{Operation: "API", Status: resp.StatusCode, Code: code, Uncertain: mutation && (resp.StatusCode >= 500 || envelope.Code == nil)}
+		return c.responseFailure(req, resp, code, decodeErr == nil && envelope.Code != nil, mutation)
 	}
 	if dst != nil {
 		data := envelope.Data
@@ -258,7 +306,7 @@ func (c *Client) doAPI(req *http.Request, dst any, mutation bool) error {
 			data = envelope.Bot
 		}
 		if len(data) == 0 || json.Unmarshal(data, dst) != nil {
-			return &APIError{Operation: "response", Status: resp.StatusCode, Uncertain: mutation}
+			return &APIError{Operation: "response", Status: resp.StatusCode, Uncertain: mutation, RequestID: c.responseRequestID(req, resp)}
 		}
 	}
 	return nil

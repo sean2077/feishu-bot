@@ -13,6 +13,7 @@ type Options struct {
 	ConfigPath          string
 	ConfigExplicit      bool
 	Probe, ProbeFeishu  bool
+	VerifyChat          string
 	ActionArgs          []string
 
 	EnvFile  string
@@ -147,6 +148,7 @@ func parseTop(args []string, o Options) (Options, error) {
 			o.Command = "help"
 			o.Probe = false
 			o.ProbeFeishu = false
+			o.VerifyChat = ""
 			return o, nil
 		case arg == "--config" || strings.HasPrefix(arg, "--config="):
 			if err := mark(seen, "--config"); err != nil {
@@ -180,6 +182,15 @@ func parseTop(args []string, o Options) (Options, error) {
 				return o, errors.New("--probe-feishu may only be specified once")
 			}
 			o.ProbeFeishu = true
+		case (arg == "--verify-chat" || strings.HasPrefix(arg, "--verify-chat=")) && o.Command == "doctor":
+			if err := mark(seen, "--verify-chat"); err != nil {
+				return o, err
+			}
+			value, _, err := takeValue(args, &i, arg, "--verify-chat")
+			if err != nil {
+				return o, err
+			}
+			o.VerifyChat = value
 		case (arg == "--log-file" || strings.HasPrefix(arg, "--log-file=")) && o.Command == "run":
 			if err := mark(seen, "--log-file"); err != nil {
 				return o, err
@@ -221,7 +232,7 @@ func parseTop(args []string, o Options) (Options, error) {
 			}
 			o.Service = true
 		default:
-			return o, fmt.Errorf("unexpected option; --probe and --probe-feishu are only supported by doctor")
+			return o, fmt.Errorf("unexpected option; --probe, --probe-feishu and --verify-chat are only supported by doctor")
 		}
 	}
 	if o.LogFile == "" && (seen["--log-max-size"] || seen["--log-max-backups"]) {

@@ -50,7 +50,7 @@ UNION SELECT room,0 FROM action_runs WHERE state='running'`)
 		}
 		_, err = tx.Exec(`UPDATE inbox SET status='uncertain' WHERE status IN ('sent','consumed');
 UPDATE action_runs SET state='uncertain' WHERE state='running';
-UPDATE outbox SET state=CASE WHEN kind='file' AND file_state='done' AND file_target IS NOT NULL THEN 'pending' WHEN kind='file' AND file_state='pending' THEN 'pending' WHEN target IS NULL OR file_state='sending' THEN 'uncertain' ELSE 'pending' END,
+UPDATE outbox SET state=CASE WHEN kind IN ('file','artifact') AND file_state='done' AND file_target IS NOT NULL THEN 'pending' WHEN kind IN ('file','artifact') AND file_state='pending' THEN 'pending' WHEN target IS NULL OR file_state='sending' THEN 'uncertain' ELSE 'pending' END,
 file_state=CASE WHEN file_state='sending' THEN 'uncertain' ELSE file_state END WHERE state IN ('sending','preparing');
 UPDATE requests SET state='expired' WHERE state='pending';
 UPDATE receipts SET desired='clear' WHERE desired='processing';`)

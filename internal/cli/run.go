@@ -27,6 +27,7 @@ var Version = "0.3.0-dev"
 
 const help = `feishu-bot init [--config path]
 feishu-bot doctor [--config path] [--env-file path] [--probe] [--probe-feishu]
+                  [--verify-chat configured-chat-id|dm:configured-user-id]
 feishu-bot run [--config path] [--env-file path] [--log-file path]
                [--log-max-size MB] [--log-max-backups N] [--service]
 feishu-bot daemon install|uninstall|start|stop|restart|status|logs
@@ -35,6 +36,8 @@ feishu-bot version
 
 Doctor is offline by default. --probe-feishu reads application identity;
 --probe sends a potentially billable model request. Neither verifies live collaboration.
+--verify-chat explicitly sends a test card/file and waits for authorized confirmation;
+stop the local service first. It never starts a model or changes chat authorization.
 On Linux and Windows, daemon install copies this binary into a work directory,
 writes service.env, registers a logon service and starts it with no launcher scripts.
 On macOS, use run in the foreground or with your own service manager.
@@ -109,6 +112,15 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		secrets = config.Secrets(c)
 		if o.Command == "doctor" {
 			report := RunDoctor(ctx, c, o.Probe, o.ProbeFeishu)
+			if o.VerifyChat != "" {
+				live := VerifyConfiguredChat(ctx, c, o.VerifyChat, stderr)
+				report.LiveChat = &live
+				report.Scope = "Local checks, explicitly requested remote probes and an explicit test-chat exchange; native/model tools remain independently unverified."
+				for key, state := range live.Checks {
+					report.Verification[key] = state
+				}
+				report.Ready = report.Ready && live.Status == "passed"
+			}
 			data, err := json.MarshalIndent(report, "", "  ")
 			if err != nil {
 				return err

@@ -78,9 +78,11 @@ type Gateway struct {
 	rooms                                                        map[string]core.Room
 	rates                                                        map[string][]int64
 	waiting                                                      map[string]bool
+	profileWait                                                  map[string]string
 	wakes                                                        map[string]*dispatchWake
 	imageTimers                                                  map[string]imageWake
 	inputLocks, dispatchLocks, receiptLocks, approvalUpdateLocks keyedLocks
+	outTargetLocks                                               keyedLocks
 	poolMu, sweepMu                                              sync.Mutex
 	outMu                                                        sync.Mutex
 	outActive                                                    map[string]bool
@@ -98,7 +100,7 @@ type Gateway struct {
 func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerFactory, log core.Logger) *Gateway {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{config: c, store: st, transport: tr, factory: factory, logger: log, ctx: ctx, cancel: cancel,
-		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rooms: map[string]core.Room{}, rates: map[string][]int64{}, waiting: map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
+		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rooms: map[string]core.Room{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
 	if _, err := rand.Read(g.historyKey[:]); err != nil {
 		panic("cannot initialize history cursor authentication")
 	}
@@ -173,6 +175,14 @@ func (g *Gateway) active(s *slot) bool {
 func (g *Gateway) Recover(ctx context.Context) error {
 	if err := g.recoverInterrupted(ctx); err != nil {
 		return err
+	}
+	if recovery, ok := g.transport.(core.CardRecovery); ok {
+		repairCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		count, err := recovery.RecoverCards(repairCtx)
+		cancel()
+		if err != nil {
+			g.audit("", "interrupted_card_repair_pending", core.Args{"recovered": count})
+		}
 	}
 	pending, err := g.store.PendingRooms()
 	if err != nil {
@@ -331,11 +341,11 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		g.notify(room, "消息未提交："+reason, &m)
 		return err
 	}
-	if contains([]string{"/help", "/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage"}, cmd) {
+	if contains([]string{"/help", "/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/model", "/profile", "/rename", "/artifacts"}, cmd) {
 		if _, err = g.store.Insert(room.Key, m, "done"); err != nil {
 			return err
 		}
-		if contains([]string{"/help", "/status", "/sessions", "/outputs", "/usage", "/retry-output"}, cmd) {
+		if contains([]string{"/help", "/status", "/sessions", "/outputs", "/usage", "/retry-output", "/artifacts"}, cmd) {
 			g.task(func() {
 				if e := g.command(g.ctx, room, m); e != nil {
 					g.audit(room.Key, "management_failed", core.Args{"error": core.Redact(e.Error(), g.secrets)})
@@ -462,7 +472,7 @@ func (g *Gateway) cancelSupplement(r core.Room, d core.Delivery, reason string, 
 		changed = true
 		current, ok := Route(g.config, d.Message)
 		if ok && current.Key == r.Key && Triggers(current, d.Message) {
-			id, e = g.saveOutput(tx, r, d.SessionID, text, false, "", d.Message.ID, d.Message.ThreadID, DisplayCard("补充已取消", text), origin(d.Message), "", "", "recovery", "")
+			id, e = g.saveOutput(tx, r, d.SessionID, text, false, "", messageReply(d.Message), d.Message.ThreadID, DisplayCard("补充已取消", text), origin(d.Message), "", "", "recovery", "")
 		} else {
 			_, e = tx.Exec("UPDATE inbox SET message='{}' WHERE uuid=?", d.UUID)
 		}
@@ -490,7 +500,7 @@ func (g *Gateway) cancelLostSupplements(r core.Room) {
 }
 func (g *Gateway) kick(r core.Room) {
 	g.mu.Lock()
-	if g.closing {
+	if g.closing || g.profileWait[r.Key] != "" {
 		g.mu.Unlock()
 		return
 	}
@@ -512,6 +522,21 @@ func (g *Gateway) kick(r core.Room) {
 			unlock()
 			if err != nil && !g.isClosing() {
 				g.audit(r.Key, "dispatch_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+				if errors.Is(err, config.ErrModelProfileUnavailable) {
+					// The saved session or requested profile no longer exists.
+					// Keep the input without a silent model switch, but stop the
+					// 30-second sweep from re-dispatching and re-notifying. /model,
+					// /new or /resume clears the block after a deliberate change.
+					g.mu.Lock()
+					first := g.profileWait[r.Key] == ""
+					g.profileWait[r.Key] = err.Error()
+					delete(g.wakes, r.Key)
+					g.mu.Unlock()
+					if first {
+						g.notify(r, "已保存的模型配置不可用；输入已保存，不会自动换模型。请用 /model 选择可用配置或 default，或恢复管理员配置。", nil)
+					}
+					return
+				}
 				g.notify(r, "输入已保存，但运行启动或交付失败；请查看服务诊断。", nil)
 			}
 			g.mu.Lock()
@@ -525,6 +550,12 @@ func (g *Gateway) kick(r core.Room) {
 		}
 	}()
 }
+func (g *Gateway) clearProfileWait(key string) {
+	g.mu.Lock()
+	delete(g.profileWait, key)
+	g.mu.Unlock()
+}
+
 func (g *Gateway) kickWaiting() {
 	if g.isClosing() {
 		return
@@ -604,6 +635,9 @@ func (g *Gateway) reserve(r core.Room) (*slot, error) {
 	if e != nil {
 		return nil, e
 	}
+	if e = g.sessionProfile(&ss); e != nil {
+		return nil, e
+	}
 	ctx, cancel := context.WithCancel(g.ctx)
 	s := &slot{room: r, session: ss, ctx: ctx, cancel: cancel, live: true, workerReady: make(chan struct{}), background: -1, lastActivity: time.Now().UnixMilli(), deliveries: map[string]core.Delivery{}, inputGroups: map[string][]string{}, accepted: map[string]bool{}, renders: map[string]*render{}, replyAnchors: map[string]core.Delivery{}, requests: map[string]bool{}}
 	g.mu.Lock()
@@ -620,6 +654,10 @@ func (g *Gateway) reserve(r core.Room) (*slot, error) {
 func (g *Gateway) dispatch(r core.Room) error {
 	if g.isClosing() {
 		return nil
+	}
+	_, profileErr := g.prepareProfile(r)
+	if profileErr != nil {
+		return profileErr
 	}
 	g.cancelLostSupplements(r)
 	pending, e := g.store.Pending(r.Key)
@@ -643,7 +681,10 @@ func (g *Gateway) dispatch(r core.Room) error {
 			valid = append(valid, d)
 		}
 	}
-	pending = valid
+	pending, e = g.profileInputs(r, valid)
+	if e != nil {
+		return e
+	}
 	if len(pending) == 0 {
 		g.clearImageTimer(r.Key)
 		return nil
@@ -731,6 +772,10 @@ func (g *Gateway) dispatch(r core.Room) error {
 	}
 	for g.active(s) && !g.isClosing() {
 		queued, err := g.store.Pending(r.Key)
+		if err != nil {
+			return err
+		}
+		queued, err = g.profileInputs(r, queued)
 		if err != nil {
 			return err
 		}

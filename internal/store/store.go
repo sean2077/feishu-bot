@@ -103,9 +103,13 @@ func (s *Store) initialize() error {
 		if _, err := tx.Exec(schema); err != nil {
 			return err
 		}
+		if err := initializeConvenience(tx); err != nil {
+			return err
+		}
 		for _, col := range []struct{ table, name, decl string }{
 			{"receipts", "sender", "TEXT"}, {"session_launch_identity", "config_override", "INTEGER NOT NULL DEFAULT 1"},
 			{"outbox", "card", "TEXT"}, {"outbox", "origins", "TEXT NOT NULL DEFAULT '[]'"}, {"outbox", "file_name", "TEXT"}, {"outbox", "file_path", "TEXT"},
+			{"outbox", "delivery_key", "TEXT"}, {"outbox", "initial_card", "TEXT"}, {"outbox", "retry_count", "INTEGER NOT NULL DEFAULT 0"}, {"outbox", "retry_after", "INTEGER NOT NULL DEFAULT 0"},
 			{"outbox", "file_target", "TEXT"}, {"outbox", "file_state", "TEXT NOT NULL DEFAULT 'none'"}, {"outbox", "delivery_error", "TEXT"}, {"outbox", "kind", "TEXT NOT NULL DEFAULT 'reply'"},
 		} {
 			rows, err := tx.Query("PRAGMA table_info(" + col.table + ")")
@@ -135,6 +139,14 @@ func (s *Store) initialize() error {
 					return err
 				}
 			}
+		}
+		// Retention rechecks each candidate against the durable outbox inside
+		// its transaction. Index all three reference forms rather than copying
+		// or scanning every outstanding output for each card.
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS outbox_target_state ON outbox(target,state);
+CREATE INDEX IF NOT EXISTS outbox_file_target_state ON outbox(file_target,state);
+CREATE INDEX IF NOT EXISTS outbox_delivery_key_state ON outbox(delivery_key,state);`); err != nil {
+			return err
 		}
 		_, err := tx.Exec("INSERT OR IGNORE INTO usage_coverage(session,room,started,prior_unknown) SELECT id,room,?,1 FROM sessions", time.Now().UnixMilli())
 		if err != nil {
@@ -447,7 +459,7 @@ func (s *Store) RecoverWith(ctx context.Context, beforeCommit func(*sql.Tx, Reco
 			return e
 		}
 		_, e = tx.Exec(`UPDATE inbox SET status='uncertain' WHERE status IN ('sent','consumed'); UPDATE action_runs SET state='uncertain' WHERE state='running';
-UPDATE outbox SET state=CASE WHEN kind='file' AND file_state='done' AND file_target IS NOT NULL THEN 'pending' WHEN kind='file' AND file_state='pending' THEN 'pending' WHEN target IS NULL OR file_state='sending' THEN 'uncertain' ELSE 'pending' END,
+UPDATE outbox SET state=CASE WHEN kind IN ('file','artifact') AND file_state='done' AND file_target IS NOT NULL THEN 'pending' WHEN kind IN ('file','artifact') AND file_state='pending' THEN 'pending' WHEN target IS NULL OR file_state='sending' THEN 'uncertain' ELSE 'pending' END,
 file_state=CASE WHEN file_state='sending' THEN 'uncertain' ELSE file_state END WHERE state IN ('sending','preparing');`)
 		if e != nil {
 			return e
@@ -539,12 +551,13 @@ func (s *Store) Trim(now, backgroundMS int64) error {
 			s  string
 			at int64
 		}{
+			{"DELETE FROM card_controls WHERE expires<?", now},
 			{"DELETE FROM context_refs WHERE at<?", now - 86400000},
 			{"DELETE FROM receipts WHERE desired=applied AND desired!='processing' AND at<?", now - 7*86400000},
 			{"DELETE FROM inbox WHERE status IN ('background','context') AND at<?", now - backgroundMS},
 			{"UPDATE inbox SET message='{}',payload=NULL WHERE status IN ('done','cancelled','uncertain') AND at<?", now - 86400000},
 			{"DELETE FROM inbox WHERE status IN ('done','cancelled','uncertain') AND at<?", now - 30*86400000},
-			{"DELETE FROM outputs WHERE at<?", now - 30*86400000},
+			{"DELETE FROM outputs WHERE at<? AND id NOT IN (SELECT target FROM outbox WHERE target IS NOT NULL AND state NOT IN ('done','cancelled') UNION SELECT file_target FROM outbox WHERE file_target IS NOT NULL AND state NOT IN ('done','cancelled'))", now - 30*86400000},
 			{"DELETE FROM outbox WHERE state IN ('done','cancelled') AND file_path IS NULL AND at<?", now - 7*86400000},
 		} {
 			if _, e := tx.Exec(q.s, q.at); e != nil {
