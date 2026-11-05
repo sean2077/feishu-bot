@@ -13,7 +13,7 @@ type Options struct {
 	ConfigPath          string
 	ConfigExplicit      bool
 	Probe, ProbeFeishu  bool
-	VerifyChat string
+	VerifyChat          string
 	ActionArgs          []string
 
 	EnvFile  string
@@ -183,9 +183,13 @@ func parseTop(args []string, o Options) (Options, error) {
 			}
 			o.ProbeFeishu = true
 		case (arg == "--verify-chat" || strings.HasPrefix(arg, "--verify-chat=")) && o.Command == "doctor":
-			if err := mark(seen, "--verify-chat"); err != nil { return o, err }
+			if err := mark(seen, "--verify-chat"); err != nil {
+				return o, err
+			}
 			value, _, err := takeValue(args, &i, arg, "--verify-chat")
-			if err != nil { return o, err }
+			if err != nil {
+				return o, err
+			}
 			o.VerifyChat = value
 		case (arg == "--log-file" || strings.HasPrefix(arg, "--log-file=")) && o.Command == "run":
 			if err := mark(seen, "--log-file"); err != nil {

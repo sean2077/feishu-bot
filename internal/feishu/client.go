@@ -156,7 +156,9 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	}
 	body, _ := json.Marshal(map[string]string{"app_id": c.config.AppID, "app_secret": c.secret})
 	for attempt := 0; ; attempt++ {
-		if ctx.Err() != nil { return "", ctx.Err() }
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		token, expire, err := c.requestToken(ctx, body)
 		if err == nil {
 			ttl := min(7200, max(1, expire-60))
@@ -165,17 +167,28 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 			return c.token, nil
 		}
 		var failure *APIError
-		if !errors.As(err, &failure) || !failure.DeliveryRetryable() || attempt+1 >= apiMaxAttempts { return "", err }
+		if !errors.As(err, &failure) || !failure.DeliveryRetryable() || attempt+1 >= apiMaxAttempts {
+			return "", err
+		}
 		delay := failure.DeliveryRetryAfter()
-		if delay == 0 { delay = retryBackoff(attempt) }
-		if delay > apiMaxInlineWait { return "", err }
-		if e := waitRetry(ctx, delay); e != nil { failure.cause = e; return "", failure }
+		if delay == 0 {
+			delay = retryBackoff(attempt)
+		}
+		if delay > apiMaxInlineWait {
+			return "", err
+		}
+		if e := waitRetry(ctx, delay); e != nil {
+			failure.cause = e
+			return "", failure
+		}
 	}
 }
 
 func (c *Client) requestToken(ctx context.Context, body []byte) (string, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
-	if err != nil { return "", 0, safeFailure("auth", err) }
+	if err != nil {
+		return "", 0, safeFailure("auth", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -185,13 +198,15 @@ func (c *Client) requestToken(ctx context.Context, body []byte) (string, int, er
 	}
 	defer resp.Body.Close()
 	var result struct {
-		Code *int `json:"code"`
-		Token string `json:"tenant_access_token"`
-		Expire int `json:"expire"`
+		Code   *int   `json:"code"`
+		Token  string `json:"tenant_access_token"`
+		Expire int    `json:"expire"`
 	}
 	decodeErr := readJSON(resp.Body, &result, 64<<10)
 	code := 0
-	if result.Code != nil { code = *result.Code }
+	if result.Code != nil {
+		code = *result.Code
+	}
 	if decodeErr != nil || resp.StatusCode != http.StatusOK || result.Code == nil || code != 0 || result.Token == "" {
 		failure := c.responseFailure(req, resp, code, decodeErr == nil && result.Code != nil, false)
 		failure.Operation = "auth"

@@ -9,30 +9,30 @@ import (
 )
 
 type memory struct {
-	Status      string  `json:"status"`
-	Method      string  `json:"method"`
-	Host        *int64  `json:"hostBytes"`
-	Descendants *int64  `json:"descendantBytes"`
-	Count       *int    `json:"descendantCount"`
-	Collection  float64 `json:"collectionMs"`
-	Reason      string  `json:"reason,omitempty"`
-	HostPrivate *int64 `json:"hostPrivateBytes"`
-	DescendantPrivate *int64 `json:"descendantPrivateBytes"`
-	Native *int64 `json:"nativeResidentBytes"`
-	Tools *int64 `json:"toolOrMcpResidentBytes"`
-	Processes []memoryProcess `json:"processes,omitempty"`
+	Status            string          `json:"status"`
+	Method            string          `json:"method"`
+	Host              *int64          `json:"hostBytes"`
+	Descendants       *int64          `json:"descendantBytes"`
+	Count             *int            `json:"descendantCount"`
+	Collection        float64         `json:"collectionMs"`
+	Reason            string          `json:"reason,omitempty"`
+	HostPrivate       *int64          `json:"hostPrivateBytes"`
+	DescendantPrivate *int64          `json:"descendantPrivateBytes"`
+	Native            *int64          `json:"nativeResidentBytes"`
+	Tools             *int64          `json:"toolOrMcpResidentBytes"`
+	Processes         []memoryProcess `json:"processes,omitempty"`
 }
 type memoryProcess struct {
-	PID int `json:"pid"`
-	ParentPID int `json:"parentPid"`
-	Kind string `json:"kind"`
-	Resident int64 `json:"residentBytes"`
-	Private *int64 `json:"privateBytes"`
+	PID       int    `json:"pid"`
+	ParentPID int    `json:"parentPid"`
+	Kind      string `json:"kind"`
+	Resident  int64  `json:"residentBytes"`
+	Private   *int64 `json:"privateBytes"`
 }
 type processMemory struct {
-	pid, ppid int
+	pid, ppid    int
 	rss, private int64
-	name string
+	name         string
 }
 
 func parseStatus(data string) (processMemory, error) {

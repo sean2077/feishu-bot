@@ -127,9 +127,15 @@ func buildReplyCard(title, answer string, thinking []string, total int, final bo
 // bytePrefix never splits a UTF-8 code point and avoids allocating []rune for
 // every preview. JSON is still measured after escaping, not estimated by bytes.
 func bytePrefix(s string, n int) string {
-	if n >= len(s) { return s }
-	if n < 0 { n = 0 }
-	for n > 0 && !utf8.RuneStart(s[n]) { n-- }
+	if n >= len(s) {
+		return s
+	}
+	if n < 0 {
+		n = 0
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
 	return s[:n]
 }
 
@@ -151,13 +157,19 @@ func boundedReplyCard(title, answer string, thinking []string, total int, final 
 		return card, false
 	}
 	suffix := "\n\n（预览已截断，完成后附完整答案文件。）"
-	if final { suffix = "\n\n（完整答案另附文件。）" }
+	if final {
+		suffix = "\n\n（完整答案另附文件。）"
+	}
 	low, high := 0, len(preview)
 	for low < high {
 		mid := low + (high-low+1)/2
 		candidate := makeCard(bytePrefix(preview, mid) + suffix)
 		size, e := core.CardPayloadBytes(candidate)
-		if e == nil && size <= core.CardPayloadLimit { low = mid } else { high = mid-1 }
+		if e == nil && size <= core.CardPayloadLimit {
+			low = mid
+		} else {
+			high = mid - 1
+		}
 	}
 	return makeCard(bytePrefix(preview, low) + suffix), true
 }

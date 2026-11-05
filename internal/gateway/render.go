@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/sean2077/feishu-bot/internal/core"
 	"github.com/sean2077/feishu-bot/internal/config"
+	"github.com/sean2077/feishu-bot/internal/core"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,7 +15,7 @@ import (
 )
 
 type renderBlock struct {
-	text strings.Builder
+	text  strings.Builder
 	chars int
 }
 
@@ -50,7 +50,9 @@ type render struct {
 
 func newRender(g *Gateway, s *slot, anchor *core.Delivery) *render {
 	r := &render{g: g, room: s.room, session: s.session.ID, ctx: s.ctx, blocks: map[string]*renderBlock{}, thinking: map[string]string{}, status: "处理中", deliveryID: "preview:" + core.NewID(), started: time.Now().UnixMilli(), details: replyDetails{Model: g.config.Model.Model, ProjectPath: s.workspace.Work}}
-	if selected, err := config.ResolveSessionModel(g.config, s.session.Profile); err == nil { r.details.Model = selected.Model.Model }
+	if selected, err := config.ResolveSessionModel(g.config, s.session.Profile); err == nil {
+		r.details.Model = selected.Model.Model
+	}
 	if anchor != nil {
 		r.turn = anchor.UUID
 		r.replyTo = messageReply(anchor.Message)
@@ -184,12 +186,23 @@ func (r *render) cardLocked(title, answer string, final, success bool) core.Args
 func (r *render) waitForAnswer(wait bool, title string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed { return }
-	if wait { r.waiting++ } else if r.waiting > 0 { r.waiting-- }
-	if r.waiting == 0 { title = "处理中" }
+	if r.closed {
+		return
+	}
+	if wait {
+		r.waiting++
+	} else if r.waiting > 0 {
+		r.waiting--
+	}
+	if r.waiting == 0 {
+		title = "处理中"
+	}
 	r.status = title
 	r.urgent = true
-	if r.timer != nil { r.timer.Stop(); r.timer = nil }
+	if r.timer != nil {
+		r.timer.Stop()
+		r.timer = nil
+	}
 	r.scheduleLocked()
 }
 func (r *render) scheduleLocked() {
@@ -204,7 +217,9 @@ func (r *render) scheduleLocked() {
 	if r.urgent || r.messageID == "" && !r.createUncertain && r.replyTo != "" {
 		delay = 0
 	}
-	if remaining := time.Until(r.retryAt); remaining > delay { delay = remaining }
+	if remaining := time.Until(r.retryAt); remaining > delay {
+		delay = remaining
+	}
 	r.urgent = false
 	r.timer = time.AfterFunc(delay, func() {
 		r.mu.Lock()
@@ -231,7 +246,9 @@ func (r *render) flush() {
 	// A logical create has immutable content and a durable UUID. Later deltas
 	// are sent as an update only after the original message ID is confirmed.
 	if target == "" {
-		if r.initialCard == nil { r.initialCard = card }
+		if r.initialCard == nil {
+			r.initialCard = card
+		}
 		card = r.initialCard
 	}
 	snapshot := jsonText(card)
@@ -242,7 +259,9 @@ func (r *render) flush() {
 	if !same {
 		if target == "" {
 			target, err = provider(ctx, func() (string, error) { return r.g.transport.Card(ctx, r.room, card, reply, thread) })
-			if err == nil && target == "" { err = errors.New("provider did not return message ID") }
+			if err == nil && target == "" {
+				err = errors.New("provider did not return message ID")
+			}
 		} else {
 			err = providerVoid(ctx, func() error { return r.g.transport.Update(ctx, target, card) })
 		}
@@ -260,29 +279,45 @@ func (r *render) flush() {
 			// Include updates received during a rejected initial create.
 			r.dirty = true
 		}
-		if target != "" { _ = r.g.bindQuickControls(target, card) }
-		if r.ctx.Err() == nil { r.last = snapshot }
+		if target != "" {
+			_ = r.g.bindQuickControls(target, card)
+		}
+		if r.ctx.Err() == nil {
+			r.last = snapshot
+		}
 	} else {
 		r.failures++
 		var failure core.DeliveryFailure
 		classified := errors.As(err, &failure)
 		uncertain := !classified || failure.DeliveryUncertain()
-		if r.messageID == "" && uncertain { r.createUncertain = true }
+		if r.messageID == "" && uncertain {
+			r.createUncertain = true
+		}
 		retry := r.messageID != "" || classified && failure.DeliveryRetryable()
-		if classified && !failure.DeliveryRetryable() && !failure.DeliveryUncertain() { retry = false }
+		if classified && !failure.DeliveryRetryable() && !failure.DeliveryUncertain() {
+			retry = false
+		}
 		if retry && r.failures <= 4 && !r.createUncertain {
 			delay := time.Duration(1<<min(r.failures-1, 5)) * time.Second
-			if classified && failure.DeliveryRetryAfter() > delay { delay = failure.DeliveryRetryAfter() }
+			if classified && failure.DeliveryRetryAfter() > delay {
+				delay = failure.DeliveryRetryAfter()
+			}
 			r.retryAt = time.Now().Add(delay)
 			r.dirty = true
-		} else { r.blocked = true }
-		if r.ctx.Err() == nil { r.g.audit(r.room.Key, "preview_delivery_pending", core.Args{"session": r.session, "attempt": r.failures, "uncertain": r.createUncertain}) }
+		} else {
+			r.blocked = true
+		}
+		if r.ctx.Err() == nil {
+			r.g.audit(r.room.Key, "preview_delivery_pending", core.Args{"session": r.session, "attempt": r.failures, "uncertain": r.createUncertain})
+		}
 	}
 	r.flushing = false
 	close(r.done)
 	dirty := r.dirty
 	r.dirty = false
-	if dirty && !r.closed { r.scheduleLocked() }
+	if dirty && !r.closed {
+		r.scheduleLocked()
+	}
 	r.mu.Unlock()
 }
 
@@ -336,7 +371,9 @@ func (r *render) persist(text string, success bool, who []core.Origin, title str
 			return e
 		}
 		if r.initialCard != nil {
-			if _, e = tx.Exec("UPDATE outbox SET delivery_key=?,initial_card=? WHERE id=?", r.deliveryID, jsonText(r.initialCard), id); e != nil { return e }
+			if _, e = tx.Exec("UPDATE outbox SET delivery_key=?,initial_card=? WHERE id=?", r.deliveryID, jsonText(r.initialCard), id); e != nil {
+				return e
+			}
 		}
 		for _, uuid := range finished {
 			if _, e = tx.Exec("UPDATE inbox SET status='done',payload=NULL WHERE uuid=? AND room=? AND session=? AND status IN ('sent','consumed')", uuid, r.room.Key, r.session); e != nil {
@@ -400,11 +437,16 @@ func (r *render) cancel(title string) {
 	}
 	card = fitCardBudget(card, core.CardPayloadLimit-outputStatusReserve, "\n\n（中断前输出预览已截断。）")
 	r.mu.Unlock()
-	if id == "" { return }
+	if id == "" {
+		return
+	}
 	// Finalizing an existing card is durable too: failed /stop, /new or
 	// shutdown cosmetics must not leave an endlessly streaming orphan.
 	output, err := r.g.saveOutput(r.g.store.DB, r.room, r.session, answer, false, id, r.replyTo, r.threadID, card, nil, "", "", "status", "pending")
-	if err != nil { r.g.audit(r.room.Key, "card_close_pending", core.Args{"session": r.session}); return }
+	if err != nil {
+		r.g.audit(r.room.Key, "card_close_pending", core.Args{"session": r.session})
+		return
+	}
 	if !r.g.isClosing() {
 		r.g.task(func() { _, _ = r.g.deliverOutput(r.g.ctx, output, r.room, false) })
 	}

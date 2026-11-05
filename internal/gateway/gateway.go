@@ -81,6 +81,7 @@ type Gateway struct {
 	wakes                                                        map[string]*dispatchWake
 	imageTimers                                                  map[string]imageWake
 	inputLocks, dispatchLocks, receiptLocks, approvalUpdateLocks keyedLocks
+	outTargetLocks                                               keyedLocks
 	poolMu, sweepMu                                              sync.Mutex
 	outMu                                                        sync.Mutex
 	outActive                                                    map[string]bool
@@ -178,7 +179,9 @@ func (g *Gateway) Recover(ctx context.Context) error {
 		repairCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		count, err := recovery.RecoverCards(repairCtx)
 		cancel()
-		if err != nil { g.audit("", "interrupted_card_repair_pending", core.Args{"recovered":count}) }
+		if err != nil {
+			g.audit("", "interrupted_card_repair_pending", core.Args{"recovered": count})
+		}
 	}
 	pending, err := g.store.PendingRooms()
 	if err != nil {
@@ -610,7 +613,9 @@ func (g *Gateway) reserve(r core.Room) (*slot, error) {
 	if e != nil {
 		return nil, e
 	}
-	if e = g.sessionProfile(&ss); e != nil { return nil, e }
+	if e = g.sessionProfile(&ss); e != nil {
+		return nil, e
+	}
 	ctx, cancel := context.WithCancel(g.ctx)
 	s := &slot{room: r, session: ss, ctx: ctx, cancel: cancel, live: true, workerReady: make(chan struct{}), background: -1, lastActivity: time.Now().UnixMilli(), deliveries: map[string]core.Delivery{}, inputGroups: map[string][]string{}, accepted: map[string]bool{}, renders: map[string]*render{}, replyAnchors: map[string]core.Delivery{}, requests: map[string]bool{}}
 	g.mu.Lock()
@@ -629,7 +634,9 @@ func (g *Gateway) dispatch(r core.Room) error {
 		return nil
 	}
 	_, profileErr := g.prepareProfile(r)
-	if profileErr != nil { return profileErr }
+	if profileErr != nil {
+		return profileErr
+	}
 	g.cancelLostSupplements(r)
 	pending, e := g.store.Pending(r.Key)
 	if e != nil {
@@ -653,7 +660,9 @@ func (g *Gateway) dispatch(r core.Room) error {
 		}
 	}
 	pending, e = g.profileInputs(r, valid)
-	if e != nil { return e }
+	if e != nil {
+		return e
+	}
 	if len(pending) == 0 {
 		g.clearImageTimer(r.Key)
 		return nil
@@ -745,7 +754,9 @@ func (g *Gateway) dispatch(r core.Room) error {
 			return err
 		}
 		queued, err = g.profileInputs(r, queued)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		if len(queued) == 0 {
 			g.clearImageTimer(r.Key)
 			return nil

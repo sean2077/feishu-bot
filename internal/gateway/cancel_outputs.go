@@ -18,43 +18,66 @@ func (g *Gateway) cancelPendingOutputs(room core.Room, session string) error {
 		rows, err := tx.Query(`SELECT target,text,card,reply_to,thread_id,origins FROM outbox
 			WHERE room=? AND session=? AND kind NOT IN ('status','file') AND target IS NOT NULL
 			AND state IN ('pending','uncertain','blocked','sending','preparing') ORDER BY at DESC,id DESC`, room.Key, session)
-		if err != nil { return err }
-		type pending struct { target, text string; card, reply, thread, origins sql.NullString }
+		if err != nil {
+			return err
+		}
+		type pending struct {
+			target, text                 string
+			card, reply, thread, origins sql.NullString
+		}
 		var pendingCards []pending
 		seen := map[string]bool{}
 		for rows.Next() {
 			var output pending
-			if err = rows.Scan(&output.target, &output.text, &output.card, &output.reply, &output.thread, &output.origins); err != nil { rows.Close(); return err }
+			if err = rows.Scan(&output.target, &output.text, &output.card, &output.reply, &output.thread, &output.origins); err != nil {
+				rows.Close()
+				return err
+			}
 			if output.target != "" && !seen[output.target] {
 				seen[output.target] = true
 				pendingCards = append(pendingCards, output)
 			}
 		}
-		err = rows.Err(); rows.Close()
-		if err != nil { return err }
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
 		if _, err = tx.Exec(`UPDATE outbox SET state='cancelled' WHERE room=? AND session=? AND kind!='status'
-			AND state IN ('pending','uncertain','blocked','sending','preparing')`, room.Key, session); err != nil { return err }
+			AND state IN ('pending','uncertain','blocked','sending','preparing')`, room.Key, session); err != nil {
+			return err
+		}
 		for _, output := range pendingCards {
 			var already int
 			if err = tx.QueryRow(`SELECT COUNT(*) FROM outbox WHERE room=? AND session=? AND kind='status' AND target=?
-				AND state IN ('pending','uncertain','blocked','sending','preparing')`, room.Key, session, output.target).Scan(&already); err != nil { return err }
-			if already != 0 { continue }
+				AND state IN ('pending','uncertain','blocked','sending','preparing')`, room.Key, session, output.target).Scan(&already); err != nil {
+				return err
+			}
+			if already != 0 {
+				continue
+			}
 			var card core.Args
 			_ = json.Unmarshal([]byte(output.card.String), &card)
 			var who []core.Origin
 			if output.origins.Valid && output.origins.String != "" && output.origins.String != "null" {
 				// Do not discard an unreadable ownership binding just to update a
 				// cosmetic status. The original output is still safely cancelled.
-				if json.Unmarshal([]byte(output.origins.String), &who) != nil { continue }
+				if json.Unmarshal([]byte(output.origins.String), &who) != nil {
+					continue
+				}
 			}
 			card = cancelledOutputCard(card, output.text)
 			id, err := g.saveOutput(tx, room, session, output.text, false, output.target, output.reply.String, output.thread.String, card, who, "", "", "status", "pending")
-			if err != nil { return err }
+			if err != nil {
+				return err
+			}
 			created = append(created, id)
 		}
 		return nil
 	})
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if !g.isClosing() {
 		for _, id := range created {
 			id := id
@@ -67,21 +90,29 @@ func (g *Gateway) cancelPendingOutputs(room core.Room, session string) error {
 func cancelledOutputCard(card core.Args, text string) core.Args {
 	const title = "已停止 · 交付取消"
 	const notice = "停止后不再安排交付；此前已发出的请求仍可能到达。"
-	if card == nil { card = DisplayCard(title, text) }
+	if card == nil {
+		card = DisplayCard(title, text)
+	}
 	card = replaceQuickControls(card, nil)
 	card["header"] = core.Args{"template": "grey", "title": core.Args{"tag": "plain_text", "content": title}}
 	config := argsOf(card["config"])
-	if config == nil { config = core.Args{} }
+	if config == nil {
+		config = core.Args{}
+	}
 	config["streaming_mode"] = false
 	delete(config, "streaming_config")
 	config["summary"] = core.Args{"content": notice}
 	card["config"] = config
 	body := argsOf(card["body"])
-	if body == nil { body = core.Args{} }
+	if body == nil {
+		body = core.Args{}
+	}
 	elements, _ := body["elements"].([]any)
 	for _, value := range elements {
 		element := argsOf(value)
-		if element["tag"] != "markdown" { continue }
+		if element["tag"] != "markdown" {
+			continue
+		}
 		content := stringArg(element, "content")
 		content = strings.ReplaceAll(content, "（完整答案另附文件。）", "（中断前预览已截断。）")
 		content = strings.ReplaceAll(content, "（预览已截断，完成后附完整答案文件。）", "（中断前预览已截断。）")

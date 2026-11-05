@@ -117,7 +117,9 @@ func cut(s string, n int) string {
 	}
 	count := 0
 	for at := range s {
-		if count == n { return s[:at] }
+		if count == n {
+			return s[:at]
+		}
 		count++
 	}
 	return s

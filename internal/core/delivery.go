@@ -58,8 +58,10 @@ func IsTerminalCard(ctx context.Context) bool {
 }
 
 // CardRetainer is optional so local and test transports need no persistence.
-// Protected references include message IDs and logical delivery IDs which are
-// still active or referenced by an unfinished outbox item.
+// Protected references are message/logical delivery IDs held by live renders
+// and approvals. Implementations must also consult their durable unfinished
+// outbox references transactionally before deleting records; callers need not
+// materialize an unbounded outbox backlog into this in-memory slice.
 type CardRetainer interface {
 	Retain(context.Context, time.Time, []string) (int64, error)
 }

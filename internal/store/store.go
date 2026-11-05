@@ -138,6 +138,12 @@ func (s *Store) initialize() error {
 				}
 			}
 		}
+		// Retention rechecks each candidate against the durable outbox inside
+		// its transaction. Index all three reference forms rather than copying
+		// or scanning every outstanding output for each card.
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS outbox_target_state ON outbox(target,state);
+CREATE INDEX IF NOT EXISTS outbox_file_target_state ON outbox(file_target,state);
+CREATE INDEX IF NOT EXISTS outbox_delivery_key_state ON outbox(delivery_key,state);`); err != nil { return err }
 		_, err := tx.Exec("INSERT OR IGNORE INTO usage_coverage(session,room,started,prior_unknown) SELECT id,room,?,1 FROM sessions", time.Now().UnixMilli())
 		if err != nil {
 			return err
@@ -449,7 +455,7 @@ func (s *Store) RecoverWith(ctx context.Context, beforeCommit func(*sql.Tx, Reco
 			return e
 		}
 		_, e = tx.Exec(`UPDATE inbox SET status='uncertain' WHERE status IN ('sent','consumed'); UPDATE action_runs SET state='uncertain' WHERE state='running';
-UPDATE outbox SET state=CASE WHEN kind='file' AND file_state='done' AND file_target IS NOT NULL THEN 'pending' WHEN kind='file' AND file_state='pending' THEN 'pending' WHEN target IS NULL OR file_state='sending' THEN 'uncertain' ELSE 'pending' END,
+UPDATE outbox SET state=CASE WHEN kind IN ('file','artifact') AND file_state='done' AND file_target IS NOT NULL THEN 'pending' WHEN kind IN ('file','artifact') AND file_state='pending' THEN 'pending' WHEN target IS NULL OR file_state='sending' THEN 'uncertain' ELSE 'pending' END,
 file_state=CASE WHEN file_state='sending' THEN 'uncertain' ELSE file_state END WHERE state IN ('sending','preparing');`)
 		if e != nil {
 			return e

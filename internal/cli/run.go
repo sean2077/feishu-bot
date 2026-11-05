@@ -116,7 +116,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 				live := VerifyConfiguredChat(ctx, c, o.VerifyChat, stderr)
 				report.LiveChat = &live
 				report.Scope = "Local checks, explicitly requested remote probes and an explicit test-chat exchange; native/model tools remain independently unverified."
-				for key, state := range live.Checks { report.Verification[key] = state }
+				for key, state := range live.Checks {
+					report.Verification[key] = state
+				}
 				report.Ready = report.Ready && live.Status == "passed"
 			}
 			data, err := json.MarshalIndent(report, "", "  ")

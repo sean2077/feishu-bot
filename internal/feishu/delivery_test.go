@@ -18,8 +18,8 @@ import (
 
 func TestAPIRejectionClassificationAndSafeRequestID(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		status, code int
+		name                 string
+		status, code         int
 		retryable, uncertain bool
 	}{
 		{"rate-limit", 429, 99991400, true, false},
@@ -98,11 +98,19 @@ func TestCancellationDuringRetryWaitKeepsDefiniteRejection(t *testing.T) {
 }
 
 type deliveryRoundTripper func(*http.Request) (*http.Response, error)
+
 func (f deliveryRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-type cancelAfterRead struct { io.ReadCloser; cancel context.CancelFunc }
+
+type cancelAfterRead struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
 func (r *cancelAfterRead) Read(p []byte) (int, error) {
 	n, err := r.ReadCloser.Read(p)
-	if err == io.EOF { r.cancel() }
+	if err == io.EOF {
+		r.cancel()
+	}
 	return n, err
 }
 
@@ -126,7 +134,9 @@ func TestMessageJournalSurvivesRestartAndRequiresExplicitUnknownRecovery(t *test
 	}
 	// Simulate a restart after the provider's deduplication window. This must
 	// remain blocked until the operator explicitly requests recovery.
-	if _, err := db.Exec(`UPDATE feishu_deliveries SET first_attempt=? WHERE id=?`, time.Now().Add(-2*time.Hour).UnixMilli(), core.DeliveryID(ctx)); err != nil { t.Fatal(err) }
+	if _, err := db.Exec(`UPDATE feishu_deliveries SET first_attempt=? WHERE id=?`, time.Now().Add(-2*time.Hour).UnixMilli(), core.DeliveryID(ctx)); err != nil {
+		t.Fatal(err)
+	}
 	c2, _ := fixtureClient(t, db, handler)
 	if _, err := c2.Send(ctx, room, "durable", "", ""); err == nil || len(bodies) != 1 {
 		t.Fatal("restart automatically replayed an uncertain write")
@@ -151,7 +161,9 @@ func TestCardCreationAndMessageAssociationRecoverIndependently(t *testing.T) {
 		body := decodedBody(t, r)
 		if strings.Contains(r.URL.Path, "cardkit") {
 			creates++
-			if _, exists := body["uuid"]; exists { t.Error("CardKit create has no UUID field") }
+			if _, exists := body["uuid"]; exists {
+				t.Error("CardKit create has no UUID field")
+			}
 			apiResponse(w, core.Args{"card_id": "card_saved"})
 			return
 		}
@@ -167,10 +179,16 @@ func TestCardCreationAndMessageAssociationRecoverIndependently(t *testing.T) {
 	c, _ := fixtureClient(t, db, handler)
 	ctx := core.WithDeliveryID(context.Background(), "render:partial-create")
 	room := fixtureRoom(t, c)
-	if _, err := c.Card(ctx, room, replyFixture("frozen", false), "", ""); err == nil { t.Fatal("rate limit accepted") }
+	if _, err := c.Card(ctx, room, replyFixture("frozen", false), "", ""); err == nil {
+		t.Fatal("rate limit accepted")
+	}
 	c2, _ := fixtureClient(t, db, handler)
-	if _, err := c2.Card(ctx, room, replyFixture("frozen", false), "", ""); err == nil || creates != 1 || sends != 1 { t.Fatal("provider deadline ignored") }
-	if _, err := db.Exec(`UPDATE feishu_deliveries SET retry_at=0 WHERE id=? AND step='message'`, core.DeliveryID(ctx)); err != nil { t.Fatal(err) }
+	if _, err := c2.Card(ctx, room, replyFixture("frozen", false), "", ""); err == nil || creates != 1 || sends != 1 {
+		t.Fatal("provider deadline ignored")
+	}
+	if _, err := db.Exec(`UPDATE feishu_deliveries SET retry_at=0 WHERE id=? AND step='message'`, core.DeliveryID(ctx)); err != nil {
+		t.Fatal(err)
+	}
 	id, err := c2.Card(ctx, room, replyFixture("frozen", false), "", "")
 	if err != nil || id != "om_card" || creates != 1 || sends != 2 || uuids[0] == "" || uuids[0] != uuids[1] {
 		t.Fatalf("card entity was recreated: %q %v creates=%d sends=%d UUIDs=%v", id, err, creates, sends, uuids)
@@ -180,29 +198,42 @@ func TestCardCreationAndMessageAssociationRecoverIndependently(t *testing.T) {
 func TestFileJournalReusesUploadAndMessageUUIDAcrossRestart(t *testing.T) {
 	db := fixtureDB(t)
 	path := filepath.Join(t.TempDir(), "export.md")
-	if err := os.WriteFile(path, []byte("frozen file bytes"), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(path, []byte("frozen file bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	uploads, sends := 0, 0
 	var bodies []string
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/files") {
 			uploads++
-			if err := r.ParseMultipartForm(1 << 20); err != nil { t.Error(err) }
-			if r.MultipartForm != nil { defer r.MultipartForm.RemoveAll() }
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Error(err)
+			}
+			if r.MultipartForm != nil {
+				defer r.MultipartForm.RemoveAll()
+			}
 			apiResponse(w, core.Args{"file_key": "file_saved"})
 			return
 		}
 		sends++
 		raw, _ := io.ReadAll(r.Body)
 		bodies = append(bodies, string(raw))
-		if sends == 1 { jsonResponse(w, 503, core.Args{"code": 1}); return }
+		if sends == 1 {
+			jsonResponse(w, 503, core.Args{"code": 1})
+			return
+		}
 		apiResponse(w, core.Args{"message_id": "om_file"})
 	}
 	c, _ := fixtureClient(t, db, handler)
 	ctx := core.WithDeliveryID(context.Background(), "outbox:file")
 	room := fixtureRoom(t, c)
-	if _, err := c.File(ctx, room, path, "export.md"); err == nil { t.Fatal("unknown file send accepted") }
+	if _, err := c.File(ctx, room, path, "export.md"); err == nil {
+		t.Fatal("unknown file send accepted")
+	}
 	c2, _ := fixtureClient(t, db, handler)
-	if _, err := c2.File(ctx, room, path, "export.md"); err == nil || uploads != 1 || sends != 1 { t.Fatal("file automatically replayed") }
+	if _, err := c2.File(ctx, room, path, "export.md"); err == nil || uploads != 1 || sends != 1 {
+		t.Fatal("file automatically replayed")
+	}
 	id, err := c2.File(core.WithExplicitRetry(ctx), room, path, "export.md")
 	if err != nil || id != "om_file" || uploads != 1 || sends != 2 || bodies[0] != bodies[1] || !strings.Contains(bodies[0], "file_saved") {
 		t.Fatalf("file upload/UUID changed: %q %v uploads=%d sends=%d", id, err, uploads, sends)
@@ -214,7 +245,9 @@ func TestConcurrentLogicalSendCommitsOneMessage(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	c, _ := fixtureClient(t, db, func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock(); calls++; mu.Unlock()
+		mu.Lock()
+		calls++
+		mu.Unlock()
 		apiResponse(w, core.Args{"message_id": "om_single"})
 	})
 	ctx := core.WithDeliveryID(context.Background(), "outbox:concurrent")
@@ -222,11 +255,20 @@ func TestConcurrentLogicalSendCommitsOneMessage(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); id, err := c.Send(ctx, room, "same", "", ""); if err != nil || id != "om_single" { t.Errorf("send %q: %v", id, err) } }()
+		go func() {
+			defer wg.Done()
+			id, err := c.Send(ctx, room, "same", "", "")
+			if err != nil || id != "om_single" {
+				t.Errorf("send %q: %v", id, err)
+			}
+		}()
 	}
 	wg.Wait()
-	mu.Lock(); defer mu.Unlock()
-	if calls != 1 { t.Fatalf("logical send emitted %d messages", calls) }
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("logical send emitted %d messages", calls)
+	}
 }
 
 func TestPermissionFallbackKeepsInlinePayloadDuringExplicitRecovery(t *testing.T) {
@@ -236,19 +278,27 @@ func TestPermissionFallbackKeepsInlinePayloadDuringExplicitRecovery(t *testing.T
 	c, _ := fixtureClient(t, db, func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "cardkit") {
 			creates++
-			if creates == 1 { jsonResponse(w, 403, core.Args{"code": 99991672}); return }
+			if creates == 1 {
+				jsonResponse(w, 403, core.Args{"code": 99991672})
+				return
+			}
 			apiResponse(w, core.Args{"card_id": "card_new_permission"})
 			return
 		}
 		raw, _ := io.ReadAll(r.Body)
 		bodies = append(bodies, string(raw))
-		if len(bodies) == 1 { jsonResponse(w, 503, core.Args{"code": 1}); return }
+		if len(bodies) == 1 {
+			jsonResponse(w, 503, core.Args{"code": 1})
+			return
+		}
 		apiResponse(w, core.Args{"message_id": "om_inline_recovered"})
 	})
 	ctx := core.WithDeliveryID(context.Background(), "outbox:inline-fallback")
 	room := fixtureRoom(t, c)
 	card := replyFixture("frozen", false)
-	if _, err := c.Card(ctx, room, card, "", ""); err == nil { t.Fatal("unknown inline outcome was accepted") }
+	if _, err := c.Card(ctx, room, card, "", ""); err == nil {
+		t.Fatal("unknown inline outcome was accepted")
+	}
 	id, err := c.Card(core.WithExplicitRetry(ctx), room, card, "", "")
 	if err != nil || id != "om_inline_recovered" || creates != 1 || len(bodies) != 2 || bodies[0] != bodies[1] {
 		t.Fatalf("permission change replaced the logical message: id=%q err=%v creates=%d bodies=%v", id, err, creates, bodies)
@@ -265,7 +315,9 @@ func TestUnknownCardCreationCannotAutomaticallyCreateAnotherEntity(t *testing.T)
 	c, _ := fixtureClient(t, db, handler)
 	ctx := core.WithDeliveryID(context.Background(), "render:unknown-card-create")
 	room := fixtureRoom(t, c)
-	if _, err := c.Card(ctx, room, replyFixture("same", false), "", ""); err == nil { t.Fatal("unknown create was accepted") }
+	if _, err := c.Card(ctx, room, replyFixture("same", false), "", ""); err == nil {
+		t.Fatal("unknown create was accepted")
+	}
 	c2, _ := fixtureClient(t, db, handler)
 	if _, err := c2.Card(ctx, room, replyFixture("same", false), "", ""); err == nil || creates != 1 {
 		t.Fatalf("restart recreated a CardKit entity: %v creates=%d", err, creates)
@@ -273,7 +325,11 @@ func TestUnknownCardCreationCannotAutomaticallyCreateAnotherEntity(t *testing.T)
 }
 
 func TestTransientAuthenticationRetriesBeforeExactlyOneVisibleMessage(t *testing.T) {
-	for _, tc := range []struct { name string; status, code int; retry bool }{
+	for _, tc := range []struct {
+		name         string
+		status, code int
+		retry        bool
+	}{
 		{"rate-limit", 429, 99991400, true},
 		{"server-failure", 503, 1, true},
 		{"invalid-credential", 401, 99991661, false},
@@ -286,7 +342,9 @@ func TestTransientAuthenticationRetriesBeforeExactlyOneVisibleMessage(t *testing
 				apiResponse(w, core.Args{"message_id": "om_after_auth"})
 			})
 			base := c.http.Transport
-			if base == nil { base = http.DefaultTransport }
+			if base == nil {
+				base = http.DefaultTransport
+			}
 			c.http.Transport = deliveryRoundTripper(func(r *http.Request) (*http.Response, error) {
 				if strings.Contains(r.URL.Path, "/auth/") {
 					authentications++
@@ -298,10 +356,14 @@ func TestTransientAuthenticationRetriesBeforeExactlyOneVisibleMessage(t *testing
 			})
 			id, err := c.Send(context.Background(), fixtureRoom(t, c), "after auth", "", "")
 			if tc.retry {
-				if err != nil || id != "om_after_auth" || authentications != 2 || messages != 1 { t.Fatalf("auth retry: id=%q err=%v auth=%d messages=%d", id, err, authentications, messages) }
+				if err != nil || id != "om_after_auth" || authentications != 2 || messages != 1 {
+					t.Fatalf("auth retry: id=%q err=%v auth=%d messages=%d", id, err, authentications, messages)
+				}
 			} else {
 				var failure core.DeliveryFailure
-				if !errors.As(err, &failure) || failure.DeliveryRetryable() || failure.DeliveryUncertain() || authentications != 1 || messages != 0 { t.Fatalf("permanent auth failure retried: err=%v auth=%d messages=%d", err, authentications, messages) }
+				if !errors.As(err, &failure) || failure.DeliveryRetryable() || failure.DeliveryUncertain() || authentications != 1 || messages != 0 {
+					t.Fatalf("permanent auth failure retried: err=%v auth=%d messages=%d", err, authentications, messages)
+				}
 			}
 		})
 	}

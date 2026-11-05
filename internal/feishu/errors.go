@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	apiMaxAttempts = 3
+	apiMaxAttempts   = 3
 	apiMaxInlineWait = 2 * time.Second
 )
 
@@ -22,13 +22,13 @@ const (
 // Retryable is set only for explicit temporary rejections. Uncertain wins over
 // Retryable and requires user-authorized recovery for a new external write.
 type APIError struct {
-	Operation string
+	Operation    string
 	Status, Code int
-	Uncertain bool
-	Retryable bool
-	RetryAfter time.Duration
-	RequestID string
-	cause error
+	Uncertain    bool
+	Retryable    bool
+	RetryAfter   time.Duration
+	RequestID    string
+	cause        error
 }
 
 var _ core.DeliveryFailure = (*APIError)(nil)
@@ -41,15 +41,19 @@ func (e *APIError) Error() string {
 	return detail
 }
 
-func (e *APIError) Unwrap() error { return e.cause }
-func (e *APIError) DeliveryRetryable() bool { return e.Retryable && !e.Uncertain }
-func (e *APIError) DeliveryUncertain() bool { return e.Uncertain }
+func (e *APIError) Unwrap() error                     { return e.cause }
+func (e *APIError) DeliveryRetryable() bool           { return e.Retryable && !e.Uncertain }
+func (e *APIError) DeliveryUncertain() bool           { return e.Uncertain }
 func (e *APIError) DeliveryRetryAfter() time.Duration { return max(time.Duration(0), e.RetryAfter) }
 
 func localRejection(operation string, err error) error {
-	if err == nil { return nil }
+	if err == nil {
+		return nil
+	}
 	var failure core.DeliveryFailure
-	if errors.As(err, &failure) { return err }
+	if errors.As(err, &failure) {
+		return err
+	}
 	return &APIError{Operation: operation, cause: err}
 }
 
@@ -57,15 +61,25 @@ func requestOperation(req *http.Request) string {
 	path := req.URL.Path
 	switch {
 	case strings.HasPrefix(path, "/open-apis/cardkit/v1/cards"):
-		if req.Method == http.MethodPost { return "card create" }
-		if strings.HasSuffix(path, "/content") { return "card content update" }
+		if req.Method == http.MethodPost {
+			return "card create"
+		}
+		if strings.HasSuffix(path, "/content") {
+			return "card content update"
+		}
 		return "card update"
-	case path == "/open-apis/im/v1/files": return "file upload"
+	case path == "/open-apis/im/v1/files":
+		return "file upload"
 	case strings.HasPrefix(path, "/open-apis/im/v1/messages"):
-		if req.Method == http.MethodPost { return "message send" }
-		if req.Method == http.MethodPatch { return "message update" }
+		if req.Method == http.MethodPost {
+			return "message send"
+		}
+		if req.Method == http.MethodPatch {
+			return "message update"
+		}
 		return "message read"
-	default: return "API"
+	default:
+		return "API"
 	}
 }
 
@@ -100,7 +114,7 @@ func responseRetryAfter(headers http.Header, now time.Time) time.Duration {
 		}
 		if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
 			if seconds > int64((1<<63-1)/time.Second) {
-				return time.Duration(1<<63-1)
+				return time.Duration(1<<63 - 1)
 			}
 			if seconds > 0 {
 				delay = max(delay, time.Duration(seconds)*time.Second)

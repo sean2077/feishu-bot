@@ -11,22 +11,22 @@ type Resource struct {
 	Name string `json:"name"`
 }
 type Message struct {
-	ID           string     `json:"id"`
-	ChatID       string     `json:"chatId"`
-	ChatType     string     `json:"chatType"`
-	SenderID     string     `json:"senderId"`
-	SenderName   string     `json:"senderName,omitempty"`
-	SenderIsBot  bool       `json:"senderIsBot,omitempty"`
-	SenderIsSelf bool       `json:"senderIsSelf,omitempty"`
-	Text         string     `json:"text"`
-	Time         int64      `json:"time"`
-	Mentioned    bool       `json:"mentioned"`
-	ReplyTo      string     `json:"replyTo,omitempty"`
-	InteractionMessageID string `json:"interactionMessageId,omitempty"`
-	ThreadID     string     `json:"threadId,omitempty"`
-	Resources    []Resource `json:"resources"`
-	InputIssue   string     `json:"inputIssue,omitempty"`
-	ImageOnly    bool       `json:"imageOnly,omitempty"`
+	ID                   string     `json:"id"`
+	ChatID               string     `json:"chatId"`
+	ChatType             string     `json:"chatType"`
+	SenderID             string     `json:"senderId"`
+	SenderName           string     `json:"senderName,omitempty"`
+	SenderIsBot          bool       `json:"senderIsBot,omitempty"`
+	SenderIsSelf         bool       `json:"senderIsSelf,omitempty"`
+	Text                 string     `json:"text"`
+	Time                 int64      `json:"time"`
+	Mentioned            bool       `json:"mentioned"`
+	ReplyTo              string     `json:"replyTo,omitempty"`
+	InteractionMessageID string     `json:"interactionMessageId,omitempty"`
+	ThreadID             string     `json:"threadId,omitempty"`
+	Resources            []Resource `json:"resources"`
+	InputIssue           string     `json:"inputIssue,omitempty"`
+	ImageOnly            bool       `json:"imageOnly,omitempty"`
 }
 type Room struct {
 	Key             string   `json:"key"`
@@ -117,6 +117,7 @@ type ModelConfig struct {
 	ExtraHeaders map[string]string `json:"extraHeaders"`
 	AllowHTTP    bool              `json:"allowHttp"`
 }
+
 // ModelProfile changes only native model selection. Credentials, endpoints and
 // permission policy remain deployment settings, never chat-controlled values.
 type ModelProfile struct {
@@ -148,17 +149,17 @@ type Limits struct {
 	ImageBatchBytes     int64 `json:"imageBatchBytes"`
 }
 type Config struct {
-	TenantID     string        `json:"tenantId"`
-	AppID        string        `json:"appId"`
-	AppSecretEnv string        `json:"appSecretEnv"`
-	DataDir      string        `json:"dataDir"`
-	Runtime      RuntimeConfig `json:"runtime"`
-	Model        ModelConfig   `json:"model"`
+	TenantID      string                  `json:"tenantId"`
+	AppID         string                  `json:"appId"`
+	AppSecretEnv  string                  `json:"appSecretEnv"`
+	DataDir       string                  `json:"dataDir"`
+	Runtime       RuntimeConfig           `json:"runtime"`
+	Model         ModelConfig             `json:"model"`
 	ModelProfiles map[string]ModelProfile `json:"modelProfiles,omitempty"`
-	Projects     []Project     `json:"projects"`
-	Groups       []Group       `json:"groups"`
-	DMs          []DM          `json:"dms"`
-	Limits       Limits        `json:"limits"`
+	Projects      []Project               `json:"projects"`
+	Groups        []Group                 `json:"groups"`
+	DMs           []DM                    `json:"dms"`
+	Limits        Limits                  `json:"limits"`
 }
 
 func (c Config) Project(id string) (Project, bool) {

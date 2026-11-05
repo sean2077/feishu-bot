@@ -97,7 +97,7 @@ func (g *Gateway) artifactCommand(ctx context.Context, r core.Room, m core.Messa
 		g.notify(r, "保存的文件副本已不可用；请从原飞书消息取回。", &m)
 		return nil
 	}
-	id, err := g.saveOutput(g.store.DB, r, o.Session, "", true, "", m.ID, m.ThreadID, nil, append(o.Origins, origin(m)...), o.FileName, snapshot, "file", "pending")
+	id, err := g.saveOutput(g.store.DB, r, o.Session, "", true, "", m.ID, m.ThreadID, nil, append(o.Origins, origin(m)...), o.FileName, snapshot, "artifact", "pending")
 	if err != nil {
 		_ = os.Remove(snapshot)
 		return err

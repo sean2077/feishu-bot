@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS card_control_uses(message TEXT NOT NULL REFERENCES ca
 
 type SessionPreferences struct {
 	Name, Profile, Revision string
-	RequestedProfile       *string
+	RequestedProfile        *string
 }
 
 func (s *Store) Preferences(room, session string) (SessionPreferences, error) {

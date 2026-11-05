@@ -121,6 +121,22 @@ func (g *Gateway) profileInputs(r core.Room, inputs []core.Delivery) ([]core.Del
 	if err != nil || p.RequestedProfile == nil {
 		return inputs, err
 	}
+	if s := g.getSlot(r.Key); s != nil {
+		s.mu.Lock()
+		starting := s.live && !s.stopUnconfirmed && s.worker != nil && s.session.ID == id && len(s.replyOrder) == 0
+		s.mu.Unlock()
+		if starting {
+			// A profile selected during cold startup must not fence the very
+			// input that lets native initialize/report a confirmed idle boundary.
+			// Finish only that already-starting input (or its complete image batch)
+			// with the launched profile; later ordinary inputs remain fenced.
+			end := 1
+			if batch := inputs[0].ImageBatch; batch != nil {
+				for end < len(inputs) && inputs[end].ImageBatch != nil && inputs[end].ImageBatch.ID == batch.ID { end++ }
+			}
+			return inputs[:end], nil
+		}
+	}
 	allowed := make([]core.Delivery, 0, len(inputs))
 	for _, input := range inputs {
 		if input.Command != nil {

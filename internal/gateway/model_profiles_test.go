@@ -1,7 +1,10 @@
 package gateway
 
 import (
+	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -29,7 +32,9 @@ func TestProfileWaitsForBoundaryPreservesSupplementsAndNativeID(t *testing.T) {
 	w.emit(core.WorkerEvent{Type: "result", UUID: first.UUID, UUIDs: []string{first.UUID, extra.UUID}, ResultID: core.NewID(), Text: "completed", Success: true, Source: "foreground"})
 	eventually(t, func() bool {
 		s := f.g.getSlot(f.room().Key)
-		if s == nil { return false }
+		if s == nil {
+			return false
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return !s.busy && s.activeRequests == 0
@@ -73,6 +78,73 @@ func TestProfileWaitsForBoundaryPreservesSupplementsAndNativeID(t *testing.T) {
 	}
 }
 
+func TestProfileSelectionDuringColdStartupDoesNotFenceFirstInput(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.ModelProfiles = map[string]core.ModelProfile{"careful": {Model: "selected-model"}}
+	})
+	entered, release := make(chan struct{}), make(chan struct{})
+	var first sync.Once
+	f.g.factory = func(ctx context.Context, _ core.Room, _ core.Session, _ core.Workspace, emit func(core.WorkerEvent)) (core.Worker, error) {
+		first.Do(func() { close(entered); select { case <-release: case <-ctx.Done(): } })
+		if ctx.Err() != nil { return nil, ctx.Err() }
+		w := &fakeWorker{emit: emit, sent: make(chan core.Delivery, 100), responses: make(chan core.Args, 100)}
+		f.starts.Add(1)
+		// Real native initialization need not report idle/CCID before input.
+		f.started <- w
+		return w, nil
+	}
+	f.send(f.message("starting-input", "work", "member"))
+	select { case <-entered: case <-time.After(3*time.Second): t.Fatal("factory did not reach startup barrier") }
+	f.send(f.message("profile-at-startup", "/model careful", "owner"))
+	close(release)
+	w := f.worker()
+	d := f.delivery(w)
+	if d.Message.ID != "starting-input" || w.stops.Load() != 0 { t.Fatal("startup profile selection blocked or killed its first input", d) }
+	nativeID := core.NewID()
+	w.emit(core.WorkerEvent{Type: "ready", CCID: nativeID})
+	zero := 0
+	w.emit(core.WorkerEvent{Type: "activity", State: "running", Background: &zero})
+	f.send(f.message("after-profile", "next", "member"))
+	f.finish(w, d, "finished first input")
+	w.emit(core.WorkerEvent{Type: "activity", State: "idle", Background: &zero})
+	nextWorker := f.worker()
+	next := f.delivery(nextWorker)
+	current, err := f.s.Session(f.room().Key)
+	if err != nil || next.Message.ID != "after-profile" || current.CCID != nativeID || current.ID != d.SessionID || w.stops.Load() != 1 {
+		t.Fatal("startup profile did not switch at the later safe boundary", current, next, err)
+	}
+}
+
+func TestProfileSwitchKeepsUncertainOutputWithoutReplay(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.ModelProfiles = map[string]core.ModelProfile{"careful": {Model: "selected-model"}}
+	})
+	r := f.room()
+	f.send(f.message("initial", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	f.finish(w, d, "normal final reply")
+	eventually(t, func() bool { return f.tr.receiptDone("initial") })
+	before, _ := f.s.Session(r.Key)
+	id, err := f.g.saveOutput(f.s.DB, r, d.SessionID, "unknown previously saved output", true, "", "", "", nil, nil, "", "", "reply", "uncertain")
+	if err != nil { t.Fatal(err) }
+	f.tr.mu.Lock()
+	cards := len(f.tr.cards)
+	f.tr.mu.Unlock()
+	f.send(f.message("profile", "/profile careful", "owner"))
+	f.send(f.message("following", "continue", "member"))
+	nextWorker := f.worker()
+	next := f.delivery(nextWorker)
+	after, _ := f.s.Session(r.Key)
+	output, err := f.g.output(id)
+	f.tr.mu.Lock()
+	afterCards := len(f.tr.cards)
+	f.tr.mu.Unlock()
+	if err != nil || output.State != "uncertain" || output.Target != "" || after.ID != before.ID || after.CCID != before.CCID || next.Message.ID != "following" || afterCards != cards {
+		t.Fatal("profile change reset identity or replayed saved uncertain output", output, before, after, err)
+	}
+}
+
 func TestProfileReadOnlyAndUnauthorizedSelectionDoNotWakeModel(t *testing.T) {
 	f := newFixture(t, func(c *core.Config) {
 		c.ModelProfiles = map[string]core.ModelProfile{"careful": {Model: "selected-model"}}
@@ -102,7 +174,9 @@ func TestProfileSwitchKeepsCapacityWhenStopIsUnconfirmed(t *testing.T) {
 	f.send(f.message("later", "next", "member"))
 	eventually(t, func() bool {
 		s := f.g.getSlot(f.room().Key)
-		if s == nil { return false }
+		if s == nil {
+			return false
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return s.stopUnconfirmed

@@ -284,7 +284,7 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 			return "", true, e
 		}
 		stage := "reply"
-		if kind == "file" || fileState != "none" && fileState != "done" {
+		if kind == "file" || kind == "artifact" || fileState != "none" && fileState != "done" {
 			stage = "file"
 		}
 		filePending := kind == "reply" && (pendingFiles || fileState != "none" && fileState != "done")

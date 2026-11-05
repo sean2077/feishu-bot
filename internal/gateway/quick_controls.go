@@ -18,13 +18,13 @@ import (
 )
 
 type quickControl struct {
-	Room     string `json:"room"`
-	Session  string `json:"session"`
-	Revision string `json:"revision"`
-	Turn     string `json:"turn,omitempty"`
-	Output   string `json:"output,omitempty"`
+	Room          string `json:"room"`
+	Session       string `json:"session"`
+	Revision      string `json:"revision"`
+	Turn          string `json:"turn,omitempty"`
+	Output        string `json:"output,omitempty"`
 	TargetSession string `json:"targetSession,omitempty"`
-	Action   string `json:"action"`
+	Action        string `json:"action"`
 }
 
 func messageReply(m core.Message) string {
@@ -300,7 +300,9 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 		g.task(func() {
 			unlock := g.inputLocks.lock(r.Key)
 			defer unlock()
-			if !g.quickBound(a, p) { return }
+			if !g.quickBound(a, p) {
+				return
+			}
 			ctx, cancel := context.WithTimeout(g.ctx, 15*time.Second)
 			defer cancel()
 			m.Text = "/resume " + p.TargetSession

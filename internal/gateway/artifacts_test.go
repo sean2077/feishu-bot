@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,4 +47,37 @@ func TestArtifactsRetrieveOnlyCompletedFrozenRoomFiles(t *testing.T) {
 	count := len(f.tr.files)
 	f.tr.mu.Unlock()
 	if count != 1 || f.starts.Load() != 0 { t.Fatal("artifact retrieval escaped scope or woke model", count, f.starts.Load()) }
+}
+
+func TestFailedArtifactRetrievalDoesNotBlockNativeReplyDone(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	f.send(f.message("native-task", "current task", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	root := f.g.artifactRoot(r)
+	if err := os.MkdirAll(root, 0700); err != nil { t.Fatal(err) }
+	frozen := filepath.Join(root, core.NewID())
+	if err := os.WriteFile(frozen, []byte("previous completed artifact"), 0600); err != nil { t.Fatal(err) }
+	id, err := f.g.saveOutput(f.s.DB, r, d.SessionID, "", true, "", "", "", nil, nil, "previous.txt", frozen, "file", "done")
+	if err != nil { t.Fatal(err) }
+	if _, err := f.s.DB.Exec("UPDATE outbox SET file_state='done',file_target='already-delivered' WHERE id=?", id); err != nil { t.Fatal(err) }
+	f.tr.mu.Lock()
+	f.tr.fileHook = func(context.Context, string) (string, error) { return "", errors.New("fixture lost file acknowledgement") }
+	f.tr.mu.Unlock()
+	if err := f.g.command(context.Background(), r, f.message("retrieve", "/artifacts "+id, "member")); err == nil {
+		t.Fatal("fixture did not fail the explicit artifact re-delivery")
+	}
+	var pending int
+	if err := f.s.DB.QueryRow("SELECT count(*) FROM outbox WHERE room=? AND session=? AND kind='artifact' AND state='uncertain'", r.Key, d.SessionID).Scan(&pending); err != nil || pending != 1 {
+		t.Fatal("artifact failure did not retain its independent delivery record", pending, err)
+	}
+	f.tr.mu.Lock()
+	f.tr.fileHook = nil
+	f.tr.mu.Unlock()
+	f.finish(w, d, "Current native reply requires no file.")
+	eventually(t, func() bool { return f.tr.receiptDone("native-task") })
+	if err := f.s.DB.QueryRow("SELECT count(*) FROM outbox WHERE room=? AND kind='artifact' AND state='uncertain'", r.Key).Scan(&pending); err != nil || pending != 1 {
+		t.Fatal("native completion replayed or discarded unrelated artifact retrieval", pending, err)
+	}
 }

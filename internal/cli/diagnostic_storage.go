@@ -79,35 +79,62 @@ func inspectStorage(ctx context.Context, dir string) StorageDiagnostic {
 func scanExportMetadata(ctx context.Context, path string, limit int) DiskFootprint {
 	r := DiskFootprint{Status: "observed"}
 	root, err := os.OpenRoot(path)
-	if err != nil { r.Status = "unavailable"; return r }
+	if err != nil {
+		r.Status = "unavailable"
+		return r
+	}
 	defer root.Close()
 	pending := []string{"."}
 	visited := 0
-	for len(pending)>0 {
-		if ctx.Err()!=nil { r.Status="partial"; return r }
+	for len(pending) > 0 {
+		if ctx.Err() != nil {
+			r.Status = "partial"
+			return r
+		}
 		directory := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
 		dir, err := root.Open(directory)
-		if err != nil { r.Skipped++; continue }
+		if err != nil {
+			r.Skipped++
+			continue
+		}
 		for {
 			entries, readErr := dir.ReadDir(128)
 			for _, entry := range entries {
 				visited++
-				if visited>limit || ctx.Err()!=nil { _ = dir.Close(); r.Status="partial"; return r }
+				if visited > limit || ctx.Err() != nil {
+					_ = dir.Close()
+					r.Status = "partial"
+					return r
+				}
 				relative := filepath.Join(directory, entry.Name())
 				info, err := root.Lstat(relative)
-				if err!=nil || info.Mode()&fs.ModeSymlink!=0 { r.Skipped++; continue }
-				if info.IsDir() { pending=append(pending,relative); continue }
-				if !info.Mode().IsRegular() { r.Skipped++; continue }
-				r.Bytes+=info.Size(); r.Files++
+				if err != nil || info.Mode()&fs.ModeSymlink != 0 {
+					r.Skipped++
+					continue
+				}
+				if info.IsDir() {
+					pending = append(pending, relative)
+					continue
+				}
+				if !info.Mode().IsRegular() {
+					r.Skipped++
+					continue
+				}
+				r.Bytes += info.Size()
+				r.Files++
 			}
-			if readErr!=nil {
-				if !errors.Is(readErr,io.EOF) { r.Skipped++ }
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					r.Skipped++
+				}
 				break
 			}
 		}
 		_ = dir.Close()
 	}
-	if r.Skipped>0 { r.Status="partial" }
+	if r.Skipped > 0 {
+		r.Status = "partial"
+	}
 	return r
 }

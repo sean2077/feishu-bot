@@ -26,6 +26,10 @@ type outgoing struct {
 	Success                                                                                                    bool
 }
 
+// Manual artifact retrieval has its own file delivery record. It must not
+// become a required attachment for a later native turn in the same session.
+func (o outgoing) fileOnly() bool { return o.Kind == "file" || o.Kind == "artifact" }
+
 func nullString(s string) any {
 	if s == "" {
 		return nil
@@ -161,11 +165,11 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 	target := o.Target
 	phase := "card"
 	knownFile := o.FileState == "done" && o.FileTarget != ""
-	if o.Kind == "file" {
+	if o.fileOnly() {
 		phase = "file_prepare"
 	}
 	perform := func() error {
-		if o.Kind != "file" {
+		if !o.fileOnly() {
 			filesPending := (o.FileName != "" && !knownFile) || o.Kind == "reply" && o.Success && g.unfinishedFiles(r.Key, o.Session) > 0
 			card := g.outputCard(o, r, filesPending)
 			if target == "" {
@@ -183,7 +187,7 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 			updateCtx := ctx
 			if !filesPending { updateCtx = core.WithTerminalCard(ctx) }
 			if target != "" {
-				err = providerVoid(updateCtx, func() error { return g.transport.Update(updateCtx, target, card) })
+				err = g.updateOutputCard(updateCtx, id, r, target, card)
 				if err != nil { return err }
 			}
 			if target == "" {
@@ -200,14 +204,13 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 			if e = g.store.RecordOutput(target, r.Key, o.Session); e != nil {
 				return e
 			}
-			if e = g.bindQuickControls(target, card); e != nil { return e }
 		}
-		if (o.Kind == "file" || o.FileName != "") && !knownFile {
+		if (o.fileOnly() || o.FileName != "") && !knownFile {
 			phase = "file_prepare"
 			if o.FilePath == "" || o.FileName == "" {
 				return errors.New("missing export snapshot")
 			}
-			if o.Kind != "file" {
+			if !o.fileOnly() {
 				if e := os.MkdirAll(filepath.Dir(o.FilePath), 0700); e != nil {
 					return e
 				}
@@ -253,7 +256,7 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 			if e = g.store.RecordOutput(ft, r.Key, o.Session); e != nil {
 				return e
 			}
-		} else if o.Kind == "file" {
+		} else if o.fileOnly() {
 			if !knownFile {
 				return errors.New("missing file receipt")
 			}
@@ -272,12 +275,11 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 			g.pendingOutputNotice(ctx, o, r, target, "主动发送的文件尚未确认送达；本轮未标记完成。可用 /outputs 查看记录。")
 			return errDeferredDelivery
 		}
-		if o.Kind != "file" && o.FileName != "" && knownFile {
+		if !o.fileOnly() && o.FileName != "" && knownFile {
 			phase = "card_finalize"
 			card := g.outputCard(o, r, false)
 			finalCtx := core.WithTerminalCard(ctx)
-			if e := providerVoid(finalCtx, func() error { return g.transport.Update(finalCtx, target, card) }); e != nil { return e }
-			if e := g.bindQuickControls(target, card); e != nil { return e }
+			if e := g.updateOutputCard(finalCtx, id, r, target, card); e != nil { return e }
 		}
 		res, e := g.store.DB.Exec(`UPDATE outbox SET state='done',delivery_error=NULL,retry_count=0,retry_after=0 WHERE id=? AND state='sending'`, id)
 		if e != nil {
@@ -349,9 +351,10 @@ var errCancelledDelivery = errors.New("output cancelled")
 var errDeferredDelivery = errors.New("output waiting for attachments")
 
 func (g *Gateway) pendingOutputNotice(ctx context.Context, o outgoing, r core.Room, target, text string) {
+	_ = g.withOutputCard(ctx, target, func() error {
 	latest, e := g.output(o.ID)
-	if e != nil || (latest.State != "pending" && latest.State != "uncertain" && latest.State != "blocked") || !g.permittedOutput(latest, r) {
-		return
+	if e != nil || latest.Target != target || (latest.State != "pending" && latest.State != "uncertain" && latest.State != "blocked") || !g.permittedOutput(latest, r) {
+		return errCancelledDelivery
 	}
 	card := g.outputCard(latest, r, true)
 	card["header"] = core.Args{"template": "orange", "title": core.Args{"tag": "plain_text", "content": "回复尚未完整送达"}}
@@ -360,12 +363,36 @@ func (g *Gateway) pendingOutputNotice(ctx context.Context, o outgoing, r core.Ro
 	body["elements"] = append(elements, core.Args{"tag": "markdown", "content": text + "\n/retry-output " + o.ID})
 	card["body"] = body
 	card = fitNoticeCard(card)
-	if err := providerVoid(ctx, func() error { return g.transport.Update(ctx, target, card) }); err == nil {
-		_ = g.bindQuickControls(target, card)
-	}
+	if err := g.transport.Update(ctx, target, card); err != nil { return err }
+	return g.bindQuickControls(target, card)
+	})
+}
+
+// Hold the target lock inside the provider call: cancellation can return to the
+// caller before a slow transport finishes, but a closing status must stay after
+// that actual write. No SQLite transaction waits for this lock.
+func (g *Gateway) withOutputCard(ctx context.Context, target string, write func() error) error {
+	return providerVoid(ctx, func() error {
+		unlock, err := g.outTargetLocks.lockContext(ctx, target)
+		if err != nil { return err }
+		defer unlock()
+		if err := ctx.Err(); err != nil { return err }
+		return write()
+	})
+}
+
+func (g *Gateway) updateOutputCard(ctx context.Context, id string, room core.Room, target string, card core.Args) error {
+	return g.withOutputCard(ctx, target, func() error {
+		current, err := g.output(id)
+		if err != nil { return err }
+		if current.State != "sending" || current.Target != target || current.Room != room.Key || !g.permittedOutput(current, room) { return errCancelledDelivery }
+		if err := g.transport.Update(ctx, target, card); err != nil { return err }
+		if !g.outputSending(id, room) { return errCancelledDelivery }
+		return g.bindQuickControls(target, card)
+	})
 }
 func (g *Gateway) retryable(room string) []string {
-	const query = `SELECT o.id,o.at FROM outbox o WHERE o.room=? AND o.state='pending' AND o.retry_after<=? AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR o.kind IN ('reply','recovery') OR (o.kind='file' AND o.file_state IN ('pending','done'))) AND (o.kind IN ('file','recovery') OR NOT EXISTS (SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session AND f.kind='file' AND f.state NOT IN ('done','cancelled')))`
+	const query = `SELECT o.id,o.at FROM outbox o WHERE o.room=? AND o.state='pending' AND o.retry_after<=? AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR o.kind IN ('reply','recovery') OR (o.kind IN ('file','artifact') AND o.file_state IN ('pending','done'))) AND (o.kind IN ('file','artifact','recovery') OR NOT EXISTS (SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session AND f.kind='file' AND f.state NOT IN ('done','cancelled')))`
 	g.outMu.Lock()
 	cur, ok := g.outCursor[room]
 	g.outMu.Unlock()
@@ -453,7 +480,7 @@ func (g *Gateway) outputError(id string) string {
 const outputStatusReserve = 2048
 
 func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
-	if o.Kind == "file" { return nil }
+	if o.fileOnly() { return nil }
 	card := o.Card
 	if card == nil { card = DisplayCard("回复", o.Text) }
 	if o.Kind == "status" {
@@ -468,6 +495,20 @@ func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 	suffix := "\n\n（完整答案另附文件。）"
 	if o.Kind == "status" { suffix = "\n\n（中断前输出预览已截断。）" }
 	o.Card = fitCardBudget(card, budget, suffix)
+	if size, err := core.CardPayloadBytes(o.Card); err != nil || size > budget {
+		// Legacy/custom metadata can itself exceed the limit. Preserve the full
+		// answer in the export and use a minimal template to unblock delivery.
+		if o.Kind == "status" {
+			card = cancelledOutputCard(nil, o.Text)
+		} else {
+			title := "回复"
+			if !o.Success { title = "执行失败" }
+			card = DisplayCard(title, o.Text)
+			card["config"] = core.Args{"streaming_mode": false}
+			card = g.withOutputControls(card, room, o.Session, o.ID, o.RetryCount)
+		}
+		o.Card = fitCardBudget(card, budget, suffix)
+	}
 	if o.Kind == "status" {
 		_, err = g.store.DB.Exec("UPDATE outbox SET card=? WHERE id=?", jsonText(o.Card), o.ID)
 		return err

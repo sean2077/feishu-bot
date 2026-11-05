@@ -322,7 +322,9 @@ func (g *Gateway) Action(ctx context.Context, a core.CardAction) (string, error)
 		return "", nil
 	}
 	defer g.wg.Done()
-	if text, handled, err := g.quickAction(ctx, a); handled { return text, err }
+	if text, handled, err := g.quickAction(ctx, a); handled {
+		return text, err
+	}
 	id := stringArg(a.Value, "request")
 	if id == "" {
 		return "", nil

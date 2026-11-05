@@ -15,6 +15,22 @@ import (
 var _ core.CardRetainer = (*Client)(nil)
 var _ core.CardRecovery = (*Client)(nil)
 
+const retentionScanLimit = 200
+
+func (c *Client) maintenanceCursor(ctx context.Context, name string) (int64, string, error) {
+	var at int64
+	var record string
+	err := c.db.QueryRowContext(ctx, "SELECT at,record FROM feishu_maintenance WHERE name=?", name).Scan(&at, &record)
+	if errors.Is(err, sql.ErrNoRows) { return 0, "", nil }
+	return at, record, err
+}
+
+func (c *Client) saveMaintenanceCursor(ctx context.Context, name string, at int64, record string) error {
+	_, err := c.db.ExecContext(ctx, `INSERT INTO feishu_maintenance(name,at,record) VALUES(?,?,?)
+		ON CONFLICT(name) DO UPDATE SET at=excluded.at,record=excluded.record`, name, at, record)
+	return err
+}
+
 // Only these outbox references are read; this adapter does not change the
 // gateway's delivery state or infer success from a card update.
 type outboxColumns map[string]bool
@@ -48,13 +64,19 @@ func outboxProtects(ctx context.Context, db queryRowContext, columns outboxColum
 	for _, id := range ids {
 		if columns["delivery_key"] { clauses = append(clauses, "delivery_key=?"); args = append(args, id) }
 		if columns["id"] {
-			clauses = append(clauses, "id=?", "'output:'||id=?", "'file:'||id=?")
-			args = append(args, id, id, id)
+			clauses = append(clauses, "id=?")
+			args = append(args, id)
+			for _, prefix := range []string{"output:", "file:"} {
+				if strings.HasPrefix(id, prefix) {
+					clauses = append(clauses, "id=?")
+					args = append(args, strings.TrimPrefix(id, prefix))
+				}
+			}
 		}
 	}
 	if len(clauses) == 0 { return false, nil }
 	var count int
-	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM outbox WHERE state NOT IN ('done','cancelled') AND ("+strings.Join(clauses, " OR ")+")", args...).Scan(&count)
+	err := db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM outbox WHERE state NOT IN ('done','cancelled') AND ("+strings.Join(clauses, " OR ")+"))", args...).Scan(&count)
 	return count > 0, err
 }
 
@@ -85,11 +107,13 @@ func (c *Client) Retain(ctx context.Context, before time.Time, protected []strin
 	columns, err := c.outboxColumns(ctx)
 	if err != nil { return 0, errors.New("feishu: outbox references are unavailable") }
 	var removed int64
-	lastAt, lastMessage := int64(0), ""
-	for removed < 100 {
+	lastAt, lastMessage, err := c.maintenanceCursor(ctx, "cards")
+	if err != nil { return 0, err }
+	scanned, wrapped := 0, false
+	for removed < 100 && scanned < retentionScanLimit {
 		rows, e := c.db.QueryContext(ctx, `SELECT c.message,l.terminal_at FROM feishu_cards c JOIN feishu_card_lifecycle l ON l.message=c.message
 			WHERE l.terminal_at>0 AND l.terminal_at<? AND l.updated_at<? AND (l.terminal_at>? OR (l.terminal_at=? AND c.message>?))
-			ORDER BY l.terminal_at,c.message LIMIT 100`, before.UnixMilli(), before.UnixMilli(), lastAt, lastAt, lastMessage)
+			ORDER BY l.terminal_at,c.message LIMIT ?`, before.UnixMilli(), before.UnixMilli(), lastAt, lastAt, lastMessage, min(100, retentionScanLimit-scanned))
 		if e != nil { return removed, errors.New("feishu: card retention query failed") }
 		type candidate struct { message string; at int64 }
 		var messages []candidate
@@ -100,9 +124,13 @@ func (c *Client) Retain(ctx context.Context, before time.Time, protected []strin
 		}
 		e = rows.Err(); rows.Close()
 		if e != nil { return removed, e }
-		if len(messages) == 0 { break }
+		if len(messages) == 0 {
+			if scanned == 0 && !wrapped && (lastAt != 0 || lastMessage != "") { lastAt, lastMessage, wrapped = 0, "", true; continue }
+			break
+		}
 		for _, value := range messages {
 			lastAt, lastMessage = value.at, value.message
+			scanned++
 			if keep[value.message] { continue }
 			cardUnlock := c.locks.lock("card:"+value.message)
 			n, e := c.pruneCard(ctx, value.message, before, keep, columns)
@@ -112,6 +140,9 @@ func (c *Client) Retain(ctx context.Context, before time.Time, protected []strin
 			if removed >= 100 { break }
 		}
 	}
+	// A bounded scan plus a durable cursor avoids both unbounded sweep work and
+	// starvation behind old protected records, including after a restart.
+	if err = c.saveMaintenanceCursor(ctx, "cards", lastAt, lastMessage); err != nil { return removed, err }
 	if err = c.pruneDeliveries(ctx, before, keep, columns); err != nil { return removed, err }
 	return removed, nil
 }
@@ -146,20 +177,29 @@ func (c *Client) pruneCard(ctx context.Context, message string, before time.Time
 }
 
 func (c *Client) pruneDeliveries(ctx context.Context, before time.Time, keep map[string]bool, columns outboxColumns) error {
-	lastAt, lastID, removed := int64(0), "", 0
-	for removed < 100 {
-		rows, err := c.db.QueryContext(ctx, `SELECT id,MAX(updated_at) FROM feishu_deliveries GROUP BY id HAVING MAX(updated_at)<?
-			AND SUM(CASE WHEN state NOT IN ('confirmed','rejected') THEN 1 ELSE 0 END)=0
-			AND (MAX(updated_at)>? OR (MAX(updated_at)=? AND id>?)) ORDER BY MAX(updated_at),id LIMIT 100`, before.UnixMilli(), lastAt, lastAt, lastID)
+	lastAt, lastID, err := c.maintenanceCursor(ctx, "deliveries")
+	if err != nil { return err }
+	removed, scanned, wrapped := 0, 0, false
+	for removed < 100 && scanned < retentionScanLimit {
+		// Candidate steps use a covering time index, avoiding a full GROUP BY of
+		// every stored payload. The transaction below still checks the whole
+		// logical delivery, including any uncertain or recently updated sibling.
+		rows, err := c.db.QueryContext(ctx, `SELECT DISTINCT id,updated_at FROM feishu_deliveries
+			WHERE state IN ('confirmed','rejected') AND updated_at<? AND updated_at>=?
+			AND (updated_at>? OR id>?) ORDER BY updated_at,id LIMIT ?`, before.UnixMilli(), lastAt, lastAt, lastID, min(100, retentionScanLimit-scanned))
 		if err != nil { return err }
 		type candidate struct { id string; at int64 }
 		var ids []candidate
 		for rows.Next() { var value candidate; if err = rows.Scan(&value.id, &value.at); err != nil { rows.Close(); return err }; ids = append(ids, value) }
 		err = rows.Err(); rows.Close()
 		if err != nil { return err }
-		if len(ids) == 0 { break }
+		if len(ids) == 0 {
+			if scanned == 0 && !wrapped && (lastAt != 0 || lastID != "") { lastAt, lastID, wrapped = 0, "", true; continue }
+			break
+		}
 		for _, value := range ids {
 			lastAt, lastID = value.at, value.id
+			scanned++
 			if keep[value.id] { continue }
 			// Lock every supported step before opening a transaction, in one stable
 			// order. Never hold SQLite while waiting for an in-flight network call.
@@ -173,7 +213,7 @@ func (c *Client) pruneDeliveries(ctx context.Context, before time.Time, keep map
 			if removed >= 100 { break }
 		}
 	}
-	return nil
+	return c.saveMaintenanceCursor(ctx, "deliveries", lastAt, lastID)
 }
 
 func (c *Client) pruneDelivery(ctx context.Context, id string, before time.Time, keep map[string]bool, columns outboxColumns) (bool, error) {

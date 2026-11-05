@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
@@ -43,17 +42,8 @@ func (g *Gateway) retainCards(ctx context.Context, now int64) {
 	g.approvalMu.Lock()
 	for _, a := range g.approvals { for message := range a.cards { protected = append(protected, message) } }
 	g.approvalMu.Unlock()
-	rows, err := g.store.DB.Query("SELECT id,target,file_target,delivery_key FROM outbox WHERE state NOT IN ('done','cancelled')")
-	if err != nil { return }
-	for rows.Next() {
-		var id string
-		var target, file, key sql.NullString
-		if rows.Scan(&id, &target, &file, &key) != nil { rows.Close(); return }
-		protected = append(protected, target.String, file.String, key.String, "output:"+id, "file:"+id)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil { return }
+	// The adapter checks durable outbox references inside its deletion
+	// transaction; copying the whole backlog here would defeat bounded cleanup.
 	count, err := retainer.Retain(ctx, time.UnixMilli(now).Add(-30*24*time.Hour), protected)
 	if err != nil { g.audit("", "card_retention_failed", core.Args{}); return }
 	if count > 0 { g.audit("", "card_records_pruned", core.Args{"count": count}) }

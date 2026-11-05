@@ -32,9 +32,13 @@ func (c *Client) initDeliveryState() error {
 			status INTEGER NOT NULL DEFAULT 0,code INTEGER NOT NULL DEFAULT 0,request_id TEXT NOT NULL DEFAULT '',
 			retry_at INTEGER NOT NULL DEFAULT 0,attempt TEXT NOT NULL DEFAULT '',PRIMARY KEY(id,step))`,
 		`CREATE INDEX IF NOT EXISTS feishu_deliveries_message ON feishu_deliveries(message)`,
+		`CREATE INDEX IF NOT EXISTS feishu_deliveries_retention ON feishu_deliveries(updated_at,id,state)`,
 		`CREATE TABLE IF NOT EXISTS feishu_card_lifecycle (
 			message TEXT PRIMARY KEY,updated_at INTEGER NOT NULL,terminal_at INTEGER NOT NULL DEFAULT 0,
 			stream_closed INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE INDEX IF NOT EXISTS feishu_card_lifecycle_retention ON feishu_card_lifecycle(terminal_at,message,updated_at)`,
+		`CREATE TABLE IF NOT EXISTS feishu_maintenance (
+			name TEXT PRIMARY KEY,at INTEGER NOT NULL DEFAULT 0,record TEXT NOT NULL DEFAULT '')`,
 	} {
 		if _, err := c.db.Exec(statement); err != nil {
 			return errors.New("feishu: delivery-state initialization failed")

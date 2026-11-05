@@ -264,3 +264,24 @@ func TestExplicitKnownTargetRetryHonorsProviderDeadline(t *testing.T) {
 	f.tr.mu.Lock();defer f.tr.mu.Unlock()
 	if len(f.tr.updates)!=0 {t.Fatal("explicit retry ignored provider Retry-After")}
 }
+
+func TestLegacyOversizedMetadataStillDeliversTheCompleteAnswer(t *testing.T) {
+	f := newFixture(t, nil)
+	s, err := f.s.Session(f.room().Key)
+	if err != nil { t.Fatal(err) }
+	answer := strings.Repeat("完整正文", 5000)
+	card := DisplayCard(strings.Repeat("旧标题", 20000), answer)
+	id, err := f.g.saveOutput(f.s.DB, f.room(), s.ID, answer, true, "", "", "", card, nil, "", "", "reply", "pending")
+	if err != nil { t.Fatal(err) }
+	if ok, err := f.g.deliverOutput(context.Background(), id, f.room(), false); !ok || err != nil { t.Fatal(ok, err) }
+	o, err := f.g.output(id)
+	if err != nil || o.State != "done" || o.FileState != "done" { t.Fatal("oversized metadata blocked the full answer", err) }
+	data, err := os.ReadFile(o.FilePath)
+	if err != nil || string(data) != answer { t.Fatal("legacy answer file lost content", err) }
+	f.tr.mu.Lock()
+	defer f.tr.mu.Unlock()
+	for _, update := range f.tr.updates {
+		if size, err := core.CardPayloadBytes(update.card); err != nil || size > core.CardPayloadLimit { t.Fatal("oversized fallback", size, err) }
+	}
+	if f.starts.Load() != 0 { t.Fatal("delivery woke the model") }
+}

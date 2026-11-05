@@ -119,6 +119,26 @@ func TestRetentionProtectedFirstPageDoesNotStarveLaterCards(t *testing.T) {
 	if err = db.QueryRow(`SELECT COUNT(*) FROM feishu_cards WHERE message='om_100'`).Scan(&count); err != nil || count != 0 { t.Fatal("later eligible card was not removed") }
 }
 
+func TestRetentionScanBudgetResumesAfterRestart(t *testing.T) {
+	db := fixtureDB(t)
+	handler := func(w http.ResponseWriter, r *http.Request) { t.Error("retention called provider") }
+	c, _ := fixtureClient(t, db, handler)
+	room := fixtureRoom(t, c)
+	old := time.Now().Add(-60*24*time.Hour).UnixMilli()
+	var protected []string
+	for i := 0; i < 202; i++ {
+		message := fmt.Sprintf("om_scan_%03d", i)
+		seedCardState(t, db, room.Key, message, replyFixture("saved", true), old, old)
+		if i < 201 { protected = append(protected, message) }
+	}
+	cutoff := time.Now().Add(-30*24*time.Hour)
+	if removed, err := c.Retain(context.Background(), cutoff, protected); err != nil || removed != 0 { t.Fatalf("sweep exceeded its 200-row scan budget: removed=%d err=%v", removed, err) }
+	var cursor string
+	if err := db.QueryRow("SELECT record FROM feishu_maintenance WHERE name='cards'").Scan(&cursor); err != nil || cursor != "om_scan_199" { t.Fatalf("scan progress was not durable: %q %v", cursor, err) }
+	c2, _ := fixtureClient(t, db, handler)
+	if removed, err := c2.Retain(context.Background(), cutoff, protected); err != nil || removed != 1 { t.Fatalf("restart starved the later eligible card: removed=%d err=%v", removed, err) }
+}
+
 func TestCrashRecoveryUpdatesOnlyAuthorizedUnownedExistingCards(t *testing.T) {
 	db := fixtureDB(t)
 	var writes []observedWrite

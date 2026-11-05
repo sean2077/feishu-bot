@@ -11,11 +11,11 @@ import (
 // PROCESS_MEMORY_COUNTERS_EX is pointer-sized on both supported Windows
 // architectures. PrivateUsage is committed private bytes, not Working Set.
 type processMemoryCounters struct {
-	Size, PageFaultCount uint32
-	PeakWorkingSetSize, WorkingSetSize uintptr
-	QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage uintptr
+	Size, PageFaultCount                               uint32
+	PeakWorkingSetSize, WorkingSetSize                 uintptr
+	QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage       uintptr
 	QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage uintptr
-	PagefileUsage, PeakPagefileUsage, PrivateUsage uintptr
+	PagefileUsage, PeakPagefileUsage, PrivateUsage     uintptr
 }
 
 var getProcessMemoryInfo = windows.NewLazySystemDLL("psapi.dll").NewProc("GetProcessMemoryInfo")

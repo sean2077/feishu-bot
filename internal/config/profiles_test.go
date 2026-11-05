@@ -32,13 +32,13 @@ func TestProfilesUseOnlyConfiguredNativeOptions(t *testing.T) {
 
 func TestProfileValidationRejectsUnsupportedControls(t *testing.T) {
 	cases := map[string]any{
-		"reserved name": map[string]any{"default": map[string]any{"model": "model"}},
-		"mixed case": map[string]any{"Careful": map[string]any{"model": "model"}},
-		"unknown effort": map[string]any{"careful": map[string]any{"model": "model", "effort": "ultracode"}},
-		"empty model": map[string]any{"careful": map[string]any{"model": ""}},
+		"reserved name":      map[string]any{"default": map[string]any{"model": "model"}},
+		"mixed case":         map[string]any{"Careful": map[string]any{"model": "model"}},
+		"unknown effort":     map[string]any{"careful": map[string]any{"model": "model", "effort": "ultracode"}},
+		"empty model":        map[string]any{"careful": map[string]any{"model": ""}},
 		"argument injection": map[string]any{"careful": map[string]any{"model": "--permission-mode=bypassPermissions"}},
-		"endpoint override": map[string]any{"careful": map[string]any{"model": "model", "baseUrl": "https://other.example"}},
-		"null profile": map[string]any{"careful": nil},
+		"endpoint override":  map[string]any{"careful": map[string]any{"model": "model", "baseUrl": "https://other.example"}},
+		"null profile":       map[string]any{"careful": nil},
 	}
 	for name, profiles := range cases {
 		t.Run(name, func(t *testing.T) {

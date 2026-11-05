@@ -32,16 +32,16 @@ type Diagnostic struct {
 	Remedy  string `json:"remedy,omitempty"`
 }
 type DoctorReport struct {
-	Platform     string            `json:"platform"`
-	Runtime      string            `json:"runtime"`
-	Ready        bool              `json:"ready"`
-	Scope        string            `json:"scope"`
-	Checks       []Diagnostic      `json:"checks"`
-	Verification map[string]string `json:"verification"`
-	NextSteps    []string          `json:"nextSteps"`
+	Platform     string                      `json:"platform"`
+	Runtime      string                      `json:"runtime"`
+	Ready        bool                        `json:"ready"`
+	Scope        string                      `json:"scope"`
+	Checks       []Diagnostic                `json:"checks"`
+	Verification map[string]string           `json:"verification"`
+	NextSteps    []string                    `json:"nextSteps"`
 	Native       native.VersionCompatibility `json:"native"`
-	Storage      StorageDiagnostic `json:"storage"`
-	LiveChat *ChatVerification `json:"liveChat,omitempty"`
+	Storage      StorageDiagnostic           `json:"storage"`
+	LiveChat     *ChatVerification           `json:"liveChat,omitempty"`
 }
 
 var placeholderPattern = regexp.MustCompile(`(?i)^(your[-_ ]|replace[-_ ]with[-_ ]|<[^>]+>$|(tenant|cli|oc|ou)_example(_|$))`)
