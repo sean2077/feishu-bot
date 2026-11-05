@@ -98,6 +98,55 @@ func TestQuestionActionsShareOneRow(t *testing.T) {
 	}
 }
 
+func TestQuestionOptionsUseCompactRows(t *testing.T) {
+	selected := map[string]map[int]map[int]bool{"ou_user": {0: {0: true}}}
+	questions := []question{{Question: "请选择", Options: []questionOption{{Label: "A", Description: "选项说明"}, {Label: "B"}}}}
+	private := approvalCard("request-id", &approval{
+		kind: "question", revision: "revision-id", room: core.Room{DMUser: "ou_user"},
+		questions: questions, selected: selected,
+	}, "ou_user")
+	group := approvalCard("request-id", &approval{
+		kind: "question", revision: "revision-id", questions: questions,
+	}, "ou_user")
+	find := func(card core.Args) (core.Args, core.Args) {
+		elements, _ := argsOf(card["body"])["elements"].([]any)
+		for _, raw := range elements {
+			element := argsOf(raw)
+			if stringArg(element, "tag") != "column_set" {
+				continue
+			}
+			columns, _ := element["columns"].([]any)
+			if len(columns) != 2 {
+				continue
+			}
+			left, _ := argsOf(columns[0])["elements"].([]any)
+			right, _ := argsOf(columns[1])["elements"].([]any)
+			if len(right) != 1 || stringArg(argsOf(right[0]), "tag") != "button" || stringArg(argsOf(argsOf(right[0])["text"]), "content") != "选择" {
+				continue
+			}
+			if len(left) == 0 {
+				t.Fatal("option row has no label")
+			}
+			return argsOf(left[0]), argsOf(right[0])
+		}
+		return nil, nil
+	}
+	label, action := find(private)
+	if label == nil || action == nil {
+		t.Fatal("private option row is missing")
+	}
+	if !strings.Contains(stringArg(label, "content"), "✓ A") || stringArg(action, "type") != "primary" {
+		t.Fatalf("private selection is not highlighted: label=%v action=%v", label, action)
+	}
+	label, action = find(group)
+	if label == nil || action == nil {
+		t.Fatal("group option row is missing")
+	}
+	if strings.Contains(stringArg(label, "content"), "✓") || stringArg(action, "type") != "default" {
+		t.Fatalf("group card disclosed a selection: label=%v action=%v", label, action)
+	}
+}
+
 func TestQuestionSelectionSummaryOnlyForPrivateCards(t *testing.T) {
 	questions := []question{
 		{Question: "第一题", Options: []questionOption{{Label: "A"}, {Label: "B"}, {Label: "C"}}},

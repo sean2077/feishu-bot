@@ -179,9 +179,9 @@ func approvalCard(id string, p *approval, actor string) core.Args {
 	if p.kind == "permission" {
 		return DisplayCard("需要维护者批准", p.summary+"\n\n仅批准这一次操作，超时或停止后失效。\n请求：`"+id+"`", button("批准一次", core.Args{"request": id, "decision": "allow"}, "primary"), button("拒绝", core.Args{"request": id, "decision": "deny"}, "danger"))
 	}
-	intro := "每题标注单选/多选。群内每位成员独立选择，第一位提交者生效，卡片不显示个人勾选。\n自由回答：`/answer " + id + " 你的回答`。"
+	intro := "每题标注单选/多选；群内每位成员独立选择，第一位提交者生效。"
 	if p.room.DMUser != "" {
-		intro = "每题标注单选/多选；选择后卡片会显示你的当前选择。\n自由回答：`/answer " + id + " 你的回答`。"
+		intro = "每题标注单选/多选；选择后卡片会显示你的当前选择。"
 	}
 	if line := selectionSummary(p, actor); line != "" {
 		intro += "\n\n" + line
@@ -198,16 +198,26 @@ func approvalCard(id string, p *approval, actor string) core.Args {
 		}
 		elements = append(elements, core.Args{"tag": "markdown", "content": fmt.Sprintf("**%d. %s%s**\n%s", qi+1, header, mode, q.Question)})
 		for oi, o := range q.Options {
-			if o.Description != "" {
-				elements = append(elements, core.Args{"tag": "markdown", "content": fmt.Sprintf("%d.%d %s", qi+1, oi+1, o.Description)})
+			selected := actor != "" && p.room.DMUser != "" && p.selected[actor][qi][oi]
+			label := o.Label
+			style := "default"
+			if selected {
+				label = "✓ " + label
+				style = "primary"
 			}
-			elements = append(elements, button(fmt.Sprintf("%d. %s", qi+1, o.Label), core.Args{"revision": p.revision, "request": id, "question": qi, "option": oi}, "default"))
+			value := core.Args{"revision": p.revision, "request": id, "question": qi, "option": oi}
+			if o.Description != "" {
+				elements = append(elements, optionRow(label, o.Description, value, style))
+			} else {
+				elements = append(elements, button(label, value, style))
+			}
 		}
 	}
 	elements = append(elements, actionRow(
 		button("提交选择", core.Args{"revision": p.revision, "request": id, "decision": "submit"}, "primary"),
 		button("取消", core.Args{"revision": p.revision, "request": id, "decision": "deny"}, "default"),
 	))
+	elements = append(elements, core.Args{"tag": "markdown", "text_size": "notation", "content": "卡片无法操作时：`/answer " + id + " 你的回答`。"})
 	return DisplayCard("需要补充信息", intro, elements...)
 }
 

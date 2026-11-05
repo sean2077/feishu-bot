@@ -158,25 +158,25 @@ func TestQuestionSelectionsRemainPerActor(t *testing.T) {
 		}
 		return text
 	}
-	if !strings.Contains(click("member", "1. A"), "已记录") {
+	if !strings.Contains(click("member", "A"), "已记录") {
 		t.Fatal("choice not recorded")
 	}
 	// Re-clicking the selected single-choice option keeps it selected. A group
 	// card is not refreshed, so the next click uses the same card values.
-	if !strings.Contains(click("member", "1. A"), "第 1 题已记录：A") {
+	if !strings.Contains(click("member", "A"), "第 1 题已记录：A") {
 		t.Fatal("single choice was toggled off")
 	}
-	_ = click("second", "2. Y")
+	_ = click("second", "Y")
 	if text := click("member", "提交选择"); text != "请先回答第 2 题，再提交。" {
 		t.Fatalf("another actor completed member's answer: %q", text)
 	}
-	_ = click("member", "2. X")
+	_ = click("member", "X")
 	// Multi-select toggles independently.
-	_ = click("member", "2. X")
+	_ = click("member", "X")
 	if text := click("member", "提交选择"); text != "请先回答第 2 题，再提交。" {
 		t.Fatalf("multi-select toggle was not applied: %q", text)
 	}
-	_ = click("member", "2. X")
+	_ = click("member", "X")
 	if click("member", "提交选择") != "已提交" {
 		t.Fatal("complete answers failed")
 	}

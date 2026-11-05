@@ -32,6 +32,23 @@ func actionRow(buttons ...core.Args) core.Args {
 	return core.Args{"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "medium", "columns": columns}
 }
 
+// optionRow keeps a long label and its description in the text column and a
+// compact action on the right, instead of stacking a full-width button under a
+// duplicate label line.
+func optionRow(label, description string, value core.Args, style string) core.Args {
+	text := []any{core.Args{"tag": "markdown", "content": "**" + label + "**"}}
+	if description != "" {
+		text = append(text, core.Args{"tag": "markdown", "text_size": "notation", "content": description})
+	}
+	return core.Args{
+		"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "medium",
+		"columns": []any{
+			core.Args{"tag": "column", "width": "weighted", "weight": 1, "vertical_spacing": "2px", "elements": text},
+			core.Args{"tag": "column", "width": "auto", "horizontal_align": "right", "elements": []any{button("选择", value, style)}},
+		},
+	}
+}
+
 type replyDetails struct {
 	Model, ProjectPath string
 	Context, Usage     core.Args
