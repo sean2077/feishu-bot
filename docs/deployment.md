@@ -18,7 +18,7 @@ Linux、macOS 和 Windows 运行同一个 Go 服务。源码构建需要 Go 1.25
 
 ## 发布包安装
 
-从 [GitHub Releases](https://github.com/sean2077/feishu-bot/releases) 选择目标 Go 版本，下载与本机匹配的压缩包和同一版本的 `SHA256SUMS.txt`。Linux、macOS 分别提供 amd64／arm64，Windows 提供 amd64；macOS Intel 选择 `darwin-amd64`，Apple Silicon 选择 `darwin-arm64`。完整产物命名见[版本发布](releasing.md#发布产物)。
+从 [GitHub Releases](https://github.com/sean2077/feishu-bot/releases) 选择目标 Go 版本，下载与本机匹配的便携压缩包或安装包，以及同一版本的 `SHA256SUMS.txt`。Linux、macOS 分别提供 amd64／arm64，Windows 提供 amd64；macOS Intel 选择 `darwin-amd64`，Apple Silicon 选择 `darwin-arm64`。Windows MSI 只提供 amd64，Linux deb 提供 amd64／arm64。完整产物命名见[版本发布](releasing.md#发布产物)。
 
 执行下面与平台对应的命令，核对结果与 `SHA256SUMS.txt` 中该文件一行的 SHA-256 一致。`vX.Y.Z` 是版本占位符，替换成实际下载版本：
 
@@ -45,6 +45,29 @@ cd feishu-bot-vX.Y.Z-darwin-arm64
 ```
 
 Windows 解压 ZIP 后使用 `.\feishu-bot.exe`。包内 `INSTALL.md` 给出该版本的安装入口，`BUILDINFO.json` 记录 tag、提交和目标平台；`config.example.json` 是参考模板。`init` 创建实际使用的 `config.json`，已有配置会被保留。凭据、状态库、会话历史和日志留在部署目录，升级时只更换已核对的二进制并保留这些数据。TypeScript 旧版升级另见[Go 迁移](go-migration.md)。
+
+### 安装版
+
+Windows MSI 和 Linux deb 只安装程序与文档，不注册后台服务、systemd unit 或任务计划。需要常驻运行时，安装后再执行 `feishu-bot daemon install`。安装包与便携包使用同一版本和同一 `SHA256SUMS.txt`。
+
+Windows MSI 按当前用户安装到 `%LOCALAPPDATA%\feishu-bot`，不需要管理员权限；可双击或静默安装：
+
+```powershell
+Start-Process msiexec.exe -ArgumentList '/i', '.\feishu-bot-vX.Y.Z-windows-amd64.msi', '/qn' -Wait
+& "$env:LOCALAPPDATA\feishu-bot\feishu-bot.exe" --version
+```
+
+当前 MSI 没有代码签名，Windows SmartScreen 可能提示。卸载通过“设置 > 应用”中的 `feishu-bot`，卸载不会删除自行创建的配置、状态库或日志。
+
+Linux deb 把二进制安装到 `/usr/bin/feishu-bot`，文档安装到 `/usr/share/doc/feishu-bot/`：
+
+```sh
+sudo dpkg -i feishu-bot-vX.Y.Z-linux-amd64.deb
+feishu-bot --version
+sudo dpkg -r feishu-bot
+```
+
+配置和数据目录由使用者选择；`init --config <path>`、`doctor --config <path>` 和 `run --config <path>` 使用同一路径。`dpkg -r` 不会删除这些目录。
 
 macOS 产物未提供 Developer ID 签名或 Apple 公证。若首次运行被系统阻止，在确认下载来自本仓库且 SHA-256 一致后，按 [Apple 的按程序放行说明](https://support.apple.com/en-us/102445)在“系统设置 → 隐私与安全性”中对这个程序选择“仍要打开”。保持系统全局保护启用；此操作只针对已核对的程序。
 

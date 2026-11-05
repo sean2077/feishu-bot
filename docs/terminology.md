@@ -118,3 +118,14 @@ _英文_: delivery step
 
 签名控件与实际消息、当前房间／会话、轮次或输出修订及期限的关联。回调时重新授权，停止与补发声明一次生效，旧修订不能操作新轮次。
 _英文_: quick control binding
+
+**便携版**
+
+以压缩包发布的网关二进制及文档。解压后在所选目录运行，不写入系统安装记录；升级时替换已核对的二进制并保留配置与数据。
+_英文_: portable package
+
+**安装版**
+
+以平台安装包发布的同一网关二进制及文档：Windows MSI 按当前用户安装到 `%LOCALAPPDATA%\feishu-bot`，Linux deb 安装到 `/usr/bin/feishu-bot`。安装器不注册后台服务；常驻运行仍由 `daemon install` 管理。
+_英文_: installer package
+_避免_: 用安装版指代 daemon 服务安装

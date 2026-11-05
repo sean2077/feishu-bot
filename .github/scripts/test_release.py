@@ -33,6 +33,11 @@ ARCHIVES = {
     ("darwin", "amd64"): "feishu-bot-v1.2.3-darwin-amd64.tar.gz",
     ("darwin", "arm64"): "feishu-bot-v1.2.3-darwin-arm64.tar.gz",
 }
+INSTALLERS = {
+    ("linux", "amd64"): "feishu-bot-v1.2.3-linux-amd64.deb",
+    ("linux", "arm64"): "feishu-bot-v1.2.3-linux-arm64.deb",
+    ("windows", "amd64"): "feishu-bot-v1.2.3-windows-amd64.msi",
+}
 
 
 def binary_fixture(os_name: str, arch: str) -> bytes:
@@ -204,9 +209,21 @@ class PackagingTests(unittest.TestCase):
         binary.write_bytes(binary_fixture(os_name, arch))
         return release.package(self.meta, binary, os_name, arch, output or self.out, self.repo)
 
+    def make_installer(self, target=("linux", "amd64")):
+        os_name, arch = target
+        binary = self.root / f"binary-installer-{os_name}-{arch}"
+        binary.write_bytes(binary_fixture(os_name, arch))
+        if os_name == "windows":
+            path = self.out / release.installer_name(self.meta, os_name, arch)
+            release.write_identical_or_new(path, b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 600)
+            return path
+        return release.package_deb(self.meta, binary, arch, self.out, self.repo)
+
     def make_all(self):
         for target in ARCHIVES:
             self.make_package(target)
+        for target in INSTALLERS:
+            self.make_installer(target)
 
     def test_all_targets_use_exact_names_and_deterministic_whitelisted_payloads(self):
         for target, name in ARCHIVES.items():
@@ -234,6 +251,73 @@ class PackagingTests(unittest.TestCase):
                 self.assertEqual(build["commit"], COMMIT)
                 self.assertEqual(build["binary_sha256"], hashlib.sha256(binary_fixture(*target)).hexdigest())
 
+    def test_debian_installer_is_deterministic_and_whitelisted(self):
+        binary = self.root / "deb-binary"
+        binary.write_bytes(binary_fixture("linux", "amd64"))
+        first = release.package_deb(self.meta, binary, "amd64", self.out, self.repo)
+        os.utime(self.repo / "LICENSE", (1, 2))
+        second = release.package_deb(self.meta, binary, "amd64", self.root / "deb-second", self.repo)
+        self.assertEqual(first.name, INSTALLERS[("linux", "amd64")])
+        self.assertEqual(first.read_bytes(), second.read_bytes())
+        payload = release.read_deb(first, self.meta, "amd64")
+        self.assertEqual(set(payload), {
+            "usr/bin/feishu-bot",
+            "usr/share/doc/feishu-bot/BUILDINFO.json",
+            "usr/share/doc/feishu-bot/INSTALL.md",
+            "usr/share/doc/feishu-bot/LICENSE",
+            "usr/share/doc/feishu-bot/THIRD_PARTY_NOTICES.md",
+            "usr/share/doc/feishu-bot/config.example.json",
+        })
+        info = json.loads(payload["usr/share/doc/feishu-bot/BUILDINFO.json"])
+        self.assertEqual((info["os"], info["arch"]), ("linux", "amd64"))
+        members = release._read_ar(first)
+        control_files, _ = release._read_tar_gz(members["control.tar.gz"], "control")
+        fields = release._deb_fields(control_files["./control"])
+        self.assertEqual(fields["Version"], "1.2.3")
+        self.assertEqual(fields["Architecture"], "amd64")
+        self.assertNotIn("postinst", {name[2:] for name in control_files})
+
+    def test_debian_installer_rejects_a_mismatched_control_file(self):
+        path = self.make_installer(("linux", "amd64"))
+        members = release._read_ar(path)
+        control_files, _ = release._read_tar_gz(members["control.tar.gz"], "control")
+        altered = control_files["./control"].replace(b"Version: 1.2.3", b"Version: 1.2.4")
+        control_tar = release._tar_gz(EPOCH, [
+            ("./", None, 0o755), ("./control", altered, 0o644),
+            ("./md5sums", control_files["./md5sums"], 0o644),
+        ])
+        path.write_bytes(release._ar_archive([
+            ("debian-binary/", members["debian-binary"]),
+            ("control.tar.gz/", control_tar),
+            ("data.tar.gz/", members["data.tar.gz"]),
+        ], EPOCH))
+        with self.assertRaisesRegex(release.ReleaseError, "version differs"):
+            release.read_deb(path, self.meta, "amd64")
+
+    def test_msi_source_pins_version_identity_and_timestamp_normalization(self):
+        files = {
+            "feishu-bot.exe": b"exe", "BUILDINFO.json": b"{}", "INSTALL.md": b"docs",
+            "config.example.json": b"{}", "LICENSE": b"license", "THIRD_PARTY_NOTICES.md": b"notices",
+        }
+        stage = self.root / "stage"
+        source = release.msi_source(self.meta, "amd64", files, stage)
+        text = source.decode()
+        self.assertEqual(source, release.msi_source(self.meta, "amd64", files, stage))
+        self.assertIn('Version="1.2.3"', text)
+        self.assertIn('InstallScope="perUser"', text)
+        self.assertIn("LocalAppDataFolder", text)
+        self.assertIn('RegistryKey Root="HKCU"', text)
+        self.assertIn("Software\\feishu-bot", text)
+        self.assertIn("<RemoveFolder", text)
+        self.assertIn('Package Id="{', text)
+        self.assertIn('UpgradeCode="{', text)
+        self.assertIn("feishu-bot.exe", text)
+        for value in ("1.300.0", "1.2.70000"):
+            with self.subTest(version=value), self.assertRaisesRegex(release.ReleaseError, "MSI ProductVersion"):
+                release.msi_version(value)
+        with self.assertRaisesRegex(release.ReleaseError, "not a Windows Installer"):
+            release.normalize_msi(b"not-an-msi", EPOCH)
+
     def test_wrong_binary_architecture_is_not_packaged(self):
         binary = self.root / "wrong-binary"
         binary.write_bytes(binary_fixture("linux", "amd64"))
@@ -252,9 +336,9 @@ class PackagingTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(release.ReleaseError):
                 release.validate_metadata({**self.meta, **change})
 
-    def test_verify_requires_the_complete_five_target_set(self):
+    def test_verify_requires_the_complete_five_portable_archives_and_three_installers(self):
         self.make_package()
-        with self.assertRaisesRegex(release.ReleaseError, "exactly the five"):
+        with self.assertRaisesRegex(release.ReleaseError, "five portable archives and three installers"):
             release.verify(self.meta, self.out)
         self.assertFalse((self.out / "release-manifest.json").exists())
 
@@ -265,7 +349,8 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(manifest["commit"], COMMIT)
         self.assertEqual(manifest["tag"], TAG)
         expected = [{"name": name, "sha256": hashlib.sha256((self.out / name).read_bytes()).hexdigest(),
-                     "size": (self.out / name).stat().st_size} for name in sorted(ARCHIVES.values())]
+                     "size": (self.out / name).stat().st_size}
+                    for name in sorted([*ARCHIVES.values(), *INSTALLERS.values()])]
         self.assertEqual(manifest["assets"], expected)
         self.assertEqual((self.out / "SHA256SUMS.txt").read_text(),
                          "".join(f"{item['sha256']}  {item['name']}\n" for item in expected))
@@ -276,7 +361,7 @@ class PackagingTests(unittest.TestCase):
     def test_extra_artifacts_are_not_silently_published(self):
         self.make_all()
         (self.out / "service.env").write_bytes(b"EXAMPLE_TOKEN=not-for-release\n")
-        with self.assertRaisesRegex(release.ReleaseError, "exactly the five"):
+        with self.assertRaisesRegex(release.ReleaseError, "five portable archives and three installers"):
             release.verify(self.meta, self.out)
         self.assertFalse((self.out / "SHA256SUMS.txt").exists())
 
@@ -405,6 +490,29 @@ class PackagingTests(unittest.TestCase):
              mock.patch.object(release, "run", side_effect=process):
             release.smoke(self.meta, path, "linux", "amd64")
         self.assertEqual([args[0] for args in calls], ["--version", "--help", "init"])
+
+    def test_deb_installer_smoke_elevates_only_dpkg(self):
+        path = self.make_installer(("linux", "amd64"))
+        calls = []
+        def process(args, *, cwd, timeout=30, env=None):
+            calls.append(args)
+            if "--version" in args:
+                return "feishu-bot 1.2.3\n"
+            if "--help" in args:
+                return "feishu-bot init|doctor\n"
+            if "init" in args:
+                config = Path(args[args.index("--config") + 1])
+                config.parent.mkdir()
+                config.write_bytes(b'{"tenantId":"tenant_example"}\n')
+            return ""
+        with mock.patch.object(release.platform, "system", return_value="Linux"), \
+             mock.patch.object(release.platform, "machine", return_value="x86_64"), \
+             mock.patch.object(release.os, "geteuid", return_value=1000, create=True), \
+             mock.patch.object(release, "run", side_effect=process):
+            release.smoke_installer(self.meta, path, "linux", "amd64")
+        self.assertEqual(calls[0][:3], ["sudo", "-n", "dpkg"])
+        self.assertEqual(calls[-1][:4], ["sudo", "-n", "dpkg", "-r"])
+        self.assertNotIn("sudo", calls[1])
 
 
 if __name__ == "__main__":

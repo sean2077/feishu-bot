@@ -76,9 +76,16 @@ class PublishTests(unittest.TestCase):
         self.notes = self.root / "notes.md"
         self.notes.write_text("Release fixture notes.\n", encoding="utf-8")
         assets = []
-        for target in ("linux-amd64", "linux-arm64", "windows-amd64", "darwin-amd64", "darwin-arm64"):
-            name = f"feishu-bot-v1.2.3-{target}.{'zip' if target.startswith('windows') else 'tar.gz'}"
-            content = target.encode()
+        names = [
+            f"feishu-bot-v1.2.3-{target}.{'zip' if target.startswith('windows') else 'tar.gz'}"
+            for target in ("linux-amd64", "linux-arm64", "windows-amd64", "darwin-amd64", "darwin-arm64")
+        ] + [
+            "feishu-bot-v1.2.3-windows-amd64.msi",
+            "feishu-bot-v1.2.3-linux-amd64.deb",
+            "feishu-bot-v1.2.3-linux-arm64.deb",
+        ]
+        for name in names:
+            content = name.encode()
             (self.artifacts / name).write_bytes(content)
             assets.append({"name": name, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)})
         (self.artifacts / "release-manifest.json").write_text(
@@ -94,8 +101,13 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(url, "https://example.invalid/release")
         self.assertEqual(self.api.writes[0], "create")
         self.assertEqual(self.api.writes[-1], "publish")
-        self.assertEqual(len(self.api.files), 7)
+        self.assertEqual(len(self.api.files), 10)
         self.assertFalse(self.api.current["draft"])
+
+    def test_missing_installer_cannot_be_published_as_complete(self):
+        (self.artifacts / "feishu-bot-v1.2.3-windows-amd64.msi").unlink()
+        with self.assertRaisesRegex(publisher.PublishError, "Missing or unsafe local asset"):
+            publisher.payload(self.metadata, self.notes, self.artifacts)
 
     def test_interrupted_draft_resumes_without_replacing_existing_files(self):
         names = sorted(self.data["hashes"])
