@@ -208,11 +208,11 @@ func jsonLogger(out io.Writer, secrets []string) core.Logger {
 type serviceGateway interface {
 	Recover(context.Context) error
 	Message(context.Context, core.Message) error
-	Action(context.Context, core.CardAction) (string, error)
+	ActionResponse(context.Context, core.CardAction) (core.Args, error)
 	Close(context.Context) error
 }
 type serviceChannel interface {
-	Start(context.Context, func(context.Context, core.Message) error, func(context.Context, core.CardAction) (string, error)) error
+	Start(context.Context, func(context.Context, core.Message) error, func(context.Context, core.CardAction) (core.Args, error)) error
 	Close() error
 }
 type serviceFactory func(core.Config, *store.Store, core.Logger) (serviceGateway, serviceChannel, error)
@@ -299,7 +299,7 @@ func runService(parent context.Context, c core.Config, log core.Logger, makeServ
 		return nil
 	}
 	log("starting", core.Args{"runtime": "go", "groups": len(c.Groups), "dms": len(c.DMs), "maxWorkers": c.Runtime.MaxWorkers})
-	err = channel.Start(ctx, g.Message, g.Action)
+	err = channel.Start(ctx, g.Message, g.ActionResponse)
 	if parent.Err() != nil {
 		return nil
 	}

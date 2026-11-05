@@ -26,7 +26,7 @@ import (
 // This driver is an independent implementation of that documented protocol;
 // it has no SDK private-field access or copied upstream implementation.
 
-func (c *Client) Start(parent context.Context, onMessage func(context.Context, core.Message) error, onAction func(context.Context, core.CardAction) (string, error)) error {
+func (c *Client) Start(parent context.Context, onMessage func(context.Context, core.Message) error, onAction func(context.Context, core.CardAction) (core.Args, error)) error {
 	c.lifeMu.Lock()
 	if c.closed || c.started {
 		c.lifeMu.Unlock()
