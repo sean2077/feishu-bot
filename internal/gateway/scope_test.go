@@ -62,6 +62,23 @@ func response(t *testing.T, w *fakeWorker) core.Args {
 		return nil
 	}
 }
+
+// waitApprovalBinding waits until the exact delivered card is registered. The
+// transport records the card before the gateway installs the callback binding,
+// so a click issued from cardCount() alone can race registration.
+func waitApprovalBinding(t *testing.T, f *fixture, card sentCard, request string) {
+	t.Helper()
+	eventually(t, func() bool {
+		f.g.approvalMu.Lock()
+		defer f.g.approvalMu.Unlock()
+		p := f.g.approvals[request]
+		if p == nil {
+			return false
+		}
+		_, observed := p.cards[card.id]
+		return observed
+	})
+}
 func TestPermissionApprovalsBindExactCardRoomAndMaintainer(t *testing.T) {
 	f := newFixture(t, nil)
 	f.send(f.message("one", "work", "member"))
@@ -149,6 +166,8 @@ func TestQuestionSelectionsRemainPerActor(t *testing.T) {
 	w.emit(core.WorkerEvent{Type: "request", ID: "q", Kind: "question", Name: "AskUserQuestion", Input: core.Args{"questions": questions}})
 	eventually(t, func() bool { return f.tr.cardCount() == 1 })
 	card := f.tr.cardLast()
+	request := stringArg(cardValue(card.card, "A"), "request")
+	waitApprovalBinding(t, f, card, request)
 	click := func(actor, label string) string {
 		t.Helper()
 		value := cardValue(f.tr.latestCard(card.id), label)
@@ -198,7 +217,9 @@ func TestPrivateQuestionSelectionReturnsUpdatedCard(t *testing.T) {
 	w.emit(core.WorkerEvent{Type: "request", ID: "q", Kind: "question", Name: "AskUserQuestion", Input: core.Args{"questions": []any{core.Args{"question": "Pick", "options": []any{core.Args{"label": "A"}, core.Args{"label": "B"}}}}}})
 	eventually(t, func() bool { return f.tr.cardCount() == 1 })
 	card := f.tr.cardLast()
-	response, e := f.g.ActionResponse(context.Background(), core.CardAction{UserID: "member", ChatID: "dm-member", MessageID: card.id, Value: cardValue(card.card, "A")})
+	value := cardValue(card.card, "A")
+	waitApprovalBinding(t, f, card, stringArg(value, "request"))
+	response, e := f.g.ActionResponse(context.Background(), core.CardAction{UserID: "member", ChatID: "dm-member", MessageID: card.id, Value: value})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -225,7 +246,9 @@ func TestGroupQuestionSelectionReturnsNoCard(t *testing.T) {
 	w.emit(core.WorkerEvent{Type: "request", ID: "q", Kind: "question", Name: "AskUserQuestion", Input: core.Args{"questions": []any{core.Args{"question": "Pick", "options": []any{core.Args{"label": "A"}, core.Args{"label": "B"}}}}}})
 	eventually(t, func() bool { return f.tr.cardCount() == 1 })
 	card := f.tr.cardLast()
-	response, e := f.g.ActionResponse(context.Background(), core.CardAction{UserID: "member", ChatID: "group", MessageID: card.id, Value: cardValue(card.card, "A")})
+	value := cardValue(card.card, "A")
+	waitApprovalBinding(t, f, card, stringArg(value, "request"))
+	response, e := f.g.ActionResponse(context.Background(), core.CardAction{UserID: "member", ChatID: "group", MessageID: card.id, Value: value})
 	if e != nil {
 		t.Fatal(e)
 	}

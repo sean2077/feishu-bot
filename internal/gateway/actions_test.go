@@ -38,13 +38,15 @@ func TestActionApprovalExecutesTheApprovedFileSnapshot(t *testing.T) {
 	w.emit(core.WorkerEvent{Type: "request", ID: "publish-request", Kind: "action", Name: "publish", Input: core.Args{"file": "document.txt"}})
 	eventually(t, func() bool { return f.tr.cardCount() > 0 })
 	card := f.tr.cardLast()
+	approval := cardValue(card.card, "批准一次")
+	waitApprovalBinding(t, f, card, stringArg(approval, "request"))
 	if !strings.Contains(jsonText(card.card), "SHA256") {
 		t.Fatal("approval missing content digest")
 	}
 	if e := os.WriteFile(path, []byte("changed after approval prompt"), 0600); e != nil {
 		t.Fatal(e)
 	}
-	_, e := f.g.Action(context.Background(), core.CardAction{UserID: "owner", ChatID: "group", MessageID: card.id, Value: cardValue(card.card, "批准一次")})
+	_, e := f.g.Action(context.Background(), core.CardAction{UserID: "owner", ChatID: "group", MessageID: card.id, Value: approval})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -132,10 +134,12 @@ func TestApprovalPersistenceFailureDeniesAndReleasesWaiter(t *testing.T) {
 	w.emit(core.WorkerEvent{Type: "request", ID: "request", Kind: "permission", Name: "Bash", Input: core.Args{}})
 	eventually(t, func() bool { return f.tr.cardCount() > 0 })
 	card := f.tr.cardLast()
+	approval := cardValue(card.card, "批准一次")
+	waitApprovalBinding(t, f, card, stringArg(approval, "request"))
 	if _, e := f.s.DB.Exec("CREATE TRIGGER approval_storage_failure BEFORE UPDATE ON requests BEGIN SELECT RAISE(ABORT,'injected write failure'); END"); e != nil {
 		t.Fatal(e)
 	}
-	_, e := f.g.Action(context.Background(), core.CardAction{UserID: "owner", ChatID: "group", MessageID: card.id, Value: cardValue(card.card, "批准一次")})
+	_, e := f.g.Action(context.Background(), core.CardAction{UserID: "owner", ChatID: "group", MessageID: card.id, Value: approval})
 	if e != nil {
 		t.Fatal(e)
 	}
