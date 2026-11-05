@@ -87,8 +87,8 @@ func TestBuiltArtifactIdentityInitAndDiagnosticJourney(t *testing.T) {
 	if err!=nil || json.Unmarshal(data,&report)!=nil || report.Verification["model"]!="passed" || modelCalls.Load()!=1 || report.Verification["modelStreaming"]!="not_checked" {
 		t.Fatalf("artifact local-provider diagnostic contract: err=%v report=%s",err,data)
 	}
-	if runtime.GOOS=="windows" {
-		t.Log("Artifact init/local/native identity/mock-model passed; fake-CA Feishu probe is Unix-only because Go uses the Windows certificate store.")
+	if runtime.GOOS!="linux" {
+		t.Log("Artifact init/local/native identity/mock-model passed; fake-CA Feishu probe is Linux-only because Windows/macOS use the operating-system certificate store.")
 		return
 	}
 	proxy,certificate,calls:=artifactFeishuProxy(t)
@@ -104,7 +104,7 @@ func TestBuiltArtifactIdentityInitAndDiagnosticJourney(t *testing.T) {
 	}
 }
 
-func artifactFeishuProxy(t *testing.T)(*httptest.Server,[]byte,*atomic.Int32){
+func artifactFeishuProxy(t *testing.T, custom ...http.Handler)(*httptest.Server,[]byte,*atomic.Int32){
 	t.Helper()
 	key,err:=rsa.GenerateKey(rand.Reader,2048);if err!=nil{t.Fatal(err)}
 	template:=&x509.Certificate{SerialNumber:big.NewInt(1),Subject:pkix.Name{CommonName:"local Feishu fixture"},DNSNames:[]string{"open.feishu.cn"},NotBefore:time.Now().Add(-time.Hour),NotAfter:time.Now().Add(time.Hour),KeyUsage:x509.KeyUsageDigitalSignature|x509.KeyUsageCertSign,ExtKeyUsage:[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},IsCA:true,BasicConstraintsValid:true}
@@ -112,7 +112,7 @@ func artifactFeishuProxy(t *testing.T)(*httptest.Server,[]byte,*atomic.Int32){
 	cert:=pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:der})
 	pair,err:=tls.X509KeyPair(cert,pem.EncodeToMemory(&pem.Block{Type:"RSA PRIVATE KEY",Bytes:x509.MarshalPKCS1PrivateKey(key)}));if err!=nil{t.Fatal(err)}
 	var calls atomic.Int32
-	server:=httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+	handler:=http.Handler(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
 		w.Header().Set("Content-Type","application/json")
 		switch r.URL.Path {
 		case "/open-apis/auth/v3/tenant_access_token/internal":
@@ -123,6 +123,8 @@ func artifactFeishuProxy(t *testing.T)(*httptest.Server,[]byte,*atomic.Int32){
 		default:http.Error(w,"fixture endpoint only",404)
 		}
 	}))
+	if len(custom)>0 { handler=custom[0] }
+	server:=httptest.NewUnstartedServer(handler)
 	server.TLS=&tls.Config{Certificates:[]tls.Certificate{pair},MinVersion:tls.VersionTLS12}
 	server.StartTLS();t.Cleanup(server.Close)
 	proxy:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){

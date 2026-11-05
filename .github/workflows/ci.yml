@@ -76,21 +76,50 @@ jobs:
       - name: Verify the actual built artifact against local providers
         shell: bash
         run: go test -race -count=1 -timeout 180s ./internal/cli -run '^TestBuiltArtifact'
-      - name: Record rendering allocation observations
+      - name: Record advisory Go formatting patch
         if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
         shell: bash
-        run: go test ./internal/gateway -run '^$' -bench 'BenchmarkRender|BenchmarkReplyCard' -benchmem -benchtime=1x
-      - name: Record native resource scenarios
-        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
-        shell: bash
-        run: |
-          go build -trimpath -o ./bin/benchmark-native ./cmd/benchmark-native
-          ./bin/benchmark-native --samples 1 --warm-turns 0 --idle-ms 100 --scenario matrix > native-resource-observations.json
-      - name: Retain resource observations
+        run: gofmt -d $(git ls-files '*.go') > gofmt.patch
+      - name: Retain advisory Go formatting patch
         if: always() && matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: native-resource-observations
+          name: gofmt-patch
+          path: gofmt.patch
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Record rendering allocation observations
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
+        shell: bash
+        run: go test ./internal/gateway -run '^$' -bench 'BenchmarkRender|BenchmarkReplyCard' -benchmem -benchtime=3x -count=3
+      - name: Record native resource scenarios
+        if: (matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest') && matrix.go == '1.27.x'
+        shell: bash
+        run: |
+          benchmark=./bin/benchmark-native
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            benchmark+=.exe
+          fi
+          go build -trimpath -o "$benchmark" ./cmd/benchmark-native
+          "$benchmark" --samples 1 --warm-turns 0 --idle-ms 100 --scenario matrix > native-resource-observations.json
+      - name: Print resource observation summary
+        if: always() && (matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest') && matrix.go == '1.27.x'
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          path = Path('native-resource-observations.json')
+          if path.exists() and path.stat().st_size:
+              report = json.loads(path.read_text(encoding='utf-8'))
+              print(json.dumps({'environment': report['environment'], 'native': report['native'], 'summary': report['summary']}, ensure_ascii=False))
+              for sample in report['samples']:
+                  memory = sample['idleMemory']
+                  print(json.dumps({'scenario': sample['scenario'], 'status': sample['status'], 'workers': sample['workersStarted'], 'sessionStable': sample['sessionStable'], 'memoryStatus': memory['status'], 'hostResidentBytes': memory['hostBytes'], 'nativeResidentBytes': memory['nativeResidentBytes'], 'toolOrMcpResidentBytes': memory['toolOrMcpResidentBytes'], 'hostPrivateBytes': memory['hostPrivateBytes'], 'descendantPrivateBytes': memory['descendantPrivateBytes'], 'transport': sample['transport'], 'goAllocatedBytes': sample['goAllocatedBytes'], 'memorySampling': sample['memorySampling']}, ensure_ascii=False))
+      - name: Retain resource observations
+        if: always() && (matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest') && matrix.go == '1.27.x'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-resource-observations-${{ runner.os }}-${{ runner.arch }}
           path: native-resource-observations.json
           if-no-files-found: warn
           retention-days: 7

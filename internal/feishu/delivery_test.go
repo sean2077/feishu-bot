@@ -3,6 +3,7 @@ package feishu
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -226,4 +227,82 @@ func TestConcurrentLogicalSendCommitsOneMessage(t *testing.T) {
 	wg.Wait()
 	mu.Lock(); defer mu.Unlock()
 	if calls != 1 { t.Fatalf("logical send emitted %d messages", calls) }
+}
+
+func TestPermissionFallbackKeepsInlinePayloadDuringExplicitRecovery(t *testing.T) {
+	db := fixtureDB(t)
+	creates := 0
+	var bodies []string
+	c, _ := fixtureClient(t, db, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "cardkit") {
+			creates++
+			if creates == 1 { jsonResponse(w, 403, core.Args{"code": 99991672}); return }
+			apiResponse(w, core.Args{"card_id": "card_new_permission"})
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(raw))
+		if len(bodies) == 1 { jsonResponse(w, 503, core.Args{"code": 1}); return }
+		apiResponse(w, core.Args{"message_id": "om_inline_recovered"})
+	})
+	ctx := core.WithDeliveryID(context.Background(), "outbox:inline-fallback")
+	room := fixtureRoom(t, c)
+	card := replyFixture("frozen", false)
+	if _, err := c.Card(ctx, room, card, "", ""); err == nil { t.Fatal("unknown inline outcome was accepted") }
+	id, err := c.Card(core.WithExplicitRetry(ctx), room, card, "", "")
+	if err != nil || id != "om_inline_recovered" || creates != 1 || len(bodies) != 2 || bodies[0] != bodies[1] {
+		t.Fatalf("permission change replaced the logical message: id=%q err=%v creates=%d bodies=%v", id, err, creates, bodies)
+	}
+}
+
+func TestUnknownCardCreationCannotAutomaticallyCreateAnotherEntity(t *testing.T) {
+	db := fixtureDB(t)
+	creates := 0
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		creates++
+		jsonResponse(w, 503, core.Args{"code": 1})
+	}
+	c, _ := fixtureClient(t, db, handler)
+	ctx := core.WithDeliveryID(context.Background(), "render:unknown-card-create")
+	room := fixtureRoom(t, c)
+	if _, err := c.Card(ctx, room, replyFixture("same", false), "", ""); err == nil { t.Fatal("unknown create was accepted") }
+	c2, _ := fixtureClient(t, db, handler)
+	if _, err := c2.Card(ctx, room, replyFixture("same", false), "", ""); err == nil || creates != 1 {
+		t.Fatalf("restart recreated a CardKit entity: %v creates=%d", err, creates)
+	}
+}
+
+func TestTransientAuthenticationRetriesBeforeExactlyOneVisibleMessage(t *testing.T) {
+	for _, tc := range []struct { name string; status, code int; retry bool }{
+		{"rate-limit", 429, 99991400, true},
+		{"server-failure", 503, 1, true},
+		{"invalid-credential", 401, 99991661, false},
+		{"monthly-quota", 429, 99991403, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			messages, authentications := 0, 0
+			c, _ := fixtureClient(t, nil, func(w http.ResponseWriter, r *http.Request) {
+				messages++
+				apiResponse(w, core.Args{"message_id": "om_after_auth"})
+			})
+			base := c.http.Transport
+			if base == nil { base = http.DefaultTransport }
+			c.http.Transport = deliveryRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if strings.Contains(r.URL.Path, "/auth/") {
+					authentications++
+					if authentications == 1 {
+						return &http.Response{StatusCode: tc.status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(fmt.Sprintf(`{"code":%d}`, tc.code))), Request: r}, nil
+					}
+				}
+				return base.RoundTrip(r)
+			})
+			id, err := c.Send(context.Background(), fixtureRoom(t, c), "after auth", "", "")
+			if tc.retry {
+				if err != nil || id != "om_after_auth" || authentications != 2 || messages != 1 { t.Fatalf("auth retry: id=%q err=%v auth=%d messages=%d", id, err, authentications, messages) }
+			} else {
+				var failure core.DeliveryFailure
+				if !errors.As(err, &failure) || failure.DeliveryRetryable() || failure.DeliveryUncertain() || authentications != 1 || messages != 0 { t.Fatalf("permanent auth failure retried: err=%v auth=%d messages=%d", err, authentications, messages) }
+			}
+		})
+	}
 }

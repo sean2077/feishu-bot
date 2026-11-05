@@ -274,6 +274,7 @@ func streamExpired(err error) bool {
 func disableStreaming(card core.Args) {
 	if config, ok := object(card["config"]); ok {
 		config["streaming_mode"] = false
+		delete(config, "streaming_config")
 	}
 }
 

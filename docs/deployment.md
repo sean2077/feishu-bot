@@ -130,11 +130,17 @@ Windows 登录启动不是 Windows SCM 服务：未登录不运行，且以当�
 
 数据目录检查使用独立临时 SQLite 文件，结束后删除，不打开现有 `gateway.sqlite`，也不留下固定 `doctor.sqlite`。目录不可写或配置的资料目录不存在时仍输出其余检查项；先处理报告中的失败项，再启动。
 
+`doctor` 的 `native` 字段报告实际版本、固定已测版本与 `tested`／`untested` 状态；未知版本不被伪装成已验证，也不单凭版本不同阻止启动。`storage` 仅读取数据库、WAL、SHM 和导出目录文件元数据，不打开生产 SQLite 或执行 checkpoint。
+
+显式 `doctor --verify-chat <已配置群ID>` 或 `doctor --verify-chat dm:<已配置用户ID>` 验证入站、卡片、回调与小文件。先停止同一数据目录的服务，按随机挑战在获准聊天发消息；只在当前配置内执行，不添加成员或启动模型。命令超时后旧按钮失效。详见[首次连接](first-connection.md)。
+
 只有显式 `doctor --probe` 才发送一个可能计费的模型请求。未完成配置时跳过请求；HTTP 200 的登录页或非 Messages JSON 不算通过。诊断不打印模型回复或凭据。
 
 ## 模型、网络和时区
 
 `model.baseUrl` 使用 Claude Code 可调用的 Anthropic Messages 兼容地址，`model`／`smallModel` 填实际模型 ID。可直连服务商或兼容网关；不做协议转换，不保证任意兼容模型都具备同样工具与多模态能力。
+
+可选 `model.effort` 指定原生默认 effort；`modelProfiles` 是管理员定义的命名模型配置，只允许 `model`、`smallModel`、`effort`，不能覆盖端点、凭据或工具权限。聊天内 `/model` 查看并选择，`/profile` 同义；选择按会话保存，等待安全轮次边界后生效并保持原生 ID。未配置时仍使用原有默认模型。effort 支持由原生 CLI／模型服务决定，不用额外提示词模拟推理控制。[配置与行为](usage.md)
 
 地址支持路径前缀，末尾 `/v1` 去重。默认 HTTPS；`allowHttp` 仅用于明确选择的本地测试。`extraHeaders` 可引用 `env:VARIABLE_NAME`，缺失引用和头注入在运行前拒绝。
 

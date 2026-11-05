@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/sean2077/feishu-bot/internal/core"
 	"strings"
+	"unicode"
 )
 
 var phases = map[string]string{"not_started": "尚未启动", "suspended": "已暂停运行，保留会话", "starting": "正在启动原生会话", "stopping": "正在停止，等待退出确认", "termination_unconfirmed": "停止未确认，需要维护者检查", "compacting": "正在整理原生上下文", "awaiting_answer": "等待审批或回答", "working": "处理中", "delivery_pending": "有输出尚未完整送达", "queued": "输入已保存，等待运行", "background": "原生后台工作或监控中", "connected_unknown": "已连接，后台状态尚未确认", "idle": "空闲，可继续对话"}
@@ -42,6 +43,22 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 	rows.Close()
 	var outputs int64
 	if e = g.store.DB.QueryRow("SELECT count(*) FROM outbox WHERE room=? AND state NOT IN ('done','cancelled')", r.Key).Scan(&outputs); e != nil {
+		return nil, e
+	}
+	outboxStates := core.Args{}
+	rows, e = g.store.DB.Query("SELECT state,count(*) FROM outbox WHERE room=? GROUP BY state", r.Key)
+	if e != nil { return nil, e }
+	for rows.Next() {
+		var state string
+		var count int64
+		if e = rows.Scan(&state, &count); e != nil { rows.Close(); return nil, e }
+		outboxStates[state] = count
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil { return nil, e }
+	var snapshotCount, snapshotBytes int64
+	if e = g.store.DB.QueryRow("SELECT count(*),coalesce(sum(length(CAST(snapshot AS BLOB))),0) FROM feishu_cards WHERE room=?", r.Key).Scan(&snapshotCount, &snapshotBytes); e != nil {
 		return nil, e
 	}
 	state := "not_started"
@@ -98,6 +115,8 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 		phase = "queued"
 	}
 	view := core.Args{"project": r.ProjectID, "state": state, "phase": phase, "background": background, "monitorPinned": pinned, "pendingOrUnconfirmed": total, "inputs": inputs, "approvals": approvals, "pendingOutputs": outputs}
+	view["outboxStates"] = outboxStates
+	view["cardSnapshots"] = core.Args{"count": snapshotCount, "bytes": snapshotBytes}
 	if saved != nil {
 		view["session"] = saved.ID
 		p, err := g.store.Preferences(r.Key, saved.ID)
@@ -247,7 +266,9 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 		}
 		return strings.Join(lines, "\n"), true, nil
 	}
-	rows, e := g.store.DB.Query("SELECT id,state,file_state,delivery_error,kind FROM outbox WHERE room=? AND state NOT IN ('done','cancelled') ORDER BY at DESC,id DESC LIMIT 20", r.Key)
+	rows, e := g.store.DB.Query(`SELECT o.id,o.state,o.file_state,o.delivery_error,o.kind,o.retry_count,o.retry_after,
+		EXISTS(SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session AND f.kind='file' AND f.state NOT IN ('done','cancelled'))
+		FROM outbox o WHERE o.room=? AND o.state NOT IN ('done','cancelled') ORDER BY o.at DESC,o.id DESC LIMIT 20`, r.Key)
 	if e != nil {
 		return "", true, e
 	}
@@ -255,7 +276,10 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 	for rows.Next() {
 		var id, state, fileState, kind string
 		var detail sql.NullString
-		if e = rows.Scan(&id, &state, &fileState, &detail, &kind); e != nil {
+		var retryCount int
+		var retryAfter int64
+		var pendingFiles bool
+		if e = rows.Scan(&id, &state, &fileState, &detail, &kind, &retryCount, &retryAfter, &pendingFiles); e != nil {
 			rows.Close()
 			return "", true, e
 		}
@@ -263,9 +287,21 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 		if kind == "file" || fileState != "none" && fileState != "done" {
 			stage = "file"
 		}
-		item := core.Args{"id": id, "state": state, "stage": stage, "uncertain": state == "uncertain" || fileState == "uncertain"}
+		filePending := kind == "reply" && (pendingFiles || fileState != "none" && fileState != "done")
+		reason := "pending"
+		switch {
+		case state == "uncertain" || fileState == "uncertain": reason = "uncertain"
+		case strings.Contains(detail.String, "Automatic retry budget exhausted"): reason = "retry_budget"
+		case state == "blocked": reason = "rejected"
+		case strings.Contains(detail.String, "HTTP 429") || strings.Contains(detail.String, "code 99991400"): reason = "rate_limited"
+		case filePending: reason = "file_pending"
+		}
+		item := core.Args{"id": id, "state": state, "stage": stage, "reason": reason, "retryCount": retryCount, "retryAfter": retryAfter, "nativeTurnEnded": kind == "reply", "filePending": filePending, "uncertain": state == "uncertain" || fileState == "uncertain"}
 		if detail.Valid && detail.String != "" {
 			item["detail"] = "交付尚未完成，请查看服务诊断。"
+			if manage {
+				item["detail"] = cut(strings.Map(func(r rune) rune { if unicode.IsControl(r) { return ' ' }; return r }, core.Redact(detail.String, g.secrets)), 600)
+			}
 		}
 		items = append(items, item)
 	}
@@ -284,6 +320,14 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 		}
 		state := map[string]string{"pending": "等待交付", "uncertain": "结果未知", "blocked": "自动重试已暂停", "sending": "正在发送", "preparing": "正在准备"}[stringArg(item, "state")]
 		lines = append(lines, "", stage+" · "+state+"\n`"+stringArg(item, "id")+"`")
+		reasons := map[string]string{"rejected": "已确认拒绝；请先修复权限、参数或服务配置。", "retry_budget": "已达到自动重试预算；请处理原因后明确补发。", "rate_limited": "服务限流；自动重试遵守服务返回的等待时间。", "file_pending": "模型本轮已结束，完整文件仍待送达；尚未标记 Done。"}
+		if reason := reasons[stringArg(item, "reason")]; reason != "" { lines = append(lines, reason) }
+		if boolArg(item, "filePending") && stringArg(item, "reason") != "file_pending" { lines = append(lines, "模型本轮已结束，文件仍待交付；尚未标记 Done。") }
+		if manage {
+			lines = append(lines, fmt.Sprintf("交付失败次数：%v", item["retryCount"]))
+			if at, ok := item["retryAfter"].(int64); ok && at > 0 && stringArg(item, "state") == "pending" { lines = append(lines, "最早自动重试："+timeLabel(at)) }
+			if detail := stringArg(item, "detail"); detail != "" { lines = append(lines, "诊断："+detail) }
+		}
 		if boolArg(item, "uncertain") {
 			lines = append(lines, "先核实是否已经收到；明确补发可能重复，不会自动重放未知写入。")
 		}
@@ -299,6 +343,9 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 }
 func (g *Gateway) command(ctx context.Context, r core.Room, m core.Message) error {
 	cmd, arg := splitCommand(m.Text)
+	if cmd == "/sessions" && arg == "" {
+		return g.sessionsReply(ctx, r, m)
+	}
 	if cmd == "/model" || cmd == "/profile" {
 		return g.modelCommand(r, m, arg)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -165,4 +166,70 @@ func TestRenderReplacementsAndCrossDeltaRedaction(t *testing.T) {
 	defer r.mu.Unlock()
 	if r.timer != nil { r.timer.Stop() }
 	if r.answerLocked() != "替换🧑‍💻新增" || r.totalChars != utf8.RuneCountInString("替换🧑‍💻新增") { t.Fatal("replacement duplicated old block or character count") }
+}
+
+func TestPendingIndependentFileDoesNotMarkReplyTerminal(t *testing.T) {
+	f := newFixture(t, nil)
+	s, err := f.s.Session(f.room().Key)
+	if err != nil { t.Fatal(err) }
+	file, err := f.g.saveOutput(f.s.DB, f.room(), s.ID, "", true, "", "", "", nil, nil, "attachment.txt", filepath.Join(f.c.DataDir,"exports","pending"), "file", "pending")
+	if err != nil { t.Fatal(err) }
+	id, err := f.g.saveOutput(f.s.DB, f.room(), s.ID, "answer", true, "", "", "", replyCard("回复","answer",nil,0,true,replyDetails{},time.Second,true), nil, "", "", "reply", "pending")
+	if err != nil { t.Fatal(err) }
+	var terminal atomic.Bool
+	f.tr.updateHook = func(ctx context.Context, _ string, _ core.Args) error { if core.IsTerminalCard(ctx) { terminal.Store(true) }; return nil }
+	if ok, err := f.g.deliverOutput(context.Background(), id, f.room(), false); ok || err != nil { t.Fatal("reply completed before independent file",ok,err) }
+	if terminal.Load() { t.Fatal("waiting card marked terminal") }
+	if _, err := f.s.DB.Exec("UPDATE outbox SET state='done',file_state='done',file_target='file-confirmed' WHERE id=?",file);err!=nil { t.Fatal(err) }
+	if ok, err := f.g.deliverOutput(context.Background(), id, f.room(), false); !ok || err != nil { t.Fatal(ok,err) }
+	if !terminal.Load() { t.Fatal("confirmed final card not terminal") }
+}
+
+func TestFailedFileNoticeKeepsWorkingOutputRetryControls(t *testing.T) {
+	f := newFixture(t, nil)
+	s, err := f.s.Session(f.room().Key)
+	if err != nil { t.Fatal(err) }
+	f.tr.fileHook = func(context.Context,string)(string,error) { return "", classifiedFailure{uncertain:true} }
+	path := filepath.Join(f.c.DataDir,"exports",core.Hash(f.room().Key)[:32],"reply.md")
+	card := replyCard("回复","answer",nil,0,true,replyDetails{},time.Second,true)
+	id, err := f.g.saveOutput(f.s.DB,f.room(),s.ID,"answer",true,"","","",card,nil,"reply.md",path,"reply","pending")
+	if err != nil { t.Fatal(err) }
+	if ok, err := f.g.deliverOutput(context.Background(),id,f.room(),false); ok || err==nil { t.Fatal("unknown file marked done") }
+	f.tr.mu.Lock()
+	last := f.tr.updates[len(f.tr.updates)-1]
+	f.tr.mu.Unlock()
+	value := testQuickValue(t,f.g,last.card,"retry")
+	p, ok := f.g.readQuick(stringArg(value,"quick_control"))
+	action := core.CardAction{ChatID:f.room().ChatID,MessageID:last.id,UserID:"owner",Value:value}
+	if !ok || p.Output!=id || !f.g.quickBound(action,p) { t.Fatal("visible retry control lost output binding") }
+	f.tr.mu.Lock();f.tr.fileHook=nil;f.tr.mu.Unlock()
+	if _, err := f.g.Action(context.Background(),action);err!=nil { t.Fatal(err) }
+	eventually(t,func()bool { o,e:=f.g.output(id);return e==nil && o.State=="done" })
+}
+
+func TestFinalBeforeReservedPreviewFlushKeepsOriginalCreate(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("race", "hello", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	s := f.g.getSlot(f.room().Key)
+	r := newRender(f.g,s,&d)
+	r.flushing=true
+	r.done=make(chan struct{})
+	var sentKey, sentSnapshot string
+	f.tr.cardHook=func(ctx context.Context,_ core.Room,card core.Args)(string,error){ sentKey=core.DeliveryID(ctx);sentSnapshot=jsonText(card);return "",classifiedFailure{uncertain:true} }
+	drain,err:=r.persist("final answer",true,origin(d.Message),"",nil)
+	if err!=nil {t.Fatal(err)}
+	if r.initialCard==nil {t.Fatal("reserved initial create not frozen by final persistence")}
+	r.flush()
+	drain()
+	o,err:=f.g.output(r.finalID)
+	if err!=nil || o.State!="uncertain" || o.DeliveryKey!=sentKey || jsonText(o.InitialCard)!=sentSnapshot { t.Fatalf("lost original create identity: %s %s %v",o.State,o.DeliveryKey,err) }
+	f.tr.mu.Lock(); f.tr.cardHook=func(ctx context.Context,_ core.Room,card core.Args)(string,error){
+		if core.DeliveryID(ctx)!=sentKey || jsonText(card)!=sentSnapshot {t.Error("explicit recovery changed original create")}
+		return "original-message",nil
+	}; f.tr.mu.Unlock()
+	if ok,err:=f.g.deliverOutput(context.Background(),o.ID,f.room(),true);!ok||err!=nil {t.Fatal(ok,err)}
+	f.tr.mu.Lock();defer f.tr.mu.Unlock()
+	if !strings.Contains(jsonText(f.tr.updates[len(f.tr.updates)-1].card),"final answer") {t.Fatal("final snapshot not applied to recovered message")}
 }

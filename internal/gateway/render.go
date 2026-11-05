@@ -116,7 +116,7 @@ func (r *render) update(text string, partial bool, kind, key string) {
 		if partial {
 			text = old + text
 		}
-		r.thinking[key] = cut(text, 180)
+		r.thinking[key] = strings.Clone(cut(text, 180))
 		for len(r.thinkingOrder) > 10 {
 			delete(r.thinking, r.thinkingOrder[0])
 			r.thinkingOrder = r.thinkingOrder[1:]
@@ -315,6 +315,12 @@ func (r *render) persist(text string, success bool, who []core.Origin, title str
 	if truncated {
 		name = "reply.md"
 		path = filepath.Join(r.g.config.DataDir, "exports", core.Hash(r.room.Key)[:32], core.NewID()+".md")
+	}
+	// A timer can reserve the in-flight slot before its task obtains this
+	// mutex. Freeze its create here too, so the durable final output cannot
+	// lose that preview's delivery key or immutable payload in the race.
+	if r.flushing && r.messageID == "" && r.initialCard == nil {
+		r.initialCard = r.cardLocked(r.status, r.answerLocked(), false, false)
 	}
 	state := "pending"
 	if r.flushing {

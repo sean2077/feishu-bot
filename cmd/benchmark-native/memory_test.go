@@ -21,3 +21,12 @@ func TestIncompleteDescendantMemoryIsUnavailable(t *testing.T) {
 	rows:=[]processMemory{{pid:1,ppid:0,rss:100},{pid:2,ppid:1,rss:-1}}
 	if _,_,_,err:=memoryFromRows(rows,1);err==nil { t.Fatal("unobservable descendant reported as zero") }
 }
+
+func TestSampledPeakKeepsOneObservedTreeAndMissingValues(t *testing.T) {
+	host1,desc1,host2,desc2:=int64(100),int64(40),int64(90),int64(80)
+	s:=memorySamples{Peak:memory{Status:"unavailable"}}
+	s.observe(memory{Status:"observed",Host:&host1,Descendants:&desc1,Collection:2})
+	s.observe(memory{Status:"unavailable",Collection:3})
+	s.observe(memory{Status:"observed",Host:&host2,Descendants:&desc2,Collection:4})
+	if s.Observed!=2 || s.Unavailable!=1 || s.CollectionMS!=9 || s.Peak.Host==nil || *s.Peak.Host!=90 || *s.Peak.Descendants!=80 { t.Fatal("mixed maxima from different snapshots or hid missing samples",s) }
+}

@@ -84,26 +84,33 @@ func (c *Client) Retain(ctx context.Context, before time.Time, protected []strin
 	for _, ref := range protected { if ref != "" { keep[ref] = true } }
 	columns, err := c.outboxColumns(ctx)
 	if err != nil { return 0, errors.New("feishu: outbox references are unavailable") }
-	rows, err := c.db.QueryContext(ctx, `SELECT c.message FROM feishu_cards c JOIN feishu_card_lifecycle l ON l.message=c.message
-		WHERE l.terminal_at>0 AND l.terminal_at<? AND l.updated_at<? ORDER BY l.terminal_at,c.message LIMIT 100`, before.UnixMilli(), before.UnixMilli())
-	if err != nil { return 0, errors.New("feishu: card retention query failed") }
-	var messages []string
-	for rows.Next() {
-		var message string
-		if err = rows.Scan(&message); err != nil { rows.Close(); return 0, err }
-		messages = append(messages, message)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil { return 0, err }
 	var removed int64
-	for _, message := range messages {
-		if keep[message] { continue }
-		cardUnlock := c.locks.lock("card:"+message)
-		n, e := c.pruneCard(ctx, message, before, keep, columns)
-		cardUnlock()
-		removed += n
+	lastAt, lastMessage := int64(0), ""
+	for removed < 100 {
+		rows, e := c.db.QueryContext(ctx, `SELECT c.message,l.terminal_at FROM feishu_cards c JOIN feishu_card_lifecycle l ON l.message=c.message
+			WHERE l.terminal_at>0 AND l.terminal_at<? AND l.updated_at<? AND (l.terminal_at>? OR (l.terminal_at=? AND c.message>?))
+			ORDER BY l.terminal_at,c.message LIMIT 100`, before.UnixMilli(), before.UnixMilli(), lastAt, lastAt, lastMessage)
+		if e != nil { return removed, errors.New("feishu: card retention query failed") }
+		type candidate struct { message string; at int64 }
+		var messages []candidate
+		for rows.Next() {
+			var value candidate
+			if e = rows.Scan(&value.message, &value.at); e != nil { rows.Close(); return removed, e }
+			messages = append(messages, value)
+		}
+		e = rows.Err(); rows.Close()
 		if e != nil { return removed, e }
+		if len(messages) == 0 { break }
+		for _, value := range messages {
+			lastAt, lastMessage = value.at, value.message
+			if keep[value.message] { continue }
+			cardUnlock := c.locks.lock("card:"+value.message)
+			n, e := c.pruneCard(ctx, value.message, before, keep, columns)
+			cardUnlock()
+			removed += n
+			if e != nil { return removed, e }
+			if removed >= 100 { break }
+		}
 	}
 	if err = c.pruneDeliveries(ctx, before, keep, columns); err != nil { return removed, err }
 	return removed, nil
@@ -128,35 +135,50 @@ func (c *Client) pruneCard(ctx context.Context, message string, before time.Time
 	n, err := result.RowsAffected()
 	if err != nil || n == 0 { return 0, err }
 	if _, err = tx.ExecContext(ctx, "DELETE FROM feishu_card_lifecycle WHERE message=?", message); err != nil { return 0, err }
+	// Delete the confirmed creation receipts with their terminal mapping. A
+	// later startup must not interpret intentional retention as a crash between
+	// acknowledgement and mapping persistence and reconstruct historical cards.
+	for _, id := range ids {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM feishu_deliveries WHERE id=?", id); err != nil { return 0, err }
+	}
 	if err = tx.Commit(); err != nil { return 0, err }
 	return n, nil
 }
 
 func (c *Client) pruneDeliveries(ctx context.Context, before time.Time, keep map[string]bool, columns outboxColumns) error {
-	rows, err := c.db.QueryContext(ctx, `SELECT id FROM feishu_deliveries GROUP BY id HAVING MAX(updated_at)<?
-		AND SUM(CASE WHEN state NOT IN ('confirmed','rejected') THEN 1 ELSE 0 END)=0 ORDER BY MAX(updated_at),id LIMIT 100`, before.UnixMilli())
-	if err != nil { return err }
-	var ids []string
-	for rows.Next() { var id string; if err = rows.Scan(&id); err != nil { rows.Close(); return err }; ids = append(ids, id) }
-	err = rows.Err(); rows.Close()
-	if err != nil { return err }
-	for _, id := range ids {
-		if keep[id] { continue }
-		// Lock every supported step before opening a transaction, in one stable
-		// order. Never hold SQLite while waiting for an in-flight network call.
-		createUnlock := c.locks.lock("delivery:"+id+":card-create")
-		uploadUnlock := c.locks.lock("delivery:"+id+":file-upload")
-		messageUnlock := c.locks.lock("delivery:"+id+":message")
-		err = c.pruneDelivery(ctx, id, before, keep, columns)
-		messageUnlock(); uploadUnlock(); createUnlock()
+	lastAt, lastID, removed := int64(0), "", 0
+	for removed < 100 {
+		rows, err := c.db.QueryContext(ctx, `SELECT id,MAX(updated_at) FROM feishu_deliveries GROUP BY id HAVING MAX(updated_at)<?
+			AND SUM(CASE WHEN state NOT IN ('confirmed','rejected') THEN 1 ELSE 0 END)=0
+			AND (MAX(updated_at)>? OR (MAX(updated_at)=? AND id>?)) ORDER BY MAX(updated_at),id LIMIT 100`, before.UnixMilli(), lastAt, lastAt, lastID)
 		if err != nil { return err }
+		type candidate struct { id string; at int64 }
+		var ids []candidate
+		for rows.Next() { var value candidate; if err = rows.Scan(&value.id, &value.at); err != nil { rows.Close(); return err }; ids = append(ids, value) }
+		err = rows.Err(); rows.Close()
+		if err != nil { return err }
+		if len(ids) == 0 { break }
+		for _, value := range ids {
+			lastAt, lastID = value.at, value.id
+			if keep[value.id] { continue }
+			// Lock every supported step before opening a transaction, in one stable
+			// order. Never hold SQLite while waiting for an in-flight network call.
+			createUnlock := c.locks.lock("delivery:"+value.id+":card-create")
+			uploadUnlock := c.locks.lock("delivery:"+value.id+":file-upload")
+			messageUnlock := c.locks.lock("delivery:"+value.id+":message")
+			pruned, err := c.pruneDelivery(ctx, value.id, before, keep, columns)
+			messageUnlock(); uploadUnlock(); createUnlock()
+			if err != nil { return err }
+			if pruned { removed++ }
+			if removed >= 100 { break }
+		}
 	}
 	return nil
 }
 
-func (c *Client) pruneDelivery(ctx context.Context, id string, before time.Time, keep map[string]bool, columns outboxColumns) error {
+func (c *Client) pruneDelivery(ctx context.Context, id string, before time.Time, keep map[string]bool, columns outboxColumns) (bool, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil { return err }
+	if err != nil { return false, err }
 	defer tx.Rollback()
 	var message string
 	var unresolved, recent, cardExists int
@@ -165,12 +187,13 @@ func (c *Client) pruneDelivery(ctx context.Context, id string, before time.Time,
 		COALESCE(SUM(CASE WHEN updated_at>=? THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN EXISTS(SELECT 1 FROM feishu_cards c WHERE c.message=feishu_deliveries.message) THEN 1 ELSE 0 END),0)
 		FROM feishu_deliveries WHERE id=?`, before.UnixMilli(), id).Scan(&message, &unresolved, &recent, &cardExists)
-	if err != nil { return err }
-	if keep[message] || unresolved > 0 || recent > 0 || cardExists > 0 { return nil }
+	if err != nil { return false, err }
+	if keep[message] || unresolved > 0 || recent > 0 || cardExists > 0 { return false, nil }
 	protected, err := outboxProtects(ctx, tx, columns, message, []string{id})
-	if err != nil || protected { return err }
-	if _, err = tx.ExecContext(ctx, "DELETE FROM feishu_deliveries WHERE id=?", id); err != nil { return err }
-	return tx.Commit()
+	if err != nil || protected { return false, err }
+	if _, err = tx.ExecContext(ctx, "DELETE FROM feishu_deliveries WHERE id=?", id); err != nil { return false, err }
+	if err = tx.Commit(); err != nil { return false, err }
+	return true, nil
 }
 
 // RecoverCards is a startup-only repair, before renders/model work can start.
@@ -181,6 +204,7 @@ func (c *Client) RecoverCards(ctx context.Context) (int64, error) {
 	if c.isClosed() { return 0, errors.New("feishu: transport is closed") }
 	unlock := c.locks.lock("card-maintenance")
 	defer unlock()
+	if err := c.restoreCardMappings(ctx); err != nil { return 0, err }
 	columns, err := c.outboxColumns(ctx)
 	if err != nil { return 0, err }
 	// Keyset pagination keeps startup memory bounded and does not retry a card
@@ -232,17 +256,29 @@ func (c *Client) RecoverCards(ctx context.Context) (int64, error) {
 func markCardInterrupted(card core.Args) {
 	const notice = "连接中断；本轮尚未确认完成。请查看 /status，必要时显式重试输出。"
 	var answer core.Args
+	statusFound := false
 	var visit func(any)
 	visit = func(value any) {
 		switch item := value.(type) {
 		case []any: for _, child := range item { visit(child) }
 		case map[string]any:
-			if item["element_id"] == "reply_status" && item["tag"] == "markdown" { item["content"] = notice }
+			if item["element_id"] == "reply_status" && item["tag"] == "markdown" { item["content"] = notice; statusFound = true }
 			if item["element_id"] == "reply_answer" && item["tag"] == "markdown" { answer = item }
 			for _, child := range item { visit(child) }
 		}
 	}
 	visit(card)
+	header, ok := object(card["header"])
+	if !ok { header = core.Args{}; card["header"] = header }
+	header["template"] = "orange"
+	header["title"] = core.Args{"tag": "plain_text", "content": "连接中断 · 尚未确认完成"}
+	if !statusFound {
+		if body, ok := object(card["body"]); ok {
+			if elements, ok := body["elements"].([]any); ok {
+				body["elements"] = append(elements, core.Args{"tag": "markdown", "element_id": "reply_status", "content": notice})
+			}
+		}
+	}
 	if config, ok := object(card["config"]); ok { config["summary"] = core.Args{"content": "连接中断，尚未确认完成"} }
 	if answer == nil { return }
 	// Make room for the notice using the actual nested JSON byte budget. Keep a

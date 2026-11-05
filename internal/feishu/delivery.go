@@ -2,7 +2,6 @@ package feishu
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -119,6 +118,12 @@ func (c *Client) deliveryStep(ctx context.Context, room, step string, payload co
 			return "", &APIError{Operation: "saved delivery acknowledgement", Uncertain: true}
 		}
 		return saved.Result, nil
+	}
+	if saved.State == "rejected" && step == "card-create" && permissionDenied(saved.failure("cardkit permission fallback")) {
+		// The logical send already chose an inline card after a definite scope
+		// denial. Keep that route even if a later explicit retry runs after new
+		// permissions were granted; its message UUID must keep the same body.
+		return "", saved.failure("cardkit permission fallback")
 	}
 	if (saved.State == "attempting" || saved.State == "uncertain") && !core.IsExplicitRetry(ctx) {
 		return "", saved.failure("uncertain delivery requires explicit retry")
@@ -237,13 +242,3 @@ func (c *Client) linkDeliveryMessage(ctx context.Context, message string) error 
 	return nil
 }
 
-// hasOutbox keeps the transport usable with its small SQLite integration
-// fixture and with databases opened by older installations before migration.
-func (c *Client) hasOutbox(ctx context.Context) (bool, error) {
-	var name string
-	err := c.db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name='outbox'`).Scan(&name)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
-}

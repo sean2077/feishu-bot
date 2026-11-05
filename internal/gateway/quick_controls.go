@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -22,6 +23,7 @@ type quickControl struct {
 	Revision string `json:"revision"`
 	Turn     string `json:"turn,omitempty"`
 	Output   string `json:"output,omitempty"`
+	TargetSession string `json:"targetSession,omitempty"`
 	Action   string `json:"action"`
 }
 
@@ -69,11 +71,21 @@ func (g *Gateway) readQuick(token string) (quickControl, bool) {
 // Identical render context produces identical JSON. In particular, wall time
 // must not invalidate streaming snapshot deduplication or a frozen create body.
 func (g *Gateway) quickControls(r core.Room, session, turn, output string) []any {
+	return g.quickControlsRevision(r, session, turn, output, "")
+}
+
+// A later failed delivery attempt gets new controls, while duplicate clicks on
+// the same visible attempt remain one-shot. The outbox ID itself stays stable.
+func (g *Gateway) quickOutputControls(r core.Room, session, output string, attempt int) []any {
+	return g.quickControlsRevision(r, session, "", output, "retry:"+strconv.Itoa(attempt))
+}
+
+func (g *Gateway) quickControlsRevision(r core.Room, session, turn, output, salt string) []any {
 	if session == "" {
 		return nil
 	}
 	p := quickControl{Room: r.Key, Session: session, Turn: turn, Output: output}
-	p.Revision = core.Hash(jsonText([]string{r.Key, session, turn, output}))[:32]
+	p.Revision = core.Hash(jsonText([]string{r.Key, session, turn, output, salt}))[:32]
 	makeButton := func(action, label, style string) core.Args {
 		q := p
 		q.Action = action
@@ -238,7 +250,7 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 	if !g.quickBound(a, p) {
 		return "卡片已刷新、过期或会话已切换，请使用最新卡片。", true, nil
 	}
-	if (p.Action == "stop" || p.Action == "retry") && !canManage(r, a.UserID) {
+	if (p.Action == "stop" || p.Action == "retry" || p.Action == "resume") && !canManage(r, a.UserID) {
 		return "此操作需要本聊天维护者。", true, nil
 	}
 	if p.Action != "stop" && !g.quickRate(r, a.UserID) {
@@ -276,6 +288,27 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 	case "supplement":
 		text, err := g.quickSupplement(ctx, r, a, p)
 		return text, true, err
+	case "resume":
+		id, err := g.store.ResolveSession(r.Key, p.TargetSession)
+		if err != nil || p.TargetSession == "" || id != p.TargetSession || id == p.Session {
+			return "所选历史会话不存在或不属于当前聊天。", true, nil
+		}
+		claimed, err := g.claimQuick(a, p)
+		if err != nil || !claimed {
+			return "会话恢复已提交或卡片已失效。", true, err
+		}
+		g.task(func() {
+			unlock := g.inputLocks.lock(r.Key)
+			defer unlock()
+			if !g.quickBound(a, p) { return }
+			ctx, cancel := context.WithTimeout(g.ctx, 15*time.Second)
+			defer cancel()
+			m.Text = "/resume " + p.TargetSession
+			if err := g.command(ctx, r, m); err != nil {
+				g.audit(r.Key, "quick_resume_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+			}
+		})
+		return "已请求停止当前运行并选择历史会话；下一条消息才恢复模型。", true, nil
 	case "stop":
 		target := g.foregroundTarget(r)
 		if p.Turn == "" || target == nil || target.UUID != p.Turn || target.SessionID != p.Session {

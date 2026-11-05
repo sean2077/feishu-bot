@@ -112,7 +112,7 @@ func New(config core.Config, db *sql.DB, log core.Logger, options ...Options) (*
 
 func permissionDenied(err error) bool {
 	var e *APIError
-	return errors.As(err, &e) && (e.Status == http.StatusForbidden || e.Code == 99991672)
+	return errors.As(err, &e) && !e.Uncertain && !e.DeliveryRetryable() && (e.Status == http.StatusForbidden || e.Code == 99991672)
 }
 func safeFailure(op string, err error) error {
 	if errors.Is(err, context.Canceled) {
@@ -155,34 +155,53 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 		return c.token, nil
 	}
 	body, _ := json.Marshal(map[string]string{"app_id": c.config.AppID, "app_secret": c.secret})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
-	if err != nil {
-		return "", safeFailure("auth", err)
+	for attempt := 0; ; attempt++ {
+		if ctx.Err() != nil { return "", ctx.Err() }
+		token, expire, err := c.requestToken(ctx, body)
+		if err == nil {
+			ttl := min(7200, max(1, expire-60))
+			c.token = token
+			c.tokenUntil = time.Now().Add(time.Duration(ttl) * time.Second)
+			return c.token, nil
+		}
+		var failure *APIError
+		if !errors.As(err, &failure) || !failure.DeliveryRetryable() || attempt+1 >= apiMaxAttempts { return "", err }
+		delay := failure.DeliveryRetryAfter()
+		if delay == 0 { delay = retryBackoff(attempt) }
+		if delay > apiMaxInlineWait { return "", err }
+		if e := waitRetry(ctx, delay); e != nil { failure.cause = e; return "", failure }
 	}
+}
+
+func (c *Client) requestToken(ctx context.Context, body []byte) (string, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
+	if err != nil { return "", 0, safeFailure("auth", err) }
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", safeFailure("auth", err)
+		// Refreshing this private credential cannot send a visible message. A
+		// connection failure here is safely retryable, unlike message creation.
+		return "", 0, &APIError{Operation: "auth", Retryable: true, cause: ctx.Err()}
 	}
 	defer resp.Body.Close()
 	var result struct {
-		Code   int    `json:"code"`
-		Token  string `json:"tenant_access_token"`
-		Expire int    `json:"expire"`
+		Code *int `json:"code"`
+		Token string `json:"tenant_access_token"`
+		Expire int `json:"expire"`
 	}
-	if err = readJSON(resp.Body, &result, 64<<10); err != nil || resp.StatusCode != http.StatusOK || result.Code != 0 || result.Token == "" {
-		return "", &APIError{Operation: "auth", Status: resp.StatusCode, Code: result.Code}
+	decodeErr := readJSON(resp.Body, &result, 64<<10)
+	code := 0
+	if result.Code != nil { code = *result.Code }
+	if decodeErr != nil || resp.StatusCode != http.StatusOK || result.Code == nil || code != 0 || result.Token == "" {
+		failure := c.responseFailure(req, resp, code, decodeErr == nil && result.Code != nil, false)
+		failure.Operation = "auth"
+		if code != 99991403 && (resp.StatusCode >= 500 || resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusOK && (decodeErr != nil || result.Code == nil || code == 0 && result.Token == "")) {
+			failure.Retryable = true
+			failure.RetryAfter = responseRetryAfter(resp.Header, time.Now())
+		}
+		return "", 0, failure
 	}
-	ttl := result.Expire - 60
-	if ttl < 1 {
-		ttl = 1
-	}
-	if ttl > 7200 {
-		ttl = 7200
-	}
-	c.token = result.Token
-	c.tokenUntil = time.Now().Add(time.Duration(ttl) * time.Second)
-	return c.token, nil
+	return result.Token, result.Expire, nil
 }
 
 // api retries only explicit, temporary API rejections. Network failures and

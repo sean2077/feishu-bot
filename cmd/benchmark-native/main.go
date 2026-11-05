@@ -62,6 +62,7 @@ type sample struct {
 	Turns []turn `json:"turns"`
 	Memory memory `json:"idleMemory"`
 	MemoryPhases map[string]memory `json:"memoryPhases"`
+	MemorySampling memorySamples `json:"memorySampling"`
 	AllocatedBytes uint64 `json:"goAllocatedBytes"`
 	Allocations uint64 `json:"goAllocations"`
 	Transport transportStats `json:"transport"`
@@ -120,6 +121,7 @@ func runSample(index int, o settings) (result sample) {
 	defer server.Close()
 	var st *store.Store
 	var g *gateway.Gateway
+	var sampler *memorySampler
 	var mu sync.Mutex
 	byRoom := map[string]*observation{}
 	byID := map[string]*observation{}
@@ -137,6 +139,7 @@ func runSample(index int, o settings) (result sample) {
 		}
 	}}
 	defer func() {
+		if sampler!=nil { result.MemorySampling=sampler.stop() }
 		if nativeFailure.Load() { result.Failures = append(result.Failures, "native-failed-or-exited-before-cleanup") }
 		result.Workers = int(workers.Load())
 		result.ActiveWorkers = active.Load()
@@ -205,6 +208,7 @@ func runSample(index int, o settings) (result sample) {
 	if err = g.Recover(context.Background()); err != nil { result.Failures = append(result.Failures, "recovery"); return }
 	result.ServiceInit = elapsed(start)
 	result.MemoryPhases["no-session"] = memorySnapshot(o.Claude)
+	sampler=startMemorySampler(o.Claude)
 	previous := map[int]core.Session{}
 	runTurn := func(roomIndex int, kind string, attach bool) bool {
 		input := core.Message{ID: core.NewID(), ChatID: c.Groups[roomIndex].ChatID, ChatType: "group", SenderID: "alice", Text: "Return the local benchmark fixture answer without using tools.", Mentioned: true, Time: time.Now().UnixMilli()}
@@ -340,7 +344,9 @@ func main() {
 		}
 	}
 	expected := o.Samples*len(planned)
-	report := core.Args{"schema":2,"fixture":"deterministic-text-v2","settings":o,"native":nativeIdentity(o.Claude),"environment":core.Args{"platform":runtime.GOOS,"arch":runtime.GOARCH,"go":runtime.Version(),"logicalCpus":runtime.NumCPU()},"scope":core.Args{"model":"Local deterministic HTTP fixture; synthetic tokens are not model cost.","transport":"In-memory Feishu substitute; no live acceptance. Slow-card latency is synthetic.","memory":"Host includes benchmark, gateway, SQLite and fixture. RSS/Working Set sums can double-count shared pages; unavailable is not zero. Native tools and MCP descendants are grouped, not inferred individually.","allocations":"Process-wide Go allocations include the driver and fixtures; use the isolated render microbenchmarks for the rendering component.","cold":"Fresh native session, not cold OS caches.","liveServiceAccepted":false},"samples":all,"summary":core.Args{"attemptedSamples":len(all),"passedSamples":passed,"failedSamples":len(all)-passed,"unattemptedSamples":expected-len(all),"coldFirstOutputMs":distribution(cold),"warmFirstOutputMs":distribution(warm),"resumeFirstOutputMs":distribution(resumed),"stopMs":distribution(stops)}}
+	identity := native.VersionCompatibility{Tested:native.TestedVersion,Status:"not_requested"}
+	for _, scenario := range planned { if scenario.Sessions>0 { identity=nativeIdentity(o.Claude);break } }
+	report := core.Args{"schema":2,"fixture":"deterministic-text-v2","settings":o,"native":identity,"environment":core.Args{"platform":runtime.GOOS,"arch":runtime.GOARCH,"go":runtime.Version(),"logicalCpus":runtime.NumCPU()},"scope":core.Args{"model":"Local deterministic HTTP fixture; synthetic tokens are not model cost.","transport":"In-memory Feishu substitute; no live acceptance. Slow-card latency is synthetic.","memory":"Host includes benchmark, gateway, SQLite and fixture. RSS/Working Set sums can double-count shared pages; unavailable is not zero. Native tools and MCP descendants are grouped, not inferred individually.","allocations":"Process-wide Go allocations include the driver and fixtures; use the isolated render microbenchmarks for the rendering component.","cold":"Fresh native session, not cold OS caches.","liveServiceAccepted":false},"samples":all,"summary":core.Args{"attemptedSamples":len(all),"passedSamples":passed,"failedSamples":len(all)-passed,"unattemptedSamples":expected-len(all),"coldFirstOutputMs":distribution(cold),"warmFirstOutputMs":distribution(warm),"resumeFirstOutputMs":distribution(resumed),"stopMs":distribution(stops)}}
 	enc:=json.NewEncoder(os.Stdout); enc.SetIndent("","  ")
 	if enc.Encode(report)!=nil || passed!=expected { os.Exit(1) }
 }

@@ -85,6 +85,6 @@ func fitNoticeCard(card core.Args) core.Args {
 	return card
 }
 
-func (g *Gateway) withOutputControls(card core.Args, room core.Room, session, output string) core.Args {
-	return replaceQuickControls(card, g.quickControls(room, session, "", output))
+func (g *Gateway) withOutputControls(card core.Args, room core.Room, session, output string, attempt int) core.Args {
+	return replaceQuickControls(card, g.quickOutputControls(room, session, output, attempt))
 }

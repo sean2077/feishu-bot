@@ -166,7 +166,8 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 	}
 	perform := func() error {
 		if o.Kind != "file" {
-			card := g.outputCard(o, r, (o.FileName != "" && !knownFile) || o.Kind == "reply" && o.Success && g.unfinishedFiles(r.Key, o.Session) > 0)
+			filesPending := (o.FileName != "" && !knownFile) || o.Kind == "reply" && o.Success && g.unfinishedFiles(r.Key, o.Session) > 0
+			card := g.outputCard(o, r, filesPending)
 			if target == "" {
 				if o.InitialCard == nil {
 					o.InitialCard = card
@@ -180,7 +181,7 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 			}
 			if !g.outputSending(id, r) { return errCancelledDelivery }
 			updateCtx := ctx
-			if o.FileName == "" || knownFile { updateCtx = core.WithTerminalCard(ctx) }
+			if !filesPending { updateCtx = core.WithTerminalCard(ctx) }
 			if target != "" {
 				err = providerVoid(updateCtx, func() error { return g.transport.Update(updateCtx, target, card) })
 				if err != nil { return err }
@@ -317,7 +318,6 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 		if !failure.DeliveryRetryable() { state = "blocked" }
 	}
 	attempt := o.RetryCount + 1
-	if explicit { attempt = 1 }
 	if state == "pending" && attempt >= 6 {
 		state = "blocked"
 		reason += " Automatic retry budget exhausted; resolve the cause and use /retry-output."
@@ -348,17 +348,16 @@ func (g *Gateway) pendingOutputNotice(ctx context.Context, o outgoing, r core.Ro
 	if e != nil || (latest.State != "pending" && latest.State != "uncertain" && latest.State != "blocked") || !g.permittedOutput(latest, r) {
 		return
 	}
-	var card core.Args
-	_ = json.Unmarshal([]byte(jsonText(o.Card)), &card)
-	if card == nil {
-		card = DisplayCard("回复尚未完整送达", cut(o.Text, 23800))
-	}
+	card := g.outputCard(latest, r, true)
 	card["header"] = core.Args{"template": "orange", "title": core.Args{"tag": "plain_text", "content": "回复尚未完整送达"}}
 	body := argsOf(card["body"])
 	elements, _ := body["elements"].([]any)
 	body["elements"] = append(elements, core.Args{"tag": "markdown", "content": text + "\n/retry-output " + o.ID})
 	card["body"] = body
-	_ = providerVoid(ctx, func() error { return g.transport.Update(ctx, target, fitNoticeCard(card)) })
+	card = fitNoticeCard(card)
+	if err := providerVoid(ctx, func() error { return g.transport.Update(ctx, target, card) }); err == nil {
+		_ = g.bindQuickControls(target, card)
+	}
 }
 func (g *Gateway) retryable(room string) []string {
 	const query = `SELECT o.id,o.at FROM outbox o WHERE o.room=? AND o.state='pending' AND o.retry_after<=? AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR o.kind IN ('reply','recovery') OR (o.kind='file' AND o.file_state IN ('pending','done'))) AND (o.kind IN ('file','recovery') OR NOT EXISTS (SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session AND f.kind='file' AND f.state NOT IN ('done','cancelled')))`
@@ -470,7 +469,7 @@ func (g *Gateway) outputCard(o outgoing, room core.Room, filesPending bool) core
 		if !o.Success { title = "执行失败" }
 		card = DisplayCard(title, o.Text)
 	}
-	card = g.withOutputControls(card, room, o.Session, o.ID)
+	card = g.withOutputControls(card, room, o.Session, o.ID, o.RetryCount)
 	if filesPending {
 		card["header"] = core.Args{"template":"orange", "title":core.Args{"tag":"plain_text", "content":"模型已完成 · 文件待送达"}}
 		body := argsOf(card["body"])
