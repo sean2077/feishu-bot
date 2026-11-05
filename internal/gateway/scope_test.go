@@ -15,7 +15,13 @@ func cardValue(card core.Args, label string) core.Args {
 	for _, value := range elements {
 		element := argsOf(value)
 		if stringArg(argsOf(element["text"]), "content") == label {
-			return argsOf(element["value"])
+			behaviors, _ := element["behaviors"].([]any)
+			for _, raw := range behaviors {
+				behavior := argsOf(raw)
+				if stringArg(behavior, "type") == "callback" {
+					return argsOf(behavior["value"])
+				}
+			}
 		}
 	}
 	return nil

@@ -16,7 +16,10 @@ func button(label string, value core.Args, style string) core.Args {
 	if style == "" {
 		style = "default"
 	}
-	return core.Args{"tag": "button", "text": core.Args{"tag": "plain_text", "content": cut(label, 80)}, "type": style, "value": value}
+	// Card JSON 2.0 declares click callbacks on the component's behaviors. A
+	// top-level value is the card 1.0 form and does not declare a callback here,
+	// so the click can appear to do nothing.
+	return core.Args{"tag": "button", "text": core.Args{"tag": "plain_text", "content": cut(label, 80)}, "type": style, "behaviors": []any{core.Args{"type": "callback", "value": value}}}
 }
 
 type replyDetails struct {

@@ -30,7 +30,7 @@ func TestForwardedApprovalUsesMaintainerOpenIDWithoutGrantingDMAccess(t *testing
 	}
 	target := origin
 	target.ChatID, target.DMUser = "ou_owner", "ou_owner"
-	card := core.Args{"header": core.Args{"title": core.Args{"tag": "plain_text", "content": "需要维护者批准"}}, "body": core.Args{"elements": []any{core.Args{"tag": "button", "text": core.Args{"tag": "plain_text", "content": "批准一次"}, "value": core.Args{"request": "fixture-request", "decision": "allow"}}}}}
+	card := core.Args{"header": core.Args{"title": core.Args{"tag": "plain_text", "content": "需要维护者批准"}}, "body": core.Args{"elements": []any{core.Args{"tag": "button", "text": core.Args{"tag": "plain_text", "content": "批准一次"}, "behaviors": []any{core.Args{"type": "callback", "value": core.Args{"request": "fixture-request", "decision": "allow"}}}}}}}
 	mid, err := c.Card(context.Background(), target, card, "", "")
 	if err != nil || mid != "om_approval" {
 		t.Fatalf("approval forwarding failed: %q %v", mid, err)
