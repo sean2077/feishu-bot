@@ -103,7 +103,9 @@ func (s *Store) initialize() error {
 		if _, err := tx.Exec(schema); err != nil {
 			return err
 		}
-		if err := initializeConvenience(tx); err != nil { return err }
+		if err := initializeConvenience(tx); err != nil {
+			return err
+		}
 		for _, col := range []struct{ table, name, decl string }{
 			{"receipts", "sender", "TEXT"}, {"session_launch_identity", "config_override", "INTEGER NOT NULL DEFAULT 1"},
 			{"outbox", "card", "TEXT"}, {"outbox", "origins", "TEXT NOT NULL DEFAULT '[]'"}, {"outbox", "file_name", "TEXT"}, {"outbox", "file_path", "TEXT"},
@@ -143,7 +145,9 @@ func (s *Store) initialize() error {
 		// or scanning every outstanding output for each card.
 		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS outbox_target_state ON outbox(target,state);
 CREATE INDEX IF NOT EXISTS outbox_file_target_state ON outbox(file_target,state);
-CREATE INDEX IF NOT EXISTS outbox_delivery_key_state ON outbox(delivery_key,state);`); err != nil { return err }
+CREATE INDEX IF NOT EXISTS outbox_delivery_key_state ON outbox(delivery_key,state);`); err != nil {
+			return err
+		}
 		_, err := tx.Exec("INSERT OR IGNORE INTO usage_coverage(session,room,started,prior_unknown) SELECT id,room,?,1 FROM sessions", time.Now().UnixMilli())
 		if err != nil {
 			return err

@@ -18,9 +18,9 @@ const messageDedupWindow = time.Hour
 
 type deliveryStep struct {
 	ID, Step, Room, Fingerprint, Payload, UUID, State, Result, Message string
-	FirstAttempt, UpdatedAt, RetryAt int64
-	Status, Code int
-	RequestID string
+	FirstAttempt, UpdatedAt, RetryAt                                   int64
+	Status, Code                                                       int
+	RequestID                                                          string
 }
 
 func (c *Client) initDeliveryState() error {
@@ -245,4 +245,3 @@ func (c *Client) linkDeliveryMessage(ctx context.Context, message string) error 
 	}
 	return nil
 }
-

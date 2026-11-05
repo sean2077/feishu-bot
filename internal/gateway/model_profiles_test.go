@@ -85,8 +85,16 @@ func TestProfileSelectionDuringColdStartupDoesNotFenceFirstInput(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var first sync.Once
 	f.g.factory = func(ctx context.Context, _ core.Room, _ core.Session, _ core.Workspace, emit func(core.WorkerEvent)) (core.Worker, error) {
-		first.Do(func() { close(entered); select { case <-release: case <-ctx.Done(): } })
-		if ctx.Err() != nil { return nil, ctx.Err() }
+		first.Do(func() {
+			close(entered)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		})
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		w := &fakeWorker{emit: emit, sent: make(chan core.Delivery, 100), responses: make(chan core.Args, 100)}
 		f.starts.Add(1)
 		// Real native initialization need not report idle/CCID before input.
@@ -94,12 +102,18 @@ func TestProfileSelectionDuringColdStartupDoesNotFenceFirstInput(t *testing.T) {
 		return w, nil
 	}
 	f.send(f.message("starting-input", "work", "member"))
-	select { case <-entered: case <-time.After(3*time.Second): t.Fatal("factory did not reach startup barrier") }
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("factory did not reach startup barrier")
+	}
 	f.send(f.message("profile-at-startup", "/model careful", "owner"))
 	close(release)
 	w := f.worker()
 	d := f.delivery(w)
-	if d.Message.ID != "starting-input" || w.stops.Load() != 0 { t.Fatal("startup profile selection blocked or killed its first input", d) }
+	if d.Message.ID != "starting-input" || w.stops.Load() != 0 {
+		t.Fatal("startup profile selection blocked or killed its first input", d)
+	}
 	nativeID := core.NewID()
 	w.emit(core.WorkerEvent{Type: "ready", CCID: nativeID})
 	zero := 0
@@ -127,7 +141,9 @@ func TestProfileSwitchKeepsUncertainOutputWithoutReplay(t *testing.T) {
 	eventually(t, func() bool { return f.tr.receiptDone("initial") })
 	before, _ := f.s.Session(r.Key)
 	id, err := f.g.saveOutput(f.s.DB, r, d.SessionID, "unknown previously saved output", true, "", "", "", nil, nil, "", "", "reply", "uncertain")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	f.tr.mu.Lock()
 	cards := len(f.tr.cards)
 	f.tr.mu.Unlock()

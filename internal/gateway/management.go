@@ -47,16 +47,23 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 	}
 	outboxStates := core.Args{}
 	rows, e = g.store.DB.Query("SELECT state,count(*) FROM outbox WHERE room=? GROUP BY state", r.Key)
-	if e != nil { return nil, e }
+	if e != nil {
+		return nil, e
+	}
 	for rows.Next() {
 		var state string
 		var count int64
-		if e = rows.Scan(&state, &count); e != nil { rows.Close(); return nil, e }
+		if e = rows.Scan(&state, &count); e != nil {
+			rows.Close()
+			return nil, e
+		}
 		outboxStates[state] = count
 	}
 	e = rows.Err()
 	rows.Close()
-	if e != nil { return nil, e }
+	if e != nil {
+		return nil, e
+	}
 	var snapshotCount, snapshotBytes int64
 	if e = g.store.DB.QueryRow("SELECT count(*),coalesce(sum(length(CAST(snapshot AS BLOB))),0) FROM feishu_cards WHERE room=?", r.Key).Scan(&snapshotCount, &snapshotBytes); e != nil {
 		return nil, e
@@ -290,17 +297,27 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 		filePending := kind == "reply" && (pendingFiles || fileState != "none" && fileState != "done")
 		reason := "pending"
 		switch {
-		case state == "uncertain" || fileState == "uncertain": reason = "uncertain"
-		case strings.Contains(detail.String, "Automatic retry budget exhausted"): reason = "retry_budget"
-		case state == "blocked": reason = "rejected"
-		case strings.Contains(detail.String, "HTTP 429") || strings.Contains(detail.String, "code 99991400"): reason = "rate_limited"
-		case filePending: reason = "file_pending"
+		case state == "uncertain" || fileState == "uncertain":
+			reason = "uncertain"
+		case strings.Contains(detail.String, "Automatic retry budget exhausted"):
+			reason = "retry_budget"
+		case state == "blocked":
+			reason = "rejected"
+		case strings.Contains(detail.String, "HTTP 429") || strings.Contains(detail.String, "code 99991400"):
+			reason = "rate_limited"
+		case filePending:
+			reason = "file_pending"
 		}
 		item := core.Args{"id": id, "state": state, "stage": stage, "reason": reason, "retryCount": retryCount, "retryAfter": retryAfter, "nativeTurnEnded": kind == "reply", "filePending": filePending, "uncertain": state == "uncertain" || fileState == "uncertain"}
 		if detail.Valid && detail.String != "" {
 			item["detail"] = "交付尚未完成，请查看服务诊断。"
 			if manage {
-				item["detail"] = cut(strings.Map(func(r rune) rune { if unicode.IsControl(r) { return ' ' }; return r }, core.Redact(detail.String, g.secrets)), 600)
+				item["detail"] = cut(strings.Map(func(r rune) rune {
+					if unicode.IsControl(r) {
+						return ' '
+					}
+					return r
+				}, core.Redact(detail.String, g.secrets)), 600)
 			}
 		}
 		items = append(items, item)
@@ -321,12 +338,20 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 		state := map[string]string{"pending": "等待交付", "uncertain": "结果未知", "blocked": "自动重试已暂停", "sending": "正在发送", "preparing": "正在准备"}[stringArg(item, "state")]
 		lines = append(lines, "", stage+" · "+state+"\n`"+stringArg(item, "id")+"`")
 		reasons := map[string]string{"rejected": "已确认拒绝；请先修复权限、参数或服务配置。", "retry_budget": "已达到自动重试预算；请处理原因后明确补发。", "rate_limited": "服务限流；自动重试遵守服务返回的等待时间。", "file_pending": "模型本轮已结束，完整文件仍待送达；尚未标记 Done。"}
-		if reason := reasons[stringArg(item, "reason")]; reason != "" { lines = append(lines, reason) }
-		if boolArg(item, "filePending") && stringArg(item, "reason") != "file_pending" { lines = append(lines, "模型本轮已结束，文件仍待交付；尚未标记 Done。") }
+		if reason := reasons[stringArg(item, "reason")]; reason != "" {
+			lines = append(lines, reason)
+		}
+		if boolArg(item, "filePending") && stringArg(item, "reason") != "file_pending" {
+			lines = append(lines, "模型本轮已结束，文件仍待交付；尚未标记 Done。")
+		}
 		if manage {
 			lines = append(lines, fmt.Sprintf("交付失败次数：%v", item["retryCount"]))
-			if at, ok := item["retryAfter"].(int64); ok && at > 0 && stringArg(item, "state") == "pending" { lines = append(lines, "最早自动重试："+timeLabel(at)) }
-			if detail := stringArg(item, "detail"); detail != "" { lines = append(lines, "诊断："+detail) }
+			if at, ok := item["retryAfter"].(int64); ok && at > 0 && stringArg(item, "state") == "pending" {
+				lines = append(lines, "最早自动重试："+timeLabel(at))
+			}
+			if detail := stringArg(item, "detail"); detail != "" {
+				lines = append(lines, "诊断："+detail)
+			}
 		}
 		if boolArg(item, "uncertain") {
 			lines = append(lines, "先核实是否已经收到；明确补发可能重复，不会自动重放未知写入。")

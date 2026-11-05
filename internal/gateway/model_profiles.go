@@ -132,7 +132,9 @@ func (g *Gateway) profileInputs(r core.Room, inputs []core.Delivery) ([]core.Del
 			// with the launched profile; later ordinary inputs remain fenced.
 			end := 1
 			if batch := inputs[0].ImageBatch; batch != nil {
-				for end < len(inputs) && inputs[end].ImageBatch != nil && inputs[end].ImageBatch.ID == batch.ID { end++ }
+				for end < len(inputs) && inputs[end].ImageBatch != nil && inputs[end].ImageBatch.ID == batch.ID {
+					end++
+				}
 			}
 			return inputs[:end], nil
 		}

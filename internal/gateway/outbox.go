@@ -73,9 +73,13 @@ func (g *Gateway) output(id string) (outgoing, error) {
 	o.FilePath = path.String
 	o.FileTarget = ft.String
 	o.DeliveryKey = key.String
-	if o.DeliveryKey == "" { o.DeliveryKey = "output:" + o.ID }
+	if o.DeliveryKey == "" {
+		o.DeliveryKey = "output:" + o.ID
+	}
 	if initial.Valid && initial.String != "" {
-		if err = json.Unmarshal([]byte(initial.String), &o.InitialCard); err != nil { return o, err }
+		if err = json.Unmarshal([]byte(initial.String), &o.InitialCard); err != nil {
+			return o, err
+		}
 	}
 	if card.Valid && card.String != "" {
 		if err = json.Unmarshal([]byte(card.String), &o.Card); err != nil {
@@ -150,10 +154,16 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 	if (o.State != "pending" && o.State != "uncertain" && o.State != "blocked") || ((o.State == "uncertain" || o.State == "blocked") && !explicit) || (o.FileState == "uncertain" && !explicit) {
 		return false, nil
 	}
-	if (o.State == "pending" || !explicit) && o.RetryAfter > time.Now().UnixMilli() { return false, nil }
+	if (o.State == "pending" || !explicit) && o.RetryAfter > time.Now().UnixMilli() {
+		return false, nil
+	}
 	ctx = core.WithDeliveryID(ctx, o.DeliveryKey)
-	if explicit { ctx = core.WithExplicitRetry(ctx) }
-	if err = g.budgetOutput(&o, r); err != nil { return false, err }
+	if explicit {
+		ctx = core.WithExplicitRetry(ctx)
+	}
+	if err = g.budgetOutput(&o, r); err != nil {
+		return false, err
+	}
 	result, err := g.store.DB.Exec(`UPDATE outbox SET state='sending',delivery_error=NULL WHERE id=? AND state=?`, id, o.State)
 	if err != nil {
 		return false, err
@@ -175,20 +185,32 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 			if target == "" {
 				if o.InitialCard == nil {
 					o.InitialCard = card
-					if _, e := g.store.DB.Exec("UPDATE outbox SET initial_card=? WHERE id=? AND state='sending'", jsonText(card), id); e != nil { return e }
+					if _, e := g.store.DB.Exec("UPDATE outbox SET initial_card=? WHERE id=? AND state='sending'", jsonText(card), id); e != nil {
+						return e
+					}
 				}
 				target, err = provider(ctx, func() (string, error) { return g.transport.Card(ctx, r, o.InitialCard, o.ReplyTo, o.ThreadID) })
-				if err != nil { return err }
+				if err != nil {
+					return err
+				}
 				if target != "" {
-					if _, err = g.store.DB.Exec("UPDATE outbox SET target=? WHERE id=? AND state='sending'", target, id); err != nil { return err }
+					if _, err = g.store.DB.Exec("UPDATE outbox SET target=? WHERE id=? AND state='sending'", target, id); err != nil {
+						return err
+					}
 				}
 			}
-			if !g.outputSending(id, r) { return errCancelledDelivery }
+			if !g.outputSending(id, r) {
+				return errCancelledDelivery
+			}
 			updateCtx := ctx
-			if !filesPending { updateCtx = core.WithTerminalCard(ctx) }
+			if !filesPending {
+				updateCtx = core.WithTerminalCard(ctx)
+			}
 			if target != "" {
 				err = g.updateOutputCard(updateCtx, id, r, target, card)
-				if err != nil { return err }
+				if err != nil {
+					return err
+				}
 			}
 			if target == "" {
 				return errors.New("provider did not return message ID")
@@ -235,7 +257,7 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 				return errCancelledDelivery
 			}
 			phase = "file_send"
-			fileCtx := core.WithDeliveryID(ctx, "file:" + o.ID)
+			fileCtx := core.WithDeliveryID(ctx, "file:"+o.ID)
 			ft, e := provider(fileCtx, func() (string, error) { return g.transport.File(fileCtx, r, o.FilePath, o.FileName) })
 			if e != nil {
 				return e
@@ -279,7 +301,9 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 			phase = "card_finalize"
 			card := g.outputCard(o, r, false)
 			finalCtx := core.WithTerminalCard(ctx)
-			if e := g.updateOutputCard(finalCtx, id, r, target, card); e != nil { return e }
+			if e := g.updateOutputCard(finalCtx, id, r, target, card); e != nil {
+				return e
+			}
 		}
 		res, e := g.store.DB.Exec(`UPDATE outbox SET state='done',delivery_error=NULL,retry_count=0,retry_after=0 WHERE id=? AND state='sending'`, id)
 		if e != nil {
@@ -321,7 +345,9 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 			reason += " " + detail
 		} else {
 			reason = detail
-			if !failure.DeliveryRetryable() { state = "blocked" }
+			if !failure.DeliveryRetryable() {
+				state = "blocked"
+			}
 		}
 	}
 	attempt := o.RetryCount + 1
@@ -330,11 +356,15 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 		reason += " Automatic retry budget exhausted; resolve the cause and use /retry-output."
 	}
 	delay := time.Duration(1<<min(attempt, 8)) * time.Second
-	if classified && failure.DeliveryRetryAfter() > delay { delay = failure.DeliveryRetryAfter() }
+	if classified && failure.DeliveryRetryAfter() > delay {
+		delay = failure.DeliveryRetryAfter()
+	}
 	fileState := ""
 	if phase == "file_send" && !knownFile {
 		fileState = "pending"
-		if state == "uncertain" { fileState = "uncertain" }
+		if state == "uncertain" {
+			fileState = "uncertain"
+		}
 	}
 	_, dbErr := g.store.DB.Exec(`UPDATE outbox SET state=?,target=COALESCE(?,target),file_state=CASE WHEN ?!='' THEN ? ELSE file_state END,delivery_error=?,retry_count=?,retry_after=? WHERE id=? AND state='sending'`, state, nullString(target), fileState, fileState, reason, attempt, time.Now().Add(delay).UnixMilli(), id)
 	g.audit(r.Key, "output_delivery_failed", core.Args{"id": id, "phase": phase, "kind": o.Kind, "knownTarget": target != "", "knownFile": knownFile})
@@ -352,19 +382,21 @@ var errDeferredDelivery = errors.New("output waiting for attachments")
 
 func (g *Gateway) pendingOutputNotice(ctx context.Context, o outgoing, r core.Room, target, text string) {
 	_ = g.withOutputCard(ctx, target, func() error {
-	latest, e := g.output(o.ID)
-	if e != nil || latest.Target != target || (latest.State != "pending" && latest.State != "uncertain" && latest.State != "blocked") || !g.permittedOutput(latest, r) {
-		return errCancelledDelivery
-	}
-	card := g.outputCard(latest, r, true)
-	card["header"] = core.Args{"template": "orange", "title": core.Args{"tag": "plain_text", "content": "回复尚未完整送达"}}
-	body := argsOf(card["body"])
-	elements, _ := body["elements"].([]any)
-	body["elements"] = append(elements, core.Args{"tag": "markdown", "content": text + "\n/retry-output " + o.ID})
-	card["body"] = body
-	card = fitNoticeCard(card)
-	if err := g.transport.Update(ctx, target, card); err != nil { return err }
-	return g.bindQuickControls(target, card)
+		latest, e := g.output(o.ID)
+		if e != nil || latest.Target != target || (latest.State != "pending" && latest.State != "uncertain" && latest.State != "blocked") || !g.permittedOutput(latest, r) {
+			return errCancelledDelivery
+		}
+		card := g.outputCard(latest, r, true)
+		card["header"] = core.Args{"template": "orange", "title": core.Args{"tag": "plain_text", "content": "回复尚未完整送达"}}
+		body := argsOf(card["body"])
+		elements, _ := body["elements"].([]any)
+		body["elements"] = append(elements, core.Args{"tag": "markdown", "content": text + "\n/retry-output " + o.ID})
+		card["body"] = body
+		card = fitNoticeCard(card)
+		if err := g.transport.Update(ctx, target, card); err != nil {
+			return err
+		}
+		return g.bindQuickControls(target, card)
 	})
 }
 
@@ -374,9 +406,13 @@ func (g *Gateway) pendingOutputNotice(ctx context.Context, o outgoing, r core.Ro
 func (g *Gateway) withOutputCard(ctx context.Context, target string, write func() error) error {
 	return providerVoid(ctx, func() error {
 		unlock, err := g.outTargetLocks.lockContext(ctx, target)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		defer unlock()
-		if err := ctx.Err(); err != nil { return err }
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return write()
 	})
 }
@@ -384,10 +420,18 @@ func (g *Gateway) withOutputCard(ctx context.Context, target string, write func(
 func (g *Gateway) updateOutputCard(ctx context.Context, id string, room core.Room, target string, card core.Args) error {
 	return g.withOutputCard(ctx, target, func() error {
 		current, err := g.output(id)
-		if err != nil { return err }
-		if current.State != "sending" || current.Target != target || current.Room != room.Key || !g.permittedOutput(current, room) { return errCancelledDelivery }
-		if err := g.transport.Update(ctx, target, card); err != nil { return err }
-		if !g.outputSending(id, room) { return errCancelledDelivery }
+		if err != nil {
+			return err
+		}
+		if current.State != "sending" || current.Target != target || current.Room != room.Key || !g.permittedOutput(current, room) {
+			return errCancelledDelivery
+		}
+		if err := g.transport.Update(ctx, target, card); err != nil {
+			return err
+		}
+		if !g.outputSending(id, room) {
+			return errCancelledDelivery
+		}
 		return g.bindQuickControls(target, card)
 	})
 }
@@ -480,9 +524,13 @@ func (g *Gateway) outputError(id string) string {
 const outputStatusReserve = 2048
 
 func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
-	if o.fileOnly() { return nil }
+	if o.fileOnly() {
+		return nil
+	}
 	card := o.Card
-	if card == nil { card = DisplayCard("回复", o.Text) }
+	if card == nil {
+		card = DisplayCard("回复", o.Text)
+	}
 	if o.Kind == "status" {
 		card = replaceQuickControls(card, nil)
 	} else {
@@ -490,10 +538,16 @@ func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 	}
 	budget := core.CardPayloadLimit - outputStatusReserve
 	size, err := core.CardPayloadBytes(card)
-	if err != nil { return err }
-	if size <= budget { return nil }
+	if err != nil {
+		return err
+	}
+	if size <= budget {
+		return nil
+	}
 	suffix := "\n\n（完整答案另附文件。）"
-	if o.Kind == "status" { suffix = "\n\n（中断前输出预览已截断。）" }
+	if o.Kind == "status" {
+		suffix = "\n\n（中断前输出预览已截断。）"
+	}
 	o.Card = fitCardBudget(card, budget, suffix)
 	if size, err := core.CardPayloadBytes(o.Card); err != nil || size > budget {
 		// Legacy/custom metadata can itself exceed the limit. Preserve the full
@@ -502,7 +556,9 @@ func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 			card = cancelledOutputCard(nil, o.Text)
 		} else {
 			title := "回复"
-			if !o.Success { title = "执行失败" }
+			if !o.Success {
+				title = "执行失败"
+			}
 			card = DisplayCard(title, o.Text)
 			card["config"] = core.Args{"streaming_mode": false}
 			card = g.withOutputControls(card, room, o.Session, o.ID, o.RetryCount)
@@ -527,15 +583,21 @@ func (g *Gateway) outputCard(o outgoing, room core.Room, filesPending bool) core
 	_ = json.Unmarshal([]byte(jsonText(o.Card)), &card)
 	if card == nil {
 		title := "回复"
-		if !o.Success { title = "执行失败" }
+		if !o.Success {
+			title = "执行失败"
+		}
 		card = DisplayCard(title, o.Text)
 	}
-	if o.Kind == "status" { card = replaceQuickControls(card, nil) } else { card = g.withOutputControls(card, room, o.Session, o.ID, o.RetryCount) }
+	if o.Kind == "status" {
+		card = replaceQuickControls(card, nil)
+	} else {
+		card = g.withOutputControls(card, room, o.Session, o.ID, o.RetryCount)
+	}
 	if filesPending {
-		card["header"] = core.Args{"template":"orange", "title":core.Args{"tag":"plain_text", "content":"模型已完成 · 文件待送达"}}
+		card["header"] = core.Args{"template": "orange", "title": core.Args{"tag": "plain_text", "content": "模型已完成 · 文件待送达"}}
 		body := argsOf(card["body"])
 		elements, _ := body["elements"].([]any)
-		body["elements"] = append(elements, core.Args{"tag":"markdown", "content":"文件确认送达后才标记完成。可用 /outputs 查看状态。"})
+		body["elements"] = append(elements, core.Args{"tag": "markdown", "content": "文件确认送达后才标记完成。可用 /outputs 查看状态。"})
 		card["body"] = body
 	}
 	return fitNoticeCard(card)
