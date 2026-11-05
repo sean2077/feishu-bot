@@ -150,3 +150,35 @@ func TestStandaloneImageAndDMTrigger(t *testing.T) {
 		t.Fatalf("DM image event: %+v", received)
 	}
 }
+func TestMentionOptionalGroupAcceptsUnmentionedMessages(t *testing.T) {
+	c, _ := fixtureClient(t, nil, func(http.ResponseWriter, *http.Request) { t.Fatal("unexpected HTTP") })
+	c.config.Groups[0].MentionOptional = true
+	var received []core.Message
+	c.onMessage = func(_ context.Context, m core.Message) error { received = append(received, m); return nil }
+	for _, event := range []struct {
+		kind    string
+		content string
+	}{
+		{"text", `{"text":"hello"}`},
+		{"image", `{"image_key":"img_fixture"}`},
+	} {
+		if _, err := c.HandleEvent(context.Background(), rawEvent("oc_allowed", "ou_member", event.kind, event.content, false)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(received) != 2 || received[0].Mentioned || received[0].Text != "hello" || !received[1].ImageOnly {
+		t.Fatalf("mention-optional events: %+v", received)
+	}
+}
+func TestMentionOptionalGroupStillRejectsUnauthorizedAuthor(t *testing.T) {
+	c, _ := fixtureClient(t, nil, func(http.ResponseWriter, *http.Request) { t.Fatal("unexpected HTTP") })
+	c.config.Groups[0].MentionOptional = true
+	called := false
+	c.onMessage = func(context.Context, core.Message) error { called = true; return nil }
+	if _, err := c.HandleEvent(context.Background(), rawEvent("oc_allowed", "ou_stranger", "text", `{"text":"hello"}`, false)); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("unauthorized author reached gateway")
+	}
+}

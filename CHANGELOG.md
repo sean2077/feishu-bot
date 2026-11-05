@@ -2,6 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
+- 新增逐群 `groups[].mentionOptional` 配置：设为 `true` 的群免除 @，群内所有获准作者直接触发；默认仍要求明确 @，群和作者授权不变，修改后需重启。
 - 新增仅稳定版本 tag 触发的 release CI：在 Linux amd64／arm64、Windows amd64、macOS amd64／arm64 上验证并打包，生成 SHA-256 与构建信息，完整附件校验后公开 GitHub Release；同一版本重跑核对提交和内容，保留已公开附件。
 - macOS 提供原生网关二进制与前台运行说明；使用 Darwin 进程表记录子进程组身份、检查已观测的 PID 复用并区分僵尸，内置 daemon 管理仍限 Linux／Windows。
 - 用 Go 替换生产 TypeScript 服务、会话 worker、飞书适配、审批、交付、诊断及固定操作示例；一个服务直接管理持久 Claude 原生进程，运行时不再依赖 Node.js 或 TypeScript Agent SDK。

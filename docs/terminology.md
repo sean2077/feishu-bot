@@ -88,6 +88,12 @@ _英文_: uncertain write
 非 @ 群消息作为下一条提问隐藏前缀的行为。默认关闭（`limits.backgroundMessages = 0`）；需要前文时通过 `read_chat_history` 按需读取。
 _英文_: background pre-injection
 
+**免 @ 群**
+
+配置 `groups[].mentionOptional: true` 的群。该群所有获准作者（`members` 与项目 `maintainers`）的每条消息直接触发，无需明确 @；群和作者授权不变。默认关闭，仅启动时读取。
+_英文_: mention-optional group
+_避免_: 开放群、免授权群
+
 **维护者**
 
 配置中获准管理共享会话、执行管理命令和批准审批的用户。与普通获准成员不同。

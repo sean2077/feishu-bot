@@ -57,6 +57,7 @@ func member(ids []string, id string) bool {
 func roomFor(c core.Config, chat, dm string) (core.Room, bool) {
 	project := ""
 	var members []string
+	mentionOptional := false
 	if dm != "" {
 		for _, v := range c.DMs {
 			if v.UserID == dm {
@@ -69,6 +70,7 @@ func roomFor(c core.Config, chat, dm string) (core.Room, bool) {
 			if v.ChatID == chat {
 				project = v.ProjectID
 				members = v.Members
+				mentionOptional = v.MentionOptional
 				break
 			}
 		}
@@ -84,7 +86,7 @@ func roomFor(c core.Config, chat, dm string) (core.Room, bool) {
 		user = dm
 	}
 	key, _ := json.Marshal([]any{c.TenantID, c.AppID, project, kind, chat, user})
-	return core.Room{Key: string(key), ChatID: chat, ProjectID: project, DMUser: dm, Maintainers: p.Maintainers, Members: members}, true
+	return core.Room{Key: string(key), ChatID: chat, ProjectID: project, DMUser: dm, Maintainers: p.Maintainers, Members: members, MentionOptional: mentionOptional}, true
 }
 func (c *Client) validatedRoom(room core.Room) (core.Room, error) {
 	var parts []any

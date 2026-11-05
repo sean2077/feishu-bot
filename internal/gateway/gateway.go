@@ -229,7 +229,7 @@ func (g *Gateway) Recover(ctx context.Context) error {
 }
 func (g *Gateway) sanitize(r core.Room, d *core.Delivery) bool {
 	current, ok := Route(g.config, d.Message)
-	if !ok || current.Key != r.Key || !Triggers(d.Message) || d.Message.InputIssue != "" {
+	if !ok || current.Key != r.Key || !Triggers(current, d.Message) || d.Message.InputIssue != "" {
 		return false
 	}
 	if d.SupplementTo != "" && d.Command != nil {
@@ -265,7 +265,7 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	}
 	defer g.wg.Done()
 	room, ok := Route(g.config, original)
-	if !ok || (!Triggers(original) && g.config.Limits.BackgroundMessages == 0) {
+	if !ok || (!Triggers(room, original) && g.config.Limits.BackgroundMessages == 0) {
 		return nil
 	}
 	unlock := g.inputLocks.lock(room.Key)
@@ -283,7 +283,7 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		m.Resources = m.Resources[:12]
 	}
 	g.rememberRoom(room)
-	if !Triggers(m) {
+	if !Triggers(room, m) {
 		if g.config.Limits.BackgroundMessages > 0 && m.InputIssue == "" {
 			if _, err = g.store.Insert(room.Key, m, "background"); err != nil {
 				return err
@@ -461,7 +461,7 @@ func (g *Gateway) cancelSupplement(r core.Room, d core.Delivery, reason string, 
 		}
 		changed = true
 		current, ok := Route(g.config, d.Message)
-		if ok && current.Key == r.Key && Triggers(d.Message) {
+		if ok && current.Key == r.Key && Triggers(current, d.Message) {
 			id, e = g.saveOutput(tx, r, d.SessionID, text, false, "", d.Message.ID, d.Message.ThreadID, DisplayCard("补充已取消", text), origin(d.Message), "", "", "recovery", "")
 		} else {
 			_, e = tx.Exec("UPDATE inbox SET message='{}' WHERE uuid=?", d.UUID)
@@ -926,7 +926,7 @@ func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery, p
 		}
 		for _, d := range members {
 			current, ok := Route(g.config, d.Message)
-			if !ok || current.Key != r.Key || !Triggers(d.Message) || !g.stillQueued(d) || !g.supplementAlive(r, d) {
+			if !ok || current.Key != r.Key || !Triggers(current, d.Message) || !g.stillQueued(d) || !g.supplementAlive(r, d) {
 				return errors.New("input preparation cancelled")
 			}
 		}
