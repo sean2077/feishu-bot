@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -67,38 +68,46 @@ func inspectStorage(ctx context.Context, dir string) StorageDiagnostic {
 		r.Exports = unknown
 		return r
 	}
-	r.Exports.Status = "observed"
-	entries := 0
-	err = filepath.WalkDir(exports, func(path string, entry fs.DirEntry, walkErr error) error {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	r.Exports = scanExportMetadata(ctx, exports, 10000)
+	return r
+}
+
+// ReadDir's batch size bounds allocation before the entry limit is reached.
+// filepath.WalkDir would first allocate the entire largest directory. os.Root
+// also keeps a concurrently changed directory from redirecting this metadata
+// scan outside the export tree.
+func scanExportMetadata(ctx context.Context, path string, limit int) DiskFootprint {
+	r := DiskFootprint{Status: "observed"}
+	root, err := os.OpenRoot(path)
+	if err != nil { r.Status = "unavailable"; return r }
+	defer root.Close()
+	pending := []string{"."}
+	visited := 0
+	for len(pending)>0 {
+		if ctx.Err()!=nil { r.Status="partial"; return r }
+		directory := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		dir, err := root.Open(directory)
+		if err != nil { r.Skipped++; continue }
+		for {
+			entries, readErr := dir.ReadDir(128)
+			for _, entry := range entries {
+				visited++
+				if visited>limit || ctx.Err()!=nil { _ = dir.Close(); r.Status="partial"; return r }
+				relative := filepath.Join(directory, entry.Name())
+				info, err := root.Lstat(relative)
+				if err!=nil || info.Mode()&fs.ModeSymlink!=0 { r.Skipped++; continue }
+				if info.IsDir() { pending=append(pending,relative); continue }
+				if !info.Mode().IsRegular() { r.Skipped++; continue }
+				r.Bytes+=info.Size(); r.Files++
+			}
+			if readErr!=nil {
+				if !errors.Is(readErr,io.EOF) { r.Skipped++ }
+				break
+			}
 		}
-		entries++
-		if entries > 10000 {
-			return errors.New("export scan limit")
-		}
-		if walkErr != nil {
-			r.Exports.Skipped++
-			return nil
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if entry.Type()&fs.ModeSymlink != 0 {
-			r.Exports.Skipped++
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() {
-			r.Exports.Skipped++
-			return nil
-		}
-		r.Exports.Bytes += info.Size()
-		r.Exports.Files++
-		return nil
-	})
-	if err != nil || r.Exports.Skipped > 0 {
-		r.Exports.Status = "partial"
+		_ = dir.Close()
 	}
+	if r.Skipped>0 { r.Status="partial" }
 	return r
 }

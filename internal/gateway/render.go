@@ -388,17 +388,22 @@ func (r *render) cancel(title string) {
 	r.mu.Lock()
 	id := r.messageID
 	answer := "以下为中断前输出，不代表任务完成。\n\n" + r.answerLocked()
-	card, truncated := r.cardFitLocked(title, answer, true, false)
+	card := replaceQuickControls(r.cardLocked(title, answer, true, false), nil)
+	body := argsOf(card["body"])
+	if elements, ok := body["elements"].([]any); ok {
+		for _, item := range elements {
+			element := argsOf(item)
+			if stringArg(element, "element_id") == "reply_answer" {
+				element["content"] = strings.ReplaceAll(stringArg(element, "content"), "（完整答案另附文件。）", "（中断前输出预览已截断。）")
+			}
+		}
+	}
+	card = fitCardBudget(card, core.CardPayloadLimit-outputStatusReserve, "\n\n（中断前输出预览已截断。）")
 	r.mu.Unlock()
 	if id == "" { return }
-	name, path := "", ""
-	if truncated {
-		name = "reply.md"
-		path = filepath.Join(r.g.config.DataDir, "exports", core.Hash(r.room.Key)[:32], core.NewID()+".md")
-	}
 	// Finalizing an existing card is durable too: failed /stop, /new or
 	// shutdown cosmetics must not leave an endlessly streaming orphan.
-	output, err := r.g.saveOutput(r.g.store.DB, r.room, r.session, answer, false, id, r.replyTo, r.threadID, card, nil, name, path, "status", "pending")
+	output, err := r.g.saveOutput(r.g.store.DB, r.room, r.session, answer, false, id, r.replyTo, r.threadID, card, nil, "", "", "status", "pending")
 	if err != nil { r.g.audit(r.room.Key, "card_close_pending", core.Args{"session": r.session}); return }
 	if !r.g.isClosing() {
 		r.g.task(func() { _, _ = r.g.deliverOutput(r.g.ctx, output, r.room, false) })

@@ -146,10 +146,10 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 	if (o.State != "pending" && o.State != "uncertain" && o.State != "blocked") || ((o.State == "uncertain" || o.State == "blocked") && !explicit) || (o.FileState == "uncertain" && !explicit) {
 		return false, nil
 	}
-	if !explicit && o.RetryAfter > time.Now().UnixMilli() { return false, nil }
+	if (o.State == "pending" || !explicit) && o.RetryAfter > time.Now().UnixMilli() { return false, nil }
 	ctx = core.WithDeliveryID(ctx, o.DeliveryKey)
 	if explicit { ctx = core.WithExplicitRetry(ctx) }
-	if err = g.budgetOutput(&o); err != nil { return false, err }
+	if err = g.budgetOutput(&o, r); err != nil { return false, err }
 	result, err := g.store.DB.Exec(`UPDATE outbox SET state='sending',delivery_error=NULL WHERE id=? AND state=?`, id, o.State)
 	if err != nil {
 		return false, err
@@ -313,9 +313,14 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 	} else if phase == "file_prepare" {
 		reason = "Cannot read or prepare the file; check the data directory permissions and capacity."
 	}
-	if classified && !failure.DeliveryUncertain() {
-		reason = core.Redact(err.Error(), g.secrets)
-		if !failure.DeliveryRetryable() { state = "blocked" }
+	if classified {
+		detail := cut(core.Redact(err.Error(), g.secrets), 500)
+		if failure.DeliveryUncertain() {
+			reason += " " + detail
+		} else {
+			reason = detail
+			if !failure.DeliveryRetryable() { state = "blocked" }
+		}
 	}
 	attempt := o.RetryCount + 1
 	if state == "pending" && attempt >= 6 {
@@ -442,16 +447,31 @@ func (g *Gateway) outputError(id string) string {
 	return fmt.Sprintf("File not confirmed delivered. Check /outputs; explicit /retry-output %s may be required.", id)
 }
 
-func (g *Gateway) budgetOutput(o *outgoing) error {
+// Reserve room for later delivery-state notices before deciding whether the
+// answer needs a file. Adding controls after this decision must never silently
+// truncate a legacy outbox answer whose only copy was the card.
+const outputStatusReserve = 2048
+
+func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 	if o.Kind == "file" { return nil }
 	card := o.Card
 	if card == nil { card = DisplayCard("回复", o.Text) }
+	if o.Kind == "status" {
+		card = replaceQuickControls(card, nil)
+	} else {
+		card = g.withOutputControls(card, room, o.Session, o.ID, o.RetryCount)
+	}
+	budget := core.CardPayloadLimit - outputStatusReserve
 	size, err := core.CardPayloadBytes(card)
 	if err != nil { return err }
-	if size <= core.CardPayloadLimit { return nil }
-	title := "回复"
-	if !o.Success { title = "执行失败" }
-	o.Card, _ = boundedReplyCard(title, o.Text, nil, 0, true, replyDetails{}, 0, o.Success, nil)
+	if size <= budget { return nil }
+	suffix := "\n\n（完整答案另附文件。）"
+	if o.Kind == "status" { suffix = "\n\n（中断前输出预览已截断。）" }
+	o.Card = fitCardBudget(card, budget, suffix)
+	if o.Kind == "status" {
+		_, err = g.store.DB.Exec("UPDATE outbox SET card=? WHERE id=?", jsonText(o.Card), o.ID)
+		return err
+	}
 	if o.FilePath == "" {
 		o.FileName = "reply.md"
 		o.FilePath = filepath.Join(g.config.DataDir, "exports", core.Hash(o.Room)[:32], core.NewID()+".md")
@@ -469,7 +489,7 @@ func (g *Gateway) outputCard(o outgoing, room core.Room, filesPending bool) core
 		if !o.Success { title = "执行失败" }
 		card = DisplayCard(title, o.Text)
 	}
-	card = g.withOutputControls(card, room, o.Session, o.ID, o.RetryCount)
+	if o.Kind == "status" { card = replaceQuickControls(card, nil) } else { card = g.withOutputControls(card, room, o.Session, o.ID, o.RetryCount) }
 	if filesPending {
 		card["header"] = core.Args{"template":"orange", "title":core.Args{"tag":"plain_text", "content":"模型已完成 · 文件待送达"}}
 		body := argsOf(card["body"])

@@ -125,7 +125,8 @@ func(f *artifactPlatform)serveHTTP(w http.ResponseWriter,r *http.Request){
 
 func(f *artifactPlatform)websocket(w http.ResponseWriter,r *http.Request){
 	conn,err:=(&websocket.Upgrader{}).Upgrade(w,r,nil);if err!=nil{f.t.Error("artifact websocket upgrade",err);return}
-	defer conn.Close();wire:=&artifactWire{conn:conn};f.connections<-wire
+	defer conn.Close();wire:=&artifactWire{conn:conn}
+	select{case f.connections<-wire:default:f.t.Error("unexpected artifact reconnect storm");return}
 	for{
 		_,data,err:=conn.ReadMessage();if err!=nil{return}
 		var frame larkws.Frame

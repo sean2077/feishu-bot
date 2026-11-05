@@ -86,7 +86,7 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 			}
 			return e
 		}
-		if _, e := g.store.DB.Exec("UPDATE outbox SET state='cancelled' WHERE session=? AND state IN ('pending','uncertain','blocked','sending','preparing')", session); e != nil {
+		if e := g.cancelPendingOutputs(r, session); e != nil {
 			if s != nil {
 				s.events.Unlock()
 			}

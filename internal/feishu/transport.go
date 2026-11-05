@@ -492,6 +492,19 @@ func (c *Client) checkReplyOrigin(ctx context.Context, id string, room core.Room
 		}
 		return nil
 	}
+	if c.db != nil {
+		var savedRoom string
+		if err := c.db.QueryRowContext(ctx, "SELECT room FROM outputs WHERE id=?", id).Scan(&savedRoom); err == nil {
+			// Management callbacks reply to the bot's own acknowledged card.
+			// A scoped output receipt is sufficient for this reply only; it must
+			// not become a history or attachment-download capability.
+			if savedRoom != room.Key {
+				return errors.New("feishu: reply output is outside the room scope")
+			}
+			_, err = c.validatedRoom(room)
+			return err
+		}
+	}
 	origin, err := c.Fetch(ctx, id, room)
 	if err != nil {
 		return err

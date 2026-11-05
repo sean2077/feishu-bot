@@ -85,6 +85,10 @@ func TestDeliveryClassificationsControlRetryState(t *testing.T) {
 			if ok, err := f.g.deliverOutput(context.Background(), id, f.room(), false); ok || err == nil { t.Fatal("rejection reported delivered") }
 			o, err := f.g.output(id)
 			if err != nil || o.State != tc.state { t.Fatalf("state=%s err=%v", o.State, err) }
+			if tc.name == "uncertain" {
+				var reason string
+				if err := f.s.DB.QueryRow("SELECT delivery_error FROM outbox WHERE id=?", id).Scan(&reason); err != nil || !strings.Contains(reason, "unconfirmed") || !strings.Contains(reason, tc.err.Error()) { t.Fatalf("lost safe ambiguity diagnostics: %q %v", reason, err) }
+			}
 			if tc.state == "pending" && o.RetryAfter < time.Now().Add(50*time.Second).UnixMilli() { t.Fatal("Retry-After discarded") }
 			before := f.tr.cardCount()
 			_, _ = f.g.deliverOutput(context.Background(), id, f.room(), false)
@@ -232,4 +236,31 @@ func TestFinalBeforeReservedPreviewFlushKeepsOriginalCreate(t *testing.T) {
 	if ok,err:=f.g.deliverOutput(context.Background(),o.ID,f.room(),true);!ok||err!=nil {t.Fatal(ok,err)}
 	f.tr.mu.Lock();defer f.tr.mu.Unlock()
 	if !strings.Contains(jsonText(f.tr.updates[len(f.tr.updates)-1].card),"final answer") {t.Fatal("final snapshot not applied to recovered message")}
+}
+
+func TestLegacyReplyBudgetIncludesNewControlsAndExportsAllText(t *testing.T) {
+	f:=newFixture(t,nil)
+	s,err:=f.s.Session(f.room().Key)
+	if err!=nil {t.Fatal(err)}
+	answer:=strings.Repeat("a",27000)
+	card:=DisplayCard("回复",answer)
+	if n,err:=core.CardPayloadBytes(card);err!=nil||n>core.CardPayloadLimit {t.Fatal("fixture was already oversized",n,err)}
+	id,err:=f.g.saveOutput(f.s.DB,f.room(),s.ID,answer,true,"","","",card,nil,"","","reply","pending")
+	if err!=nil {t.Fatal(err)}
+	if ok,err:=f.g.deliverOutput(context.Background(),id,f.room(),false);!ok||err!=nil {t.Fatal(ok,err)}
+	o,err:=f.g.output(id)
+	if err!=nil||o.FilePath==""||o.FileState!="done" {t.Fatal("controls silently truncated the only answer",o,err)}
+	data,err:=os.ReadFile(o.FilePath)
+	if err!=nil||string(data)!=answer {t.Fatal("legacy complete answer lost",err)}
+	if f.starts.Load()!=0 {t.Fatal("migration woke the model")}
+}
+
+func TestExplicitKnownTargetRetryHonorsProviderDeadline(t *testing.T) {
+	f:=newFixture(t,nil)
+	id,err:=f.g.saveOutput(f.s.DB,f.room(),"session","answer",true,"known-card","","",DisplayCard("回复","answer"),nil,"","","reply","pending")
+	if err!=nil {t.Fatal(err)}
+	if _,err=f.s.DB.Exec("UPDATE outbox SET retry_after=? WHERE id=?",time.Now().Add(time.Minute).UnixMilli(),id);err!=nil {t.Fatal(err)}
+	if ok,err:=f.g.deliverOutput(context.Background(),id,f.room(),true);ok||err!=nil {t.Fatal(ok,err)}
+	f.tr.mu.Lock();defer f.tr.mu.Unlock()
+	if len(f.tr.updates)!=0 {t.Fatal("explicit retry ignored provider Retry-After")}
 }

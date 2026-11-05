@@ -3,8 +3,6 @@ package gateway
 import (
 	"strings"
 	"testing"
-
-	"github.com/sean2077/feishu-bot/internal/core"
 )
 
 func TestManagementDiagnosticsStayRoomScopedAndRespectRole(t *testing.T) {

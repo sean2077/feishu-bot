@@ -62,6 +62,10 @@ func (g *Gateway) retainCards(ctx context.Context, now int64) {
 // The card is already a private copy. Keep all controls and metadata, shrinking
 // only the answer to make room for a delivery-status notice.
 func fitNoticeCard(card core.Args) core.Args {
+	return fitCardBudget(card, core.CardPayloadLimit, "…")
+}
+
+func fitCardBudget(card core.Args, budget int, suffix string) core.Args {
 	body := argsOf(card["body"])
 	elements, _ := body["elements"].([]any)
 	var answer core.Args
@@ -73,15 +77,15 @@ func fitNoticeCard(card core.Args) core.Args {
 	if answer == nil { return card }
 	original := stringArg(answer, "content")
 	size, err := core.CardPayloadBytes(card)
-	if err == nil && size <= core.CardPayloadLimit { return card }
+	if err == nil && size <= budget { return card }
 	lo, hi := 0, min(len(original), core.CardPayloadLimit)
 	for lo < hi {
 		mid := lo + (hi-lo+1)/2
-		answer["content"] = bytePrefix(original, mid) + "…"
+		answer["content"] = bytePrefix(original, mid) + suffix
 		size, err = core.CardPayloadBytes(card)
-		if err == nil && size <= core.CardPayloadLimit { lo = mid } else { hi = mid-1 }
+		if err == nil && size <= budget { lo = mid } else { hi = mid-1 }
 	}
-	answer["content"] = bytePrefix(original, lo) + "…"
+	answer["content"] = bytePrefix(original, lo) + suffix
 	return card
 }
 

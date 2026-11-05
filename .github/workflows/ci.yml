@@ -77,9 +77,9 @@ jobs:
         shell: bash
         run: go test -race -count=1 -timeout 180s ./internal/cli -run '^TestBuiltArtifact'
       - name: Record advisory Go formatting patch
-        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
         shell: bash
-        run: gofmt -d $(git ls-files '*.go') > gofmt.patch
+        run: git ls-files -z '*.go' | xargs -0 gofmt -d > gofmt.patch
       - name: Retain advisory Go formatting patch
         if: always() && matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

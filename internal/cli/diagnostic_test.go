@@ -79,3 +79,12 @@ func TestGuidancePreservesUnverifiedLiveAcceptance(t *testing.T) {
 		}
 	}
 }
+
+func TestExportMetadataScanStopsAtItsBudget(t *testing.T) {
+	dir:=t.TempDir()
+	for _,name:=range []string{"one","two","three"} {
+		if err:=os.WriteFile(filepath.Join(dir,name),[]byte("x"),0600);err!=nil { t.Fatal(err) }
+	}
+	r:=scanExportMetadata(context.Background(),dir,2)
+	if r.Status!="partial" || r.Files!=2 || r.Bytes!=2 { t.Fatal("export scan exceeded its entry budget or hid truncation",r) }
+}
