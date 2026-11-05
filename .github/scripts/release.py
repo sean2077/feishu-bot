@@ -821,6 +821,7 @@ def package_msi(meta: dict, binary: Path, arch: str, output: Path, repo: Path, w
     if binary.is_symlink() or not binary.is_file():
         raise ReleaseError("production binary must be a regular file")
     files = release_payload(meta, binary.read_bytes(), "windows", arch, repo, "msi")
+    wix_bin = wix_bin.resolve()
     candle, light = wix_bin / "candle.exe", wix_bin / "light.exe"
     for tool in (candle, light):
         if not tool.is_file():
@@ -851,6 +852,7 @@ def smoke_installer(meta: dict, installer: Path, os_name: str, arch: str) -> Non
     validate_metadata(meta)
     if installer.name != installer_name(meta, os_name, arch) or installer.is_symlink() or not installer.is_file():
         raise ReleaseError("installer name, target or file type is incorrect")
+    installer = installer.resolve()
     host_os = {"Linux": "linux", "Windows": "windows"}.get(platform.system())
     host_arch = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(platform.machine().lower())
     if (host_os, host_arch) != (os_name, arch):

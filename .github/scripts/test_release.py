@@ -493,6 +493,7 @@ class PackagingTests(unittest.TestCase):
 
     def test_deb_installer_smoke_elevates_only_dpkg(self):
         path = self.make_installer(("linux", "amd64"))
+        relative = Path(os.path.relpath(path, Path.cwd()))
         calls = []
         def process(args, *, cwd, timeout=30, env=None):
             calls.append(args)
@@ -509,8 +510,9 @@ class PackagingTests(unittest.TestCase):
              mock.patch.object(release.platform, "machine", return_value="x86_64"), \
              mock.patch.object(release.os, "geteuid", return_value=1000, create=True), \
              mock.patch.object(release, "run", side_effect=process):
-            release.smoke_installer(self.meta, path, "linux", "amd64")
+            release.smoke_installer(self.meta, relative, "linux", "amd64")
         self.assertEqual(calls[0][:3], ["sudo", "-n", "dpkg"])
+        self.assertTrue(Path(calls[0][-1]).is_absolute())
         self.assertEqual(calls[-1][:4], ["sudo", "-n", "dpkg", "-r"])
         self.assertNotIn("sudo", calls[1])
 
