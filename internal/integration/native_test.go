@@ -140,15 +140,47 @@ func (f *localFeishu) withButton(label string) (observedCard, core.Args, bool) {
 	return observedCard{}, nil, false
 }
 func buttonValue(card core.Args, label string) core.Args {
-	body, _ := card["body"].(map[string]any)
-	elements, _ := body["elements"].([]any)
-	for _, raw := range elements {
-		element, _ := raw.(map[string]any)
-		text, _ := element["text"].(map[string]any)
-		if text["content"] == label {
-			value, _ := element["value"].(map[string]any)
-			return core.Args(value)
+	var found core.Args
+	var walk func(any) bool
+	walk = func(value any) bool {
+		switch item := value.(type) {
+		case map[string]any:
+			if item["tag"] == "button" {
+				text, _ := item["text"].(map[string]any)
+				if text["content"] == label {
+					if value, _ := item["value"].(map[string]any); value != nil {
+						found = core.Args(value)
+						return true
+					}
+					// Card JSON 2.0 declares click callbacks under behaviors;
+					// newer cards no longer carry a top-level value.
+					if behaviors, ok := item["behaviors"].([]any); ok {
+						for _, raw := range behaviors {
+							behavior, _ := raw.(map[string]any)
+							if value, _ := behavior["value"].(map[string]any); value != nil {
+								found = core.Args(value)
+								return true
+							}
+						}
+					}
+				}
+			}
+			for _, child := range item {
+				if walk(child) {
+					return true
+				}
+			}
+		case []any:
+			for _, child := range item {
+				if walk(child) {
+					return true
+				}
+			}
 		}
+		return false
+	}
+	if walk(card) {
+		return found
 	}
 	return nil
 }
