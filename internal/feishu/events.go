@@ -144,15 +144,15 @@ func (c *Client) runEvent(ctx context.Context, event pendingEvent) (reply any, e
 	if event.action != nil && c.onAction != nil {
 		callbackCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 		defer cancel()
-		text, e := c.onAction(callbackCtx, *event.action)
+		reply, e := c.onAction(callbackCtx, *event.action)
 		if e != nil {
 			c.emit("feishu_card_handler_error", formatSafeError(e))
 			return nil, e
 		}
-		if text == "" {
+		if reply == nil {
 			return core.Args{}, nil
 		}
-		return core.Args{"toast": core.Args{"type": "info", "content": text}}, nil
+		return reply, nil
 	}
 	return nil, nil
 }

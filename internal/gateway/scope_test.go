@@ -186,6 +186,54 @@ func TestQuestionSelectionsRemainPerActor(t *testing.T) {
 		t.Fatalf("mixed actor choices: %#v", values)
 	}
 }
+func TestPrivateQuestionSelectionReturnsUpdatedCard(t *testing.T) {
+	f := newFixture(t, nil)
+	m := f.message("dm", "task", "member")
+	m.ChatType = "p2p"
+	m.ChatID = "dm-member"
+	m.Mentioned = false
+	f.send(m)
+	w := f.worker()
+	_ = f.delivery(w)
+	w.emit(core.WorkerEvent{Type: "request", ID: "q", Kind: "question", Name: "AskUserQuestion", Input: core.Args{"questions": []any{core.Args{"question": "Pick", "options": []any{core.Args{"label": "A"}, core.Args{"label": "B"}}}}}})
+	eventually(t, func() bool { return f.tr.cardCount() == 1 })
+	card := f.tr.cardLast()
+	response, e := f.g.ActionResponse(context.Background(), core.CardAction{UserID: "member", ChatID: "dm-member", MessageID: card.id, Value: cardValue(card.card, "A")})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if stringArg(argsOf(response["toast"]), "content") == "" {
+		t.Fatal("private selection returned no toast")
+	}
+	raw, ok := response["card"].(core.Args)
+	if !ok || stringArg(raw, "type") != "raw" {
+		t.Fatalf("private selection returned no raw card: %#v", response)
+	}
+	body := argsOf(argsOf(raw["data"])["body"])
+	elements, _ := body["elements"].([]any)
+	intro := stringArg(argsOf(elements[0]), "content")
+	if !strings.Contains(intro, "当前选择") || !strings.Contains(intro, "1. A") {
+		t.Fatalf("private card did not show the selection: %q", intro)
+	}
+}
+
+func TestGroupQuestionSelectionReturnsNoCard(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("group", "task", "member"))
+	w := f.worker()
+	_ = f.delivery(w)
+	w.emit(core.WorkerEvent{Type: "request", ID: "q", Kind: "question", Name: "AskUserQuestion", Input: core.Args{"questions": []any{core.Args{"question": "Pick", "options": []any{core.Args{"label": "A"}, core.Args{"label": "B"}}}}}})
+	eventually(t, func() bool { return f.tr.cardCount() == 1 })
+	card := f.tr.cardLast()
+	response, e := f.g.ActionResponse(context.Background(), core.CardAction{UserID: "member", ChatID: "group", MessageID: card.id, Value: cardValue(card.card, "A")})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, exists := response["card"]; exists {
+		t.Fatalf("group selection returned a card update: %#v", response)
+	}
+}
+
 func TestStoppedApprovalAndOldCardCannotRunCommand(t *testing.T) {
 	f := newFixture(t, nil)
 	f.send(f.message("one", "task", "member"))

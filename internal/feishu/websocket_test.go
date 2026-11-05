@@ -93,7 +93,9 @@ func TestLongConnectionSeparatesCardCallbacksAndClosesAllLoops(t *testing.T) {
 			started.Do(func() { close(messageStarted) })
 			<-ctx.Done()
 			return ctx.Err()
-		}, func(context.Context, core.CardAction) (string, error) { return "已确认", nil })
+		}, func(context.Context, core.CardAction) (core.Args, error) {
+			return core.Args{"toast": core.Args{"type": "info", "content": "已确认"}}, nil
+		})
 	}()
 	await(t, messageStarted, "message callback")
 	await(t, cardAck, "independent card callback")

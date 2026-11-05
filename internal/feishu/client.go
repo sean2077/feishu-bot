@@ -47,7 +47,7 @@ type Client struct {
 	conn            *websocket.Conn
 	started, closed bool
 	onMessage       func(context.Context, core.Message) error
-	onAction        func(context.Context, core.CardAction) (string, error)
+	onAction        func(context.Context, core.CardAction) (core.Args, error)
 	locks           keyedLocks
 	originMu        sync.Mutex
 	origins         map[string]core.Room
