@@ -7,38 +7,7 @@ import (
 )
 
 func RoomFor(c core.Config, chat, dm string) (core.Room, bool) {
-	project := ""
-	var members []string
-	mentionOptional := false
-	if dm != "" {
-		for _, b := range c.DMs {
-			if b.UserID == dm {
-				project = b.ProjectID
-				break
-			}
-		}
-	} else {
-		for _, b := range c.Groups {
-			if b.ChatID == chat {
-				project = b.ProjectID
-				members = b.Members
-				mentionOptional = b.MentionOptional
-				break
-			}
-		}
-	}
-	p, ok := c.Project(project)
-	if !ok || project == "" {
-		return core.Room{}, false
-	}
-	kind := "group"
-	var user any
-	if dm != "" {
-		kind = "p2p"
-		user = dm
-	}
-	key, _ := json.Marshal([]any{c.TenantID, c.AppID, project, kind, chat, user})
-	return core.Room{Key: string(key), ChatID: chat, ProjectID: project, DMUser: dm, Maintainers: p.Maintainers, Members: members, MentionOptional: mentionOptional}, true
+	return c.RoomFor(chat, dm)
 }
 func RoomFromKey(c core.Config, key string) (core.Room, bool) {
 	var a []any
@@ -72,13 +41,7 @@ func contains(values []string, v string) bool {
 	return false
 }
 func AuthorizedAuthor(r core.Room, id string) bool {
-	if id == "" {
-		return false
-	}
-	if r.DMUser != "" {
-		return r.DMUser == id
-	}
-	return contains(r.Maintainers, id) || contains(r.Members, id)
+	return r.Authorizes(id)
 }
 func Route(c core.Config, m core.Message) (core.Room, bool) {
 	if m.SenderIsBot || m.SenderID == "" || m.ChatID == "" || m.ID == "" || (m.ChatType != "group" && m.ChatType != "p2p") {

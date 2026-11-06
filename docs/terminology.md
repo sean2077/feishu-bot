@@ -94,6 +94,18 @@ _英文_: background pre-injection
 _英文_: mention-optional group
 _避免_: 开放群、免授权群
 
+**兜底群绑定**
+
+`groups[]` 中 `chatId: "*"` 的唯一绑定，覆盖未显式绑定的群。默认仅项目维护者可在这些群触发；`members` 增加获准作者，`allowAllMembers: true` 允许该群任意用户。显式群绑定优先，私聊不受影响。默认不配置，仅启动时读取。
+_英文_: default group binding
+_避免_: 开放群、通配符成员
+
+**允许全部群成员**
+
+群绑定上的 `allowAllMembers: true`。该群任意用户都是获准作者，仍需明确 @，除非同时设置 `mentionOptional`。仅建议用于成员很少且互信的小群。
+_英文_: allow-all-members
+_避免_: 免授权群
+
 **维护者**
 
 配置中获准管理共享会话、执行管理命令和批准审批的用户。与普通获准成员不同。

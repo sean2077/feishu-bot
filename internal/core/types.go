@@ -36,6 +36,7 @@ type Room struct {
 	Maintainers     []string `json:"maintainers"`
 	Members         []string `json:"members,omitempty"`
 	MentionOptional bool     `json:"mentionOptional"`
+	AllowAllMembers bool     `json:"allowAllMembers,omitempty"`
 }
 type Session struct {
 	ID        string `json:"id"`
@@ -130,6 +131,7 @@ type Group struct {
 	ProjectID       string   `json:"projectId"`
 	Members         []string `json:"members,omitempty"`
 	MentionOptional bool     `json:"mentionOptional"`
+	AllowAllMembers bool     `json:"allowAllMembers,omitempty"`
 }
 type DM struct {
 	UserID    string `json:"userId"`

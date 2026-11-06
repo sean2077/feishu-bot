@@ -45,6 +45,52 @@ func TestRoomKeyIgnoresMentionOptional(t *testing.T) {
 	}
 }
 
+func TestDefaultGroupBindingAppliesOnlyToUnlistedGroups(t *testing.T) {
+	c := policyConfig()
+	c.Groups = append(c.Groups, core.Group{ChatID: core.AnyGroupChatID, ProjectID: "project"})
+	room, ok := RoomFor(c, "oc_unlisted", "")
+	if !ok || room.ChatID != "oc_unlisted" || room.ProjectID != "project" {
+		t.Fatalf("default group room: %+v", room)
+	}
+	if !room.Authorizes("owner") || room.Authorizes("member") || room.Authorizes("stranger") || room.Authorizes("") {
+		t.Fatal("default group must allow only maintainers")
+	}
+	if _, ok := RoomFor(c, "oc_dm_chat", "member"); !ok {
+		t.Fatal("configured DM stopped resolving")
+	}
+	if _, ok := RoomFor(c, "oc_dm_chat", "stranger"); ok {
+		t.Fatal("default group binding leaked into DMs")
+	}
+	explicit, ok := RoomFor(c, "group", "")
+	if !ok || !explicit.MentionOptional || explicit.AllowAllMembers {
+		t.Fatalf("explicit binding did not win: %+v", explicit)
+	}
+}
+
+func TestExplicitGroupBindingOverridesDefaultPolicy(t *testing.T) {
+	c := policyConfig()
+	c.Groups = append(c.Groups, core.Group{ChatID: core.AnyGroupChatID, ProjectID: "project", AllowAllMembers: true})
+	explicit, _ := RoomFor(c, "group", "")
+	if explicit.AllowAllMembers || explicit.Authorizes("stranger") || !explicit.Authorizes("member") {
+		t.Fatalf("explicit binding inherited default policy: %+v", explicit)
+	}
+	fallback, _ := RoomFor(c, "oc_unlisted", "")
+	if !fallback.AllowAllMembers || !fallback.Authorizes("stranger") {
+		t.Fatalf("default policy: %+v", fallback)
+	}
+}
+
+func TestRoomKeyIgnoresAllowAllMembers(t *testing.T) {
+	c := policyConfig()
+	c.Groups = append(c.Groups, core.Group{ChatID: core.AnyGroupChatID, ProjectID: "project"})
+	off, _ := RoomFor(c, "oc_unlisted", "")
+	c.Groups[2].AllowAllMembers = true
+	on, _ := RoomFor(c, "oc_unlisted", "")
+	if on.Key != off.Key {
+		t.Fatalf("room key changed with author policy: %q != %q", off.Key, on.Key)
+	}
+}
+
 func TestTriggersHonorsMentionOptional(t *testing.T) {
 	c := policyConfig()
 	optional, _ := RoomFor(c, "group", "")
