@@ -24,6 +24,10 @@ const (
 	httpActiveLimit  = 8
 	httpWaitingLimit = 64
 	httpPreviewLimit = 2
+
+	// A single response header must not block a whole endpoint group (including
+	// token refresh) until restart. Longer hints still apply to that request.
+	httpSharedBackoffMax = time.Minute
 )
 
 var httpGroupNames = [httpGroupCount]string{"auth", "endpoint", "cards", "messages", "files", "resources", "other"}
@@ -144,6 +148,7 @@ func (b *requestBudget) rateLimited(req *http.Request, delay time.Duration) {
 		// solely because two independently sampled jitters disagreed.
 		delay = 250 * time.Millisecond
 	}
+	delay = min(delay, httpSharedBackoffMax)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	until := time.Now().Add(delay)

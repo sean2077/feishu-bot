@@ -106,6 +106,11 @@ func (g *Gateway) syncSessionTitles(s *slot, worker core.Worker, driver *session
 				break
 			}
 			if title.State != "pending" || title.Desired == "" || title.Revision == lastRevision {
+				// A /rename can attach its notice after this driver already
+				// finished that revision; report the stored outcome once.
+				if title.State != "pending" {
+					g.sendSessionTitleNotice(s, driver, title.Revision, title.Desired, title.State)
+				}
 				break
 			}
 			lastRevision = title.Revision
@@ -126,21 +131,32 @@ func (g *Gateway) syncSessionTitles(s *slot, worker core.Worker, driver *session
 				g.audit(s.room.Key, "session_title_result_save_failed", core.Args{"revision": title.Revision, "error": saveErr.Error()})
 			}
 			if applied {
-				s.mu.Lock()
-				notice := driver.notice
-				if notice == nil || notice.revision != title.Revision {
-					notice = nil
-				} else {
-					driver.notice = nil
-				}
-				s.mu.Unlock()
-				if notice != nil && s.ctx.Err() == nil {
-					g.notify(s.room, sessionTitleResult(title.Desired, state), &notice.message)
-				}
+				g.sendSessionTitleNotice(s, driver, title.Revision, title.Desired, state)
 			}
 			// Re-read once to pick up a coalesced newer revision. The same
 			// uncertain write is never retried without a new explicit intent.
 		}
+	}
+}
+
+// sendSessionTitleNotice delivers the pending /rename notice for revision at
+// most once. Only completed native outcomes are reported.
+func (g *Gateway) sendSessionTitleNotice(s *slot, driver *sessionTitleSync, revision, desired, state string) {
+	switch state {
+	case "confirmed", string(core.ControlNotSent), string(core.ControlRejected), string(core.ControlUnconfirmed):
+	default:
+		return
+	}
+	s.mu.Lock()
+	notice := driver.notice
+	if notice == nil || notice.revision != revision {
+		notice = nil
+	} else {
+		driver.notice = nil
+	}
+	s.mu.Unlock()
+	if notice != nil && s.ctx.Err() == nil {
+		g.notify(s.room, sessionTitleResult(desired, state), &notice.message)
 	}
 }
 

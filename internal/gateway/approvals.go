@@ -178,12 +178,15 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 			}
 		}
 		if !success {
+			// Cancellation or expiry already settles the request through its own
+			// callback; only an actual delivery failure reports undelivered cards.
+			ended := waitCtx.Err() != nil
 			reason := "card delivery failed"
 			if errors.Is(lastErr, core.ErrCardTooLarge) {
 				reason = "approval card exceeds the platform size limit; ask fewer questions or shorter option text"
 			}
 			g.settleApproval(id, core.Args{"approved": false, "reason": reason}, "system")
-			if p.forwarded {
+			if p.forwarded && !ended {
 				g.notify(r, "未能确认审批卡送达项目维护者。本次请求已结束，操作未获批准。", nil)
 			}
 		}
@@ -341,6 +344,16 @@ func (g *Gateway) settleApproval(id string, value core.Args, actor string) bool 
 		defer cancelWrite()
 	}
 	durable := g.persistApproval(writeCtx, id, state, actor)
+	fallback := ""
+	if !durable && state == "approved" && writeCtx.Err() != nil {
+		// The approval lost its window while waiting for storage. The native
+		// request must not wait again, so record the negative outcome after
+		// settlement instead of leaving the row pending until restart.
+		fallback = "expired"
+		if p.ctx.Err() != nil {
+			fallback = "denied"
+		}
+	}
 	if !durable {
 		// Only a committed approval can authorize execution. Abandon the
 		// local request even when storage is unavailable; recovery expires
@@ -362,6 +375,9 @@ func (g *Gateway) settleApproval(id string, value core.Args, actor string) bool 
 	}
 	p.outcome <- value
 	g.approvalMu.Unlock()
+	if fallback != "" {
+		g.task(func() { _ = g.persistApproval(context.Background(), id, fallback, "system") })
+	}
 	g.audit(p.room.Key, "request_settled", core.Args{"id": id, "kind": p.kind, "state": state, "actor": actor})
 	for _, mid := range cards {
 		mid := mid

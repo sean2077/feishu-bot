@@ -530,6 +530,7 @@ class PackagingTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.root)}), \
              mock.patch.object(release.platform, "system", return_value="Linux"), \
              mock.patch.object(release.platform, "machine", return_value="x86_64"), \
+             mock.patch.object(release.os, "geteuid", return_value=1000, create=True), \
              mock.patch.object(release, "installer_operation", side_effect=operation), \
              mock.patch.object(release, "deb_installed_identity", side_effect=[None, ("1.2.3", "amd64", "half-installed"), None]):
             with self.assertRaisesRegex(release.ReleaseError, "partial install timeout"):
@@ -545,6 +546,7 @@ class PackagingTests(unittest.TestCase):
             with self.subTest(identities=identities), mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.root)}), \
                  mock.patch.object(release.platform, "system", return_value="Linux"), \
                  mock.patch.object(release.platform, "machine", return_value="x86_64"), \
+                 mock.patch.object(release.os, "geteuid", return_value=1000, create=True), \
                  mock.patch.object(release, "installer_operation") as command, \
                  mock.patch.object(release, "deb_installed_identity", side_effect=identities):
                 with self.assertRaises(release.ReleaseError):
@@ -557,6 +559,7 @@ class PackagingTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.root)}), \
              mock.patch.object(release.platform, "system", return_value="Linux"), \
              mock.patch.object(release.platform, "machine", return_value="x86_64"), \
+             mock.patch.object(release.os, "geteuid", return_value=1000, create=True), \
              mock.patch.object(release, "run", side_effect=release.ReleaseError("version check failed")), \
              mock.patch.object(release, "installer_operation", side_effect=[None, release.ReleaseError("uninstall failed")]), \
              mock.patch.object(release, "deb_installed_identity", side_effect=[None, ("1.2.3", "amd64", "installed"),

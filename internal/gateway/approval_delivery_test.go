@@ -323,8 +323,47 @@ func TestApprovalCancelledWhileWaitingForStorageCannotCommitLater(t *testing.T) 
 	case <-time.After(time.Second):
 		t.Fatal("settlement did not finish")
 	}
-	var state string
-	if err := f.s.DB.QueryRow("SELECT state FROM requests WHERE id=?", id).Scan(&state); err != nil || state != "pending" {
-		t.Fatal("cancelled transaction committed a decision; pending recovery was expected", state, err)
+	// The cancelled approval itself never commits; the request is then closed
+	// durably as denied instead of staying pending until restart recovery.
+	eventually(t, func() bool {
+		var state, actor string
+		err := f.s.DB.QueryRow("SELECT state,coalesce(actor,'') FROM requests WHERE id=?", id).Scan(&state, &actor)
+		return err == nil && state == "denied" && actor == "system"
+	})
+}
+
+func TestForwardedApprovalCancelledDuringDeliveryDoesNotReportFailure(t *testing.T) {
+	f := newFixture(t, nil)
+	r, session := forwardedApprovalRoom(t, f)
+	entered := make(chan struct{}, 4)
+	f.tr.cardHook = func(ctx context.Context, _ core.Room, _ core.Args) (string, error) {
+		entered <- struct{}{}
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan core.Args, 1)
+	go func() {
+		value, _ := f.g.ask(ctx, r, session, "Bash", core.Args{}, "Operation summary", nil)
+		result <- value
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("approval card delivery did not start")
+	}
+	cancel()
+	select {
+	case value := <-result:
+		if boolArg(value, "approved") || stringArg(value, "reason") != "cancelled" {
+			t.Fatal(value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled approval did not return")
+	}
+	eventually(t, func() bool { return f.g.approvalCount(session) == 0 })
+	time.Sleep(100 * time.Millisecond)
+	if hasApprovalNotice(f, "未能确认审批卡送达") {
+		t.Fatal("cancellation was reported as an approval card delivery failure")
 	}
 }

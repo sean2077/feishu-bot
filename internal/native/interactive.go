@@ -17,14 +17,15 @@ import (
 // Interactive resumes an existing native session with the same launch identity
 // and model profile. Its caller must hold the service lock until tree cleanup is
 // confirmed. It does not expose Feishu tools, an action relay or stdio RPC.
-func Interactive(ctx context.Context, c core.Config, r core.Room, s core.Session, w core.Workspace, input *os.File, out, errOut io.Writer) error {
+// beforeStart runs only after every local launch check has passed.
+func Interactive(ctx context.Context, c core.Config, r core.Room, s core.Session, w core.Workspace, input *os.File, out, errOut io.Writer, beforeStart func() error) error {
 	cmd, cleanup, err := interactiveCommand(c, r, s, w)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = input, out, errOut
-	return process.RunInteractive(ctx, cmd)
+	return process.RunInteractiveWith(ctx, cmd, beforeStart)
 }
 
 func interactiveCommand(c core.Config, r core.Room, s core.Session, w core.Workspace) (*exec.Cmd, func(), error) {

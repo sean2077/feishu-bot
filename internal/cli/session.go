@@ -72,11 +72,13 @@ func parseSession(args []string, o Options) (Options, error) {
 	return resolveOptions(&o)
 }
 
-type localSessionRunner func(context.Context, core.Config, core.Room, core.Session, core.Workspace) error
+// A runner calls commit after its local launch checks and before starting the
+// native process. Returning without commit leaves the chat selection unchanged.
+type localSessionRunner func(ctx context.Context, c core.Config, r core.Room, s core.Session, w core.Workspace, commit func() error) error
 
 func runLocalSession(ctx context.Context, c core.Config, o Options, out, errOut io.Writer) error {
-	return runSessionWith(ctx, c, o, out, func(ctx context.Context, c core.Config, r core.Room, s core.Session, w core.Workspace) error {
-		return native.Interactive(ctx, c, r, s, w, os.Stdin, out, errOut)
+	return runSessionWith(ctx, c, o, out, func(ctx context.Context, c core.Config, r core.Room, s core.Session, w core.Workspace, commit func() error) error {
+		return native.Interactive(ctx, c, r, s, w, os.Stdin, out, errOut, commit)
 	})
 }
 
@@ -150,22 +152,33 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 	if err = st.BindLaunchIdentity(s, w, p.CWD != ""); err != nil {
 		return err
 	}
-	if _, err = st.Resume(r.Key, s.ID); err != nil {
-		return err
-	}
 	s.State = "open"
-	// Native local turns are not observed by the gateway's SDK result ledger.
-	if _, err = st.DB.ExecContext(ctx, "UPDATE usage_coverage SET prior_unknown=1 WHERE session=?", s.ID); err != nil {
+	committed := false
+	commit := func() error {
+		// Select the session and mark local usage only after the launch checks
+		// pass, so a start that fails early never switches the chat's session.
+		if committed {
+			return nil
+		}
+		if _, err := st.Resume(r.Key, s.ID); err != nil {
+			return err
+		}
+		committed = true
+		// Native local turns are not observed by the gateway's SDK result ledger.
+		if _, err := st.DB.ExecContext(ctx, "UPDATE usage_coverage SET prior_unknown=1 WHERE session=?", s.ID); err != nil {
+			return err
+		}
+		if _, err := st.DB.ExecContext(ctx, "INSERT INTO audit(at,room,event,detail) VALUES(?,?,'local_session_started',?)", time.Now().UnixMilli(), r.Key, sessionDetail(core.Args{"session": s.ID, "nativeSessionId": s.CCID})); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(out, "Local session %s; gateway remains locked until native exit is confirmed.\n", s.ID)
 		return err
 	}
-	if _, err = st.DB.ExecContext(ctx, "INSERT INTO audit(at,room,event,detail) VALUES(?,?,'local_session_started',?)", time.Now().UnixMilli(), r.Key, sessionDetail(core.Args{"session": s.ID, "nativeSessionId": s.CCID})); err != nil {
-		return err
-	}
-	if _, err = fmt.Fprintf(out, "Local session %s; gateway remains locked until native exit is confirmed.\n", s.ID); err != nil {
-		return err
-	}
-	result = run(ctx, c, r, s, w)
+	result = run(ctx, c, r, s, w, commit)
 	confirmed = !errors.Is(result, process.ErrUnconfirmed)
+	if !committed {
+		return result
+	}
 	state := "exited"
 	if result != nil {
 		state = "failed"

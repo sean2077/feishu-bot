@@ -51,7 +51,10 @@ func localSessionFixture(t *testing.T) (core.Config, core.Room, core.Session, co
 func TestLocalSessionRetainsIdentityAndExclusiveLease(t *testing.T) {
 	c, r, s, w := localSessionFixture(t)
 	var out bytes.Buffer
-	err := runSessionWith(context.Background(), c, Options{SessionID: s.ID}, &out, func(ctx context.Context, actual core.Config, room core.Room, session core.Session, work core.Workspace) error {
+	err := runSessionWith(context.Background(), c, Options{SessionID: s.ID}, &out, func(ctx context.Context, actual core.Config, room core.Room, session core.Session, work core.Workspace, commit func() error) error {
+		if err := commit(); err != nil {
+			return err
+		}
 		if session.ID != s.ID || session.CCID != s.CCID || room.Key != r.Key || work.Work != w.Work || work.ConfigDir != w.ConfigDir || work.NativeConfig != w.NativeConfig {
 			t.Fatal("handoff changed launch identity", session, work)
 		}
@@ -86,8 +89,11 @@ func TestLocalSessionFailsClosedOnActiveLockUnknownInputAndUnconfirmedExit(t *te
 	c, r, s, _ := localSessionFixture(t)
 	var out bytes.Buffer
 	calls := 0
-	run := func(context.Context, core.Config, core.Room, core.Session, core.Workspace) error {
+	run := func(_ context.Context, _ core.Config, _ core.Room, _ core.Session, _ core.Workspace, commit func() error) error {
 		calls++
+		if err := commit(); err != nil {
+			return err
+		}
 		return process.ErrUnconfirmed
 	}
 	unlock, err := workspace.Lock(c.DataDir)
@@ -132,7 +138,7 @@ func TestLocalSessionRejectsChangedConfigurationAndInvalidArguments(t *testing.T
 	c, _, s, _ := localSessionFixture(t)
 	c.Projects[0].CWD = t.TempDir()
 	called := false
-	err := runSessionWith(context.Background(), c, Options{SessionID: s.ID}, &bytes.Buffer{}, func(context.Context, core.Config, core.Room, core.Session, core.Workspace) error {
+	err := runSessionWith(context.Background(), c, Options{SessionID: s.ID}, &bytes.Buffer{}, func(context.Context, core.Config, core.Room, core.Session, core.Workspace, func() error) error {
 		called = true
 		return nil
 	})
@@ -157,11 +163,51 @@ func TestLocalSessionRejectsUndeliveredOutput(t *testing.T) {
 	}
 	st.Close()
 	called := false
-	err = runSessionWith(context.Background(), c, Options{SessionID: s.ID}, &bytes.Buffer{}, func(context.Context, core.Config, core.Room, core.Session, core.Workspace) error {
+	err = runSessionWith(context.Background(), c, Options{SessionID: s.ID}, &bytes.Buffer{}, func(context.Context, core.Config, core.Room, core.Session, core.Workspace, func() error) error {
 		called = true
 		return nil
 	})
 	if err == nil || called {
 		t.Fatal("handoff ignored pending output", err)
+	}
+}
+
+func TestLocalSessionFailedLaunchKeepsChatSelection(t *testing.T) {
+	c, r, s, _ := localSessionFixture(t)
+	st, err := store.Open(filepath.Join(c.DataDir, "gateway.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.NewSession(r.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	launchErr := errors.New("missing model credential or endpoint")
+	err = runSessionWith(context.Background(), c, Options{SessionID: s.ID}, &bytes.Buffer{}, func(context.Context, core.Config, core.Room, core.Session, core.Workspace, func() error) error {
+		return launchErr
+	})
+	if !errors.Is(err, launchErr) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(c.DataDir, "gateway.lock")); !os.IsNotExist(err) {
+		t.Fatal("failed launch retained lock", err)
+	}
+	st, err = store.Open(filepath.Join(c.DataDir, "gateway.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	selected, err := st.Session(r.Key)
+	if err != nil || selected.ID != current.ID {
+		t.Fatal("failed launch switched the chat session", selected.ID, current.ID, err)
+	}
+	var unknown int
+	if err := st.DB.QueryRow("SELECT coalesce(max(prior_unknown),0) FROM usage_coverage WHERE session=?", s.ID).Scan(&unknown); err != nil || unknown != 0 {
+		t.Fatal("failed launch marked local usage", unknown, err)
+	}
+	var started int
+	if err := st.DB.QueryRow("SELECT count(*) FROM audit WHERE event IN ('local_session_started','local_session_finished')").Scan(&started); err != nil || started != 0 {
+		t.Fatal("failed launch audited a local session", started, err)
 	}
 }

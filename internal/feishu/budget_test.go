@@ -196,3 +196,16 @@ func TestOutboundRateLimitIsSharedAcrossMessagesButNotEndpointGroups(t *testing.
 		t.Fatal("missing content-free rate-limit diagnostic", data)
 	}
 }
+
+func TestSharedRateLimitFloorIsBounded(t *testing.T) {
+	c, _ := fixtureClient(t, nil, func(http.ResponseWriter, *http.Request) { t.Error("unexpected fixture HTTP") })
+	req := budgetRequest(context.Background(), "im/v1/messages")
+	group, _ := requestGroup(req)
+	c.budget.rateLimited(req, 365*24*time.Hour)
+	c.budget.mu.Lock()
+	until := c.budget.until[group]
+	c.budget.mu.Unlock()
+	if remaining := time.Until(until); remaining <= 0 || remaining > httpSharedBackoffMax {
+		t.Fatal("one response header blocked the endpoint group beyond the shared bound", remaining)
+	}
+}
