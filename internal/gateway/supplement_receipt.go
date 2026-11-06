@@ -10,9 +10,9 @@ import (
 
 // supplementReceipt renders the visible receipt for an accepted supplement.
 // A card-form supplement has no human message bubble, so its receipt carries
-// the author and the full text. The text is fenced with a longer run of
-// backticks than any run it contains, which keeps user Markdown and mentions
-// inert while preserving the original content.
+// the author and the full text. The text is quoted line by line, and HTML and
+// link delimiters are escaped so user content cannot inject mentions, links or
+// images into the bot's message.
 //
 // /btw supplements already have a visible message; they get an
 // attribution-only receipt to avoid duplicating the content.
@@ -39,9 +39,10 @@ func supplementReceipt(m core.Message) string {
 	if m.InteractionMessageID == "" {
 		return who + " 补充已交给原生输入流。"
 	}
-	fence := "```"
-	for strings.Contains(text, fence) {
-		fence += "`"
+	text = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "[", `\[`, "]", `\]`).Replace(text)
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = "> " + lines[i]
 	}
-	return fmt.Sprintf("%s 补充了任务：\n\n%s\n%s\n%s", who, fence, text, fence)
+	return fmt.Sprintf("%s 补充了任务：\n\n%s", who, strings.Join(lines, "\n"))
 }

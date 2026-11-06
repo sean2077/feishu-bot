@@ -8,28 +8,35 @@ import (
 	"github.com/sean2077/feishu-bot/internal/core"
 )
 
-func TestSupplementReceiptCardFormNamesAuthorAndFencesContent(t *testing.T) {
-	text := "第一行\n```go\nfmt.Println(\"x\")\n```\n最后一行"
+func TestSupplementReceiptCardFormNamesAuthorAndQuotesContent(t *testing.T) {
+	text := "第一行\n<at user_id=\"all\"></at> [链接](https://example.com)\n最后一行"
 	got := supplementReceipt(core.Message{SenderID: "ou_member", InteractionMessageID: "om_card", Text: text})
 	if !strings.Contains(got, `<at user_id="ou_member">补充者</at>`) {
 		t.Fatalf("receipt lost the author mention: %q", got)
 	}
-	if !strings.Contains(got, text) {
-		t.Fatalf("receipt lost the full supplement: %q", got)
+	if !strings.Contains(got, "> 第一行") {
+		t.Fatalf("receipt did not quote the first line: %q", got)
+	}
+	if !strings.Contains(got, "> &lt;at user_id=\"all\"&gt;&lt;/at&gt; \\[链接\\](https://example.com)") {
+		t.Fatalf("receipt did not escape user Markdown/mentions: %q", got)
+	}
+	if strings.Contains(got, `<at user_id="all">`) {
+		t.Fatalf("receipt emitted a user mention: %q", got)
+	}
+	if strings.Contains(got, "```") {
+		t.Fatalf("receipt still uses a code fence: %q", got)
 	}
 	if strings.Contains(got, "不代表模型已读取") {
 		t.Fatalf("receipt still contains the removed disclaimer: %q", got)
 	}
-	lines := strings.Split(got, "\n")
-	fence := ""
-	for _, line := range lines {
-		if strings.HasPrefix(line, "```") {
-			fence = line
-			break
-		}
+	parts := strings.SplitN(got, "\n\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("receipt is missing the quoted body: %q", got)
 	}
-	if fence != "````" {
-		t.Fatalf("fence = %q, want four backticks for content containing three", fence)
+	for _, line := range strings.Split(parts[1], "\n") {
+		if !strings.HasPrefix(line, "> ") {
+			t.Fatalf("receipt line is outside the quote: %q", line)
+		}
 	}
 }
 
@@ -86,7 +93,7 @@ func TestAcceptedCardSupplementPostsAuthorReceipt(t *testing.T) {
 		f.tr.mu.Lock()
 		defer f.tr.mu.Unlock()
 		for _, notice := range f.tr.notices {
-			if strings.Contains(notice, `<at user_id="member">补充者</at>`) && strings.Contains(notice, "补充正文") {
+			if strings.Contains(notice, `<at user_id="member">补充者</at>`) && strings.Contains(notice, "> 补充正文") {
 				return true
 			}
 		}
