@@ -21,7 +21,7 @@ const (
 	groupOther
 	httpGroupCount
 
-	httpActiveLimit = 8
+	httpActiveLimit  = 8
 	httpWaitingLimit = 64
 	httpPreviewLimit = 2
 )
@@ -52,14 +52,14 @@ func requestGroup(req *http.Request) (int, bool) {
 }
 
 type requestBudget struct {
-	mu sync.Mutex
-	changed chan struct{}
-	closed bool
+	mu                              sync.Mutex
+	changed                         chan struct{}
+	closed                          bool
 	active, waiting, previews, peak int
-	groups [httpGroupCount]int
-	until [httpGroupCount]time.Time
-	admitted, rejected, limited uint64
-	waitNanos, activeNanos uint64
+	groups                          [httpGroupCount]int
+	until                           [httpGroupCount]time.Time
+	admitted, rejected, limited     uint64
+	waitNanos, activeNanos          uint64
 }
 
 func (b *requestBudget) signal() {

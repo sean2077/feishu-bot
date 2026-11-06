@@ -53,7 +53,7 @@ func TestDownloadUsesOrdinaryGETThenBoundedValidatedRanges(t *testing.T) {
 				w.Header().Set("ETag", `"fixture-version"`)
 				w.Header().Set("Content-Length", fmt.Sprint(end-start+1))
 				w.WriteHeader(http.StatusPartialContent)
-				_, _ = w.Write(payload[start:end+1])
+				_, _ = w.Write(payload[start : end+1])
 			})
 			c.config.Limits.AttachmentBytes = 20 << 20
 			c.rememberOrigin("om_range", fixtureRoom(t, c))
@@ -98,17 +98,28 @@ func TestDownloadRejectsInvalidRangesAndRemovesEveryPartial(t *testing.T) {
 				}
 				contentRange := "bytes 0-15/16"
 				body := strings.Repeat("x", 16)
-				if large { w.Header().Set("ETag", `"original"`) }
+				if large {
+					w.Header().Set("ETag", `"original"`)
+				}
 				switch name {
-				case "missing": contentRange = ""
-				case "unknown-total": contentRange = "bytes 0-15/*"
-				case "start": contentRange = "bytes 1-15/16"
-				case "end": contentRange = "bytes 0-14/16"
-				case "oversize": contentRange = "bytes 0-15/17"
-				case "truncated": body = "short"
-				case "extra": body += "x"
-				case "encoded": w.Header().Set("Content-Encoding", "gzip")
-				case "changed-length": contentRange = fmt.Sprintf("bytes %d-%d/%d", downloadRangeBytes, limit-2, limit)
+				case "missing":
+					contentRange = ""
+				case "unknown-total":
+					contentRange = "bytes 0-15/*"
+				case "start":
+					contentRange = "bytes 1-15/16"
+				case "end":
+					contentRange = "bytes 0-14/16"
+				case "oversize":
+					contentRange = "bytes 0-15/17"
+				case "truncated":
+					body = "short"
+				case "extra":
+					body += "x"
+				case "encoded":
+					w.Header().Set("Content-Encoding", "gzip")
+				case "changed-length":
+					contentRange = fmt.Sprintf("bytes %d-%d/%d", downloadRangeBytes, limit-2, limit)
 				case "changed-etag":
 					contentRange = fmt.Sprintf("bytes %d-%d/%d", downloadRangeBytes, limit-2, limit-1)
 					w.Header().Set("ETag", `"replacement"`)

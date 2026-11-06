@@ -81,8 +81,9 @@ func runSessionWith(ctx context.Context,c core.Config,o Options,out io.Writer,ru
 	if err=st.DB.QueryRowContext(ctx,`SELECT
  (SELECT count(*) FROM inbox WHERE room=? AND status IN ('queued','sent','consumed','uncertain'))+
  (SELECT count(*) FROM requests WHERE room=? AND state='pending')+
- (SELECT count(*) FROM action_runs WHERE room=? AND state NOT IN ('done','failed','denied','cancelled','succeeded'))`,r.Key,r.Key,r.Key).Scan(&outstanding);err!=nil{return err}
-	if outstanding>0{return errors.New("session room has pending or uncertain inputs, approvals or actions; resolve them before local handoff")}
+ (SELECT count(*) FROM action_runs WHERE room=? AND state NOT IN ('done','failed'))+
+ (SELECT count(*) FROM outbox WHERE room=? AND state NOT IN ('done','cancelled'))`,r.Key,r.Key,r.Key,r.Key).Scan(&outstanding);err!=nil{return err}
+	if outstanding>0{return errors.New("session room has pending or uncertain inputs, outputs, approvals or actions; resolve them before local handoff")}
 	prefs,err:=st.Preferences(r.Key,s.ID);if err!=nil{return err}
 	if prefs.RequestedProfile!=nil{return errors.New("apply or clear the pending model selection in Feishu before local handoff")}
 	s.Profile=prefs.Profile

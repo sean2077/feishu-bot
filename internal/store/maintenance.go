@@ -35,12 +35,16 @@ func initializeMaintenance(tx *sql.Tx) error {
 	_, err := tx.Exec(`
 CREATE TABLE IF NOT EXISTS maintenance_cursors(name TEXT PRIMARY KEY,at INTEGER NOT NULL,row_id INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS operator_decisions(kind TEXT NOT NULL,id TEXT NOT NULL,room TEXT NOT NULL,session TEXT NOT NULL,actor TEXT NOT NULL,at INTEGER NOT NULL,decision TEXT NOT NULL,detail TEXT NOT NULL,PRIMARY KEY(kind,id));
+CREATE TABLE IF NOT EXISTS output_discarded_origins(room TEXT NOT NULL,session TEXT NOT NULL,origin TEXT NOT NULL,output TEXT NOT NULL,actor TEXT NOT NULL,at INTEGER NOT NULL,PRIMARY KEY(room,session,origin,output));
+CREATE INDEX IF NOT EXISTS output_discarded_origins_room_at ON output_discarded_origins(room,at);
 CREATE INDEX IF NOT EXISTS operator_decisions_room_at ON operator_decisions(room,at);
 CREATE INDEX IF NOT EXISTS context_refs_age ON context_refs(at);
 CREATE INDEX IF NOT EXISTS receipts_terminal_age ON receipts(at) WHERE desired=applied AND desired!='processing';
 CREATE INDEX IF NOT EXISTS inbox_background_age ON inbox(at) WHERE status IN ('background','context');
 CREATE INDEX IF NOT EXISTS inbox_terminal_age ON inbox(at) WHERE status IN ('done','cancelled');
 CREATE INDEX IF NOT EXISTS inbox_terminal_body_age ON inbox(at) WHERE status IN ('done','cancelled') AND (message!='{}' OR payload IS NOT NULL);
+CREATE INDEX IF NOT EXISTS inbox_uuid ON inbox(uuid);
+CREATE INDEX IF NOT EXISTS inbox_room_pending_age ON inbox(room,at) WHERE status IN ('queued','sent','consumed','uncertain');
 CREATE INDEX IF NOT EXISTS inbox_session_active ON inbox(session) WHERE status IN ('queued','sent','consumed','uncertain');
 CREATE INDEX IF NOT EXISTS outputs_age ON outputs(at);
 CREATE INDEX IF NOT EXISTS audit_age ON audit(at);
@@ -87,7 +91,7 @@ func maintenancePolicies(now, backgroundMS int64) []maintenancePolicy {
 		{"receipts", "receipts", "at", "desired=applied AND desired!='processing'", pendingSession("receipts"), "", now-7*dayMS},
 		{"inbox_background", "inbox", "at", "status IN ('background','context')", inputRefs, "", now-max(int64(0),backgroundMS)},
 		{"inbox_bodies", "inbox", "at", "status IN ('done','cancelled') AND (message!='{}' OR payload IS NOT NULL)", inputRefs, "message='{}',payload=NULL", now-dayMS},
-		{"inbox_terminal", "inbox", "at", "status IN ('done','cancelled')", inputRefs, "", now-30*dayMS},
+		{"inbox_terminal", "inbox", "at", "status IN ('done','cancelled')", inputRefs+` OR EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='input' AND d.id=inbox.uuid)`, "", now-30*dayMS},
 		{"outputs", "outputs", "at", "1", `EXISTS(SELECT 1 FROM outbox o WHERE o.target=outputs.id AND o.state NOT IN ('done','cancelled')) OR EXISTS(SELECT 1 FROM outbox o WHERE o.file_target=outputs.id AND o.state NOT IN ('done','cancelled'))`, "", now-30*dayMS},
 		{"outbox", "outbox", "at", "state IN ('done','cancelled')", `file_path IS NOT NULL OR file_state IN ('sending','uncertain') OR EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id)`, "", now-7*dayMS},
 		{"discarded_output_bodies", "outbox", "at", "state IN ('done','cancelled') AND (text!='' OR card IS NOT NULL OR initial_card IS NOT NULL)", `state!='cancelled' OR file_path IS NOT NULL OR NOT EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id AND d.decision='discard')`, "text='',card=NULL,initial_card=NULL", now-7*dayMS},
@@ -190,7 +194,7 @@ func (s *Store) TableStats(ctx context.Context, room string) ([]TableStat,error)
 	ctx,cancel:=context.WithTimeout(ctx,2*time.Second);defer cancel()
 	defs:=[]struct{table,clock,retention string}{
 		{"sessions","created","retained"},
-		{"inbox","at","background window; terminal body 1d / marker 30d; active or uncertain retained"},
+		{"inbox","at","background window; terminal body 1d / marker 30d; active, uncertain and operator cancellation markers retained"},
 		{"context_refs","at","1d; unfinished reply references retained"},
 		{"receipts","at","settled 7d; active or uncertain session references retained"},
 		{"outputs","at","30d; unfinished outbox references retained"},
@@ -203,6 +207,7 @@ func (s *Store) TableStats(ctx context.Context, room string) ([]TableStat,error)
 		{"card_controls","expires","until expiry"},
 		{"feishu_cards","","transport terminal retention; legacy clock unavailable"},
 		{"operator_decisions","at","retained for explicit cancellation/discard evidence"},
+		{"output_discarded_origins","at","retained to prevent completion/replay after required output abandonment"},
 	}
 	stats:=make([]TableStat,0,len(defs))
 	for _,d:=range defs {

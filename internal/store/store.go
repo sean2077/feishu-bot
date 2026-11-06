@@ -552,6 +552,7 @@ func (s *Store) Audit(room, event string, detail core.Args) error {
 	_, e = s.DB.Exec("INSERT INTO audit(at,room,event,detail) VALUES(?,?,?,?)", time.Now().UnixMilli(), room, event, string(j))
 	return e
 }
+
 // Trim keeps the legacy call shape while applying bounded, cancelable policies.
 func (s *Store) Trim(now, backgroundMS int64) error {
 	_, err := s.Maintain(context.Background(), now, backgroundMS)

@@ -116,7 +116,9 @@ func TestLongConnectionSeparatesCardCallbacksAndClosesAllLoops(t *testing.T) {
 		t.Fatal("websocket lifecycle and acknowledgement diagnostics missing", stats)
 	}
 	for _, lane := range stats["lanes"].([]core.Args) {
-		if lane["depth"] != 0 || lane["capacity"] != 8 { t.Fatal("old connection queues retained", lane) }
+		if lane["depth"] != 0 || lane["capacity"] != 8 {
+			t.Fatal("old connection queues retained", lane)
+		}
 	}
 	c.lifeMu.Lock()
 	defer c.lifeMu.Unlock()

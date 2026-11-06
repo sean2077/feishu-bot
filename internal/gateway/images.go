@@ -150,9 +150,13 @@ func (g *Gateway) queueInput(d core.Delivery, now int64) error {
 			return e
 		}
 		n, e := inserted.RowsAffected()
-		if e != nil { return e }
+		if e != nil {
+			return e
+		}
 		if n > 0 && !d.Message.SenderIsBot && d.Command == nil {
-			if e := store.RecordSessionActivity(tx, d.RoomKey, d.SessionID, now); e != nil { return e }
+			if e := store.RecordSessionActivity(tx, d.RoomKey, d.SessionID, now); e != nil {
+				return e
+			}
 		}
 		if e = saveQueuedTx(tx, d); e != nil {
 			return e

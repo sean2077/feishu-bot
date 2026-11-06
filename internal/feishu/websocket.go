@@ -157,8 +157,8 @@ func (c *Client) endpoint(ctx context.Context) (*larkws.Endpoint, error) {
 }
 
 type connectionJob struct {
-	frame larkws.Frame
-	event pendingEvent
+	frame    larkws.Frame
+	event    pendingEvent
 	received time.Time
 }
 

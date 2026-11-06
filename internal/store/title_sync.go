@@ -19,7 +19,7 @@ func initializeTitleSync(tx *sql.Tx) error {
 // Native titles are display metadata; they never participate in /resume lookup.
 type SessionTitleSync struct {
 	Desired, Revision, Confirmed, State string
-	Updated                            int64
+	Updated                             int64
 }
 
 func (s *Store) TitleSync(room, session string) (SessionTitleSync, error) {

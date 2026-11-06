@@ -436,6 +436,9 @@ func (r *render) persist(text string, success bool, who []core.Origin, title str
 			}
 		}
 		if r.ctx.Err() == nil {
+			if discarded, err := r.g.closeDiscardedOutput(r.ctx, id, r.room, target); err != nil || discarded {
+				return
+			}
 			_, _ = r.g.deliverOutput(r.ctx, id, r.room, false)
 		}
 	}, nil

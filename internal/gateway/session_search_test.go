@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 	"github.com/sean2077/feishu-bot/internal/core"
@@ -24,7 +23,10 @@ func TestSessionSearchCursorScopeTamperAndCurrentIdentity(t *testing.T) {
 	card:=f.g.sessionPageCard(r,"member",sessionPageText(page,false),page)
 	if err:=f.g.bindQuickControls("page-card",card);err!=nil{t.Fatal(err)}
 	a:=core.CardAction{ChatID:r.ChatID,UserID:"member",MessageID:"wrong-message",Value:testQuickValue(t,f.g,card,"sessions")}
-	if text,err:=f.g.Action(context.Background(),a);err!=nil||!strings.Contains(text,"失效"){t.Fatal("unbound page control accepted",text,err)}
+	control,valid:=f.g.readQuick(stringArg(a.Value,"quick_control"))
+ if !valid||f.g.quickBound(a,control){t.Fatal("page control was not bound to the actual delivered card")}
+ if _,err:=f.g.Action(context.Background(),a);err!=nil{t.Fatal(err)}
+ if f.tr.cardCount()!=0{t.Fatal("unbound control delivered another page")}
 	if f.starts.Load()!=0{t.Fatal("metadata search started native")}
 }
 

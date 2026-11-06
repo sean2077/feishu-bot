@@ -342,11 +342,11 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		g.notify(room, "消息未提交："+reason, &m)
 		return err
 	}
-	if contains([]string{"/help", "/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/model", "/profile", "/rename", "/artifacts"}, cmd) {
+	if contains([]string{"/help", "/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/model", "/profile", "/rename", "/artifacts", "/inputs", "/cancel-input", "/discard-output"}, cmd) {
 		if _, err = g.store.Insert(room.Key, m, "done"); err != nil {
 			return err
 		}
-		if contains([]string{"/help", "/status", "/sessions", "/outputs", "/usage", "/retry-output", "/artifacts"}, cmd) {
+		if contains([]string{"/help", "/status", "/sessions", "/outputs", "/usage", "/retry-output", "/artifacts", "/inputs", "/cancel-input", "/discard-output"}, cmd) {
 			g.task(func() {
 				if e := g.command(g.ctx, room, m); e != nil {
 					g.audit(room.Key, "management_failed", core.Args{"error": core.Redact(e.Error(), g.secrets)})

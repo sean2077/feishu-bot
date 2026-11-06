@@ -108,7 +108,9 @@ func (c *Client) downloadResource(ctx context.Context, target, token, destinatio
 }
 
 func (c *Client) downloadFailure(resp *http.Response) *APIError {
-	var envelope struct { Code int `json:"code"` }
+	var envelope struct {
+		Code int `json:"code"`
+	}
 	// Provider prose, URLs and arbitrary fields never enter logs or diagnostics.
 	structured := readJSON(resp.Body, &envelope, 64<<10) == nil
 	if !structured {

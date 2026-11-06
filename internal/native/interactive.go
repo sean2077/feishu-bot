@@ -37,6 +37,8 @@ func interactiveCommand(c core.Config,r core.Room,s core.Session,w core.Workspac
 	settings,err:=privateSettings(w,modelEnv);if err!=nil{return nil,nil,err}
 	cleanup:=func(){if settings!=""{_ = os.Remove(settings)}}
 	env:=Environment(w,c.AppSecretEnv)
+	// Terminal capabilities are needed by the local TUI, not by SDK workers.
+	for _,key:=range []string{"TERM","COLORTERM","NO_COLOR"}{if value,ok:=os.LookupEnv(key);ok{env[key]=value}}
 	for k,v:=range modelEnv{env[k]=v};delete(env,"ANTHROPIC_API_KEY")
 	args:=[]string{"--resume",s.CCID}
 	if c.Model.Model!=""{args=append(args,"--model",c.Model.Model)}

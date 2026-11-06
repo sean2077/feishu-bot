@@ -9,15 +9,15 @@ import (
 )
 
 type Options struct {
-	Command, Subcommand string
-	ConfigPath          string
-	ConfigExplicit      bool
-	Probe, ProbeFeishu  bool
-	VerifyChat          string
-	ActionArgs          []string
+	Command, Subcommand                string
+	ConfigPath                         string
+	ConfigExplicit                     bool
+	Probe, ProbeFeishu                 bool
+	VerifyChat                         string
+	ActionArgs                         []string
 	ExplainChat, ExplainUser, ChatType string
-	Mentioned, SenderBot bool
-	SessionID string
+	Mentioned, SenderBot               bool
+	SessionID                          string
 
 	EnvFile  string
 	LogFile  string
@@ -55,10 +55,16 @@ func Parse(args []string) (Options, error) {
 		return o, nil
 	}
 	if o.Command == "session" {
-		if len(args)<2||args[1]=="--help"||args[1]=="-h" {o.Command="help";o.Subcommand="session";return o,nil}
-		o.Subcommand=args[1]
-		if o.Subcommand!="run" {return o,errors.New("unknown session command; use feishu-bot session --help")}
-		return parseSession(args[2:],o)
+		if len(args) < 2 || args[1] == "--help" || args[1] == "-h" {
+			o.Command = "help"
+			o.Subcommand = "session"
+			return o, nil
+		}
+		o.Subcommand = args[1]
+		if o.Subcommand != "run" {
+			return o, errors.New("unknown session command; use feishu-bot session --help")
+		}
+		return parseSession(args[2:], o)
 	}
 	if o.Command == "daemon" {
 		if len(args) < 2 || args[1] == "--help" || args[1] == "-h" {
@@ -421,8 +427,12 @@ func parseConfig(args []string, o Options) (Options, error) {
 		}
 		if o.Subcommand == "explain" {
 			matched, err := parseExplainOption(args, &i, &o, seen)
-			if err != nil { return o, err }
-			if matched { continue }
+			if err != nil {
+				return o, err
+			}
+			if matched {
+				continue
+			}
 		}
 		if arg == "--config" || strings.HasPrefix(arg, "--config=") {
 			if err := mark(seen, "--config"); err != nil {
@@ -439,9 +449,15 @@ func parseConfig(args []string, o Options) (Options, error) {
 		return o, errors.New("unexpected option; see feishu-bot config --help")
 	}
 	if o.Subcommand == "explain" {
-		if o.ExplainChat == "" || o.ExplainUser == "" { return o, errors.New("config explain requires --chat and --user") }
-		if o.ChatType == "" { o.ChatType = "group" }
-		if o.ChatType != "group" && o.ChatType != "p2p" { return o, errors.New("--chat-type must be group or p2p") }
+		if o.ExplainChat == "" || o.ExplainUser == "" {
+			return o, errors.New("config explain requires --chat and --user")
+		}
+		if o.ChatType == "" {
+			o.ChatType = "group"
+		}
+		if o.ChatType != "group" && o.ChatType != "p2p" {
+			return o, errors.New("--chat-type must be group or p2p")
+		}
 	}
 	return resolveOptions(&o)
 }

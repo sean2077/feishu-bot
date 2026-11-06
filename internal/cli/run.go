@@ -71,7 +71,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			if o.Subcommand == "config" {
 				text = configHelp
 			}
-			if o.Subcommand == "session" { text = sessionHelp }
+			if o.Subcommand == "session" {
+				text = sessionHelp
+			}
 			_, err = io.WriteString(stdout, text)
 			return err
 		case "version":
@@ -113,7 +115,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		secrets = config.Secrets(c)
 		if o.Command == "session" {
-			return runLocalSession(ctx,c,o,stdout,stderr)
+			return runLocalSession(ctx, c, o, stdout, stderr)
 		}
 		if o.Command == "doctor" {
 			report := RunDoctor(ctx, c, o.Probe, o.ProbeFeishu)

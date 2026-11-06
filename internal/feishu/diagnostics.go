@@ -8,14 +8,14 @@ import (
 )
 
 type websocketStats struct {
-	mu sync.Mutex
-	connected bool
+	mu                                                              sync.Mutex
+	connected                                                       bool
 	connections, received, acknowledgements, ackFailures, watchdogs uint64
-	lastInbound int64
-	ackNanos, queueNanos, maxAckNanos uint64
-	queues [5]<-chan connectionJob
-	peaks [5]int
-	rejected [5]uint64
+	lastInbound                                                     int64
+	ackNanos, queueNanos, maxAckNanos                               uint64
+	queues                                                          [5]<-chan connectionJob
+	peaks                                                           [5]int
+	rejected                                                        [5]uint64
 }
 
 func (s *websocketStats) connect(queues [5]<-chan connectionJob) {
