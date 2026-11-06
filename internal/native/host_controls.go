@@ -9,17 +9,17 @@ import (
 	"github.com/sean2077/feishu-bot/internal/core"
 )
 
-const (
-	nativeControlTimeout = 5 * time.Second
-	maxHostControls      = 32
-)
+const maxHostControls = 32
 
-// Rename only succeeds after the matching native acknowledgement. Its deadline
-// covers initialization, writer admission, the pipe write and the response.
+// nativeControlTimeout is a variable only so tests can shorten the deadline.
+var nativeControlTimeout = 5 * time.Second
+
+// Rename only succeeds after the matching native acknowledgement. Waiting for
+// initialization is bounded by the caller and the worker's own startup limit;
+// the control deadline then covers writer admission, the pipe write and the
+// response, so a slow cold start does not consume the control's budget.
 // Rejection or a missing acknowledgement does not stop the conversation.
 func (w *worker) Rename(ctx context.Context, title string) error {
-	ctx, cancel := context.WithTimeout(ctx, nativeControlTimeout)
-	defer cancel()
 	notSent := func(err error) error { return &core.ControlFailure{State: core.ControlNotSent, Err: err} }
 	if err := ctx.Err(); err != nil {
 		return notSent(err)
@@ -38,6 +38,8 @@ func (w *worker) Rename(ctx context.Context, title string) error {
 	if w.ctx.Err() != nil {
 		return notSent(errWorkerUnavailable)
 	}
+	ctx, cancel := context.WithTimeout(ctx, nativeControlTimeout)
+	defer cancel()
 	id := core.NewID()
 	ack := make(chan string, 1)
 	w.hostMu.Lock()

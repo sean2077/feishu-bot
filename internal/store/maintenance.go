@@ -79,21 +79,24 @@ type maintenancePolicy struct {
 }
 
 // A selected native conversation may stay open for months. Only actual pending
-// or uncertain work protects its terminal rows; merely being selected does not.
+// work protects its terminal rows; merely being selected does not. An uncertain
+// input or action has no later resolution, so it keeps only its own row as
+// evidence instead of freezing every terminal row in its session or room. The
+// redundant IN term keeps each query matched to its partial index.
 func pendingSession(table string) string {
-	return `EXISTS(SELECT 1 FROM inbox i WHERE i.session=` + table + `.session AND i.status IN ('queued','sent','consumed','uncertain')) OR
+	return `EXISTS(SELECT 1 FROM inbox i WHERE i.session=` + table + `.session AND i.status IN ('queued','sent','consumed','uncertain') AND i.status!='uncertain') OR
 EXISTS(SELECT 1 FROM outbox o WHERE o.session=` + table + `.session AND o.state NOT IN ('done','cancelled')) OR
 EXISTS(SELECT 1 FROM requests r WHERE r.session=` + table + `.session AND r.state='pending') OR
-EXISTS(SELECT 1 FROM action_runs a WHERE a.session=` + table + `.session AND a.state IN ('running','uncertain'))`
+EXISTS(SELECT 1 FROM action_runs a WHERE a.session=` + table + `.session AND a.state IN ('running','uncertain') AND a.state='running')`
 }
 
 // Background/history metadata predates a selected session and often has no
 // session key. Keep it while any durable work in the room can still refer to it.
 func pendingRoom(table string) string {
-	return `EXISTS(SELECT 1 FROM inbox i WHERE i.room=` + table + `.room AND i.status IN ('queued','sent','consumed','uncertain')) OR
+	return `EXISTS(SELECT 1 FROM inbox i WHERE i.room=` + table + `.room AND i.status IN ('queued','sent','consumed','uncertain') AND i.status!='uncertain') OR
 EXISTS(SELECT 1 FROM outbox o INDEXED BY outbox_room_active WHERE o.room=` + table + `.room AND o.state NOT IN ('done','cancelled')) OR
 EXISTS(SELECT 1 FROM requests r WHERE r.room=` + table + `.room AND r.state='pending') OR
-EXISTS(SELECT 1 FROM action_runs a WHERE a.room=` + table + `.room AND a.state IN ('running','uncertain'))`
+EXISTS(SELECT 1 FROM action_runs a WHERE a.room=` + table + `.room AND a.state IN ('running','uncertain') AND a.state='running')`
 }
 
 func maintenancePolicies(now, backgroundMS int64) []maintenancePolicy {

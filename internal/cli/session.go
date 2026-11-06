@@ -29,7 +29,8 @@ Stop the gateway first (daemon stop, or stop its foreground run). Copy the full
 gateway session ID from /sessions; native IDs and ambiguous names are not accepted.
 The local command holds gateway.lock and owns the native process tree until exit.
 The saved cwd, configuration identity and applied model profile must still match.
-Queued, uncertain or unfinished inputs/actions/approvals block handoff.
+Queued or unfinished inputs/actions/approvals block handoff; uncertain records
+are reported but kept as evidence.
 Native TUI permission prompts are answered locally. Feishu tools and project action
 relays are unavailable, and local output is not forwarded to Feishu. Local usage is
 marked outside gateway coverage. After exit, restart the gateway to continue there.
@@ -122,16 +123,25 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 	if !ok {
 		return errors.New("session room is no longer authorized by this configuration")
 	}
-	var outstanding int
+	var outstanding, uncertain int
 	if err = st.DB.QueryRowContext(ctx, `SELECT
- (SELECT count(*) FROM inbox WHERE room=? AND status IN ('queued','sent','consumed','uncertain'))+
+ (SELECT count(*) FROM inbox WHERE room=? AND status IN ('queued','sent','consumed'))+
  (SELECT count(*) FROM requests WHERE room=? AND state='pending')+
- (SELECT count(*) FROM action_runs WHERE room=? AND state NOT IN ('done','failed'))+
- (SELECT count(*) FROM outbox WHERE room=? AND state NOT IN ('done','cancelled'))`, r.Key, r.Key, r.Key, r.Key).Scan(&outstanding); err != nil {
+ (SELECT count(*) FROM action_runs WHERE room=? AND state NOT IN ('done','failed','uncertain'))+
+ (SELECT count(*) FROM outbox WHERE room=? AND state NOT IN ('done','cancelled')),
+ (SELECT count(*) FROM inbox WHERE room=? AND status='uncertain')+
+ (SELECT count(*) FROM action_runs WHERE room=? AND state='uncertain')`, r.Key, r.Key, r.Key, r.Key, r.Key, r.Key).Scan(&outstanding, &uncertain); err != nil {
 		return err
 	}
 	if outstanding > 0 {
-		return errors.New("session room has pending or uncertain inputs, outputs, approvals or actions; resolve them before local handoff")
+		return errors.New("session room has pending inputs, outputs, approvals or actions; resolve them before local handoff")
+	}
+	// Uncertain records have no later resolution. They remain evidence and are
+	// never replayed, but they must not block every future handoff.
+	if uncertain > 0 {
+		if _, err = fmt.Fprintf(out, "Note: %d earlier input/action result(s) in this chat remain uncertain; they are kept as evidence and not replayed.\n", uncertain); err != nil {
+			return err
+		}
 	}
 	prefs, err := st.Preferences(r.Key, s.ID)
 	if err != nil {

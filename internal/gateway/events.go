@@ -334,6 +334,9 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	if ev.Compact != "" {
 		title = "上下文整理"
 	}
+	r.mu.Lock()
+	r.detached = len(finished) == 0 && ev.Source == "background"
+	r.mu.Unlock()
 	drain, err := r.persist(answer, ev.Success, who, title, finished)
 	if err != nil {
 		g.audit(s.room.Key, "final_reply_persistence_failed", core.Args{"session": s.session.ID, "error": err.Error()})

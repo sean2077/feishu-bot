@@ -38,6 +38,12 @@ func nullString(s string) any {
 	return s
 }
 func (g *Gateway) saveOutput(db sqlExec, r core.Room, session, text string, success bool, target, replyTo, thread string, card core.Args, who []core.Origin, filename, path, kind, state string) (string, error) {
+	return g.saveOutputWith(db, r, session, text, success, target, replyTo, thread, card, who, filename, path, kind, state, true)
+}
+
+// saveOutputWith lets a detached background result keep its origin for
+// ownership without inheriting a discard recorded for that earlier turn.
+func (g *Gateway) saveOutputWith(db sqlExec, r core.Room, session, text string, success bool, target, replyTo, thread string, card core.Args, who []core.Origin, filename, path, kind, state string, inheritDiscard bool) (string, error) {
 	text = core.Redact(text, g.secrets)
 	if card != nil {
 		card = g.redactArgs(card)
@@ -57,8 +63,8 @@ func (g *Gateway) saveOutput(db sqlExec, r core.Room, session, text string, succ
 	if card != nil {
 		cardJSON = jsonText(card)
 	}
-	_, e := db.Exec(`INSERT INTO outbox(id,room,session,text,target,reply_to,thread_id,success,state,at,card,origins,file_name,file_path,file_state,kind) VALUES(?,?,?,?,?,?,?,?,CASE WHEN ? IN ('reply','file') AND EXISTS(SELECT 1 FROM output_discarded_origins d WHERE d.room=? AND d.session=? AND d.origin IN (SELECT json_extract(value,'$.id') FROM json_each(?))) THEN 'cancelled' ELSE ? END,?,?,?,?,?,?,?)`, id, r.Key, session, text, nullString(target), nullString(replyTo), nullString(thread), success, kind, r.Key, session, jsonText(who), state, time.Now().UnixMilli(), cardJSON, jsonText(who), nullString(filename), nullString(path), fileState, kind)
-	if e == nil {
+	_, e := db.Exec(`INSERT INTO outbox(id,room,session,text,target,reply_to,thread_id,success,state,at,card,origins,file_name,file_path,file_state,kind) VALUES(?,?,?,?,?,?,?,?,CASE WHEN ? AND ? IN ('reply','file') AND EXISTS(SELECT 1 FROM output_discarded_origins d WHERE d.room=? AND d.session=? AND d.origin IN (SELECT json_extract(value,'$.id') FROM json_each(?))) THEN 'cancelled' ELSE ? END,?,?,?,?,?,?,?)`, id, r.Key, session, text, nullString(target), nullString(replyTo), nullString(thread), success, inheritDiscard, kind, r.Key, session, jsonText(who), state, time.Now().UnixMilli(), cardJSON, jsonText(who), nullString(filename), nullString(path), fileState, kind)
+	if e == nil && inheritDiscard {
 		e = g.inheritedOutputDiscard(db, id)
 	}
 	return id, e

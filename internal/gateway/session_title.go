@@ -10,7 +10,9 @@ import (
 	"github.com/sean2077/feishu-bot/internal/store"
 )
 
-const sessionTitleTimeout = 5 * time.Second
+// sessionTitleTimeout bounds one title attempt: native initialization (which
+// the worker itself fails after 30s) plus the control's own 5s deadline.
+const sessionTitleTimeout = 40 * time.Second
 
 // One driver per live slot coalesces title changes. Its wake-up queue is bounded
 // and holds no transcript data; the authoritative target is read from SQLite.

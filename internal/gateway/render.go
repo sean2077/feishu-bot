@@ -47,6 +47,10 @@ type render struct {
 	retryAt                                                  time.Time
 	blocked, urgent                                          bool
 	done                                                     chan struct{}
+
+	// detached marks a background result delivered after its originating
+	// turn ended; it does not inherit that turn's delivery discard.
+	detached bool
 }
 
 func newRender(g *Gateway, s *slot, anchor *core.Delivery) *render {
@@ -398,7 +402,7 @@ func (r *render) persist(text string, success bool, who []core.Origin, title str
 	id := ""
 	err := r.g.store.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var e error
-		id, e = r.g.saveOutput(tx, r.room, r.session, answer, success, r.messageID, r.replyTo, r.threadID, card, who, name, path, "reply", state)
+		id, e = r.g.saveOutputWith(tx, r.room, r.session, answer, success, r.messageID, r.replyTo, r.threadID, card, who, name, path, "reply", state, !r.detached)
 		if e != nil {
 			return e
 		}

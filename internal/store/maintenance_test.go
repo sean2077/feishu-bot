@@ -125,7 +125,8 @@ func TestMaintenanceRetainsUncertainEvidenceAndUsageDedup(t *testing.T) {
 		`INSERT INTO inbox(room,id,message,status,at,session) VALUES('r','related','{"id":"related"}','done',1,'s')`,
 		`INSERT INTO action_runs(id,room,session,action,digest,state,at) VALUES('unknown','r','s','write','hash','uncertain',1)`,
 		`INSERT INTO action_runs(id,room,session,action,digest,state,at) VALUES('done','r','finished','write','hash','done',1)`,
-		`INSERT INTO requests(id,room,session,kind,digest,state,expires) VALUES('pending','r','s','permission','hash','pending',1)`,
+		`INSERT INTO requests(id,room,session,kind,digest,state,expires) VALUES('pending','r','other','permission','hash','pending',1)`,
+		`INSERT INTO inbox(room,id,message,status,at,session) VALUES('r','waiting','{"id":"waiting"}','done',1,'other')`,
 		`INSERT INTO requests(id,room,session,kind,digest,state,expires) VALUES('expired','r','finished','permission','hash','expired',1)`,
 		`INSERT INTO usage_results(session,result_id,room,at,kind,success,models) VALUES('s','result','r',1,'native',1,'[]')`,
 	}
@@ -137,8 +138,8 @@ func TestMaintenanceRetainsUncertainEvidenceAndUsageDedup(t *testing.T) {
 	maintainAllPolicies(t, s, 200*dayMS)
 	for _, q := range []string{
 		`SELECT count(*) FROM inbox WHERE id='unknown' AND message!='{}'`,
-		`SELECT count(*) FROM inbox WHERE id='related' AND message!='{}'`,
 		`SELECT count(*) FROM action_runs WHERE id='unknown' AND state='uncertain'`,
+		`SELECT count(*) FROM inbox WHERE id='waiting' AND message!='{}'`,
 		`SELECT count(*) FROM requests WHERE id='pending'`,
 		`SELECT count(*) FROM usage_results`,
 	} {
@@ -147,7 +148,9 @@ func TestMaintenanceRetainsUncertainEvidenceAndUsageDedup(t *testing.T) {
 			t.Fatal(q, n, err)
 		}
 	}
-	for _, q := range []string{`SELECT count(*) FROM action_runs WHERE id='done'`, `SELECT count(*) FROM requests WHERE id='expired'`} {
+	// Uncertain evidence keeps only its own row; actual pending work still
+	// protects its session. Terminal rows beside the uncertain one age out.
+	for _, q := range []string{`SELECT count(*) FROM action_runs WHERE id='done'`, `SELECT count(*) FROM requests WHERE id='expired'`, `SELECT count(*) FROM inbox WHERE id='related'`} {
 		var n int
 		if err := s.DB.QueryRow(q).Scan(&n); err != nil || n != 0 {
 			t.Fatal(q, n, err)

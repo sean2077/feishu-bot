@@ -216,3 +216,23 @@ func TestNativeTitleFailureDoesNotEndNormalTask(t *testing.T) {
 		}
 	}
 }
+
+func TestControlDeadlineStartsAfterInitialization(t *testing.T) {
+	previous := nativeControlTimeout
+	nativeControlTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { nativeControlTimeout = previous })
+	w, p := controlHarness(t, false)
+	w.initialized = make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- w.Rename(context.Background(), "after slow start") }()
+	// The deadline itself is under test, so elapsed time is the input here: a
+	// cold start longer than the control deadline must still write the frame.
+	time.Sleep(2 * nativeControlTimeout)
+	close(w.initialized)
+	frame := nextControl(t, p)
+	acknowledge(w, frame["request_id"], "success")
+	var failure *core.ControlFailure
+	if err := controlResult(t, done); errors.As(err, &failure) && failure.State == core.ControlNotSent {
+		t.Fatal("initialization wait consumed the control deadline", err)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/sean2077/feishu-bot/internal/workspace"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -110,24 +111,29 @@ func TestLocalSessionFailsClosedOnActiveLockUnknownInputAndUnconfirmedExit(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB.Exec("INSERT INTO inbox(room,id,message,status,at,session) VALUES(?,'unknown','{}','uncertain',1,?)", r.Key, s.ID); err != nil {
+	if _, err := st.DB.Exec("INSERT INTO inbox(room,id,message,status,at,session) VALUES(?,'unknown','{}','sent',1,?)", r.Key, s.ID); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
 	if err := runSessionWith(context.Background(), c, Options{SessionID: s.ID}, &out, run); err == nil || calls != 0 {
-		t.Fatal("handoff resumed unknown work", err)
+		t.Fatal("handoff resumed while an input was still in flight", err)
 	}
 	st, err = store.Open(filepath.Join(c.DataDir, "gateway.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = st.DB.Exec("UPDATE inbox SET status='cancelled' WHERE id='unknown'")
+	// Recovery turns an interrupted input into uncertain evidence. It is
+	// reported and never replayed, but it does not block handoff forever.
+	_, err = st.DB.Exec("UPDATE inbox SET status='uncertain' WHERE id='unknown'")
 	if err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
 	if err := runSessionWith(context.Background(), c, Options{SessionID: s.ID}, &out, run); !errors.Is(err, process.ErrUnconfirmed) || calls != 1 {
 		t.Fatal("unconfirmed exit hidden", calls, err)
+	}
+	if !strings.Contains(out.String(), "remain uncertain") {
+		t.Fatal("uncertain evidence was not reported", out.String())
 	}
 	if _, err := workspace.ReadLock(c.DataDir); err != nil {
 		t.Fatal("unconfirmed exit released lease", err)

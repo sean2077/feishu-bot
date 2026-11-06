@@ -255,3 +255,25 @@ func TestLatePreviewTargetAndDiscardClosureCommitTogether(t *testing.T) {
 		t.Fatal("ACK target/closure not durable", target, state, status, err)
 	}
 }
+
+func TestDiscardDoesNotSuppressLaterDetachedBackgroundResult(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("background-origin", "start background work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	file := operationOutput(t, f, d.SessionID, "file", "uncertain", d.Message.ID, "")
+	if _, err := f.g.discardOutput(context.Background(), f.room(), file, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	f.finish(w, d, "foreground answer")
+	eventually(t, func() bool {
+		var n int
+		return f.s.DB.QueryRow("SELECT count(*) FROM outbox WHERE session=? AND kind='reply' AND state='cancelled'", d.SessionID).Scan(&n) == nil && n == 1
+	})
+	w.emit(core.WorkerEvent{Type: "result", ReplyToUUID: d.UUID, BackgroundID: "background-task", ResultID: core.NewID(), Text: "background answer", Success: true, Source: "background"})
+	eventually(t, func() bool {
+		var origins string
+		err := f.s.DB.QueryRow("SELECT origins FROM outbox WHERE session=? AND kind='reply' AND text='background answer' AND state!='cancelled'", d.SessionID).Scan(&origins)
+		return err == nil && strings.Contains(origins, d.Message.ID)
+	})
+}
