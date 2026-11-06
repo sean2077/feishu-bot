@@ -36,6 +36,7 @@ func initializeMaintenance(tx *sql.Tx) error {
 CREATE TABLE IF NOT EXISTS maintenance_cursors(name TEXT PRIMARY KEY,at INTEGER NOT NULL,row_id INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS operator_decisions(kind TEXT NOT NULL,id TEXT NOT NULL,room TEXT NOT NULL,session TEXT NOT NULL,actor TEXT NOT NULL,at INTEGER NOT NULL,decision TEXT NOT NULL,detail TEXT NOT NULL,PRIMARY KEY(kind,id));
 CREATE TABLE IF NOT EXISTS output_discarded_origins(room TEXT NOT NULL,session TEXT NOT NULL,origin TEXT NOT NULL,output TEXT NOT NULL,actor TEXT NOT NULL,at INTEGER NOT NULL,PRIMARY KEY(room,session,origin,output));
+CREATE INDEX IF NOT EXISTS output_discarded_origin_lookup ON output_discarded_origins(room,origin);
 CREATE INDEX IF NOT EXISTS output_discarded_origins_room_at ON output_discarded_origins(room,at);
 CREATE INDEX IF NOT EXISTS operator_decisions_room_at ON operator_decisions(room,at);
 CREATE INDEX IF NOT EXISTS context_refs_age ON context_refs(at);
@@ -51,12 +52,15 @@ CREATE INDEX IF NOT EXISTS audit_age ON audit(at);
 CREATE INDEX IF NOT EXISTS audit_room_age ON audit(room,at);
 CREATE INDEX IF NOT EXISTS requests_terminal_expiry ON requests(expires) WHERE state IN ('approved','denied','expired','cancelled');
 CREATE INDEX IF NOT EXISTS requests_session_pending ON requests(session) WHERE state='pending';
+CREATE INDEX IF NOT EXISTS requests_room_pending ON requests(room) WHERE state='pending';
 CREATE INDEX IF NOT EXISTS requests_room_expiry ON requests(room,expires);
 CREATE INDEX IF NOT EXISTS action_runs_terminal_age ON action_runs(at) WHERE state IN ('done','failed');
 CREATE INDEX IF NOT EXISTS action_runs_session_active ON action_runs(session) WHERE state IN ('running','uncertain');
+CREATE INDEX IF NOT EXISTS action_runs_room_active ON action_runs(room) WHERE state IN ('running','uncertain');
 CREATE INDEX IF NOT EXISTS action_runs_room_age ON action_runs(room,at);
 CREATE INDEX IF NOT EXISTS outbox_terminal_age ON outbox(at) WHERE state IN ('done','cancelled');
 CREATE INDEX IF NOT EXISTS outbox_session_active ON outbox(session) WHERE state NOT IN ('done','cancelled');
+CREATE INDEX IF NOT EXISTS outbox_room_active ON outbox(room) WHERE state NOT IN ('done','cancelled');
 CREATE INDEX IF NOT EXISTS outbox_reply_active ON outbox(room,reply_to) WHERE state NOT IN ('done','cancelled');
 CREATE INDEX IF NOT EXISTS outbox_room_state_age ON outbox(room,state,at,id);
 CREATE INDEX IF NOT EXISTS outbox_room_state_retry ON outbox(room,state,retry_after,at,id);
@@ -83,15 +87,24 @@ EXISTS(SELECT 1 FROM requests r WHERE r.session=` + table + `.session AND r.stat
 EXISTS(SELECT 1 FROM action_runs a WHERE a.session=` + table + `.session AND a.state IN ('running','uncertain'))`
 }
 
+// Background/history metadata predates a selected session and often has no
+// session key. Keep it while any durable work in the room can still refer to it.
+func pendingRoom(table string) string {
+	return `EXISTS(SELECT 1 FROM inbox i WHERE i.room=`+table+`.room AND i.status IN ('queued','sent','consumed','uncertain')) OR
+EXISTS(SELECT 1 FROM outbox o INDEXED BY outbox_room_active WHERE o.room=`+table+`.room AND o.state NOT IN ('done','cancelled')) OR
+EXISTS(SELECT 1 FROM requests r WHERE r.room=`+table+`.room AND r.state='pending') OR
+EXISTS(SELECT 1 FROM action_runs a WHERE a.room=`+table+`.room AND a.state IN ('running','uncertain'))`
+}
+
 func maintenancePolicies(now, backgroundMS int64) []maintenancePolicy {
 	inputRefs := pendingSession("inbox") + ` OR EXISTS(SELECT 1 FROM outbox o WHERE o.room=inbox.room AND o.reply_to=inbox.id AND o.state NOT IN ('done','cancelled'))`
 	return []maintenancePolicy{
 		{"card_controls", "card_controls", "expires", "1", "", "", now},
-		{"context_refs", "context_refs", "at", "1", `EXISTS(SELECT 1 FROM outbox o WHERE o.room=context_refs.room AND o.reply_to=context_refs.id AND o.state NOT IN ('done','cancelled'))`, "", now - dayMS},
+		{"context_refs", "context_refs", "at", "1", pendingRoom("context_refs"), "", now - dayMS},
 		{"receipts", "receipts", "at", "desired=applied AND desired!='processing'", pendingSession("receipts"), "", now - 7*dayMS},
-		{"inbox_background", "inbox", "at", "status IN ('background','context')", inputRefs, "", now - max(int64(0), backgroundMS)},
+		{"inbox_background", "inbox", "at", "status IN ('background','context')", inputRefs + " OR " + pendingRoom("inbox"), "", now - max(int64(0), backgroundMS)},
 		{"inbox_bodies", "inbox", "at", "status IN ('done','cancelled') AND (message!='{}' OR payload IS NOT NULL)", inputRefs, "message='{}',payload=NULL", now - dayMS},
-		{"inbox_terminal", "inbox", "at", "status IN ('done','cancelled')", inputRefs + ` OR EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='input' AND d.id=inbox.uuid)`, "", now - 30*dayMS},
+		{"inbox_terminal", "inbox", "at", "status IN ('done','cancelled')", inputRefs + ` OR EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='input' AND d.id=inbox.uuid) OR EXISTS(SELECT 1 FROM output_discarded_origins d WHERE d.room=inbox.room AND d.origin=inbox.id)`, "", now - 30*dayMS},
 		{"outputs", "outputs", "at", "1", `EXISTS(SELECT 1 FROM outbox o WHERE o.target=outputs.id AND o.state NOT IN ('done','cancelled')) OR EXISTS(SELECT 1 FROM outbox o WHERE o.file_target=outputs.id AND o.state NOT IN ('done','cancelled'))`, "", now - 30*dayMS},
 		{"outbox", "outbox", "at", "state IN ('done','cancelled')", `file_path IS NOT NULL OR file_state IN ('sending','uncertain') OR EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id)`, "", now - 7*dayMS},
 		{"discarded_output_bodies", "outbox", "at", "state IN ('done','cancelled') AND (text!='' OR card IS NOT NULL OR initial_card IS NOT NULL)", `state!='cancelled' OR file_path IS NOT NULL OR NOT EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id AND d.decision='discard')`, "text='',card=NULL,initial_card=NULL", now - 7*dayMS},
@@ -229,8 +242,8 @@ func (s *Store) TableStats(ctx context.Context, room string) ([]TableStat, error
 	defer cancel()
 	defs := []struct{ table, clock, retention string }{
 		{"sessions", "created", "retained"},
-		{"inbox", "at", "background window; terminal body 1d / marker 30d; active, uncertain and operator cancellation markers retained"},
-		{"context_refs", "at", "1d; unfinished reply references retained"},
+		{"inbox", "at", "background window; terminal body 1d / marker 30d; active, uncertain and operator cancellation/discard markers retained"},
+		{"context_refs", "at", "1d; active or uncertain room evidence retains referenced metadata"},
 		{"receipts", "at", "settled 7d; active or uncertain session references retained"},
 		{"outputs", "at", "30d; unfinished outbox references retained"},
 		{"outbox", "at", "terminal 7d after export cleanup; unresolved files and operator decisions retained"},

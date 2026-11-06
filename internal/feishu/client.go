@@ -41,6 +41,7 @@ type Client struct {
 	tokenMu         sync.Mutex
 	token           string
 	tokenUntil      time.Time
+	tokenFlight     *tokenFlight
 	lifeMu          sync.Mutex
 	cancel          context.CancelFunc
 	conn            *websocket.Conn
@@ -150,38 +151,83 @@ func readJSON(r io.Reader, dst any, limit int64) error {
 	}
 	return json.Unmarshal(b, dst)
 }
+type tokenFlight struct {
+	done chan struct{}
+	err error
+}
+
 func (c *Client) accessToken(ctx context.Context) (string, error) {
-	c.tokenMu.Lock()
-	defer c.tokenMu.Unlock()
-	if c.token != "" && time.Now().Before(c.tokenUntil) {
-		return c.token, nil
-	}
-	body, _ := json.Marshal(map[string]string{"app_id": c.config.AppID, "app_secret": c.secret})
-	for attempt := 0; ; attempt++ {
-		if ctx.Err() != nil {
-			return "", ctx.Err()
+	for {
+		if err := ctx.Err(); err != nil { return "", err }
+		c.tokenMu.Lock()
+		if c.token != "" && time.Now().Before(c.tokenUntil) {
+			token := c.token
+			c.tokenMu.Unlock()
+			return token, nil
 		}
-		token, expire, err := c.requestToken(ctx, body)
+		if flight := c.tokenFlight; flight != nil {
+			c.tokenMu.Unlock()
+			// A different request may own the refresh for longer than this
+			// caller's remaining download/service deadline. Never wait on its
+			// HTTP request while holding a mutex or ignoring cancellation.
+			select {
+			case <-ctx.Done(): return "", ctx.Err()
+			case <-flight.done:
+			}
+			if err := ctx.Err(); err != nil { return "", err }
+			if flight.err == nil || errors.Is(flight.err, context.Canceled) || errors.Is(flight.err, context.DeadlineExceeded) {
+				// Read the cache again; an expired cache or cancelled owner may
+				// require one replacement refresh under this caller's deadline.
+				continue
+			}
+			if failure, ok := flight.err.(*APIError); ok {
+				copy := *failure
+				return "", &copy
+			}
+			return "", flight.err
+		}
+		flight := &tokenFlight{done: make(chan struct{})}
+		c.tokenFlight = flight
+		c.tokenMu.Unlock()
+		token, expire, err := c.refreshAccessToken(ctx)
+		c.tokenMu.Lock()
 		if err == nil {
 			ttl := min(7200, max(1, expire-60))
 			c.token = token
 			c.tokenUntil = time.Now().Add(time.Duration(ttl) * time.Second)
-			return c.token, nil
+		}
+		flight.err = err
+		c.tokenFlight = nil
+		close(flight.done)
+		c.tokenMu.Unlock()
+		return token, err
+	}
+}
+
+func (c *Client) refreshAccessToken(ctx context.Context) (string, int, error) {
+	body, _ := json.Marshal(map[string]string{"app_id": c.config.AppID, "app_secret": c.secret})
+	for attempt := 0; ; attempt++ {
+		if ctx.Err() != nil {
+			return "", 0, ctx.Err()
+		}
+		token, expire, err := c.requestToken(ctx, body)
+		if err == nil {
+			return token, expire, nil
 		}
 		var failure *APIError
 		if !errors.As(err, &failure) || !failure.DeliveryRetryable() || attempt+1 >= apiMaxAttempts {
-			return "", err
+			return "", 0, err
 		}
 		delay := failure.DeliveryRetryAfter()
 		if delay == 0 {
 			delay = retryBackoff(attempt)
 		}
 		if delay > apiMaxInlineWait {
-			return "", err
+			return "", 0, err
 		}
 		if e := waitRetry(ctx, delay); e != nil {
 			failure.cause = e
-			return "", failure
+			return "", 0, failure
 		}
 	}
 }
@@ -305,8 +351,11 @@ func (c *Client) doAPI(req *http.Request, dst any, mutation bool) error {
 		// Invalid/expired token can be refreshed on a later independent operation.
 		if code == 99991663 || code == 99991668 || resp.StatusCode == 401 {
 			c.tokenMu.Lock()
-			c.token = ""
-			c.tokenUntil = time.Time{}
+			// An old in-flight request must not invalidate a newer refresh.
+			if c.token == strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ") {
+				c.token = ""
+				c.tokenUntil = time.Time{}
+			}
 			c.tokenMu.Unlock()
 		}
 		return c.responseFailure(req, resp, code, decodeErr == nil && envelope.Code != nil, mutation)

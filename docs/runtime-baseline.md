@@ -69,7 +69,24 @@ Linux 可采集 `/proc/<pid>/status` 和 `smaps_rollup`；Windows 使用 Working
 
 `--sessions` 为 0–8，`--text-bytes` 最大 102400，`--update-ms` 为 20–5000，`--transport-ms` 为 0–1000。20 ms 是基准驱动的压力测试参数；生产配置 `limits.updateMs` 仍要求至少 250 ms。`--reclaim` 使用网关已有 `Sweep`，确认原进程释放后再发消息；网关会话 ID 和原生 ID 必须同时保持，恢复失败不会新建会话。没有会话时不应产生 CLI 或模型请求。
 
-JSON schema 2 记录每阶段进程树、100 ms 间隔观察到的完整进程树采样峰值及采集开销、宿主／原生 CLI／其余工具或 MCP 后代分项、每轮首字／原生结果／模拟交付耗时、卡片创建与更新次数、序列化卡片字节、入站文件与导出文件字节，以及进程级 Go 分配。采样峰值保留同一次完整快照，不把不同时刻各分项的最大值拼成一个峰值；100 ms 之间的瞬时峰值仍可能漏测。宿主分项包含网关、SQLite、采样器和本地服务；任意工具与 MCP 无法仅靠 PID 可靠区分，因此合并保留，不能把全部后代都记成 Claude 本体。Linux 私有页与 Windows Private Bytes 含义不同，跨操作系统不直接相减。
+JSON schema 3 保留每阶段进程树、100 ms 间隔观察到的完整进程树采样峰值及采集开销、宿主／原生 CLI／其余工具或 MCP 后代分项、每轮首字／原生结果／模拟交付耗时、卡片创建与更新次数、序列化卡片字节、入站文件与导出文件字节，以及进程级 Go 分配，并新增下面的工作量和连续趋势。采样峰值保留同一次完整快照，不把不同时刻各分项的最大值拼成一个峰值；100 ms 之间的瞬时峰值仍可能漏测。宿主分项包含网关、SQLite、采样器和本地服务；任意工具与 MCP 无法仅靠 PID 可靠区分，因此合并保留，不能把全部后代都记成 Claude 本体。Linux 私有页与 Windows Private Bytes 含义不同，跨操作系统不直接相减。
+
+### 并发与持续负载
+
+`--concurrent` 让不同聊天同时提交并等待原生轮次，每个聊天内部仍串行。`--soak-seconds` 在冷启动及热身完成后继续提交，观察 SQLite／WAL、goroutine、进程内存与维护耗时是否随轮次积累；它只支持 `warm` 场景，不改变默认资源矩阵的顺序和比较口径。
+
+```sh
+./bin/benchmark-native --claude /absolute/path/to/claude --samples 1 \
+  --scenario warm --sessions 4 --warm-turns 2 --concurrent \
+  --soak-seconds 600 --max-turns 10000 --sample-ms 1000 \
+  --idle-ms 1000 --reclaim > benchmark-soak.json
+```
+
+`--soak-seconds` 为 0–3600，`--max-turns` 为 1–20000，包含冷启动、热身以及可选恢复轮次；先达到时长或轮次上限便停止新提交。每个已提交轮次仍有最长 45 秒的有界交付等待，随后必须确认退出。`--sample-ms` 为 100–10000；采集器本身有开销，应在比较中固定。持续负载模式每 5 秒通过已有 `Sweep` 记录一次维护，不修改生产服务周期。
+
+`workload` 记录尝试／完成轮数、同时等待轮次峰值、持续阶段实际时长与停止原因，范围为初始轮次及持续阶段，可选回收恢复单独列在 `turns` 中。`completedMockTurnsPerSecond` 是本地确定性模型和模拟交付下的观测量，不能当作真实模型吞吐。`trends` 记录数据库／WAL 文件字节、goroutine、活跃进程、在途轮次、内存聚合与维护候选／变更／耗时；不可观测项为 `null`，尚未发生的维护也不记为零耗时，不存在的 WAL 则为实际零文件字节。
+
+运行时会把完整趋势、轮次与维护事件持续写入临时目录的 `observations.jsonl`，路径在 stderr 显示。最终 JSON 保留最初采样、最近最多 2000 个趋势点和丢弃点数；成功后清理临时目录，需保留超过窗口的全量记录时应在运行中另存 JSONL。失败保留数据库、JSONL 与 `benchmark-evidence.json`，并在结果中给出 `evidenceDirectory`。进程退出未确认会停止后续样本，不把残留进程带进下一组。
 
 渲染细项使用生产渲染路径的 Go 分配基准：
 
@@ -77,7 +94,7 @@ JSON schema 2 记录每阶段进程树、100 ms 间隔观察到的完整进程�
 go test ./internal/gateway -run '^$' -bench 'BenchmarkRender|BenchmarkReplyCard' -benchmem
 ```
 
-CI 在 Linux／Windows 的 Go 1.27 记录资源矩阵，并保留带平台后缀的 `native-resource-observations-*` artifact；Linux 另记录三组、每组重复三次的有界渲染分配观察。单次 CI 观察用于发现回归与核对机制，不用于承诺性能比例；正式比较仍需固定机器、多样本和相同输入。进程树退出未确认时，采样器停止后续样本，避免把残留进程计入下一组。
+CI 在 Linux／Windows 的 Go 1.27 记录资源矩阵，并额外运行 2 个聊天、6 秒持续阶段的并发检查；带平台后缀的 `native-resource-observations-*` artifact 同时保留矩阵与并发 JSON。Linux 另记录三组、每组重复三次的有界渲染分配观察。短时 CI 观察用于发现回归与核对机制，不代表上面的 10 分钟命令已执行，也不用于承诺性能比例；正式比较仍需固定机器、多样本和相同输入。
 
 ### 2026-11-05 的 CI 观察
 

@@ -31,25 +31,35 @@ func TestDownloadSharesItsTotalDeadlineWithAuthorizationAndEveryBodyRequest(t *t
 	// observation so the RoundTripper sees the enclosing download deadline.
 	c.http.Timeout = 2 * time.Minute
 	base := c.http.Transport
-	if base == nil { base = http.DefaultTransport }
+	if base == nil {
+		base = http.DefaultTransport
+	}
 	var mu sync.Mutex
 	deadlines := map[string]time.Time{}
 	c.http.Transport = deliveryRoundTripper(func(req *http.Request) (*http.Response, error) {
 		deadline, ok := req.Context().Deadline()
-		if !ok || time.Until(deadline) > 60*time.Second { t.Error("download request escaped its total deadline", req.URL.Path) }
+		if !ok || time.Until(deadline) > 60*time.Second {
+			t.Error("download request escaped its total deadline", req.URL.Path)
+		}
 		mu.Lock()
 		deadlines[req.URL.Path] = deadline
 		mu.Unlock()
 		return base.RoundTrip(req)
 	})
 	path := filepath.Join(t.TempDir(), "downloaded")
-	if err := c.Download(context.Background(), "om_deadline", core.Resource{Kind: "file", Key: "file_deadline"}, path, 100); err != nil { t.Fatal(err) }
+	if err := c.Download(context.Background(), "om_deadline", core.Resource{Kind: "file", Key: "file_deadline"}, path, 100); err != nil {
+		t.Fatal(err)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	auth := deadlines["/open-apis/auth/v3/tenant_access_token/internal"]
-	if auth.IsZero() || len(deadlines) != 3 { t.Fatal("authorization and resource preflight were not included", deadlines) }
+	if auth.IsZero() || len(deadlines) != 3 {
+		t.Fatal("authorization and resource preflight were not included", deadlines)
+	}
 	for _, deadline := range deadlines {
-		if !deadline.Equal(auth) { t.Fatal("download reset its timeout after authorization", deadlines) }
+		if !deadline.Equal(auth) {
+			t.Fatal("download reset its timeout after authorization", deadlines)
+		}
 	}
 }
 

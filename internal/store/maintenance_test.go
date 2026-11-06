@@ -213,3 +213,27 @@ func TestTableStatsRoomScopeAndUnknownUsageRetention(t *testing.T) {
 		t.Fatal("usage results not diagnosed")
 	}
 }
+
+func TestMaintenancePreservesSessionlessContextDuringActiveWork(t *testing.T) {
+	s:=openTest(t)
+	for _,q:=range []string{
+		`INSERT INTO inbox(room,id,message,status,at) VALUES('active','background','{"id":"background","resources":[{"kind":"file","key":"source"}]}','context',1)`,
+		`INSERT INTO context_refs(room,id,message,at) VALUES('active','quoted','{"id":"quoted","resources":[{"kind":"file","key":"quote"}]}',1)`,
+		`INSERT INTO inbox(room,id,message,status,at,session) VALUES('active','running','{}','consumed',1,'session')`,
+		`INSERT INTO context_refs(room,id,message,at) VALUES('idle','expired','{}',1)`,
+	}{if _,err:=s.DB.Exec(q);err!=nil{t.Fatal(err)}}
+	if _,err:=s.Maintain(context.Background(),2*dayMS,1);err!=nil{t.Fatal(err)}
+	for _,id:=range []string{"background","quoted"}{m,err:=s.ContextMessage("active",id);if err!=nil||m==nil||len(m.Resources)!=1{t.Fatal("active attachment metadata was evicted",id,m,err)}}
+	var n int
+	if err:=s.DB.QueryRow("SELECT count(*) FROM context_refs WHERE room='idle'").Scan(&n);err!=nil||n!=0{t.Fatal("inactive context did not expire",n,err)}
+}
+
+func TestMaintenanceKeepsDiscardedOriginDedupWithoutItsBody(t *testing.T) {
+	s:=openTest(t)
+	if _,err:=s.DB.Exec(`INSERT INTO inbox(room,id,message,status,at,session) VALUES('r','discard-source','{"id":"discard-source"}','done',1,'s');
+INSERT INTO output_discarded_origins(room,session,origin,output,actor,at) VALUES('r','s','discard-source','discarded','owner',1);`);err!=nil{t.Fatal(err)}
+	if _,err:=s.Maintain(context.Background(),100*dayMS,1);err!=nil{t.Fatal(err)}
+	seen,err:=s.Seen("r","discard-source");if err!=nil||!seen{t.Fatal("discard origin became eligible for native input replay",seen,err)}
+	var body string
+	if err=s.DB.QueryRow("SELECT message FROM inbox WHERE room='r' AND id='discard-source'").Scan(&body);err!=nil||body!="{}"{t.Fatal("dedup marker retained the unnecessary message body",body,err)}
+}

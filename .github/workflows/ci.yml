@@ -128,6 +128,9 @@ jobs:
           fi
           go build -trimpath -o "$benchmark" ./cmd/benchmark-native
           "$benchmark" --samples 1 --warm-turns 0 --idle-ms 100 --scenario matrix > native-resource-observations.json
+          "$benchmark" --samples 1 --scenario warm --sessions 2 --warm-turns 1 \
+            --concurrent --soak-seconds 6 --max-turns 1000 --sample-ms 500 \
+            --idle-ms 100 > native-concurrent-observations.json
       - name: Print resource observation summary
         if: always() && (matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest') && matrix.go == '1.27.x'
         shell: python
@@ -141,12 +144,22 @@ jobs:
               for sample in report['samples']:
                   memory = sample['idleMemory']
                   print(json.dumps({'scenario': sample['scenario'], 'status': sample['status'], 'workers': sample['workersStarted'], 'sessionStable': sample['sessionStable'], 'memoryStatus': memory['status'], 'hostResidentBytes': memory['hostBytes'], 'nativeResidentBytes': memory['nativeResidentBytes'], 'toolOrMcpResidentBytes': memory['toolOrMcpResidentBytes'], 'hostPrivateBytes': memory['hostPrivateBytes'], 'descendantPrivateBytes': memory['descendantPrivateBytes'], 'transport': sample['transport'], 'goAllocatedBytes': sample['goAllocatedBytes'], 'memorySampling': sample['memorySampling']}, ensure_ascii=False))
+          path = Path('native-concurrent-observations.json')
+          if path.exists() and path.stat().st_size:
+              report = json.loads(path.read_text(encoding='utf-8'))
+              for sample in report['samples']:
+                  workload, trends = sample['workload'], sample['trends']
+                  print(json.dumps({'scenario': sample['scenario'], 'status': sample['status'], 'workload': workload, 'trendPoints': len(trends['points']), 'droppedEarlierPoints': trends['droppedEarlierPoints'], 'latestMaintenance': trends['points'][-1]['maintenance'] if trends['points'] else None, 'cleanupConfirmed': sample['cleanupConfirmed']}, ensure_ascii=False))
+                  if sample['status'] != 'passed' or not workload['concurrent'] or workload['peakInFlightTurns'] < 2 or workload['completedTurns'] != workload['attemptedTurns']:
+                      raise SystemExit('concurrent native workload did not complete with overlapping room turns')
       - name: Retain resource observations
         if: always() && (matrix.os == 'ubuntu-latest' || matrix.os == 'windows-latest') && matrix.go == '1.27.x'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-resource-observations-${{ runner.os }}-${{ runner.arch }}
-          path: native-resource-observations.json
+          path: |
+            native-resource-observations.json
+            native-concurrent-observations.json
           if-no-files-found: warn
           retention-days: 7
 

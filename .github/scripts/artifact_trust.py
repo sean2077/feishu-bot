@@ -8,11 +8,13 @@ workflow's always-run cleanup to recover after an interrupted Go test process.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import secrets
 import shlex
 import shutil
@@ -38,16 +40,92 @@ def hosted_root() -> Path:
 
 
 def invoke(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
+    # Include the operation, never arbitrary arguments (a keychain command can
+    # contain its password). Preserve bounded OS output on timeout as well.
+    if args[:3] == ["sudo", "-n", "/usr/bin/security"]:
+        operation = "security " + args[3]
+    elif args[0] == "/usr/bin/security":
+        operation = "security " + args[1]
+    elif Path(args[0]).name == "powershell.exe" and "-Operation" in args:
+        operation = "CurrentUser Root " + args[args.index("-Operation") + 1]
+    else:
+        operation = Path(args[0]).name
+    command = args
+    if args[:3] == ["sudo", "-n", "/usr/bin/security"]:
+        # Bound the privileged child itself. Killing only the unprivileged
+        # sudo monitor on timeout can leave a root security process behind.
+        # alarm survives exec; only our fixed security invocation is wrapped.
+        command = ["sudo", "-n", "/usr/bin/perl", "-e", 'alarm 25; exec @ARGV or die "exec security failed";', "--", *args[2:]]
     try:
-        result = subprocess.run(args, capture_output=True, text=True,
+        result = subprocess.run(command, capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", timeout=30)
     except subprocess.TimeoutExpired as exc:
-        raise TrustError(f"OS certificate operation timed out: {Path(args[0]).name}") from exc
+        diagnostic = exc.stderr or exc.stdout or ""
+        if isinstance(diagnostic, bytes):
+            diagnostic = diagnostic.decode("utf-8", errors="replace")
+        raise TrustError(f"OS certificate operation timed out: {operation}: {diagnostic[-2000:]}") from exc
     if check and result.returncode:
         # Arguments can contain the ephemeral keychain password. Never print
         # them; the OS diagnostic is sufficient to identify an approval block.
-        raise TrustError(f"OS certificate operation failed: {result.stderr[-2000:] or result.stdout[-2000:]}")
+        raise TrustError(f"OS certificate operation failed ({operation}): {result.stderr[-2000:] or result.stdout[-2000:]}")
     return result
+
+
+def windows_certificate(operation: str, certificate: Path, state: dict) -> bool:
+    # certutil -store matches a CertId against every supported identifier and
+    # may be slow on populated hosted-runner stores. The normal PowerShell
+    # Certificate provider imports/removes the certificate; a read-only .NET
+    # lookup matches only its exact thumbprint and verifies its SHA256 bytes.
+    # No unprotected store flags, policy changes or chain-validation bypasses.
+    helper = Path(__file__).with_name("artifact_windows_trust.ps1")
+    result = invoke(["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                     "-File", str(helper), "-Operation", operation,
+                     "-Certificate", str(certificate), "-Thumbprint", state["thumbprint"],
+                     "-Sha256", state["sha256"]])
+    if len(result.stdout) > 4096:
+        raise TrustError("CurrentUser Root certificate response is too large")
+    try:
+        status = json.loads(result.stdout)
+    except ValueError as exc:
+        raise TrustError("CurrentUser Root certificate presence could not be confirmed") from exc
+    if not isinstance(status, dict) or set(status) != {"present"} or type(status["present"]) is not bool:
+        raise TrustError("CurrentUser Root certificate presence could not be confirmed")
+    return status["present"]
+
+
+def macos_settings(path: Path) -> dict:
+    result = invoke(["/usr/bin/security", "trust-settings-export", "-d", str(path)], check=False)
+    if result.returncode:
+        if "No Trust Settings were found" in result.stderr:
+            return {"trustVersion": 1, "trustList": {}}
+        raise TrustError("cannot export administrator trust settings: " + result.stderr[-2000:])
+    if not path.is_file() or path.stat().st_size > 16 << 20:
+        raise TrustError("administrator trust-settings export is missing or too large")
+    settings = plistlib.loads(path.read_bytes())
+    if not isinstance(settings, dict) or settings.get("trustVersion") != 1 or not isinstance(settings.get("trustList"), dict):
+        raise TrustError("unsupported administrator trust-settings schema")
+    return settings
+
+
+def remove_macos_trust(record: Path, thumbprint: str) -> None:
+    # remove-trusted-cert hangs on affected hosted macOS 15 images. Use the
+    # supported external representation API instead, removing only our exact
+    # SHA1 key (Apple TrustSettingsSchema.h), never replacing a pre-test
+    # snapshot that could discard unrelated newly added trust settings.
+    before = macos_settings(record.parent / "trust-before.plist")
+    key = thumbprint.upper()
+    if key not in before["trustList"]:
+        return
+    expected = copy.deepcopy(before)
+    del expected["trustList"][key]
+    replacement = record.parent / "trust-cleaned.plist"
+    replacement.write_bytes(plistlib.dumps(expected))
+    replacement.chmod(0o600)
+    if macos_settings(record.parent / "trust-recheck.plist") != before:
+        raise TrustError("administrator trust settings changed concurrently; cleanup not applied")
+    invoke(["sudo", "-n", "/usr/bin/security", "trust-settings-import", "-d", str(replacement)])
+    if macos_settings(record.parent / "trust-after.plist") != expected:
+        raise TrustError("administrator trust-settings cleanup could not be confirmed exactly")
 
 
 def save(record: Path, state: dict) -> None:
@@ -94,10 +172,17 @@ def install(certificate: Path) -> Path:
     save(record, state)
     try:
         if operating_system == "Windows":
+            # Import a DER file through the documented PKIClient cmdlet. Keep
+            # the PEM and both fingerprints for independently verified cleanup.
+            encoded = entry / "certificate.cer"
+            encoded.write_bytes(der)
+            encoded.chmod(0o600)
+            if windows_certificate("inspect", encoded, state):
+                raise TrustError("fixture certificate already exists in CurrentUser Root")
             state["trust_attempted"] = True
             save(record, state)
-            invoke(["certutil", "-user", "-f", "-addstore", "Root", str(local)])
-            invoke(["certutil", "-user", "-store", "Root", state["thumbprint"]])
+            if not windows_certificate("import", encoded, state):
+                raise TrustError("temporary certificate import could not be confirmed")
         else:
             security = "/usr/bin/security"
             keychain = entry / "fixture.keychain-db"
@@ -120,9 +205,12 @@ def install(certificate: Path) -> Path:
                     "-p", "ssl", "-s", "open.feishu.cn", "-k", str(keychain), str(local)])
             invoke([security, "verify-cert", "-c", str(local), "-p", "ssl", "-s", "open.feishu.cn"])
         return record
-    except BaseException:
+    except BaseException as original:
         # Keep the journal if cleanup itself fails, so the workflow can retry.
-        cleanup(record)
+        try:
+            cleanup(record)
+        except Exception as recovery:
+            raise TrustError(f"certificate install failed: {original}; cleanup failed: {recovery}") from original
         raise
 
 
@@ -132,18 +220,16 @@ def cleanup(record: Path) -> None:
     failures = []
     if state["platform"] == "Windows":
         if state["trust_attempted"]:
-            present = invoke(["certutil", "-user", "-store", "Root", state["thumbprint"]], check=False)
-            if present.returncode == 0:
-                invoke(["certutil", "-user", "-delstore", "Root", state["thumbprint"]])
-            if invoke(["certutil", "-user", "-store", "Root", state["thumbprint"]], check=False).returncode == 0:
+            encoded = record.parent / "certificate.cer"
+            if windows_certificate("inspect", encoded, state):
+                windows_certificate("remove", encoded, state)
+            if windows_certificate("inspect", encoded, state):
                 raise TrustError("temporary certificate remains in CurrentUser Root")
     else:
         security = "/usr/bin/security"
         if state["trust_attempted"]:
             try:
-                result = invoke(["sudo", "-n", security, "remove-trusted-cert", "-d", str(local)], check=False)
-                if result.returncode and not any(text in result.stderr for text in ("No Trust Settings", "could not be found")):
-                    failures.append(result.stderr[-2000:])
+                remove_macos_trust(record, state["thumbprint"])
                 if invoke([security, "verify-cert", "-c", str(local), "-p", "ssl", "-s", "open.feishu.cn"], check=False).returncode == 0:
                     failures.append("temporary CA remains trusted after removal")
             except TrustError as exc:

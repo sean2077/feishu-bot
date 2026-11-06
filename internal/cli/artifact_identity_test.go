@@ -19,7 +19,16 @@ type artifactIdentity struct {
 func readArtifactIdentity(t *testing.T, prefix string) artifactIdentity {
 	t.Helper()
 	identity := artifactIdentity{Path: os.Getenv(prefix+"_PATH"), Version: os.Getenv(prefix+"_VERSION"), Commit: os.Getenv(prefix+"_COMMIT"), SHA256: os.Getenv(prefix+"_SHA256")}
-	if identity.Path == "" { t.Skip("set "+prefix+"_PATH to exercise the actual artifact") }
+	if identity.Path == "" {
+		configured := prefix != "FEISHU_ARTIFACT"
+		for _, candidate := range []string{"FEISHU_ARTIFACT", "FEISHU_PREVIOUS_ARTIFACT"} {
+			for _, field := range []string{"PATH", "VERSION", "COMMIT", "SHA256", "BUILDINFO"} {
+				configured = configured || os.Getenv(candidate+"_"+field) != ""
+			}
+		}
+		if configured { t.Fatal("explicit artifact journey is missing "+prefix+"_PATH") }
+		t.Skip("set FEISHU_ARTIFACT_PATH and its identities to exercise the actual artifact")
+	}
 	manifest := os.Getenv(prefix+"_BUILDINFO")
 	commit, commitErr := hex.DecodeString(identity.Commit)
 	digest, digestErr := hex.DecodeString(identity.SHA256)

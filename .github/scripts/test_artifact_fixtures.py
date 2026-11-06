@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import subprocess
 import tempfile
 import unittest
@@ -97,12 +98,13 @@ class ArtifactTrustTests(unittest.TestCase):
         def invoke(args, check=True):
             nonlocal present
             commands.append(args)
-            if "-addstore" in args:
+            operation = args[args.index("-Operation") + 1]
+            if operation == "import":
+                self.assertEqual(Path(args[args.index("-Certificate") + 1]).read_bytes(), self.der)
                 present = True
-            if "-delstore" in args:
+            if operation == "remove":
                 present = False
-            code = 0 if "-store" not in args or present else 1
-            return subprocess.CompletedProcess(args, code, "", "")
+            return subprocess.CompletedProcess(args, 0, json.dumps({"present": present}), "")
 
         with mock.patch.object(artifact_trust.platform, "system", return_value="Windows"), mock.patch.object(artifact_trust, "invoke", side_effect=invoke):
             record = artifact_trust.install(self.certificate)
@@ -110,12 +112,16 @@ class ArtifactTrustTests(unittest.TestCase):
             artifact_trust.cleanup(record)
         self.assertFalse(record.parent.exists())
         self.assertFalse(present)
-        self.assertTrue(all(command[:2] == ["certutil", "-user"] for command in commands))
-        self.assertIn(["certutil", "-user", "-delstore", "Root", hashlib.sha1(self.der).hexdigest()], commands)
+        self.assertEqual([command[command.index("-Operation") + 1] for command in commands],
+                         ["inspect", "import", "inspect", "remove", "inspect"])
+        for command in commands:
+            self.assertEqual(command[:5], ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+            self.assertEqual(command[command.index("-Thumbprint") + 1], hashlib.sha1(self.der).hexdigest())
+            self.assertEqual(command[command.index("-Sha256") + 1], hashlib.sha256(self.der).hexdigest())
 
     def test_changed_certificate_record_cannot_remove_an_unrelated_root(self):
         with mock.patch.object(artifact_trust.platform, "system", return_value="Windows"), mock.patch.object(
-                artifact_trust, "invoke", return_value=subprocess.CompletedProcess([], 0, "", "")) as command:
+                artifact_trust, "windows_certificate", side_effect=[False, True]) as command:
             record = artifact_trust.install(self.certificate)
             state = json.loads(record.read_text())
             state["thumbprint"] = "0" * 40
@@ -139,7 +145,14 @@ class ArtifactTrustTests(unittest.TestCase):
                 Path(args[-1]).touch()
             if "add-trusted-cert" in args:
                 trusted = True
-            if "remove-trusted-cert" in args:
+            if "trust-settings-export" in args:
+                entries = {"0" * 40: {"issuerName": b"unrelated-root", "trustSettings": []}}
+                if trusted:
+                    entries[hashlib.sha1(self.der).hexdigest().upper()] = {"issuerName": b"fixture-root"}
+                Path(args[-1]).write_bytes(plistlib.dumps({"trustVersion": 1, "trustList": entries}))
+            if "trust-settings-import" in args:
+                settings = plistlib.loads(Path(args[-1]).read_bytes())
+                self.assertEqual(settings, {"trustVersion": 1, "trustList": {"0" * 40: {"issuerName": b"unrelated-root", "trustSettings": []}}})
                 trusted = False
             if "verify-cert" in args:
                 code = 0 if trusted else 1
@@ -153,24 +166,90 @@ class ArtifactTrustTests(unittest.TestCase):
         self.assertFalse(record.parent.exists())
         self.assertFalse(trusted)
         self.assertIn(["/usr/bin/security", "list-keychains", "-d", "user", "-s", original], commands)
-        removes = [command for command in commands if "remove-trusted-cert" in command]
-        self.assertEqual(removes, [["sudo", "-n", "/usr/bin/security", "remove-trusted-cert", "-d", str(record.parent / "certificate.pem")]])
+        imports = [command for command in commands if "trust-settings-import" in command]
+        self.assertEqual(imports, [["sudo", "-n", "/usr/bin/security", "trust-settings-import", "-d", str(record.parent / "trust-cleaned.plist")]])
+        self.assertFalse(any("remove-trusted-cert" in command for command in commands))
         self.assertFalse(any("authorizationdb" in command for command in commands))
+
+    def test_macos_privileged_security_child_has_its_own_timeout(self):
+        args = ["sudo", "-n", "/usr/bin/security", "trust-settings-import", "-d", "/fixture.plist"]
+        with mock.patch.object(artifact_trust.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as command:
+            artifact_trust.invoke(args)
+        actual = command.call_args.args[0]
+        self.assertEqual(actual[:4], ["sudo", "-n", "/usr/bin/perl", "-e"])
+        self.assertIn("alarm 25", actual[4])
+        self.assertEqual(actual[5:], ["--", *args[2:]])
+        self.assertEqual(command.call_args.kwargs["timeout"], 30)
+
+    def test_macos_changed_trust_settings_are_never_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record = Path(directory) / "record.json"
+            key = hashlib.sha1(self.der).hexdigest().upper()
+            before = {"trustVersion": 1, "trustList": {key: {"issuerName": b"fixture"}}}
+            changed = {"trustVersion": 1, "trustList": {**before["trustList"], "0" * 40: {"issuerName": b"new-root"}}}
+            with mock.patch.object(artifact_trust, "macos_settings", side_effect=[before, changed]), mock.patch.object(artifact_trust, "invoke") as command:
+                with self.assertRaisesRegex(artifact_trust.TrustError, "changed concurrently"):
+                    artifact_trust.remove_macos_trust(record, key)
+                command.assert_not_called()
 
     def test_windows_failed_import_is_cleaned_before_reporting_the_failure(self):
         commands = []
 
         def invoke(args, check=True):
             commands.append(args)
-            if "-addstore" in args:
+            if args[args.index("-Operation") + 1] == "import":
                 raise artifact_trust.TrustError("import denied")
-            return subprocess.CompletedProcess(args, 1, "", "not found")
+            return subprocess.CompletedProcess(args, 0, '{"present":false}', "")
 
         with mock.patch.object(artifact_trust.platform, "system", return_value="Windows"), mock.patch.object(artifact_trust, "invoke", side_effect=invoke):
             with self.assertRaisesRegex(artifact_trust.TrustError, "import denied"):
                 artifact_trust.install(self.certificate)
         self.assertFalse(list((self.root / "feishu-artifact-trust").glob("*/record.json")))
-        self.assertFalse(any("-delstore" in command for command in commands))
+        self.assertFalse(any(command[command.index("-Operation") + 1] == "remove" for command in commands))
+
+    def test_windows_access_denied_during_lookup_keeps_recovery_journal(self):
+        with mock.patch.object(artifact_trust.platform, "system", return_value="Windows"), mock.patch.object(
+                artifact_trust, "windows_certificate", side_effect=[False, True]):
+            record = artifact_trust.install(self.certificate)
+        with mock.patch.object(artifact_trust.platform, "system", return_value="Windows"), mock.patch.object(
+                artifact_trust.subprocess, "run", return_value=subprocess.CompletedProcess([], 0x80070005, "", "access denied")) as command:
+            for _ in range(2):
+                with self.assertRaisesRegex(artifact_trust.TrustError, "CurrentUser Root inspect.*access denied"):
+                    artifact_trust.cleanup(record)
+                self.assertTrue(record.is_file())
+            self.assertTrue(all(call.args[0][call.args[0].index("-Operation") + 1] == "inspect"
+                                for call in command.call_args_list))
+
+    def test_windows_preexisting_root_is_never_claimed_or_removed(self):
+        with mock.patch.object(artifact_trust.platform, "system", return_value="Windows"), mock.patch.object(
+                artifact_trust, "windows_certificate", return_value=True) as command:
+            with self.assertRaisesRegex(artifact_trust.TrustError, "already exists"):
+                artifact_trust.install(self.certificate)
+            self.assertEqual(command.call_count, 1)
+            self.assertEqual(command.call_args.args[0], "inspect")
+
+    def test_windows_missing_or_malformed_status_never_proves_absence(self):
+        state = {"thumbprint": "a" * 40, "sha256": "b" * 64}
+        for response in ("", "{}", '{"present":"false"}', '{"present":false,"error":"denied"}'):
+            with self.subTest(response=response), mock.patch.object(artifact_trust, "invoke", return_value=
+                    subprocess.CompletedProcess([], 0, response, "")):
+                with self.assertRaisesRegex(artifact_trust.TrustError, "could not be confirmed"):
+                    artifact_trust.windows_certificate("inspect", self.certificate, state)
+
+    def test_failed_import_preserves_primary_error_and_cleanup_journal(self):
+        with mock.patch.object(artifact_trust.platform, "system", return_value="Windows"), mock.patch.object(
+                artifact_trust, "windows_certificate", side_effect=[False, artifact_trust.TrustError("import timed out"),
+                                                                     artifact_trust.TrustError("lookup denied")]):
+            with self.assertRaisesRegex(artifact_trust.TrustError, "import timed out.*lookup denied"):
+                artifact_trust.install(self.certificate)
+        self.assertEqual(len(list((self.root / "feishu-artifact-trust").glob("*/record.json"))), 1)
+
+    def test_timeout_identifies_operation_and_retains_bounded_os_diagnostic(self):
+        args = ["powershell.exe", "-Operation", "import"]
+        with mock.patch.object(artifact_trust.subprocess, "run", side_effect=
+                subprocess.TimeoutExpired(args, 30, output=b"partial import diagnostic")):
+            with self.assertRaisesRegex(artifact_trust.TrustError, "CurrentUser Root import: partial import diagnostic"):
+                artifact_trust.invoke(args)
 
 
 if __name__ == "__main__":

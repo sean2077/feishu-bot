@@ -196,29 +196,58 @@ func TestDiscardLatePreviewClosesExistingCardOnce(t *testing.T) {
 }
 
 func TestDiscardClosingStatusFailureRollsBackWholeDecision(t *testing.T) {
-	f:=newFixture(t,nil);s,err:=f.s.Session(f.room().Key);if err!=nil{t.Fatal(err)}
-	id:=operationOutput(t,f,s.ID,"reply","blocked","bound","existing-card")
-	if _,err=f.s.DB.Exec("CREATE TRIGGER reject_discard_status BEFORE INSERT ON outbox WHEN NEW.kind='status' BEGIN SELECT RAISE(ABORT,'fixture closing status failure'); END");err!=nil{t.Fatal(err)}
-	if _,err=f.g.discardOutput(context.Background(),f.room(),id,"owner");err==nil{t.Fatal("decision committed without its durable closing status")}
-	if o,err:=f.g.output(id);err!=nil||o.State!="blocked"{t.Fatal("partial cancellation escaped rollback",o,err)}
+	f := newFixture(t, nil)
+	s, err := f.s.Session(f.room().Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := operationOutput(t, f, s.ID, "reply", "blocked", "bound", "existing-card")
+	if _, err = f.s.DB.Exec("CREATE TRIGGER reject_discard_status BEFORE INSERT ON outbox WHEN NEW.kind='status' BEGIN SELECT RAISE(ABORT,'fixture closing status failure'); END"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.g.discardOutput(context.Background(), f.room(), id, "owner"); err == nil {
+		t.Fatal("decision committed without its durable closing status")
+	}
+	if o, err := f.g.output(id); err != nil || o.State != "blocked" {
+		t.Fatal("partial cancellation escaped rollback", o, err)
+	}
 	var n int
-	if err=f.s.DB.QueryRow("SELECT count(*) FROM operator_decisions").Scan(&n);err!=nil||n!=0{t.Fatal("partial decision escaped rollback",n,err)}
+	if err = f.s.DB.QueryRow("SELECT count(*) FROM operator_decisions").Scan(&n); err != nil || n != 0 {
+		t.Fatal("partial decision escaped rollback", n, err)
+	}
 }
 
 func TestDiscardRefusesUnattributableRequiredSibling(t *testing.T) {
-	f:=newFixture(t,nil);s,err:=f.s.Session(f.room().Key);if err!=nil{t.Fatal(err)}
-	id:=operationOutput(t,f,s.ID,"reply","blocked","bound","")
-	operationOutput(t,f,s.ID,"file","blocked","","")
-	if _,err=f.g.discardOutput(context.Background(),f.room(),id,"owner");!errors.Is(err,errOutputUnbound){t.Fatal("unknown sibling dependency was guessed independent",err)}
+	f := newFixture(t, nil)
+	s, err := f.s.Session(f.room().Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := operationOutput(t, f, s.ID, "reply", "blocked", "bound", "")
+	operationOutput(t, f, s.ID, "file", "blocked", "", "")
+	if _, err = f.g.discardOutput(context.Background(), f.room(), id, "owner"); !errors.Is(err, errOutputUnbound) {
+		t.Fatal("unknown sibling dependency was guessed independent", err)
+	}
 }
 
 func TestLatePreviewTargetAndDiscardClosureCommitTogether(t *testing.T) {
-	f:=newFixture(t,nil);s,err:=f.s.Session(f.room().Key);if err!=nil{t.Fatal(err)}
-	file:=operationOutput(t,f,s.ID,"file","blocked","same","")
-	if _,err=f.g.discardOutput(context.Background(),f.room(),file,"owner");err!=nil{t.Fatal(err)}
-	reply:=operationOutput(t,f,s.ID,"reply","preparing","same","")
-	ctx,cancel:=context.WithCancel(context.Background());cancel()
-	if err=f.g.acknowledgePreviewTarget(ctx,reply,f.room(),"acknowledged-late-card");err!=nil{t.Fatal("observed ACK was lost to concurrent render cancellation",err)}
-	var target,state,status string
-	if err=f.s.DB.QueryRow(`SELECT o.target,o.state,json_extract(d.detail,'$.closingStatus') FROM outbox o JOIN operator_decisions d ON d.id=o.id AND d.kind='output' WHERE o.id=?`,reply).Scan(&target,&state,&status);err!=nil||target!="acknowledged-late-card"||state!="cancelled"||status==""{t.Fatal("ACK target/closure not durable",target,state,status,err)}
+	f := newFixture(t, nil)
+	s, err := f.s.Session(f.room().Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := operationOutput(t, f, s.ID, "file", "blocked", "same", "")
+	if _, err = f.g.discardOutput(context.Background(), f.room(), file, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	reply := operationOutput(t, f, s.ID, "reply", "preparing", "same", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err = f.g.acknowledgePreviewTarget(ctx, reply, f.room(), "acknowledged-late-card"); err != nil {
+		t.Fatal("observed ACK was lost to concurrent render cancellation", err)
+	}
+	var target, state, status string
+	if err = f.s.DB.QueryRow(`SELECT o.target,o.state,json_extract(d.detail,'$.closingStatus') FROM outbox o JOIN operator_decisions d ON d.id=o.id AND d.kind='output' WHERE o.id=?`, reply).Scan(&target, &state, &status); err != nil || target != "acknowledged-late-card" || state != "cancelled" || status == "" {
+		t.Fatal("ACK target/closure not durable", target, state, status, err)
+	}
 }

@@ -139,10 +139,10 @@ func runArtifactNativeJourney(t *testing.T, initial, current artifactIdentity) {
 	// defaults must not make a real previous binary unable to start this fixture.
 	encoded, _ := json.Marshal(core.Args{
 		"tenantId": c.TenantID, "appId": c.AppID, "appSecretEnv": c.AppSecretEnv, "dataDir": c.DataDir,
-		"runtime": core.Args{"claudeExecutable": claude, "maxWorkers": 1, "idleMs": 60000},
-		"model": core.Args{"baseUrl": model.URL, "allowHttp": true, "tokenEnv": c.Model.TokenEnv, "model": "fixture-model", "smallModel": "fixture-model"},
+		"runtime":  core.Args{"claudeExecutable": claude, "maxWorkers": 1, "idleMs": 60000},
+		"model":    core.Args{"baseUrl": model.URL, "allowHttp": true, "tokenEnv": c.Model.TokenEnv, "model": "fixture-model", "smallModel": "fixture-model"},
 		"projects": []core.Args{{"id": "fixture", "cwd": work, "nativeConfig": "isolated", "permissionMode": "default", "maintainers": []string{"ou_owner"}, "actions": []any{}}},
-		"groups": []core.Args{{"chatId": "oc_artifact", "projectId": "fixture", "members": []string{"ou_member"}}}, "dms": []any{},
+		"groups":   []core.Args{{"chatId": "oc_artifact", "projectId": "fixture", "members": []string{"ou_member"}}}, "dms": []any{},
 		"limits": core.Args{"updateMs": 250, "approvalMs": 60000},
 	})
 	if err := os.WriteFile(configPath, encoded, 0600); err != nil {
@@ -152,7 +152,9 @@ func runArtifactNativeJourney(t *testing.T, initial, current artifactIdentity) {
 	env = append(env, trust...)
 	envPath := filepath.Join(dir, "service.env")
 	envData := []byte("ARTIFACT_NATIVE_APP_SECRET=artifact-native-app\nARTIFACT_NATIVE_MODEL_TOKEN=artifact-native-model\n")
-	if err := os.WriteFile(envPath, envData, 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(envPath, envData, 0600); err != nil {
+		t.Fatal(err)
+	}
 	logPath := filepath.Join(dir, "service.log")
 	verifyVersion := func(expected string) {
 		versionCmd := exec.Command(binary, "--version")
@@ -283,7 +285,9 @@ func runArtifactNativeJourney(t *testing.T, initial, current artifactIdentity) {
 	stopService()
 	original, cc := artifactSession(t, c.DataDir)
 	beforeLog, err := os.ReadFile(logPath)
-	if err != nil || len(beforeLog) == 0 { t.Fatal("production service log was not written", err) }
+	if err != nil || len(beforeLog) == 0 {
+		t.Fatal("production service log was not written", err)
+	}
 	if upgrade {
 		installArtifactBinary(t, current, binary)
 		verifyVersion(current.Version)
@@ -301,17 +305,23 @@ func runArtifactNativeJourney(t *testing.T, initial, current artifactIdentity) {
 	}
 	for path, expected := range map[string][]byte{configPath: encoded, envPath: envData, target: []byte("artifact-approved-native")} {
 		actual, err := os.ReadFile(path)
-		if err != nil || !bytes.Equal(actual, expected) { t.Fatal("service restart/upgrade changed configuration, environment or project data", filepath.Base(path), err) }
+		if err != nil || !bytes.Equal(actual, expected) {
+			t.Fatal("service restart/upgrade changed configuration, environment or project data", filepath.Base(path), err)
+		}
 	}
 	afterLog, err := os.ReadFile(logPath)
-	if err != nil || !bytes.HasPrefix(afterLog, beforeLog) || len(afterLog) <= len(beforeLog) { t.Fatal("service restart/upgrade replaced or stopped appending its existing log", err) }
+	if err != nil || !bytes.HasPrefix(afterLog, beforeLog) || len(afterLog) <= len(beforeLog) {
+		t.Fatal("service restart/upgrade replaced or stopped appending its existing log", err)
+	}
 	t.Logf("Actual production binary + real native CLI + local TLS/WS/REST/model: MCP history, maintainer Write approval, question answer after reconnect, same reply card, complete file before Done, /stop, service restart and original native session/history all confirmed. upgrade=%t oldCommit=%s newCommit=%s; config/env/project bytes and service-log prefix preserved.", upgrade, initial.Commit, current.Commit)
 }
 
 func artifactSession(t *testing.T, dir string) (string, string) {
 	t.Helper()
 	path := filepath.Join(dir, "gateway.sqlite")
-	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() { t.Fatal("artifact database is missing", err) }
+	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+		t.Fatal("artifact database is missing", err)
+	}
 	// Inspect without store.Open: the test harness must not migrate an old
 	// binary's database before the new production binary gets to open it.
 	db, err := sql.Open("sqlite", path)
@@ -320,7 +330,9 @@ func artifactSession(t *testing.T, dir string) (string, string) {
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA query_only=ON"); err != nil { t.Fatal(err) }
+	if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
+		t.Fatal(err)
+	}
 	var id, cc string
 	if err := db.QueryRow("SELECT id,cc FROM sessions WHERE state='open'").Scan(&id, &cc); err != nil {
 		t.Fatal("artifact did not persist its native session", err)
