@@ -434,5 +434,5 @@ func (g *Gateway) quickSupplement(ctx context.Context, r core.Room, a core.CardA
 		return "", err
 	}
 	g.kick(r)
-	return "补充已保存，等待交给本轮原生输入流；这不代表模型已读取。", nil
+	return "补充已保存，等待交给本轮原生输入流。", nil
 }

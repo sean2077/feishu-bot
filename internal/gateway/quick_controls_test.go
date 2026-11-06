@@ -99,8 +99,12 @@ func TestQuickSupplementDeduplicatesAndOldStopCannotStopLaterTurn(t *testing.T) 
 		t.Fatal(err)
 	}
 	a := core.CardAction{ChatID: r.ChatID, UserID: "second", MessageID: "bound-card", Value: testQuickValue(t, f.g, card, "supplement"), FormValue: core.Args{"quick_supplement": "/new"}}
-	if _, err := f.g.Action(context.Background(), a); err != nil {
+	reply, err := f.g.Action(context.Background(), a)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if strings.Contains(reply, "不代表模型已读取") || !strings.Contains(reply, "补充已保存") {
+		t.Fatalf("supplement toast = %q", reply)
 	}
 	extra := f.delivery(w)
 	if extra.SupplementTo != d.UUID || extra.SessionID != d.SessionID || extra.Message.Text != "/new" || extra.Message.InteractionMessageID != "bound-card" {

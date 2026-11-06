@@ -86,7 +86,9 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		if ok && d.SupplementTo != "" && !accepted {
 			r, allowed := Route(g.config, d.Message)
 			if allowed && r.Key == s.room.Key {
-				g.notify(r, "补充已交给原生输入流；这不代表模型已读取、理解或执行。", &d.Message)
+				if receipt := supplementReceipt(d.Message); receipt != "" {
+					g.notify(r, receipt, &d.Message)
+				}
 			}
 		}
 	case "input_rejected":
