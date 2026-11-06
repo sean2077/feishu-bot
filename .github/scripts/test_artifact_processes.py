@@ -298,10 +298,18 @@ class FailureTests(unittest.TestCase):
         session.sid = 42
         session.processes = mock.Mock()
         member = processes._Member(99, 42, (100,), True)
+        # This isolated Unix contract also runs on Windows, where SIGKILL is
+        # absent. Use fixture signals and a clock that reaches both stages.
+        unix_signals = mock.Mock(SIGTERM=15, SIGKILL=9)
         with mock.patch.object(session, "members", return_value=[member]), \
                 mock.patch.object(processes, "_reap_children"), \
+                mock.patch.object(processes, "signal", unix_signals), \
+                mock.patch.object(time, "monotonic", side_effect=[0, 0, 0, 0, .01, .01, .02]), \
+                mock.patch.object(time, "sleep"), \
                 self.assertRaises(processes.SupervisionError):
             session.cleanup(.02)
+        self.assertEqual(session.processes.signal.call_args_list,
+                         [mock.call(member, 15), mock.call(member, 9)])
 
     def test_empty_snapshot_is_rechecked_for_a_forked_replacement(self):
         session = object.__new__(processes._UnixSession)
@@ -309,9 +317,12 @@ class FailureTests(unittest.TestCase):
         session.processes = mock.Mock()
         member = processes._Member(99, 42, (100,), True)
         with mock.patch.object(session, "members", side_effect=[[], [member], [], []]), \
-                mock.patch.object(processes, "_reap_children"):
+                mock.patch.object(processes, "_reap_children"), \
+                mock.patch.object(processes, "signal", mock.Mock(SIGTERM=15, SIGKILL=9)), \
+                mock.patch.object(time, "monotonic", return_value=0), \
+                mock.patch.object(time, "sleep"):
             session.cleanup(1)
-        session.processes.signal.assert_called_once_with(member, signal.SIGTERM)
+        session.processes.signal.assert_called_once_with(member, 15)
 
     def test_native_structure_layouts_use_fixed_width_windows_and_darwin_types(self):
         self.assertEqual(ctypes.sizeof(processes._BSDInfo), 136)
