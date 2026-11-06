@@ -354,10 +354,22 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 		}
 		if !o.fileOnly() && o.FileName != "" && knownFile {
 			phase = "card_finalize"
-			card := g.outputCard(o, r, false)
+			card := g.deliveredOutputCard(o, r)
 			finalCtx := core.WithTerminalCard(ctx)
 			if e := g.updateOutputCard(finalCtx, id, r, target, card); e != nil {
 				return e
+			}
+		}
+		// A text-only reply has no later card_finalize step, so drop the retry
+		// action here. The answer is already delivered; a failed cosmetic refresh
+		// must not turn it into a failed delivery, but cancellation still wins.
+		if !o.fileOnly() && o.Kind != "status" && !(o.FileName != "" && knownFile) {
+			card := g.deliveredOutputCard(o, r)
+			if e := g.updateOutputCard(core.WithTerminalCard(ctx), id, r, target, card); e != nil {
+				if errors.Is(e, errCancelledDelivery) {
+					return e
+				}
+				g.audit(r.Key, "output_controls_refresh_failed", core.Args{"output": o.ID, "error": e.Error()})
 			}
 		}
 		res, e := g.store.DB.Exec(`UPDATE outbox SET state='done',delivery_error=NULL,retry_count=0,retry_after=0 WHERE id=? AND state='sending'`, id)
@@ -650,6 +662,15 @@ func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 	}
 	_, err = g.store.DB.Exec("UPDATE outbox SET card=?,file_name=?,file_path=?,file_state=? WHERE id=? AND state NOT IN ('done','cancelled')", jsonText(o.Card), o.FileName, o.FilePath, o.FileState, o.ID)
 	return err
+}
+
+// deliveredOutputCard rebuilds an output card after every delivery step has
+// succeeded. Session-level actions stay available, while the retry action is
+// dropped because there is no longer an incomplete delivery to retry.
+func (g *Gateway) deliveredOutputCard(o outgoing, r core.Room) core.Args {
+	card := g.outputCard(o, r, false)
+	card = replaceQuickControls(card, g.quickControls(r, o.Session, "", ""))
+	return fitNoticeCard(card)
 }
 
 func (g *Gateway) outputCard(o outgoing, room core.Room, filesPending bool) core.Args {

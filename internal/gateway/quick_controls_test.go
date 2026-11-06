@@ -202,3 +202,127 @@ func TestQuickStopIsAuthorizedOnceAndPreservesSession(t *testing.T) {
 		t.Fatal("duplicate quick stop changed session or started native generation", before, after, w.stops.Load())
 	}
 }
+
+func TestQuickControlsUseCompactLayoutAndTwoLineSupplement(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	s, _ := f.s.Session(r.Key)
+	controls := f.g.quickControls(r, s.ID, "turn-one", "")
+	if len(controls) != 3 {
+		t.Fatalf("quick controls have %d elements, want divider/row/form", len(controls))
+	}
+	var checkIDs func(any)
+	checkIDs = func(v any) {
+		switch item := v.(type) {
+		case []any:
+			for _, child := range item {
+				checkIDs(child)
+			}
+		case map[string]any:
+			if id, ok := item["element_id"].(string); ok {
+				if len(id) > 20 || id[0] < 'A' || (id[0] > 'Z' && id[0] < 'a') || id[0] > 'z' {
+					t.Errorf("element_id %q violates the Card JSON 2.0 limit", id)
+				}
+			}
+			for _, child := range item {
+				checkIDs(child)
+			}
+		}
+	}
+	checkIDs(controls)
+	divider := argsOf(controls[0])
+	if stringArg(divider, "tag") != "hr" || stringArg(divider, "element_id") != "gateway_quick_div" {
+		t.Fatalf("first control is not the divider: %#v", divider)
+	}
+	row := argsOf(controls[1])
+	if stringArg(row, "flex_mode") != "none" {
+		t.Fatalf("button row flex_mode = %q, want none", stringArg(row, "flex_mode"))
+	}
+	columns, _ := row["columns"].([]any)
+	if len(columns) != 3 {
+		t.Fatalf("button row has %d columns, want 3", len(columns))
+	}
+	labels := []string{}
+	for _, raw := range columns {
+		column := argsOf(raw)
+		if stringArg(column, "width") != "auto" {
+			t.Fatalf("button column width = %q, want auto", stringArg(column, "width"))
+		}
+		children, _ := column["elements"].([]any)
+		if len(children) != 1 {
+			t.Fatalf("button column has %d elements", len(children))
+		}
+		b := argsOf(children[0])
+		if _, exists := b["width"]; exists {
+			t.Fatalf("button should keep its natural width: %#v", b)
+		}
+		labels = append(labels, stringArg(argsOf(b["text"]), "content"))
+	}
+	if strings.Join(labels, ",") != "查看状态,待回答,停止本轮" {
+		t.Fatalf("button labels = %v", labels)
+	}
+
+	form := argsOf(controls[2])
+	formElements, _ := form["elements"].([]any)
+	if len(formElements) != 1 {
+		t.Fatalf("form has %d elements, want one column_set", len(formElements))
+	}
+	layout := argsOf(formElements[0])
+	if stringArg(layout, "tag") != "column_set" {
+		t.Fatalf("form child = %q, want column_set", stringArg(layout, "tag"))
+	}
+	layoutColumns, _ := layout["columns"].([]any)
+	if len(layoutColumns) != 2 {
+		t.Fatalf("form layout has %d columns, want 2", len(layoutColumns))
+	}
+	input := argsOf(argsOf(layoutColumns[0])["elements"].([]any)[0])
+	if rows, ok := numberArg(input, "rows"); !ok || rows != 2 {
+		t.Fatalf("supplement rows = %v, want 2", input["rows"])
+	}
+	if stringArg(input, "input_type") != "multiline_text" || stringArg(input, "width") != "fill" {
+		t.Fatalf("supplement input = %#v", input)
+	}
+	submit := argsOf(argsOf(layoutColumns[1])["elements"].([]any)[0])
+	if stringArg(submit, "type") != "primary_filled" || stringArg(argsOf(submit["text"]), "content") != "发送" {
+		t.Fatalf("submit button = %#v", submit)
+	}
+	if stringArg(submit, "name") != "quick_supplement_submit" || stringArg(submit, "form_action_type") != "submit" {
+		t.Fatalf("submit button lost its form binding: %#v", submit)
+	}
+	if behaviors, ok := submit["behaviors"].([]any); !ok || len(behaviors) != 1 {
+		t.Fatalf("submit button lost its callback behavior: %#v", submit)
+	}
+
+	replaced := replaceQuickControls(DisplayCard("fixture", "reply", controls...), f.g.quickControls(r, s.ID, "turn-two", ""))
+	var walk func(any)
+	countDividers := func(v any) int {
+		count := 0
+		walk = func(value any) {
+			switch item := value.(type) {
+			case []any:
+				for _, child := range item {
+					walk(child)
+				}
+			case map[string]any:
+				if item["element_id"] == "gateway_quick_div" {
+					count++
+				}
+				for _, child := range item {
+					walk(child)
+				}
+			}
+		}
+		walk(v)
+		return count
+	}
+	if got := countDividers(replaced); got != 1 {
+		t.Fatalf("replaced card has %d dividers, want 1", got)
+	}
+	empty := replaceQuickControls(DisplayCard("fixture", "reply", controls...), nil)
+	if got := countDividers(empty); got != 0 {
+		t.Fatalf("card without controls has %d dividers", got)
+	}
+	if jsonText(empty) != jsonText(DisplayCard("fixture", "reply")) {
+		t.Fatalf("remaining quick controls were not removed: %s", jsonText(empty))
+	}
+}
