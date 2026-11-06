@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"github.com/sean2077/feishu-bot/internal/core"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 func RoomFor(c core.Config, chat, dm string) (core.Room, bool) {
@@ -86,6 +88,37 @@ func cut(s string, n int) string {
 		count++
 	}
 	return s
+}
+
+const nativeTitleRunes = 60
+
+// nativeSessionTitle derives the native session-list title from the first
+// admitted human message. The native process would otherwise name the session
+// from the raw JSON input frame. Group messages keep their author; all other
+// input stays as a single short line.
+func nativeSessionTitle(m core.Message) string {
+	clean := func(value string) string {
+		value = strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return ' '
+			}
+			return r
+		}, value)
+		return strings.Join(strings.Fields(value), " ")
+	}
+	text := clean(m.Text)
+	if text == "" {
+		return ""
+	}
+	if m.ChatType == "group" {
+		if sender := clean(m.SenderName); sender != "" {
+			text = sender + "：" + text
+		}
+	}
+	if utf8.RuneCountInString(text) > nativeTitleRunes {
+		text = cut(text, nativeTitleRunes-1) + "…"
+	}
+	return text
 }
 func jsonText(v any) string                  { b, _ := json.Marshal(v); return string(b) }
 func stringArg(a core.Args, k string) string { s, _ := a[k].(string); return s }

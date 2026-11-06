@@ -111,6 +111,7 @@ func (s *Store) initialize() error {
 			{"outbox", "card", "TEXT"}, {"outbox", "origins", "TEXT NOT NULL DEFAULT '[]'"}, {"outbox", "file_name", "TEXT"}, {"outbox", "file_path", "TEXT"},
 			{"outbox", "delivery_key", "TEXT"}, {"outbox", "initial_card", "TEXT"}, {"outbox", "retry_count", "INTEGER NOT NULL DEFAULT 0"}, {"outbox", "retry_after", "INTEGER NOT NULL DEFAULT 0"},
 			{"outbox", "file_target", "TEXT"}, {"outbox", "file_state", "TEXT NOT NULL DEFAULT 'none'"}, {"outbox", "delivery_error", "TEXT"}, {"outbox", "kind", "TEXT NOT NULL DEFAULT 'reply'"},
+			{"session_preferences", "native_title", "TEXT NOT NULL DEFAULT ''"},
 		} {
 			rows, err := tx.Query("PRAGMA table_info(" + col.table + ")")
 			if err != nil {

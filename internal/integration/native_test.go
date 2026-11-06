@@ -278,6 +278,7 @@ func TestRealNativeGatewayApprovalDeliveryAndRestart(t *testing.T) {
 	var readyIDs []string
 	var nativeErrors []string
 	var activity []core.WorkerEvent
+	var nativeHome string
 	log := func(string, core.Args) {}
 	start := func() {
 		var err error
@@ -288,6 +289,9 @@ func TestRealNativeGatewayApprovalDeliveryAndRestart(t *testing.T) {
 		factory := native.NewFactory(c, log)
 		wrapped := func(ctx context.Context, room core.Room, session core.Session, workspace core.Workspace, emit func(core.WorkerEvent)) (core.Worker, error) {
 			launches.Add(1)
+			observedMu.Lock()
+			nativeHome = workspace.Home
+			observedMu.Unlock()
 			return factory(ctx, room, session, workspace, func(event core.WorkerEvent) {
 				observedMu.Lock()
 				if event.Type == "ready" {
@@ -395,6 +399,31 @@ func TestRealNativeGatewayApprovalDeliveryAndRestart(t *testing.T) {
 	if err = st.DB.QueryRow("SELECT state,file_state FROM outbox WHERE reply_to=? AND kind='reply'", first.ID).Scan(&outputState, &fileState); err != nil || outputState != "done" || fileState != "done" {
 		t.Fatalf("acknowledged final output did not commit: %q %q %v", outputState, fileState, err)
 	}
+	await(t, ctx, "native session display title", func() bool {
+		observedMu.Lock()
+		home := nativeHome
+		observedMu.Unlock()
+		if home == "" {
+			return false
+		}
+		transcripts, _ := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", "*.jsonl"))
+		for _, path := range transcripts {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				var entry core.Args
+				if json.Unmarshal([]byte(line), &entry) != nil {
+					continue
+				}
+				if entry["type"] == "custom-title" && entry["customTitle"] == first.Text {
+					return true
+				}
+			}
+		}
+		return false
+	})
 	tr.mu.Lock()
 	fileCalls := tr.fileCalls
 	replyCards := 0

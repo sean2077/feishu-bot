@@ -239,6 +239,11 @@ func (g *Gateway) renameCommand(r core.Room, m core.Message, name string) error 
 		g.notify(r, err.Error(), &m)
 		return nil
 	}
+	effective := strings.TrimSpace(name)
+	if effective == "-" {
+		effective = ""
+	}
+	g.renameNativeSession(r, id, effective)
 	g.notify(r, "会话名称已更新。用 /sessions 查看；/resume 支持本聊天的名称或唯一短 ID。", &m)
 	return nil
 }

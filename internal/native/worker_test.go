@@ -51,14 +51,25 @@ func fakeClaude() {
 		switch frame["type"] {
 		case "control_request":
 			request := object(frame["request"])
-			if request["subtype"] != "initialize" {
+			switch request["subtype"] {
+			case "initialize":
+				hooks := object(request["hooks"])
+				if len(array(hooks["PreToolUse"])) == 0 || len(stringsOf(request["sdkMcpServers"])) != 1 || !strings.Contains(text(request["appendSystemPrompt"]), "Feishu") {
+					os.Exit(24)
+				}
+				send(args{"type": "control_response", "response": args{"subtype": "success", "request_id": frame["request_id"], "response": args{"hooks_applied": true}}})
+			case "rename_session":
+				title := text(request["title"])
+				if title == "" || request["source"] != "host" {
+					os.Exit(32)
+				}
+				if os.WriteFile(filepath.Join(os.Getenv("HOME"), "session-title"), []byte(title), 0600) != nil {
+					os.Exit(33)
+				}
+				send(args{"type": "control_response", "response": args{"subtype": "success", "request_id": frame["request_id"]}})
+			default:
 				os.Exit(23)
 			}
-			hooks := object(request["hooks"])
-			if len(array(hooks["PreToolUse"])) == 0 || len(stringsOf(request["sdkMcpServers"])) != 1 || !strings.Contains(text(request["appendSystemPrompt"]), "Feishu") {
-				os.Exit(24)
-			}
-			send(args{"type": "control_response", "response": args{"subtype": "success", "request_id": frame["request_id"], "response": args{"hooks_applied": true}}})
 		case "control_response":
 			response := object(frame["response"])
 			id := text(response["request_id"])
@@ -279,6 +290,28 @@ func TestPersistentNativeStreamKeepsAttributionAndContext(t *testing.T) {
 	if ready != 1 || !reasoning {
 		t.Fatalf("ready=%d reasoning=%v", ready, reasoning)
 	}
+}
+func TestRenameSessionSetsNativeDisplayTitle(t *testing.T) {
+	f := newFixture(t)
+	f.start()
+	if err := f.worker.Rename(context.Background(), " Release\n  Notes "); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(f.workspace.Home, "session-title")
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil {
+			if string(data) != "Release Notes" {
+				t.Fatalf("native title %q", data)
+			}
+			if err = f.worker.Rename(context.Background(), " \n "); err == nil {
+				t.Fatal("empty title accepted")
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("native title was not applied")
 }
 func TestMCPAndHumanControlRequestsBridgeWithoutBlockingReadLoop(t *testing.T) {
 	f := newFixture(t)

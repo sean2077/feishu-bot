@@ -46,6 +46,30 @@ func TestSessionNamesAndPrefixesStayWithinRoom(t *testing.T) {
 	}
 }
 
+func TestNativeTitleStaysOutsideChatNameLookup(t *testing.T) {
+	s := openTest(t)
+	ss, err := s.Session("room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetNativeTitle("room", ss.ID, "张三：修复登录问题"); err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.Preferences("room", ss.ID)
+	if err != nil || p.NativeTitle != "张三：修复登录问题" || p.Name != "" {
+		t.Fatalf("preferences %+v %v", p, err)
+	}
+	if _, err := s.ResolveSession("room", "张三：修复登录问题"); err == nil {
+		t.Fatal("automatic native title became a chat-local session name")
+	}
+	if err := s.RenameSession("room", ss.ID, "-"); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = s.Preferences("room", ss.ID)
+	if p.NativeTitle != "张三：修复登录问题" || p.Name != "" {
+		t.Fatalf("rename - cleared native display metadata: %+v", p)
+	}
+}
 func TestProfileRequestRevisionDoesNotLoseNewSelection(t *testing.T) {
 	s := openTest(t)
 	ss, _ := s.Session("room")

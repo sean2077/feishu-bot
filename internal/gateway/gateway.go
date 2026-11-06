@@ -769,6 +769,7 @@ func (g *Gateway) dispatch(r core.Room) error {
 			g.removeSlot(s)
 			return nil
 		}
+		g.applySessionTitle(s, worker, pending[0].Message)
 	}
 	for g.active(s) && !g.isClosing() {
 		queued, err := g.store.Pending(r.Key)

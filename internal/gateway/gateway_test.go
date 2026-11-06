@@ -144,6 +144,7 @@ type fakeWorker struct {
 	emit      func(core.WorkerEvent)
 	sent      chan core.Delivery
 	responses chan core.Args
+	renames   chan string
 	stops     atomic.Int64
 	failStop  atomic.Bool
 	stopHook  func(context.Context) error
@@ -156,6 +157,12 @@ func (w *fakeWorker) Send(ctx context.Context, d core.Delivery) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+func (w *fakeWorker) Rename(_ context.Context, title string) error {
+	if w.renames != nil {
+		w.renames <- title
+	}
+	return nil
 }
 func (w *fakeWorker) Respond(_ context.Context, id string, a core.Args) error {
 	copy := argsOfCopy(a)
@@ -198,7 +205,7 @@ func newFixture(t *testing.T, mutate func(*core.Config)) *fixture {
 	}
 	f := &fixture{t: t, c: c, s: st, tr: &fakeTransport{messages: map[string]core.Message{}}, started: make(chan *fakeWorker, 20)}
 	f.g = New(c, st, f.tr, func(ctx context.Context, r core.Room, s core.Session, w core.Workspace, emit func(core.WorkerEvent)) (core.Worker, error) {
-		worker := &fakeWorker{emit: emit, sent: make(chan core.Delivery, 100), responses: make(chan core.Args, 100)}
+		worker := &fakeWorker{emit: emit, sent: make(chan core.Delivery, 100), responses: make(chan core.Args, 100), renames: make(chan string, 8)}
 		f.starts.Add(1)
 		cc := s.CCID
 		if cc == "" {
@@ -239,6 +246,16 @@ func (f *fixture) worker() *fakeWorker {
 	case <-time.After(3 * time.Second):
 		f.t.Fatal("worker not started")
 		return nil
+	}
+}
+func (f *fixture) title(w *fakeWorker) string {
+	f.t.Helper()
+	select {
+	case title := <-w.renames:
+		return title
+	case <-time.After(3 * time.Second):
+		f.t.Fatal("native title not sent")
+		return ""
 	}
 }
 func (f *fixture) delivery(w *fakeWorker) core.Delivery {
@@ -511,4 +528,28 @@ func TestUnknownCardCreateRequiresExplicitRetryAndRoomOwnership(t *testing.T) {
 		t.Fatalf("explicit retry: %t %v", ok, e)
 	}
 	eventually(t, func() bool { return f.tr.receiptDone("one") })
+}
+
+func TestNativeSessionTitleUsesFirstMessageAndRename(t *testing.T) {
+	f := newFixture(t, nil)
+	m := f.message("title-source", "第一行\n第二行", "member")
+	m.SenderName = "张三"
+	f.send(m)
+	w := f.worker()
+	d := f.delivery(w)
+	if d.Message.ID != "title-source" {
+		t.Fatalf("delivered %q", d.Message.ID)
+	}
+	if title := f.title(w); title != "张三：第一行 第二行" {
+		t.Fatalf("first native title %q", title)
+	}
+	f.finish(w, d, "done")
+	f.send(f.message("rename", "/rename 发布检查", "owner"))
+	if title := f.title(w); title != "发布检查" {
+		t.Fatalf("renamed native title %q", title)
+	}
+	f.send(f.message("clear-name", "/rename -", "owner"))
+	if title := f.title(w); title != "张三：第一行 第二行" {
+		t.Fatalf("cleared native title %q", title)
+	}
 }
