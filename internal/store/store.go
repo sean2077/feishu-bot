@@ -149,6 +149,12 @@ CREATE INDEX IF NOT EXISTS outbox_file_target_state ON outbox(file_target,state)
 CREATE INDEX IF NOT EXISTS outbox_delivery_key_state ON outbox(delivery_key,state);`); err != nil {
 			return err
 		}
+		if err := initializeMaintenance(tx); err != nil {
+			return err
+		}
+		if err := initializeSessionCatalog(tx); err != nil {
+			return err
+		}
 		_, err := tx.Exec("INSERT OR IGNORE INTO usage_coverage(session,room,started,prior_unknown) SELECT id,room,?,1 FROM sessions", time.Now().UnixMilli())
 		if err != nil {
 			return err
@@ -546,25 +552,8 @@ func (s *Store) Audit(room, event string, detail core.Args) error {
 	_, e = s.DB.Exec("INSERT INTO audit(at,room,event,detail) VALUES(?,?,?,?)", time.Now().UnixMilli(), room, event, string(j))
 	return e
 }
+// Trim keeps the legacy call shape while applying bounded, cancelable policies.
 func (s *Store) Trim(now, backgroundMS int64) error {
-	return s.Transaction(context.Background(), func(tx *sql.Tx) error {
-		for _, q := range []struct {
-			s  string
-			at int64
-		}{
-			{"DELETE FROM card_controls WHERE expires<?", now},
-			{"DELETE FROM context_refs WHERE at<?", now - 86400000},
-			{"DELETE FROM receipts WHERE desired=applied AND desired!='processing' AND at<?", now - 7*86400000},
-			{"DELETE FROM inbox WHERE status IN ('background','context') AND at<?", now - backgroundMS},
-			{"UPDATE inbox SET message='{}',payload=NULL WHERE status IN ('done','cancelled','uncertain') AND at<?", now - 86400000},
-			{"DELETE FROM inbox WHERE status IN ('done','cancelled','uncertain') AND at<?", now - 30*86400000},
-			{"DELETE FROM outputs WHERE at<? AND id NOT IN (SELECT target FROM outbox WHERE target IS NOT NULL AND state NOT IN ('done','cancelled') UNION SELECT file_target FROM outbox WHERE file_target IS NOT NULL AND state NOT IN ('done','cancelled'))", now - 30*86400000},
-			{"DELETE FROM outbox WHERE state IN ('done','cancelled') AND file_path IS NULL AND at<?", now - 7*86400000},
-		} {
-			if _, e := tx.Exec(q.s, q.at); e != nil {
-				return e
-			}
-		}
-		return nil
-	})
+	_, err := s.Maintain(context.Background(), now, backgroundMS)
+	return err
 }

@@ -31,7 +31,8 @@ feishu-bot doctor [--config path] [--env-file path] [--probe] [--probe-feishu]
 feishu-bot run [--config path] [--env-file path] [--log-file path]
                [--log-max-size MB] [--log-max-backups N] [--service]
 feishu-bot daemon install|uninstall|start|stop|restart|status|logs
-feishu-bot config path|example|format
+feishu-bot config path|example|format|explain
+feishu-bot session run --session FULL_SESSION_ID [--config path] [--env-file path]
 feishu-bot version
 
 Doctor is offline by default. --probe-feishu reads application identity;
@@ -70,6 +71,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			if o.Subcommand == "config" {
 				text = configHelp
 			}
+			if o.Subcommand == "session" { text = sessionHelp }
 			_, err = io.WriteString(stdout, text)
 			return err
 		case "version":
@@ -110,6 +112,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return err
 		}
 		secrets = config.Secrets(c)
+		if o.Command == "session" {
+			return runLocalSession(ctx,c,o,stdout,stderr)
+		}
 		if o.Command == "doctor" {
 			report := RunDoctor(ctx, c, o.Probe, o.ProbeFeishu)
 			if o.VerifyChat != "" {

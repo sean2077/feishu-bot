@@ -47,6 +47,7 @@ type slot struct {
 	compacting                          string
 	requests                            map[string]bool
 	activeRequests                      int
+	titleSync                           *sessionTitleSync
 }
 type actionExecution struct {
 	room        string

@@ -97,6 +97,7 @@ func (c *Client) responseFailure(req *http.Request, resp *http.Response, code in
 	case resp.StatusCode == http.StatusTooManyRequests || code == 99991400:
 		e.Retryable = true
 		e.RetryAfter = responseRetryAfter(resp.Header, time.Now())
+		c.budget.rateLimited(req, e.RetryAfter)
 	case resp.StatusCode >= 500 || resp.StatusCode == http.StatusRequestTimeout:
 		e.Uncertain = mutation
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:

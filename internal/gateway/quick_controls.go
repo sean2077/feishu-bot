@@ -24,6 +24,8 @@ type quickControl struct {
 	Turn          string `json:"turn,omitempty"`
 	Output        string `json:"output,omitempty"`
 	TargetSession string `json:"targetSession,omitempty"`
+	Query         string `json:"query,omitempty"`
+	Cursor        string `json:"cursor,omitempty"`
 	Action        string `json:"action"`
 }
 
@@ -288,6 +290,16 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 	case "supplement":
 		text, err := g.quickSupplement(ctx, r, a, p)
 		return text, true, err
+	case "sessions":
+		g.task(func() {
+			if !g.quickBound(a, p) { return }
+			m.Text = "/sessions " + p.Query
+			if p.Cursor != "" { m.Text = "/sessions --cursor " + p.Cursor }
+			if err := g.sessionsReply(g.ctx, r, m); err != nil {
+				g.audit(r.Key, "session_page_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+			}
+		})
+		return "已请求会话列表。", true, nil
 	case "resume":
 		id, err := g.store.ResolveSession(r.Key, p.TargetSession)
 		if err != nil || p.TargetSession == "" || id != p.TargetSession || id == p.Session {

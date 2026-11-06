@@ -208,7 +208,14 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 	g.poolMu.Unlock()
 	g.kickWaiting()
 	g.pruneExports(now)
-	_ = g.store.Trim(now, g.config.Limits.BackgroundMS)
+	report, maintenanceErr := g.store.Maintain(ctx, now, g.config.Limits.BackgroundMS)
+	if g.logger != nil {
+		detail := core.Args{"durationMs": report.DurationMS, "candidates": report.Candidates, "changed": report.Changed, "policies": report.Policies}
+		if maintenanceErr != nil {
+			detail["error"] = core.Redact(maintenanceErr.Error(), g.secrets)
+		}
+		g.logger("store_maintenance", detail)
+	}
 	g.retainCards(ctx, now)
 	g.retryReceipts()
 	g.mu.Lock()

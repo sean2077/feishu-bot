@@ -52,6 +52,8 @@ type Client struct {
 	origins         map[string]core.Room
 	receiptMu       sync.Mutex
 	processingIDs   map[string]string
+	budget          requestBudget
+	wsStats         websocketStats
 }
 
 var _ core.Transport = (*Client)(nil)
@@ -190,10 +192,14 @@ func (c *Client) requestToken(ctx context.Context, body []byte) (string, int, er
 		return "", 0, safeFailure("auth", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
+	resp, err := c.doHTTP(req, c.http)
 	if err != nil {
 		// Refreshing this private credential cannot send a visible message. A
 		// connection failure here is safely retryable, unlike message creation.
+		var rejected *APIError
+		if errors.As(err, &rejected) {
+			return "", 0, rejected
+		}
 		return "", 0, &APIError{Operation: "auth", Retryable: true, cause: ctx.Err()}
 	}
 	defer resp.Body.Close()
@@ -275,8 +281,13 @@ func (c *Client) api(ctx context.Context, method, path string, query url.Values,
 	}
 }
 func (c *Client) doAPI(req *http.Request, dst any, mutation bool) error {
-	resp, err := c.http.Do(req)
+	resp, err := c.doHTTP(req, c.http)
 	if err != nil {
+		var rejected *APIError
+		if errors.As(err, &rejected) {
+			// Admission failures happened before any network write.
+			return rejected
+		}
 		return &APIError{Operation: requestOperation(req), Uncertain: mutation, cause: req.Context().Err()}
 	}
 	defer resp.Body.Close()

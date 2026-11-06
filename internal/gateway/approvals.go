@@ -113,7 +113,7 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 			target.DMUser = id
 			targets = append(targets, target)
 		}
-		g.notify(r, "这项操作需要项目维护者批准。已向维护者私聊发送操作摘要与参数；不会转发聊天历史。", nil)
+		g.notify(r, "这项操作需要项目维护者批准。审批卡正在发送，尚未确认送达；只发送操作摘要与参数，不会转发聊天历史。", nil)
 	}
 	g.task(func() {
 		success := false
@@ -155,6 +155,11 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 				unlock()
 			}
 			if alive {
+				if !success && p.forwarded {
+					g.task(func() {
+						_ = g.notice(waitCtx, r, "审批卡已确认送达至少一位项目维护者的私聊；本次操作仍需维护者批准。", nil)
+					})
+				}
 				success = true
 				if !p.forwarded {
 					_ = g.store.RecordOutput(mid, r.Key, session)
@@ -167,6 +172,9 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 				reason = "approval card exceeds the platform size limit; ask fewer questions or shorter option text"
 			}
 			g.settleApproval(id, core.Args{"approved": false, "reason": reason}, "system")
+			if p.forwarded {
+				g.notify(r, "未能确认审批卡送达项目维护者。本次请求已结束，操作未获批准。", nil)
+			}
 		}
 	})
 	if ctx.Err() != nil {

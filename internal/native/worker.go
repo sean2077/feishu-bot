@@ -46,7 +46,9 @@ type worker struct {
 	tree                   *processTree
 	stdin                  io.WriteCloser
 	stdout, stderr         *os.File
-	writeMu                sync.Mutex
+	writer                 *frameWriter
+	hostMu                 sync.Mutex
+	hostRequests           map[string]chan string
 	mu                     sync.Mutex
 	known                  map[string]bool
 	compact                *compactState
@@ -225,17 +227,12 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 				}
 			}
 		}()
+		w.hostRequests = make(map[string]chan string)
+		w.writer = newFrameWriter(workerCtx, w.stdin)
 		go w.readFrames()
 		go w.readStderr()
 		go w.waitProcess()
 		go w.pumpInputs()
-		if err = w.write(args{"type": "control_request", "request_id": w.initID, "request": initialization(project, c.Limits.ApprovalMS)}); err != nil {
-			w.fail("Claude initialization write failed", err)
-			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer stopCancel()
-			_ = w.Stop(stopCtx)
-			return nil, err
-		}
 		go func() {
 			timer := time.NewTimer(30 * time.Second)
 			defer timer.Stop()
@@ -247,6 +244,13 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 			}
 		}()
 		go func() { <-workerCtx.Done(); w.beginStop() }()
+		if err = w.write(args{"type": "control_request", "request_id": w.initID, "request": initialization(project, c.Limits.ApprovalMS)}); err != nil {
+			w.fail("Claude initialization write failed", err)
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stopCancel()
+			_ = w.Stop(stopCtx)
+			return nil, err
+		}
 		return w, nil
 	}
 }
@@ -257,21 +261,22 @@ func (w *worker) emit(event core.WorkerEvent) {
 	}
 }
 func (w *worker) write(value args) error {
+	_, err := w.writeContext(w.ctx, value)
+	return err
+}
+func (w *worker) writeContext(ctx context.Context, value args) (bool, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(data) > maxFrameBytes {
-		return fmt.Errorf("native protocol frame too large")
+		return false, fmt.Errorf("native protocol frame too large")
 	}
 	data = append(data, '\n')
-	w.writeMu.Lock()
-	defer w.writeMu.Unlock()
-	if w.ctx.Err() != nil {
-		return fmt.Errorf("native worker unavailable")
+	if w.writer == nil {
+		return false, errWorkerUnavailable
 	}
-	_, err = w.stdin.Write(data)
-	return err
+	return w.writer.write(ctx, data)
 }
 func (w *worker) Send(ctx context.Context, d core.Delivery) error {
 	if err := ctx.Err(); err != nil {
@@ -352,26 +357,6 @@ func (w *worker) Send(ctx context.Context, d core.Delivery) error {
 	return nil
 }
 
-// Rename sets the display title of the current native session. The native
-// process persists it as a custom title; the session ID, transcript content and
-// input queue are unchanged. It does not wait for model work or initialization
-// because the request is ordered behind the initialize frame on the same pipe.
-func (w *worker) Rename(ctx context.Context, title string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	title = strings.Join(strings.Fields(title), " ")
-	if title == "" {
-		return fmt.Errorf("native session title required")
-	}
-	w.mu.Lock()
-	unavailable := w.ctx.Err() != nil || w.exiting
-	w.mu.Unlock()
-	if unavailable {
-		return fmt.Errorf("native worker unavailable")
-	}
-	return w.write(args{"type": "control_request", "request_id": core.NewID(), "request": args{"subtype": "rename_session", "title": title, "source": "host"}})
-}
 func timezone() string {
 	if zone := os.Getenv("TZ"); zone != "" {
 		if _, err := time.LoadLocation(zone); err == nil {
@@ -528,9 +513,7 @@ func (w *worker) handleFrame(event args) {
 	case "control_response":
 		response := object(event["response"])
 		if response["request_id"] != w.initID {
-			if response["subtype"] != "success" {
-				w.log("native_control_rejected", args{"requestId": text(response["request_id"]), "error": text(response["error"])})
-			}
+			w.resolveHostControl(response)
 			return
 		}
 		if response["subtype"] != "success" {
@@ -783,6 +766,7 @@ func (w *worker) waitProcess() {
 	timer.Stop()
 	<-w.stderrDone
 	w.cancel()
+	<-w.writer.done
 	if w.settings != "" {
 		if removeErr := os.Remove(w.settings); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			w.log("worker_settings_cleanup_failed", args{"error": removeErr.Error()})
