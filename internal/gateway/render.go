@@ -290,7 +290,9 @@ func (r *render) flush() {
 			r.messageID = target
 			_ = r.g.store.RecordOutput(target, r.room.Key, r.session)
 			if r.finalID != "" {
-				_, _ = r.g.store.DB.Exec("UPDATE outbox SET target=? WHERE id=? AND state='preparing'", target, r.finalID)
+				if e := r.g.acknowledgePreviewTarget(r.ctx, r.finalID, r.room, target); e != nil {
+					r.g.audit(r.room.Key, "preview_target_persistence_failed", core.Args{"output": r.finalID, "error": core.Redact(e.Error(), r.g.secrets)})
+				}
 			}
 			// Include updates received during a rejected initial create.
 			r.dirty = true

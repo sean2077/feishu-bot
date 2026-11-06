@@ -848,7 +848,32 @@ def package_msi(meta: dict, binary: Path, arch: str, output: Path, repo: Path, w
     return path
 
 
-def smoke_installer(meta: dict, installer: Path, os_name: str, arch: str) -> None:
+def artifact_journey(meta: dict, binary: Path, buildinfo: Path, repo: Path) -> None:
+    """Run the native/full/upgrade Go fixtures against these exact release bytes."""
+    info = parse_json(buildinfo.read_bytes(), "installed BUILDINFO.json")
+    with binary.open("rb") as source:
+        digest = hashlib.file_digest(source, "sha256").hexdigest()
+    if (info.get("version"), info.get("commit"), info.get("binary_sha256")) != (meta["version"], meta["commit"], digest):
+        raise ReleaseError("journey binary identity differs from the validated release metadata")
+    if not os.environ.get("CLAUDE_NATIVE_PATH"):
+        raise ReleaseError("release journey requires the pinned native CLI fixture")
+    for field in ("PATH", "VERSION", "COMMIT", "SHA256", "BUILDINFO"):
+        if not os.environ.get("FEISHU_PREVIOUS_ARTIFACT_" + field):
+            raise ReleaseError("release journey requires the distinct previous binary upgrade fixture")
+    env = {**os.environ, "FEISHU_ARTIFACT_PATH": str(binary.resolve()),
+           "FEISHU_ARTIFACT_VERSION": meta["version"], "FEISHU_ARTIFACT_COMMIT": meta["commit"],
+           "FEISHU_ARTIFACT_SHA256": digest, "FEISHU_ARTIFACT_BUILDINFO": str(buildinfo.resolve())}
+    try:
+        result = subprocess.run(["go", "test", "-race", "-v", "-count=1", "-timeout", "420s",
+                                 "./internal/cli", "-run", "^TestBuiltArtifact"],
+                                cwd=repo, env=env, timeout=450)
+    except subprocess.TimeoutExpired as exc:
+        raise ReleaseError("release artifact journey exceeded 450s") from exc
+    if result.returncode:
+        raise ReleaseError("actual release artifact failed its native/TLS/service upgrade journey")
+
+
+def smoke_installer(meta: dict, installer: Path, os_name: str, arch: str, *, journey: bool = False) -> None:
     validate_metadata(meta)
     if installer.name != installer_name(meta, os_name, arch) or installer.is_symlink() or not installer.is_file():
         raise ReleaseError("installer name, target or file type is incorrect")
@@ -876,6 +901,8 @@ def smoke_installer(meta: dict, installer: Path, os_name: str, arch: str) -> Non
                 run([binary, "init", "--config", str(config)], cwd=root)
                 if not config.is_file():
                     raise ReleaseError("installed binary did not create a configuration")
+                if journey:
+                    artifact_journey(meta, Path(binary), Path("/usr/share/doc/feishu-bot/BUILDINFO.json"), Path.cwd())
             finally:
                 if installed:
                     try:
@@ -903,6 +930,8 @@ def smoke_installer(meta: dict, installer: Path, os_name: str, arch: str) -> Non
                 run([str(binary), "init", "--config", str(config)], cwd=root)
                 if not config.is_file():
                     raise ReleaseError("installed binary did not create a configuration")
+                if journey:
+                    artifact_journey(meta, binary, install_dir / "BUILDINFO.json", Path.cwd())
             finally:
                 subprocess.run(["msiexec", "/x", str(installer), "/qn", "/norestart"],
                                capture_output=True, text=True, encoding="utf-8", timeout=180)
@@ -910,7 +939,7 @@ def smoke_installer(meta: dict, installer: Path, os_name: str, arch: str) -> Non
             raise ReleaseError(f"unsupported installer kind: {os_name}/{arch}")
 
 
-def smoke(meta: dict, archive: Path, os_name: str, arch: str) -> None:
+def smoke(meta: dict, archive: Path, os_name: str, arch: str, *, journey: bool = False) -> None:
     files = read_archive(archive, meta, os_name, arch)
     host_os = {"Linux": "linux", "Windows": "windows", "Darwin": "darwin"}.get(platform.system())
     host_arch = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(platform.machine().lower())
@@ -934,6 +963,8 @@ def smoke(meta: dict, archive: Path, os_name: str, arch: str) -> None:
         actual = parse_json(config_path.read_bytes(), "initialized configuration")
         if actual != parse_json(files["config.example.json"], "configuration example"):
             raise ReleaseError("packaged binary init differs from the bundled configuration example")
+        if journey:
+            artifact_journey(meta, Path(binary), root / "BUILDINFO.json", Path.cwd())
 
 
 def verify(meta: dict, artifacts: Path) -> dict:
@@ -986,6 +1017,7 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--output", type=Path, required=True)
         elif name == "smoke":
             command.add_argument("--archive", type=Path, required=True)
+            command.add_argument("--journey", action="store_true", help="run exact-artifact native/TLS/upgrade journeys")
         else:
             command.add_argument("--artifacts", type=Path, required=True)
     installer = commands.add_parser("package-installer")
@@ -1000,6 +1032,7 @@ def main(argv: list[str] | None = None) -> int:
     installer_smoke.add_argument("--installer", type=Path, required=True)
     installer_smoke.add_argument("--os", dest="os_name", required=True)
     installer_smoke.add_argument("--arch", required=True)
+    installer_smoke.add_argument("--journey", action="store_true", help="run installed-artifact native/TLS/upgrade journeys")
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
@@ -1009,7 +1042,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "package":
                 print(package(meta, args.binary, args.os_name, args.arch, args.output, Path.cwd()))
             elif args.command == "smoke":
-                smoke(meta, args.archive, args.os_name, args.arch)
+                smoke(meta, args.archive, args.os_name, args.arch, journey=args.journey)
             elif args.command == "package-installer":
                 kind = INSTALLERS.get((args.os_name, args.arch))
                 if kind == "deb":
@@ -1021,7 +1054,7 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     raise ReleaseError(f"unsupported installer target: {args.os_name}/{args.arch}")
             elif args.command == "smoke-installer":
-                smoke_installer(meta, args.installer, args.os_name, args.arch)
+                smoke_installer(meta, args.installer, args.os_name, args.arch, journey=args.journey)
             else:
                 verify(meta, args.artifacts)
         return 0

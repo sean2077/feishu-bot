@@ -357,7 +357,9 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 }
 func (g *Gateway) command(ctx context.Context, r core.Room, m core.Message) error {
 	cmd, arg := splitCommand(m.Text)
-	if handled, err := g.operationCommand(ctx, r, m); handled { return err }
+	if handled, err := g.operationCommand(ctx, r, m); handled {
+		return err
+	}
 	if cmd == "/sessions" {
 		return g.sessionsReply(ctx, r, m)
 	}

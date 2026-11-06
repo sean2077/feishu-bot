@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,14 +34,8 @@ import (
 // binary or cli.Run. Fake Feishu is reached only through a local deny-by-default
 // CONNECT fixture. No deployment credential or real provider is involved.
 func TestBuiltArtifactIdentityInitAndDiagnosticJourney(t *testing.T) {
-	binary := os.Getenv("FEISHU_ARTIFACT_PATH")
-	if binary == "" {
-		t.Skip("set FEISHU_ARTIFACT_PATH to exercise the actual production artifact")
-	}
-	expected := os.Getenv("FEISHU_ARTIFACT_VERSION")
-	if expected == "" {
-		t.Fatal("artifact identity requires FEISHU_ARTIFACT_VERSION")
-	}
+	identity := readArtifactIdentity(t, "FEISHU_ARTIFACT")
+	binary, expected := identity.Path, identity.Version
 	claude := os.Getenv("CLAUDE_NATIVE_PATH")
 	if claude == "" {
 		t.Fatal("artifact journey requires the real pinned native CLI")
@@ -112,19 +105,12 @@ func TestBuiltArtifactIdentityInitAndDiagnosticJourney(t *testing.T) {
 	if err != nil || json.Unmarshal(data, &report) != nil || report.Verification["model"] != "passed" || modelCalls.Load() != 1 || report.Verification["modelStreaming"] != "not_checked" {
 		t.Fatalf("artifact local-provider diagnostic contract: err=%v report=%s", err, data)
 	}
-	if runtime.GOOS != "linux" {
-		t.Log("Artifact init/local/native identity/mock-model passed; fake-CA Feishu probe is Linux-only because Windows/macOS use the operating-system certificate store.")
-		return
-	}
 	proxy, certificate, calls := artifactFeishuProxy(t)
 	defer proxy.Close()
-	certPath := filepath.Join(dir, "fixture-ca.pem")
-	if err := os.WriteFile(certPath, certificate, 0600); err != nil {
-		t.Fatal(err)
-	}
+	env = append(env, artifactTrustEnvironment(t, certificate, dir)...)
 	// These variables belong only to the child fixture process. The proxy never
 	// forwards to the requested public host; its sole destination is loopback.
-	env = append(env, "HTTPS_PROXY="+proxy.URL, "HTTP_PROXY="+proxy.URL, "ALL_PROXY="+proxy.URL, "NO_PROXY=127.0.0.1,localhost", "https_proxy="+proxy.URL, "http_proxy="+proxy.URL, "all_proxy="+proxy.URL, "no_proxy=127.0.0.1,localhost", "SSL_CERT_FILE="+certPath)
+	env = append(env, "HTTPS_PROXY="+proxy.URL, "HTTP_PROXY="+proxy.URL, "ALL_PROXY="+proxy.URL, "NO_PROXY=127.0.0.1,localhost", "https_proxy="+proxy.URL, "http_proxy="+proxy.URL, "all_proxy="+proxy.URL, "no_proxy=127.0.0.1,localhost")
 	data, err = run("doctor", "--config", path, "--probe-feishu")
 	if err != nil || json.Unmarshal(data, &report) != nil || report.Verification["feishuAuth"] != "passed" || report.Verification["feishuIdentity"] != "passed" || calls.Load() != 2 || report.Verification["messageDelivery"] != "not_checked" {
 		t.Fatalf("artifact fake-Feishu identity contract: err=%v report=%s calls=%d", err, data, calls.Load())
@@ -137,7 +123,9 @@ func artifactFeishuProxy(t *testing.T, custom ...http.Handler) (*httptest.Server
 	if err != nil {
 		t.Fatal(err)
 	}
-	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "local Feishu fixture"}, DNSNames: []string{"open.feishu.cn"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, IsCA: true, BasicConstraintsValid: true}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil { t.Fatal(err) }
+	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "feishu-artifact-fixture-"+serial.Text(16)}, DNSNames: []string{"open.feishu.cn"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, IsCA: true, BasicConstraintsValid: true}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
 		t.Fatal(err)

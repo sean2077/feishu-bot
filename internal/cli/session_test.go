@@ -146,12 +146,22 @@ func TestLocalSessionRejectsChangedConfigurationAndMissingNativeID(t *testing.T)
 	}
 }
 
-func TestLocalSessionRejectsUndeliveredOutput(t *testing.T){
-	c,r,s,_:=localSessionFixture(t)
-	st,err:=store.Open(filepath.Join(c.DataDir,"gateway.sqlite"));if err!=nil{t.Fatal(err)}
-	if _,err=st.DB.Exec("INSERT INTO outbox(id,room,session,text,success,state,at) VALUES('unsent',?,?,'answer',1,'pending',1)",r.Key,s.ID);err!=nil{t.Fatal(err)}
+func TestLocalSessionRejectsUndeliveredOutput(t *testing.T) {
+	c, r, s, _ := localSessionFixture(t)
+	st, err := store.Open(filepath.Join(c.DataDir, "gateway.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DB.Exec("INSERT INTO outbox(id,room,session,text,success,state,at) VALUES('unsent',?,?,'answer',1,'pending',1)", r.Key, s.ID); err != nil {
+		t.Fatal(err)
+	}
 	st.Close()
-	called:=false
-	err=runSessionWith(context.Background(),c,Options{SessionID:s.ID},&bytes.Buffer{},func(context.Context,core.Config,core.Room,core.Session,core.Workspace)error{called=true;return nil})
-	if err==nil||called{t.Fatal("handoff ignored pending output",err)}
+	called := false
+	err = runSessionWith(context.Background(), c, Options{SessionID: s.ID}, &bytes.Buffer{}, func(context.Context, core.Config, core.Room, core.Session, core.Workspace) error {
+		called = true
+		return nil
+	})
+	if err == nil || called {
+		t.Fatal("handoff ignored pending output", err)
+	}
 }

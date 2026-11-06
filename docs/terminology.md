@@ -141,3 +141,23 @@ _英文_: portable package
 以平台安装包发布的同一网关二进制及文档：Windows MSI 按当前用户安装到 `%LOCALAPPDATA%\feishu-bot`，Linux deb 安装到 `/usr/bin/feishu-bot`。安装器不注册后台服务；常驻运行仍由 `daemon install` 管理。
 _英文_: installer package
 _避免_: 用安装版指代 daemon 服务安装
+
+**会话目录活动时间**
+
+最近一次新接收的人类输入时间，用于当前聊天的会话搜索排序。原生输出、管理查询与输入重放不更新它；无记录的旧会话以创建时间回退。
+_英文_: last admitted input time
+
+**标题同步修订**
+
+一次已保存标题目标的版本。目标值和原生 ACK 的确认值分开，旧修订的迟到响应不能确认新目标。
+_英文_: title sync revision
+
+**交付放弃**
+
+维护者明确停止交付来源绑定可核实的同轮回复及必要文件，包含后到的同轮补交。该决定保留，不代表送达、模型停止或远端消息撤回，也不产生 Done。
+_英文_: delivery discard
+
+**本地终端交接**
+
+服务停止后，持同一个服务锁在本地原生终端恢复已保存的会话身份；进程树退出确认后才释放锁。没有两个写入者同时接管，不额外建立网关 agent loop。
+_英文_: local terminal handoff

@@ -241,6 +241,10 @@ func (c *Client) Download(ctx context.Context, messageID string, r core.Resource
 	if err != nil {
 		return err
 	}
+	// One deadline covers authorization/token reads, shared admission and all
+	// body chunks; a slow preflight cannot grant the transfer another minute.
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
 	// Reauthorize the source and exact attachment association before reading any
 	// bytes; Download does not trust an arbitrary key supplied by a tool call.
 	room, err := c.attachmentRoom(ctx, messageID)
@@ -272,8 +276,6 @@ func (c *Client) Download(ctx context.Context, messageID string, r core.Resource
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
 	return c.downloadResource(ctx, c.base+"/open-apis/im/v1/messages/"+message+"/resources/"+key+"?type="+url.QueryEscape(r.Kind), token, destination, maxBytes)
 }
 

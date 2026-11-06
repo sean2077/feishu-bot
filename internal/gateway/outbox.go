@@ -494,6 +494,7 @@ func (g *Gateway) updateOutputCard(ctx context.Context, id string, room core.Roo
 		return g.bindQuickControls(target, card)
 	})
 }
+
 const retryCandidateLimit = 128
 const retryCandidateQuery = `SELECT o.id,o.at,o.retry_after,o.file_state,o.kind,o.target IS NOT NULL FROM outbox o WHERE o.room=? AND o.state='pending'`
 

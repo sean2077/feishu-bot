@@ -210,6 +210,9 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 	g.pruneExports(now)
 	report, maintenanceErr := g.store.Maintain(ctx, now, g.config.Limits.BackgroundMS)
 	if g.logger != nil {
+		for i := range report.Policies {
+			report.Policies[i].Error = core.Redact(report.Policies[i].Error, g.secrets)
+		}
 		detail := core.Args{"durationMs": report.DurationMS, "candidates": report.Candidates, "changed": report.Changed, "policies": report.Policies}
 		if maintenanceErr != nil {
 			detail["error"] = core.Redact(maintenanceErr.Error(), g.secrets)

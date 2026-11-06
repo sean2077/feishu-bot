@@ -106,4 +106,4 @@ CI 在 Linux／Windows 的 Go 1.27 记录资源矩阵，并保留带平台后缀
 
 普通 CI 使用固定 Claude Code 2.1.316。`Verify Go gateway` 的手动运行可同时指定 `candidate_sdk_version` 与 `candidate_native_version`，安装官方测试包、核对实际 `--version` 身份，再运行权限／追问、持续输入、MCP、compact、停止、恢复和长文本附件回归。候选成功不会自动改写仓库已测版本。
 
-CI 还给无 CGO 生产二进制写入当前提交身份，直接运行该文件的 `version`、`init`、`doctor` 和本地模型探针；Linux 通过严格限定到本地 TLS 服务的代理验证飞书认证／身份探针。Windows／macOS 使用系统证书存储，因此这段假 CA 飞书探针明确不执行；其他实际二进制步骤仍运行。Linux 的实际生产二进制另执行完整本地替身旅程：真实 TLS／WebSocket／REST 适配层、真实 Claude Code、MCP 历史、维护者审批 Write（普通成员被拒绝）、断线重连后的 `/answer`、同卡长回答、完整文件确认后 Done、`/stop`、服务进程重启及原生会话 ID／历史保持。测试只替换平台和模型服务，不链接替代 service factory，也不向生产代码加入测试开关。这些测试与各平台源码内的真实 CLI 网关旅程共同提供发布前证据，但不是实际飞书或真实模型验收。
+CI 给无 CGO 生产二进制写入版本并绑定准确提交、BUILDINFO 与 SHA-256，直接运行基本命令、完整本地 TLS／WebSocket／REST／原生 CLI 旅程和固定旧二进制升级恢复。发布工作流对解包及安装后的最终文件重复同一旅程；Windows／macOS 假 CA 仅在隔离 runner 明确启用、按指纹清理，生产路径保持系统证书校验。具体步骤与限制由[实际构建产物回归](validation.md#实际构建产物回归)维护；这些 fixture 不是实际飞书或真实模型验收。

@@ -20,6 +20,8 @@ concurrency:
   cancel-in-progress: true
 env:
   PYTHONDONTWRITEBYTECODE: '1'
+  # Test tooling additionally checks GITHUB_ACTIONS and github-hosted isolation.
+  FEISHU_ARTIFACT_SYSTEM_TRUST: '1'
 jobs:
   cross-platform:
     strategy:
@@ -46,6 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
@@ -64,18 +67,23 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             binary+=.exe
           fi
-          artifact_version="0.0.0-ci.$GITHUB_SHA"
+          artifact_commit="$(git rev-parse HEAD)"
+          artifact_version="0.0.0-ci.$artifact_commit"
           go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/internal/cli.Version=$artifact_version" -o "$binary" ./cmd/feishu-bot
           "$binary" --help
           "$binary" --version
-          binary_absolute="$(python -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$binary")"
-          {
-            printf 'FEISHU_ARTIFACT_PATH=%s\n' "$binary_absolute"
-            printf 'FEISHU_ARTIFACT_VERSION=%s\n' "$artifact_version"
-          } >> "$GITHUB_ENV"
+          python .github/scripts/artifact_fixture.py record --binary "$binary" \
+            --version "$artifact_version" --commit "$artifact_commit" --output bin/BUILDINFO.json
+      - name: Build the pinned previous binary for actual service upgrades
+        shell: bash
+        run: python .github/scripts/artifact_fixture.py baseline --output bin/upgrade-baseline
       - name: Verify the actual built artifact against local providers
         shell: bash
-        run: go test -race -count=1 -timeout 180s ./internal/cli -run '^TestBuiltArtifact'
+        run: go test -race -v -count=1 -timeout 420s ./internal/cli -run '^TestBuiltArtifact'
+      - name: Remove any temporary artifact CA after interrupted tests
+        if: always() && runner.os != 'Linux'
+        shell: bash
+        run: python .github/scripts/artifact_trust.py cleanup-all
       - name: Record advisory Go formatting patch
         if: always() && matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
         shell: python

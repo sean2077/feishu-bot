@@ -32,6 +32,13 @@ AND d.origin IN (SELECT json_extract(value,'$.id') FROM json_each(o.origins)) LI
 	detail:=jsonText(core.Args{"sourceOutput":source,"scope":"turn_delivery","nativeStopped":false,"deliveryConfirmed":false})
 	if _,err=db.Exec(`INSERT OR IGNORE INTO operator_decisions(kind,id,room,session,actor,at,decision,detail) VALUES('output',?,?,?,?,?,'discard',?)`,id,room,session,actor,at,detail);err!=nil{return err}
 	_,err=db.Exec(`UPDATE receipts SET desired='clear',at=? WHERE room=? AND session=? AND id IN (SELECT json_extract(value,'$.id') FROM json_each(?))`,at,room,session,raw)
+	if err!=nil{return err}
+	// Native final replies are inserted in render.persist's transaction. Close
+	// an already known preview atomically with that inherited disposition.
+	if tx,ok:=db.(*sql.Tx);ok {
+		r,exists:=RoomFromKey(g.config,room)
+		if exists {_,_,err=g.closeDiscardedOutputTx(context.Background(),tx,id,r,"")}
+	}
 	return err
 }
 
@@ -57,6 +64,7 @@ func (g *Gateway) discardOutputCommand(ctx context.Context,r core.Room,m core.Me
 
 func (g *Gateway) discardOutput(ctx context.Context,r core.Room,id,actor string) (outputDiscardResult,error) {
 	var result outputDiscardResult
+	var closingStatuses []string
 	current,ok:=RoomFromKey(g.config,r.Key)
 	if !ok||!canManage(current,actor){return result,errOutputNotFound}
 	ctx,cancel:=context.WithTimeout(ctx,2*time.Second);defer cancel()
@@ -83,6 +91,11 @@ func (g *Gateway) discardOutput(ctx context.Context,r core.Room,id,actor string)
 			if v.target!=""{targets[v.target]=true}
 		}}
 		if !bound{return errOutputNotFound}
+		if len(originSet)>0 {
+			for _,v:=range items {
+				if (v.kind=="reply"||v.kind=="file")&&len(v.origins)==0{return errOutputUnbound}
+			}
+		}
 		for changed:=true;changed; {
 			changed=false
 			for _,v:=range items{
@@ -130,13 +143,18 @@ func (g *Gateway) discardOutput(ctx context.Context,r core.Room,id,actor string)
 			}
 			result.IDs=append(result.IDs,v.id)
 		}
+		for _,output:=range result.IDs {
+			_,status,err:=g.closeDiscardedOutputTx(ctx,tx,output,r,"")
+			if err!=nil{return err}
+			if status!=""&&!contains(closingStatuses,status){closingStatuses=append(closingStatuses,status)}
+		}
 		result.Session=session
 		return nil
 	})
 	g.outMu.Unlock()
 	if err!=nil{return outputDiscardResult{},err}
 	for _,origin:=range result.Origins{g.kickReceipt(origin.ID)}
-	for _,output:=range result.IDs{if _,err:=g.closeDiscardedOutput(ctx,output,r,"");err!=nil{g.audit(r.Key,"discard_status_pending",core.Args{"id":output,"error":core.Redact(err.Error(),g.secrets)})}}
+	for _,status:=range closingStatuses{status:=status;g.task(func(){_,_=g.deliverOutput(g.ctx,status,r,false)})}
 	g.audit(r.Key,"output_discarded_by_user",core.Args{"actor":actor,"requested":id,"outputs":result.IDs,"scope":"turn_delivery","nativeStopped":false,"deliveryConfirmed":false})
 	return result,nil
 }
@@ -148,29 +166,64 @@ func (g *Gateway) closeDiscardedOutput(ctx context.Context,id string,r core.Room
 	var discarded bool
 	var status string
 	err:=g.store.Transaction(ctx,func(tx *sql.Tx)error{
-		var state,session,raw,detail string
-		var target,reply,thread sql.NullString
-		err:=tx.QueryRowContext(ctx,`SELECT o.state,o.session,o.target,o.reply_to,o.thread_id,o.origins,d.detail FROM outbox o JOIN operator_decisions d ON d.kind='output' AND d.id=o.id AND d.decision='discard' WHERE o.id=? AND o.room=?`,id,r.Key).Scan(&state,&session,&target,&reply,&thread,&raw,&detail)
-		if errors.Is(err,sql.ErrNoRows){return nil};if err!=nil{return err};if state!="cancelled"{return nil};discarded=true
-		var decision core.Args
-		if err=json.Unmarshal([]byte(detail),&decision);err!=nil{return err}
-		status=stringArg(decision,"closingStatus")
-		if status!=""{return nil}
-		if !target.Valid||target.String==""{target.String=lateTarget}
-		if target.String==""{return nil}
+		var err error
+		discarded,status,err=g.closeDiscardedOutputTx(ctx,tx,id,r,lateTarget)
+		return err
+	})
+	if err==nil&&status!=""&&!g.isClosing(){g.task(func(){_,_=g.deliverOutput(g.ctx,status,r,false)})}
+	return discarded,err
+}
+
+func (g *Gateway) closeDiscardedOutputTx(ctx context.Context,tx *sql.Tx,id string,r core.Room,lateTarget string) (bool,string,error) {
+	var state,session,raw,detail string
+	var target,reply,thread sql.NullString
+	err:=tx.QueryRowContext(ctx,`SELECT o.state,o.session,o.target,o.reply_to,o.thread_id,o.origins,d.detail FROM outbox o JOIN operator_decisions d ON d.kind='output' AND d.id=o.id AND d.decision='discard' WHERE o.id=? AND o.room=?`,id,r.Key).Scan(&state,&session,&target,&reply,&thread,&raw,&detail)
+	if errors.Is(err,sql.ErrNoRows){return false,"",nil};if err!=nil{return false,"",err};if state!="cancelled"{return false,"",nil}
+	var decision core.Args
+	if err=json.Unmarshal([]byte(detail),&decision);err!=nil{return true,"",err}
+	status:=stringArg(decision,"closingStatus")
+	if status!=""{return true,status,nil}
+	if !target.Valid||target.String==""{target.String=lateTarget}
+	if target.String==""{return true,"",nil}
+	// A reply and an older status can share one target. Persist one closing
+	// status, then point every decision at it instead of duplicating writes.
+	var existing sql.NullString
+	err=tx.QueryRowContext(ctx,`SELECT json_extract(d.detail,'$.closingStatus') FROM operator_decisions d JOIN outbox o ON o.id=d.id WHERE d.kind='output' AND d.decision='discard' AND o.room=? AND o.session=? AND o.target=? AND json_extract(d.detail,'$.closingStatus') IS NOT NULL LIMIT 1`,r.Key,session,target.String).Scan(&existing)
+	if err!=nil&&!errors.Is(err,sql.ErrNoRows){return true,"",err}
+	status=existing.String
+	if status=="" {
 		var who []core.Origin
-		if raw!=""&&raw!="null"{if err=json.Unmarshal([]byte(raw),&who);err!=nil{return err}}
+		if raw!=""&&raw!="null"{if err=json.Unmarshal([]byte(raw),&who);err!=nil{return true,"",err}}
 		const text="本轮交付已由维护者明确放弃；没有确认完整送达，也不标记 Done。原生任务按原有生命周期继续，已发出的消息不会被撤回。"
 		card:=DisplayCard("已放弃交付 · 未确认完成",text)
 		card["header"]=core.Args{"template":"grey","title":core.Args{"tag":"plain_text","content":"已放弃交付 · 未确认完成"}}
 		card["config"]=core.Args{"streaming_mode":false,"summary":core.Args{"content":text}}
 		status,err=g.saveOutput(tx,r,session,text,false,target.String,reply.String,thread.String,card,who,"","","status","pending")
+		if err!=nil{return true,"",err}
+	}
+	decision["closingStatus"]=status
+	if _,err=tx.ExecContext(ctx,"UPDATE operator_decisions SET detail=? WHERE kind='output' AND id=?",jsonText(decision),id);err!=nil{return true,"",err}
+	_,err=tx.ExecContext(ctx,"UPDATE outbox SET target=COALESCE(target,?) WHERE id=? AND state='cancelled'",target.String,id)
+	return true,status,err
+}
+
+// acknowledgePreviewTarget persists the confirmed late create receipt even if
+// an inherited discard changed preparing to cancelled. The target binding and
+// closing status commit together; the ordinary reply stays cancelled.
+func (g *Gateway) acknowledgePreviewTarget(ctx context.Context,id string,r core.Room,target string) error {
+	// The platform ACK has already been observed. A concurrent /stop may
+	// cancel the render context, but must not erase that delivery evidence.
+	// render.flush is tracked by Gateway's wait group, so shutdown still waits
+	// for this short metadata transaction before closing the store.
+	ctx,cancel:=context.WithTimeout(context.Background(),2*time.Second)
+	defer cancel()
+	var status string
+	err:=g.store.Transaction(ctx,func(tx *sql.Tx)error{
+		_,err:=tx.ExecContext(ctx,`UPDATE outbox SET target=? WHERE id=? AND room=? AND (target IS NULL OR target=?) AND (state='preparing' OR (state='cancelled' AND EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id AND d.decision='discard')))`,target,id,r.Key,target)
 		if err!=nil{return err}
-		decision["closingStatus"]=status
-		if _,err=tx.ExecContext(ctx,"UPDATE operator_decisions SET detail=? WHERE kind='output' AND id=?",jsonText(decision),id);err!=nil{return err}
-		_,err=tx.ExecContext(ctx,"UPDATE outbox SET target=COALESCE(target,?) WHERE id=? AND state='cancelled'",target.String,id)
+		_,status,err=g.closeDiscardedOutputTx(ctx,tx,id,r,target)
 		return err
 	})
 	if err==nil&&status!=""&&!g.isClosing(){g.task(func(){_,_=g.deliverOutput(g.ctx,status,r,false)})}
-	return discarded,err
+	return err
 }

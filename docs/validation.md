@@ -56,15 +56,19 @@ go test -race -count=1 -timeout 180s -v ./internal/native ./internal/integration
 
 ## 实际构建产物回归
 
-常规 CI 在各平台用 `CGO_ENABLED=0` 构建写入当前提交身份的生产二进制，随后通过 `FEISHU_ARTIFACT_PATH` 与 `FEISHU_ARTIFACT_VERSION` 执行 `TestBuiltArtifact*`。版本、初始化、本地诊断和基础模型探针直接调用这个二进制，不能由测试链接的替代服务冒充。
+常规 CI 在各平台用 `CGO_ENABLED=0` 构建写入当前提交身份的生产二进制，随后通过 `FEISHU_ARTIFACT_PATH`、`FEISHU_ARTIFACT_VERSION`、`FEISHU_ARTIFACT_COMMIT`、`FEISHU_ARTIFACT_SHA256` 和 `FEISHU_ARTIFACT_BUILDINFO` 执行 `TestBuiltArtifact*`。有产物路径时，缺少身份字段、平台不符或文件哈希不匹配均直接失败。版本、初始化、本地诊断和基础模型探针直接调用这个二进制，不能由测试链接的替代服务冒充。
 
-Linux 进一步运行本地 TLS／WebSocket／REST 飞书替身与真实原生 CLI 的完整旅程：MCP 历史读取、普通成员审批被拒、维护者批准 Write、断线重连后回答原追问、同卡长回复、完整文件确认之前没有 Done、`/stop`、服务进程重启和同一网关／原生会话的历史恢复。模型请求次数和卡片／文件数量同时断言，防止重复工具执行或重复交付被成功结果掩盖。
+各平台的显式产物检查运行本地 TLS／WebSocket／REST 飞书替身与真实原生 CLI 的完整旅程：MCP 历史读取、普通成员审批被拒、维护者批准 Write、断线重连后回答原追问、同卡长回复、完整文件确认之前没有 Done、`/stop`、服务进程重启和同一网关／原生会话的历史恢复。模型请求次数和卡片／文件数量同时断言，防止重复工具执行或重复交付被成功结果掩盖。
 
-假 CA 只放入测试子进程的证书环境，不修改系统信任或跳过 TLS 验证。Windows／macOS 使用系统证书存储，该段实际二进制 TLS 旅程明确跳过；它们仍执行上述实际二进制基本检查，以及源码内的真实原生 CLI 集成测试。普通本地测试未提供产物或原生 CLI 路径时应显示 skip，不能据此报告实际产物旅程通过。
+Linux 假 CA 只放入测试子进程证书环境。Windows／macOS 的实际产物旅程使用系统校验：仅在 `GITHUB_ACTIONS=true`、`RUNNER_ENVIRONMENT=github-hosted` 且显式 `FEISHU_ARTIFACT_SYSTEM_TRUST=1` 的隔离 runner 中允许安装临时 CA。Windows 使用 CurrentUser Root；macOS 将证书放入专用用户 keychain，并通过 runner 已有的 `sudo -n` 写入限定 SSL 主机的管理员信任域。脚本不改 authorizationdb、不关闭 TLS；用精确证书指纹记录并清理，工作流还有 `always()` 收尾。普通开发机／self-hosted runner 拒绝这类信任写入。
+
+升级旅程另外构建固定基线提交 `f727a9cd074e1001000fa7c14ecad38d25e369d1` 的旧二进制，以真实 `run --service --env-file --log-file` 进程完成首轮，然后在同一私有安装路径替换为当前产物并恢复。检查网关／原生 ID、历史、配置／环境／项目文件字节及服务日志前缀；测试侧读取旧数据库使用只读 SQL，不能在新服务启动前替它迁移。旧、新产物的 commit、version 和 SHA-256 必须不同。它验证服务进程模式的替换与恢复，不替代每种 OS 服务注册器或生产租户升级验收。
+
+普通本地测试未提供产物或原生 CLI 路径时会明确 skip；显式产物检查缺少要求的身份、旧二进制或固定 CLI 时不能报告完整成功。本地终端交接另有 Linux 真 PTY fixture 验证前台进程组、终端输入、启动失败及取消后的恢复和后代清理；macOS／Windows 的实际交互终端体验仍需人工验收。
 
 ## 发布包验证
 
-版本 tag 对应的提交在 Linux amd64／arm64、Windows amd64、macOS amd64／arm64 原生 runner 上分别运行竞态测试、vet 和固定原生 CLI 回归。随后用 `CGO_ENABLED=0` 构建生产二进制，对将要上传的便携包解压并执行 `--version`、`--help`、隔离目录中的 `init` 等冒烟检查；安装包还须重复构建并逐字节比较，在原生平台实际安装、运行和卸载。交叉编译成功不能代替目标架构或安装包的实际执行。
+版本 tag 对应的提交在 Linux amd64／arm64、Windows amd64、macOS amd64／arm64 原生 runner 上分别运行竞态测试、vet 和固定原生 CLI 回归。随后用 `CGO_ENABLED=0` 构建生产二进制，对将要上传的便携包解压，校验 BUILDINFO 中版本／提交／SHA-256，再从解包路径执行基本命令及完整 `TestBuiltArtifact*` 旅程；安装包还须重复构建并逐字节比较，在原生平台实际安装、从已安装二进制运行同一完整旅程，再卸载。交叉编译成功不能代替目标架构或安装包的实际执行。
 
 常规 CI 通过 `python -m unittest discover -s .github/scripts -p 'test_*.py'` 检查版本、发布说明、打包与发布状态机；这些测试不上传附件。发布 job 再核对完整文件集合、构建身份与 SHA-256，上传草稿后重新下载验证，最后公开 Release。具体契约与重跑方式见[版本发布](releasing.md)。
 
