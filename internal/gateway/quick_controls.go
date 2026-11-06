@@ -101,7 +101,7 @@ func (g *Gateway) quickControlsRevision(r core.Room, session, turn, output, salt
 		b["behaviors"] = []any{core.Args{"type": "callback", "value": core.Args{"quick_control": g.signQuick(q)}}}
 		return b
 	}
-	buttons := []any{makeButton("status", "查看状态", "default"), makeButton("answer", "待回答问题", "default")}
+	buttons := []any{makeButton("status", "查看状态", "default"), makeButton("answer", "待回答", "default")}
 	if turn != "" {
 		buttons = append(buttons, makeButton("stop", "停止本轮", "danger"))
 	}
@@ -112,15 +112,23 @@ func (g *Gateway) quickControlsRevision(r core.Room, session, turn, output, salt
 	}
 	columns := []any{}
 	for _, b := range buttons {
-		columns = append(columns, core.Args{"tag": "column", "width": "weighted", "weight": 1, "elements": []any{b}})
+		columns = append(columns, core.Args{"tag": "column", "width": "auto", "elements": []any{b}})
 	}
-	result := []any{core.Args{"tag": "column_set", "element_id": "gateway_quick_row", "columns": columns}}
+	result := []any{
+		core.Args{"tag": "hr", "element_id": "gateway_quick_div"},
+		core.Args{"tag": "column_set", "element_id": "gateway_quick_row", "flex_mode": "none", "horizontal_spacing": "medium", "columns": columns},
+	}
 	if turn != "" {
-		submit := makeButton("supplement", "补充当前任务", "primary")
+		submit := makeButton("supplement", "发送", "primary_filled")
 		submit["name"] = "quick_supplement_submit"
 		submit["form_action_type"] = "submit"
 		result = append(result, core.Args{"tag": "form", "element_id": "gateway_quick_form", "name": "quick_supplement_form", "elements": []any{
-			core.Args{"tag": "input", "name": "quick_supplement", "input_type": "multiline_text", "max_length": min(1000, g.config.Limits.TextChars), "required": true, "placeholder": core.Args{"tag": "plain_text", "content": "仅补充这次正在执行的前台任务"}}, submit,
+			core.Args{"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "medium", "columns": []any{
+				core.Args{"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "bottom", "elements": []any{
+					core.Args{"tag": "input", "name": "quick_supplement", "input_type": "multiline_text", "rows": 2, "width": "fill", "max_length": min(1000, g.config.Limits.TextChars), "required": true, "placeholder": core.Args{"tag": "plain_text", "content": "仅补充这次正在执行的前台任务"}},
+				}},
+				core.Args{"tag": "column", "width": "auto", "vertical_align": "bottom", "elements": []any{submit}},
+			}},
 		}})
 	}
 	return result
@@ -442,5 +450,5 @@ func (g *Gateway) quickSupplement(ctx context.Context, r core.Room, a core.CardA
 		return "", err
 	}
 	g.kick(r)
-	return "补充已保存，等待交给本轮原生输入流；这不代表模型已读取。", nil
+	return "补充已保存，等待交给本轮原生输入流。", nil
 }

@@ -90,17 +90,108 @@ func replyCard(title, answer string, thinking []string, total int, final bool, d
 	return card
 }
 
+// replyStatus turns the internal turn title into the compact status label shown
+// at the top of the card. The color carries the same state the header template
+// used to carry, without a full-width colored band.
+func replyStatus(title string, total int, final, success bool) (string, string) {
+	text := cut(title, 40)
+	color := "blue"
+	switch {
+	case final && (strings.Contains(title, "停止") || strings.Contains(title, "取消")):
+		color = "grey"
+	case final && (!success || strings.Contains(title, "失败") || strings.Contains(title, "中断")):
+		color = "red"
+	case final:
+		color = "green"
+	case strings.Contains(title, "等待") || strings.Contains(title, "审批") || strings.Contains(title, "回答"):
+		color = "orange"
+	}
+	if !final && title == "处理中" && total > 0 {
+		text = "思考中"
+	}
+	if final && success && title == "回复" {
+		text = "已回复"
+	}
+	return text, color
+}
+
+func replyStatusRow(text, color string) core.Args {
+	return core.Args{
+		"tag": "column_set", "element_id": "reply_status", "flex_mode": "none", "horizontal_spacing": "medium",
+		"columns": []any{
+			core.Args{"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "center", "elements": []any{
+				core.Args{"tag": "markdown", "content": "**飞书助手**"},
+			}},
+			core.Args{"tag": "column", "width": "auto", "horizontal_align": "right", "vertical_align": "center", "elements": []any{
+				core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "text_size": "notation", "text_color": color, "content": "● " + text}},
+			}},
+		},
+	}
+}
+
+// setReplyCardStatus updates the visible state on a private card copy. Older
+// saved cards may have a header, an unmarked compact row, or both; leaving either
+// old status visible could contradict a pending delivery or cancellation.
+func setReplyCardStatus(card core.Args, text, color string) core.Args {
+	body := argsOf(card["body"])
+	if body == nil {
+		body = core.Args{}
+	}
+	elements, _ := body["elements"].([]any)
+	row := replyStatusRow(cut(text, 40), color)
+	replaced := false
+	for i, value := range elements {
+		element := argsOf(value)
+		if stringArg(element, "element_id") == "reply_status" || (i == 0 && legacyReplyStatusRow(element)) {
+			elements[i] = row
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		elements = append([]any{row}, elements...)
+	}
+	body["elements"] = elements
+	card["body"] = body
+	delete(card, "header")
+	return card
+}
+
+// The first compact-card release had no element_id. Recognize its exact wire
+// shape, including the assistant label and layout, rather than replacing an
+// arbitrary custom column_set or a row that merely contains status-like text.
+func legacyReplyStatusRow(row core.Args) bool {
+	columns, _ := row["columns"].([]any)
+	if len(columns) != 2 {
+		return false
+	}
+	right, _ := argsOf(columns[1])["elements"].([]any)
+	if len(right) != 1 {
+		return false
+	}
+	text := argsOf(argsOf(right[0])["text"])
+	label := stringArg(text, "content")
+	if !strings.HasPrefix(label, "● ") {
+		return false
+	}
+	expected := replyStatusRow(strings.TrimPrefix(label, "● "), stringArg(text, "text_color"))
+	delete(expected, "element_id")
+	return jsonText(row) == jsonText(expected)
+}
+
 // The answer is the only large variable field. Bound metadata separately so
 // even a hostile model label or project path cannot consume the answer budget.
 func buildReplyCard(title, answer string, thinking []string, total int, final bool, d replyDetails, elapsed time.Duration, success bool) core.Args {
 	title = cut(title, 120)
 	d.Model = cut(d.Model, 256)
 	d.ProjectPath = cut(d.ProjectPath, 512)
-	elements := []any{}
+	status, statusColor := replyStatus(title, total, final, success)
+	elements := []any{replyStatusRow(status, statusColor)}
+	var reasoning core.Args
 	if total > 0 {
 		steps := []any{}
 		if total > len(thinking) {
-			steps = append(steps, core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "text_size": "notation", "text_color": "grey", "content": fmt.Sprintf("... %d earlier steps hidden", total-len(thinking))}})
+			steps = append(steps, core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "text_size": "notation", "text_color": "grey", "content": fmt.Sprintf("另有 %d 步未显示", total-len(thinking))}})
 		}
 		for _, t := range thinking {
 			snippet := cut(strings.TrimSpace(t), 180)
@@ -109,7 +200,7 @@ func buildReplyCard(title, answer string, thinking []string, total int, final bo
 			}
 			steps = append(steps, core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "text_size": "notation", "text_color": "grey", "content": snippet}, "icon": core.Args{"tag": "standard_icon", "token": "mindmap_outlined"}})
 		}
-		elements = append(elements, core.Args{"tag": "collapsible_panel", "expanded": !final, "background_color": "grey", "border": core.Args{"color": "grey"}, "vertical_spacing": "8px", "padding": "4px 8px", "header": core.Args{"title": core.Args{"tag": "plain_text", "content": fmt.Sprintf("Reasoning (%d)", total)}}, "elements": steps})
+		reasoning = core.Args{"tag": "collapsible_panel", "expanded": false, "vertical_spacing": "4px", "padding": "4px 8px", "header": core.Args{"title": core.Args{"tag": "plain_text", "content": fmt.Sprintf("思考过程 · %d 步", total)}}, "elements": steps}
 	}
 	body := answer
 	if body == "" {
@@ -122,23 +213,18 @@ func buildReplyCard(title, answer string, thinking []string, total int, final bo
 		}
 	}
 	elements = append(elements, core.Args{"tag": "markdown", "element_id": "reply_answer", "content": body})
+	if reasoning != nil {
+		elements = append(elements, reasoning)
+	}
 	if final {
-		elements = append(elements, core.Args{"tag": "hr"}, core.Args{"tag": "markdown", "text_size": "notation", "content": fmt.Sprintf("⏱ 用时 %.1f 秒", elapsed.Seconds())}, core.Args{"tag": "markdown", "text_size": "notation", "content": statusLine(d)})
+		meta := fmt.Sprintf("⏱ %.1f 秒", elapsed.Seconds())
+		if line := statusLine(d); line != "" {
+			meta += " · " + line
+		}
+		elements = append(elements, core.Args{"tag": "markdown", "text_size": "notation", "content": meta})
 		if d.ProjectPath != "" {
 			elements = append(elements, core.Args{"tag": "markdown", "text_size": "notation", "content": strings.NewReplacer("\r", " ", "\n", " ").Replace(d.ProjectPath)})
 		}
-	}
-	color := "blue"
-	if final {
-		color = "green"
-		if strings.Contains(title, "停止") || strings.Contains(title, "取消") {
-			color = "grey"
-		} else if !success || strings.Contains(title, "失败") || strings.Contains(title, "中断") {
-			color = "red"
-		}
-	}
-	if title == "处理中" && total > 0 {
-		title = "思考中"
 	}
 	summary := "正在生成回复…"
 	if final {
@@ -151,7 +237,7 @@ func buildReplyCard(title, answer string, thinking []string, total int, final bo
 	if !final {
 		cfg["streaming_config"] = core.Args{"print_frequency_ms": core.Args{"default": 70}, "print_step": core.Args{"default": 1}, "print_strategy": "fast"}
 	}
-	return core.Args{"schema": "2.0", "config": cfg, "header": core.Args{"template": color, "title": core.Args{"tag": "plain_text", "content": title}}, "body": core.Args{"elements": elements}}
+	return core.Args{"schema": "2.0", "config": cfg, "body": core.Args{"elements": elements}}
 }
 
 // bytePrefix never splits a UTF-8 code point and avoids allocating []rune for

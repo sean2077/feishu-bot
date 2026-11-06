@@ -65,6 +65,10 @@ func TestDiscardOutputGroupsRequiredFilesAndPreservesOtherTurns(t *testing.T) {
 	if len(f.tr.updates) != 1 || !strings.Contains(jsonText(f.tr.updates[0].card), "未确认完成") || argsOf(f.tr.updates[0].card["config"])["streaming_mode"] != false {
 		t.Fatal(f.tr.updates)
 	}
+	status, color := replyCardStatus(t, f.tr.updates[0].card)
+	if status != "● 已放弃交付 · 未确认完成" || color != "grey" || strings.Contains(jsonText(f.tr.updates[0].card), "quick_control") {
+		t.Fatal("discard closure has misleading state or active controls", status, color)
+	}
 }
 
 func TestDiscardBeforeNativeResultDoesNotStopTaskOrMarkDone(t *testing.T) {

@@ -611,3 +611,36 @@ func TestApprovalWaitRefreshesCardAfterBlockedPreview(t *testing.T) {
 		return false
 	})
 }
+
+func TestSuccessfulTextReplyDropsRetryControl(t *testing.T) {
+	f := newFixture(t, nil)
+	room := f.room()
+	s, err := f.s.Session(room.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := f.g.saveOutput(f.s.DB, room, s.ID, "answer", true, "", "", "", replyCard("回复", "answer", nil, 0, true, replyDetails{}, time.Second, true), nil, "", "", "reply", "pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := f.g.deliverOutput(context.Background(), id, room, false); !ok || err != nil {
+		t.Fatalf("delivery: %t %v", ok, err)
+	}
+	f.tr.mu.Lock()
+	if len(f.tr.updates) < 2 {
+		f.tr.mu.Unlock()
+		t.Fatalf("expected delivery and terminal control updates, got %d", len(f.tr.updates))
+	}
+	visible := jsonText(f.tr.updates[len(f.tr.updates)-1].card)
+	f.tr.mu.Unlock()
+	if !strings.Contains(visible, "查看状态") || !strings.Contains(visible, "待回答") {
+		t.Fatalf("terminal card lost session actions: %s", visible)
+	}
+	if strings.Contains(visible, "重试交付") {
+		t.Fatalf("terminal card still offers retry: %s", visible)
+	}
+	var state string
+	if err := f.s.DB.QueryRow("SELECT state FROM outbox WHERE id=?", id).Scan(&state); err != nil || state != "done" {
+		t.Fatalf("outbox state = %q, %v", state, err)
+	}
+}

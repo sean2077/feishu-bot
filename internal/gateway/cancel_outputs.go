@@ -94,7 +94,7 @@ func cancelledOutputCard(card core.Args, text string) core.Args {
 		card = DisplayCard(title, text)
 	}
 	card = replaceQuickControls(card, nil)
-	card["header"] = core.Args{"template": "grey", "title": core.Args{"tag": "plain_text", "content": title}}
+	card = setReplyCardStatus(card, title, "grey")
 	config := argsOf(card["config"])
 	if config == nil {
 		config = core.Args{}
@@ -125,7 +125,7 @@ func cancelledOutputCard(card core.Args, text string) core.Args {
 		// An oversized legacy/custom template may have large non-answer fields.
 		// Use a bounded cancellation preview, never schedule a new export file.
 		card = DisplayCard(title, text)
-		card["header"] = core.Args{"template": "grey", "title": core.Args{"tag": "plain_text", "content": title}}
+		card = setReplyCardStatus(card, title, "grey")
 		card["config"] = core.Args{"streaming_mode": false, "summary": core.Args{"content": notice}}
 		body = argsOf(card["body"])
 		elements, _ = body["elements"].([]any)
