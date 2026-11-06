@@ -267,13 +267,8 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 	m := core.Message{ID: a.MessageID, ChatID: r.ChatID, SenderID: a.UserID}
 	switch p.Action {
 	case "status":
-		g.task(func() {
-			text, _, err := g.management("/status", "", r, a.UserID)
-			if err == nil {
-				g.notify(r, text, &m)
-			}
-		})
-		return "本聊天状态已请求。", true, nil
+		g.task(func() { g.refreshStatusCard(r, a.UserID) })
+		return "正在刷新状态卡片。", true, nil
 	case "answer":
 		g.approvalMu.Lock()
 		ids := []string{}

@@ -83,6 +83,7 @@ type Gateway struct {
 	imageTimers                                                  map[string]imageWake
 	inputLocks, dispatchLocks, receiptLocks, approvalUpdateLocks keyedLocks
 	outTargetLocks                                               keyedLocks
+	statusLocks                                                  keyedLocks
 	poolMu, sweepMu                                              sync.Mutex
 	outMu                                                        sync.Mutex
 	outActive                                                    map[string]bool
