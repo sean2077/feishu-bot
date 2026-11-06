@@ -90,9 +90,7 @@ func TestCancelInputKeepsMinimalReplayMarkerAfterRetention(t *testing.T) {
 	if _, err := s.CancelQueuedInput(context.Background(), "r", d.UUID, "author", false, 2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Maintain(context.Background(), 100*dayMS, 1); err != nil {
-		t.Fatal(err)
-	}
+	maintainAllPolicies(t, s, 100*dayMS)
 	seen, err := s.Seen("r", d.Message.ID)
 	if err != nil || !seen {
 		t.Fatal("explicitly cancelled input became replayable", seen, err)
