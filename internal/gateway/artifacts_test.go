@@ -81,10 +81,12 @@ func TestArtifactsRetrieveOnlyCompletedFrozenRoomFiles(t *testing.T) {
 
 func TestFailedArtifactRetrievalDoesNotBlockNativeReplyDone(t *testing.T) {
 	f := newFixture(t, nil)
+	ctx := f.deliveryScenarioContext()
+	done := f.doneReceiptEvent("native-task")
 	r := f.room()
 	f.send(f.message("native-task", "current task", "member"))
-	w := f.worker()
-	d := f.delivery(w)
+	w := awaitFixtureEvent(f, ctx, "worker factory and startup events", f.started)
+	d := awaitFixtureEvent(f, ctx, "input delivered to worker", w.sent)
 	root := f.g.artifactRoot(r)
 	if err := os.MkdirAll(root, 0700); err != nil {
 		t.Fatal(err)
@@ -105,7 +107,7 @@ func TestFailedArtifactRetrievalDoesNotBlockNativeReplyDone(t *testing.T) {
 		return "", errors.New("fixture lost file acknowledgement")
 	}
 	f.tr.mu.Unlock()
-	if err := f.g.command(context.Background(), r, f.message("retrieve", "/artifacts "+id, "member")); err == nil {
+	if err := f.g.command(ctx, r, f.message("retrieve", "/artifacts "+id, "member")); err == nil {
 		t.Fatal("fixture did not fail the explicit artifact re-delivery")
 	}
 	var pending int
@@ -115,8 +117,11 @@ func TestFailedArtifactRetrievalDoesNotBlockNativeReplyDone(t *testing.T) {
 	f.tr.mu.Lock()
 	f.tr.fileHook = nil
 	f.tr.mu.Unlock()
+	if f.tr.receiptDone("native-task") {
+		t.Fatal("native task received Done before its reply completed")
+	}
 	f.finish(w, d, "Current native reply requires no file.")
-	eventually(t, func() bool { return f.tr.receiptDone("native-task") })
+	awaitFixtureEvent(f, ctx, "native reply Done with independent uncertain artifact", done)
 	if err := f.s.DB.QueryRow("SELECT count(*) FROM outbox WHERE room=? AND kind='artifact' AND state='uncertain'", r.Key).Scan(&pending); err != nil || pending != 1 {
 		t.Fatal("native completion replayed or discarded unrelated artifact retrieval", pending, err)
 	}

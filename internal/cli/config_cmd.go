@@ -19,10 +19,13 @@ Usage:
   feishu-bot config path [--config PATH]
   feishu-bot config example
   feishu-bot config format [--config PATH]
+  feishu-bot config explain --chat CHAT_ID --user USER_ID [--chat-type group|p2p]
+                           [--mentioned] [--bot] [--json] [--config PATH]
 
 path resolves --config, then ./config.json, then ~/.feishu-bot/config.json.
 example prints an annotated starter configuration.
 format rewrites valid JSON with two-space indentation.
+explain evaluates the runtime authorization/trigger policy without network or state writes.
 `
 
 func runConfigCommand(ctx context.Context, o Options, stdout, stderr io.Writer) error {
@@ -30,6 +33,8 @@ func runConfigCommand(ctx context.Context, o Options, stdout, stderr io.Writer) 
 		return err
 	}
 	switch o.Subcommand {
+	case "explain":
+		return runConfigExplain(ctx, o, stdout)
 	case "example":
 		_, err := io.WriteString(stdout, config.Example)
 		return err

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/sean2077/feishu-bot/internal/core"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -131,6 +132,19 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 			return nil, err
 		}
 		view["sessionName"] = p.Name
+		if p.Name == "" {
+			view["sessionName"] = p.NativeTitle
+		}
+		if stringArg(view, "sessionName") == "" {
+			view["sessionName"] = cut(saved.ID, 8)
+		}
+		view["manualName"] = p.Name
+		view["nativeTitle"] = p.NativeTitle
+		title, err := g.store.TitleSync(r.Key, saved.ID)
+		if err != nil {
+			return nil, err
+		}
+		view["titleSync"] = core.Args{"desired": title.Desired, "revision": title.Revision, "confirmed": title.Confirmed, "state": title.State, "updatedAt": title.Updated}
 		view["profile"] = profileLabel(p.Profile)
 		if p.RequestedProfile != nil {
 			view["requestedProfile"] = profileLabel(*p.RequestedProfile)
@@ -145,7 +159,7 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 	if !contains([]string{"/help", "/status", "/sessions", "/outputs", "/usage"}, cmd) {
 		return "", false, nil
 	}
-	if arg != "" && (arg != "--json" || cmd == "/help") {
+	if cmd != "/sessions" && arg != "" && (arg != "--json" || cmd == "/help") {
 		usage := "用法：" + cmd
 		if cmd != "/help" {
 			usage += " [--json]"
@@ -154,14 +168,14 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 	}
 	manage := canManage(r, actor)
 	if cmd == "/help" {
-		text := "**日常对话**\n群里请明确 @ 机器人；私聊直接发送。忙时普通消息仍交给原生会话处理。\n/btw 正文、/ps 正文：仅补充当前前台任务，不新建任务，不代替审批回答；接收确认不代表模型已读取。\n\n**查看与回答**\n/status 当前工作、待回答事项及交付情况\n/sessions 本聊天历史会话\n/outputs 尚未完整送达的回复和文件\n/usage 当前选中会话的 SDK 用量，不估造费用或上下文占用\n/answer 请求ID 回答（多题也可使用卡片）\n\n**会话管理**\n/stop 停止运行，保留上下文；下条消息继续\n/compact [说明] 在轮次边界执行原生压缩\n/new 明确新建会话\n/resume 会话ID 选择本聊天历史\n/retry-output 输出ID 明确补发；结果未知时可能重复\n"
+		text := "**日常对话**\n群里请明确 @ 机器人；私聊直接发送。忙时普通消息仍交给原生会话处理。\n/btw 正文、/ps 正文：仅补充当前前台任务，不新建任务，不代替审批回答；接收确认不代表模型已读取。\n\n**查看与回答**\n/status 当前工作、待回答事项及交付情况\n/sessions [关键词] 搜索本聊天历史会话并翻页\n/inputs 每条待处理输入、等待原因和可申请取消范围\n/outputs 尚未完整送达的回复和文件\n/usage 当前选中会话的 SDK 用量，不估造费用或上下文占用\n/answer 请求ID 回答（多题也可使用卡片）\n\n**会话管理**\n/stop 停止运行，保留上下文；下条消息继续\n/compact [说明] 在轮次边界执行原生压缩\n/new 明确新建会话\n/resume 会话ID 选择本聊天历史\n/cancel-input 输入ID 取消经核实尚未交给原生进程的输入\n/discard-output 输出ID 放弃同轮依赖交付，原生任务继续、不标 Done\n/retry-output 输出ID 明确补发；结果未知时可能重复\n"
 		if manage {
 			text += "你可以管理本聊天会话。工具审批仍限项目维护者。"
 		} else {
 			text += "新建、恢复、停止、压缩和补发限项目维护者；私聊本人可管理自己的会话。"
 		}
 		text += "\n/model [配置名] 查看或选择管理员定义的模型 / effort 配置（/profile 同义）\n/rename 名称 命名当前会话；/rename - 清除\n/resume 名称或唯一短ID 恢复本聊天的会话\n/artifacts [文件ID] 查看或重新取得已完成的文件，不启动模型\n"
-		return text + "\n\n排障需要机器数据时，可用 /status --json、/sessions --json、/outputs --json、/usage --json、/model --json、/artifacts --json。", true, nil
+		return text + "\n\n排障需要机器数据时，可用 /status --json、/sessions --json、/outputs --json、/inputs --json、/usage --json、/model --json、/artifacts --json。", true, nil
 	}
 	if cmd == "/usage" {
 		text, e := g.usageReply(r, arg)
@@ -173,6 +187,19 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 			return "", true, e
 		}
 		if arg == "--json" {
+			ctx, cancel := context.WithTimeout(g.ctx, 2*time.Second)
+			stats, err := g.store.TableStats(ctx, r.Key)
+			cancel()
+			v["storage"] = stats
+			if err != nil {
+				v["storageError"] = "存储诊断未完成，请查看服务日志"
+				g.audit(r.Key, "storage_diagnostics_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+			}
+			if manage {
+				if d, ok := g.transport.(interface{ Diagnostics() core.Args }); ok {
+					v["transport"] = d.Diagnostics()
+				}
+			}
 			return jsonPretty(v), true, nil
 		}
 		phase := stringArg(v, "phase")
@@ -196,6 +223,13 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 		text := fmt.Sprintf("**本聊天状态**\n状态：%s\n项目：%s\n当前会话：`%s`\n原生会话：`%s`\n\n输入 · 排队：%v · 已交给原生：%v · 已消费待结果：%v · 结果未知：%v\n等待审批或回答：%v · 待交付输出：%v\n后台活动：%s · 监控保留：%s", phases[phase], r.ProjectID, session, native, inputs["queued"], inputs["sent"], inputs["consumed"], inputs["uncertain"], v["approvals"], v["pendingOutputs"], background, pin)
 		if name := stringArg(v, "sessionName"); name != "" {
 			text += "\n会话名称：" + name
+		}
+		if title := argsOf(v["titleSync"]); stringArg(title, "desired") != "" {
+			state := stringArg(title, "state")
+			labels := map[string]string{"pending": "等待同步", "confirmed": "已确认", "not_sent": "未发出", "rejected": "原生端拒绝", "unconfirmed": "结果未确认"}
+			if label := labels[state]; label != "" {
+				text += "\n原生标题同步：" + label
+			}
 		}
 		if profile := stringArg(v, "profile"); profile != "" {
 			text += "\n模型配置：" + profile
@@ -221,58 +255,13 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 		return text, true, nil
 	}
 	if cmd == "/sessions" {
-		list, e := g.store.ListSessions(r.Key)
-		if e != nil {
-			return "", true, e
+		page, err := g.sessionPage(r, arg)
+		if err != nil {
+			return err.Error(), true, nil
 		}
-		var total int
-		if e = g.store.DB.QueryRow("SELECT count(*) FROM sessions WHERE room=?", r.Key).Scan(&total); e != nil {
-			return "", true, e
-		}
-		current := ""
-		for _, s := range list {
-			if s.State == "open" {
-				current = s.ID
-			}
-		}
-		items := []core.Args{}
-		names := map[string]string{}
-		for _, s := range list {
-			p, err := g.store.Preferences(r.Key, s.ID)
-			if err != nil {
-				return "", true, err
-			}
-			names[s.ID] = p.Name
-			items = append(items, core.Args{"id": s.ID, "shortId": cut(s.ID, 8), "name": p.Name, "profile": profileLabel(p.Profile), "state": s.State, "createdAt": s.CreatedAt, "current": s.ID == current})
-		}
-		if arg == "--json" {
-			v := core.Args{"total": total, "recentLimit": 20, "sessions": items}
-			if current != "" {
-				v["current"] = current
-			}
-			return jsonPretty(v), true, nil
-		}
-		if len(items) == 0 {
-			return "尚无历史会话。发送消息后会自动建立；查看列表不会启动模型。", true, nil
-		}
-		lines := []string{"**本聊天会话**", fmt.Sprintf("共 %d 个；显示最近 20 个，并保留当前会话。", total), "时间为 UTC；会话 ID 可直接复制。"}
-		for _, s := range list {
-			label := "历史会话"
-			if s.ID == current {
-				label = "当前会话"
-			}
-			if name := names[s.ID]; name != "" {
-				label += " · " + name
-			}
-			lines = append(lines, "", label+" · "+timeLabel(s.CreatedAt)+"\n`"+s.ID+"`")
-		}
-		if manage {
-			lines = append(lines, "", "恢复：/resume 名称、完整 ID 或唯一短 ID（至少 6 位）。/rename 名称 可命名当前会话。仅下条消息恢复上下文，旧后台工作不会自动重启。")
-		} else {
-			lines = append(lines, "", "恢复历史会话请联系项目维护者。")
-		}
-		return strings.Join(lines, "\n"), true, nil
+		return sessionPageText(page, manage), true, nil
 	}
+
 	rows, e := g.store.DB.Query(`SELECT o.id,o.state,o.file_state,o.delivery_error,o.kind,o.retry_count,o.retry_after,
 		EXISTS(SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session AND f.kind='file' AND f.state NOT IN ('done','cancelled'))
 		FROM outbox o WHERE o.room=? AND o.state NOT IN ('done','cancelled') ORDER BY o.at DESC,o.id DESC LIMIT 20`, r.Key)
@@ -360,7 +349,7 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 			lines = append(lines, "交付遇到明确失败或已达到自动重试上限；请先检查服务诊断并处理原因，再明确补发。")
 		}
 		if manage && contains([]string{"pending", "uncertain", "blocked"}, stringArg(item, "state")) {
-			lines = append(lines, "明确补发：`/retry-output "+stringArg(item, "id")+"`")
+			lines = append(lines, "明确补发：`/retry-output "+stringArg(item, "id")+"`", "放弃同轮依赖交付（不停止模型、不标 Done）：`/discard-output "+stringArg(item, "id")+"`")
 		}
 	}
 	lines = append(lines, "", "补发只处理已保存的输出，不重新调用模型或执行原任务。")
@@ -368,7 +357,10 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 }
 func (g *Gateway) command(ctx context.Context, r core.Room, m core.Message) error {
 	cmd, arg := splitCommand(m.Text)
-	if cmd == "/sessions" && arg == "" {
+	if handled, err := g.operationCommand(ctx, r, m); handled {
+		return err
+	}
+	if cmd == "/sessions" {
 		return g.sessionsReply(ctx, r, m)
 	}
 	if cmd == "/model" || cmd == "/profile" {

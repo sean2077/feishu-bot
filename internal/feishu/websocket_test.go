@@ -111,6 +111,15 @@ func TestLongConnectionSeparatesCardCallbacksAndClosesAllLoops(t *testing.T) {
 		t.Fatal("Start did not exit after Close")
 	}
 	await(t, serverClosed, "server connection teardown")
+	stats := c.Diagnostics()["websocket"].(core.Args)
+	if stats["connected"] != false || stats["connections"] != uint64(1) || stats["framesReceived"].(uint64) < 2 || stats["acks"].(uint64) < 1 || stats["lastInboundAt"].(int64) == 0 {
+		t.Fatal("websocket lifecycle and acknowledgement diagnostics missing", stats)
+	}
+	for _, lane := range stats["lanes"].([]core.Args) {
+		if lane["depth"] != 0 || lane["capacity"] != 8 {
+			t.Fatal("old connection queues retained", lane)
+		}
+	}
 	c.lifeMu.Lock()
 	defer c.lifeMu.Unlock()
 	if c.conn != nil || c.started || c.cancel != nil {

@@ -63,8 +63,15 @@ func fakeClaude() {
 				if title == "" || request["source"] != "host" {
 					os.Exit(32)
 				}
+				if title == "fixture-reject-title" {
+					send(args{"type": "control_response", "response": args{"subtype": "error", "request_id": frame["request_id"], "error": "fixture rejection"}})
+					continue
+				}
 				if os.WriteFile(filepath.Join(os.Getenv("HOME"), "session-title"), []byte(title), 0600) != nil {
 					os.Exit(33)
+				}
+				if title == "fixture-missing-ack" {
+					continue
 				}
 				send(args{"type": "control_response", "response": args{"subtype": "success", "request_id": frame["request_id"]}})
 			default:

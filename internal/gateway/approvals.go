@@ -37,6 +37,26 @@ type approval struct {
 	detach                                 func() bool
 }
 
+func (p *approval) live() bool {
+	return p.ctx.Err() == nil && p.expires > time.Now().UnixMilli()
+}
+
+func (g *Gateway) bindApprovalCard(id string, p *approval, mid string, target core.Room) bool {
+	g.approvalMu.Lock()
+	defer g.approvalMu.Unlock()
+	// Context cancellation invalidates the request immediately, even if its
+	// asynchronous durable settlement has not removed the map entry yet.
+	if g.approvals[id] != p || !p.live() {
+		return false
+	}
+	owner := ""
+	if p.forwarded {
+		owner = target.DMUser
+	}
+	p.cards[mid] = owner
+	return true
+}
+
 func parseQuestions(raw any) ([]question, bool) {
 	b, e := json.Marshal(raw)
 	if e != nil {
@@ -113,7 +133,7 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 			target.DMUser = id
 			targets = append(targets, target)
 		}
-		g.notify(r, "这项操作需要项目维护者批准。已向维护者私聊发送操作摘要与参数；不会转发聊天历史。", nil)
+		g.notify(r, "这项操作需要项目维护者批准。审批卡正在发送，尚未确认送达；只发送操作摘要与参数，不会转发聊天历史。", nil)
 	}
 	g.task(func() {
 		success := false
@@ -135,16 +155,7 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 				lastErr = e
 				continue
 			}
-			g.approvalMu.Lock()
-			alive := g.approvals[id] == p
-			if alive {
-				owner := ""
-				if p.forwarded {
-					owner = target.DMUser
-				}
-				p.cards[mid] = owner
-			}
-			g.approvalMu.Unlock()
+			alive := g.bindApprovalCard(id, p, mid, target)
 			if !alive {
 				unlock := g.approvalUpdateLocks.lock(mid)
 				cosmetic, cancelCosmetic := withTimeout()
@@ -155,6 +166,11 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 				unlock()
 			}
 			if alive {
+				if !success && p.forwarded {
+					g.task(func() {
+						_ = g.notice(waitCtx, r, "审批卡已确认送达至少一位项目维护者的私聊；本次操作仍需维护者批准。", nil)
+					})
+				}
 				success = true
 				if !p.forwarded {
 					_ = g.store.RecordOutput(mid, r.Key, session)
@@ -162,16 +178,19 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 			}
 		}
 		if !success {
+			// Cancellation or expiry already settles the request through its own
+			// callback; only an actual delivery failure reports undelivered cards.
+			ended := waitCtx.Err() != nil
 			reason := "card delivery failed"
 			if errors.Is(lastErr, core.ErrCardTooLarge) {
 				reason = "approval card exceeds the platform size limit; ask fewer questions or shorter option text"
 			}
 			g.settleApproval(id, core.Args{"approved": false, "reason": reason}, "system")
+			if p.forwarded && !ended {
+				g.notify(r, "未能确认审批卡送达项目维护者。本次请求已结束，操作未获批准。", nil)
+			}
 		}
 	})
-	if ctx.Err() != nil {
-		g.settleApproval(id, core.Args{"approved": false, "reason": "cancelled"}, "system")
-	}
 	select {
 	case result := <-p.outcome:
 		if ctx.Err() != nil {
@@ -302,17 +321,38 @@ func (g *Gateway) settleApproval(id string, value core.Args, actor string) bool 
 		g.approvalMu.Unlock()
 		return false
 	}
+	accepted := true
+	// Recheck after acquiring the settlement lock: a callback can have validated
+	// the card just before its caller cancelled or the request expired.
+	if p.ctx.Err() != nil {
+		value = core.Args{"approved": false, "reason": "cancelled"}
+		actor, accepted = "system", false
+	} else if p.expires <= time.Now().UnixMilli() {
+		value = core.Args{"approved": false, "reason": "expired"}
+		actor, accepted = "system", false
+	}
 	state := "denied"
 	if boolArg(value, "approved") {
 		state = "approved"
 	} else if stringArg(value, "reason") == "expired" {
 		state = "expired"
 	}
-	res, e := g.store.DB.Exec("UPDATE requests SET state=?,actor=? WHERE id=? AND state='pending'", state, actor, id)
-	durable := e == nil
-	if durable {
-		n, rowErr := res.RowsAffected()
-		durable = rowErr == nil && n == 1
+	writeCtx := context.Background()
+	if state == "approved" {
+		var cancelWrite context.CancelFunc
+		writeCtx, cancelWrite = context.WithDeadline(p.ctx, time.UnixMilli(p.expires))
+		defer cancelWrite()
+	}
+	durable := g.persistApproval(writeCtx, id, state, actor)
+	fallback := ""
+	if !durable && state == "approved" && writeCtx.Err() != nil {
+		// The approval lost its window while waiting for storage. The native
+		// request must not wait again, so record the negative outcome after
+		// settlement instead of leaving the row pending until restart.
+		fallback = "expired"
+		if p.ctx.Err() != nil {
+			fallback = "denied"
+		}
 	}
 	if !durable {
 		// Only a committed approval can authorize execution. Abandon the
@@ -335,6 +375,9 @@ func (g *Gateway) settleApproval(id string, value core.Args, actor string) bool 
 	}
 	p.outcome <- value
 	g.approvalMu.Unlock()
+	if fallback != "" {
+		g.task(func() { _ = g.persistApproval(context.Background(), id, fallback, "system") })
+	}
 	g.audit(p.room.Key, "request_settled", core.Args{"id": id, "kind": p.kind, "state": state, "actor": actor})
 	for _, mid := range cards {
 		mid := mid
@@ -349,8 +392,25 @@ func (g *Gateway) settleApproval(id string, value core.Args, actor string) bool 
 			_ = providerVoid(g.ctx, func() error { return g.transport.Update(g.ctx, mid, DisplayCard(title, text)) })
 		})
 	}
-	return durable
+	return durable && accepted
 }
+
+func (g *Gateway) persistApproval(ctx context.Context, id, state, actor string) bool {
+	// A cancelled positive decision must not sit in the connection queue and
+	// later commit. The transaction also rolls back cancellation during UPDATE.
+	tx, err := g.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return false
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, "UPDATE requests SET state=?,actor=? WHERE id=? AND state='pending'", state, actor, id)
+	if err != nil {
+		return false
+	}
+	n, err := res.RowsAffected()
+	return err == nil && n == 1 && ctx.Err() == nil && tx.Commit() == nil
+}
+
 func (g *Gateway) cancelApprovals(session string) {
 	g.approvalMu.Lock()
 	var ids []string
@@ -439,7 +499,7 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 			return core.Args{}, nil
 		}
 	}
-	if p.expires <= time.Now().UnixMilli() {
+	if !p.live() {
 		g.approvalMu.Unlock()
 		return actionToast("请求已结束或过期"), nil
 	}
@@ -550,7 +610,7 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 func (g *Gateway) answer(r core.Room, actor, id, text string) string {
 	g.approvalMu.Lock()
 	p := g.approvals[id]
-	if p == nil || p.kind != "question" || p.room.Key != r.Key || p.expires <= time.Now().UnixMilli() {
+	if p == nil || p.kind != "question" || p.room.Key != r.Key || !p.live() {
 		g.approvalMu.Unlock()
 		return "问题不存在或已过期"
 	}

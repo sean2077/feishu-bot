@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/store"
 	"strings"
 )
 
@@ -144,8 +145,18 @@ func (g *Gateway) queueInput(d core.Delivery, now int64) error {
 				d.ImageBatch = &core.ImageBatch{ID: core.NewID(), Deadline: now + l.ImageBatchMS, Closed: len(d.Message.Resources) >= l.ImageBatchMaxImages, MaxImages: l.ImageBatchMaxImages, MaxBytes: l.ImageBatchBytes}
 			}
 		}
-		if _, e = tx.Exec("INSERT OR IGNORE INTO inbox(room,id,message,status,at) VALUES(?,?,?,'queued',?)", d.RoomKey, d.Message.ID, jsonText(d.Message), d.Message.Time); e != nil {
+		inserted, e := tx.Exec("INSERT OR IGNORE INTO inbox(room,id,message,status,at) VALUES(?,?,?,'queued',?)", d.RoomKey, d.Message.ID, jsonText(d.Message), d.Message.Time)
+		if e != nil {
 			return e
+		}
+		n, e := inserted.RowsAffected()
+		if e != nil {
+			return e
+		}
+		if n > 0 && !d.Message.SenderIsBot && d.Command == nil {
+			if e := store.RecordSessionActivity(tx, d.RoomKey, d.SessionID, now); e != nil {
+				return e
+			}
 		}
 		if e = saveQueuedTx(tx, d); e != nil {
 			return e

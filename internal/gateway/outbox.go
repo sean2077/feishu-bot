@@ -14,6 +14,7 @@ import (
 
 type sqlExec interface {
 	Exec(string, ...any) (sql.Result, error)
+	QueryRow(string, ...any) *sql.Row
 }
 type outgoing struct {
 	ID, Kind, Room, Session, Text, Target, ReplyTo, ThreadID, State, FileName, FilePath, FileTarget, FileState string
@@ -37,6 +38,12 @@ func nullString(s string) any {
 	return s
 }
 func (g *Gateway) saveOutput(db sqlExec, r core.Room, session, text string, success bool, target, replyTo, thread string, card core.Args, who []core.Origin, filename, path, kind, state string) (string, error) {
+	return g.saveOutputWith(db, r, session, text, success, target, replyTo, thread, card, who, filename, path, kind, state, true)
+}
+
+// saveOutputWith lets a detached background result keep its origin for
+// ownership without inheriting a discard recorded for that earlier turn.
+func (g *Gateway) saveOutputWith(db sqlExec, r core.Room, session, text string, success bool, target, replyTo, thread string, card core.Args, who []core.Origin, filename, path, kind, state string, inheritDiscard bool) (string, error) {
 	text = core.Redact(text, g.secrets)
 	if card != nil {
 		card = g.redactArgs(card)
@@ -56,7 +63,10 @@ func (g *Gateway) saveOutput(db sqlExec, r core.Room, session, text string, succ
 	if card != nil {
 		cardJSON = jsonText(card)
 	}
-	_, e := db.Exec(`INSERT INTO outbox(id,room,session,text,target,reply_to,thread_id,success,state,at,card,origins,file_name,file_path,file_state,kind) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, r.Key, session, text, nullString(target), nullString(replyTo), nullString(thread), success, state, time.Now().UnixMilli(), cardJSON, jsonText(who), nullString(filename), nullString(path), fileState, kind)
+	_, e := db.Exec(`INSERT INTO outbox(id,room,session,text,target,reply_to,thread_id,success,state,at,card,origins,file_name,file_path,file_state,kind) VALUES(?,?,?,?,?,?,?,?,CASE WHEN ? AND ? IN ('reply','file') AND EXISTS(SELECT 1 FROM output_discarded_origins d WHERE d.room=? AND d.session=? AND d.origin IN (SELECT json_extract(value,'$.id') FROM json_each(?))) THEN 'cancelled' ELSE ? END,?,?,?,?,?,?,?)`, id, r.Key, session, text, nullString(target), nullString(replyTo), nullString(thread), success, inheritDiscard, kind, r.Key, session, jsonText(who), state, time.Now().UnixMilli(), cardJSON, jsonText(who), nullString(filename), nullString(path), fileState, kind)
+	if e == nil && inheritDiscard {
+		e = g.inheritedOutputDiscard(db, id)
+	}
 	return id, e
 }
 func (g *Gateway) output(id string) (outgoing, error) {
@@ -454,7 +464,7 @@ func (g *Gateway) pendingOutputNotice(ctx context.Context, o outgoing, r core.Ro
 			return errCancelledDelivery
 		}
 		card := g.outputCard(latest, r, true)
-		card["header"] = core.Args{"template": "orange", "title": core.Args{"tag": "plain_text", "content": "回复尚未完整送达"}}
+		card = setReplyCardStatus(card, "回复尚未完整送达", "orange")
 		body := argsOf(card["body"])
 		elements, _ := body["elements"].([]any)
 		body["elements"] = append(elements, core.Args{"tag": "markdown", "content": text + "\n/retry-output " + o.ID})
@@ -502,39 +512,66 @@ func (g *Gateway) updateOutputCard(ctx context.Context, id string, room core.Roo
 		return g.bindQuickControls(target, card)
 	})
 }
+
+const retryCandidateLimit = 128
+const retryCandidateQuery = `SELECT o.id,o.at,o.retry_after,o.file_state,o.kind,o.target IS NOT NULL FROM outbox o WHERE o.room=? AND o.state='pending'`
+
 func (g *Gateway) retryable(room string) []string {
-	const query = `SELECT o.id,o.at FROM outbox o WHERE o.room=? AND o.state='pending' AND o.retry_after<=? AND o.file_state!='uncertain' AND (o.target IS NOT NULL OR o.kind IN ('reply','recovery') OR (o.kind IN ('file','artifact') AND o.file_state IN ('pending','done')))`
 	g.outMu.Lock()
 	cur, ok := g.outCursor[room]
 	g.outMu.Unlock()
-	read := func(after bool) ([]string, outputCursor) {
-		q := query
-		args := []any{room, time.Now().UnixMilli()}
+	ctx, cancel := context.WithTimeout(g.ctx, 500*time.Millisecond)
+	defer cancel()
+	now := time.Now().UnixMilli()
+	read := func(after bool) ([]string, outputCursor, int, error) {
+		q := retryCandidateQuery
+		args := []any{room}
 		if after {
-			q += ` AND (o.at>? OR (o.at=? AND o.id>?))`
-			args = append(args, cur.At, cur.At, cur.ID)
+			q += ` AND (o.at,o.id)>(?,?)`
+			args = append(args, cur.At, cur.ID)
 		}
-		q += ` ORDER BY o.at,o.id LIMIT 10`
-		rows, e := g.store.DB.Query(q, args...)
+		q += ` ORDER BY o.at,o.id LIMIT ?`
+		args = append(args, retryCandidateLimit)
+		rows, e := g.store.DB.QueryContext(ctx, q, args...)
 		if e != nil {
-			return nil, outputCursor{}
+			return nil, outputCursor{}, 0, e
 		}
 		defer rows.Close()
 		var ids []string
 		var last outputCursor
+		scanned := 0
 		for rows.Next() {
-			if rows.Scan(&last.ID, &last.At) == nil {
-				ids = append(ids, last.ID)
+			var retryAfter int64
+			var fileState, kind string
+			var hasTarget bool
+			if e = rows.Scan(&last.ID, &last.At, &retryAfter, &fileState, &kind, &hasTarget); e != nil {
+				return nil, outputCursor{}, 0, e
+			}
+			scanned++
+			if retryAfter > now || fileState == "uncertain" || !(hasTarget || kind == "reply" || kind == "recovery" || (kind == "file" || kind == "artifact") && (fileState == "pending" || fileState == "done")) {
+				continue
+			}
+			ids = append(ids, last.ID)
+			if len(ids) == 10 {
+				break
 			}
 		}
-		return ids, last
+		return ids, last, scanned, rows.Err()
 	}
-	ids, last := read(ok)
-	if len(ids) == 0 && ok {
-		ids, last = read(false)
+	ids, last, scanned, err := read(ok)
+	if err == nil && scanned == 0 && ok {
+		ids, last, scanned, err = read(false)
+	}
+	if err != nil {
+		if g.logger != nil {
+			g.logger("output_retry_scan_failed", core.Args{"room": room, "error": core.Redact(err.Error(), g.secrets)})
+		}
+		return nil
 	}
 	g.outMu.Lock()
-	if len(ids) > 0 {
+	if scanned > 0 {
+		// Progress follows candidates, including those not due or waiting on
+		// attachments, so a protected prefix cannot starve later outputs.
 		g.outCursor[room] = last
 	} else {
 		delete(g.outCursor, room)
@@ -689,7 +726,7 @@ func (g *Gateway) outputCard(o outgoing, room core.Room, filesPending bool) core
 		card = g.withOutputControls(card, room, o.Session, o.ID, o.RetryCount)
 	}
 	if filesPending {
-		card["header"] = core.Args{"template": "orange", "title": core.Args{"tag": "plain_text", "content": "模型已完成 · 文件待送达"}}
+		card = setReplyCardStatus(card, "模型已完成 · 文件待送达", "orange")
 		body := argsOf(card["body"])
 		elements, _ := body["elements"].([]any)
 		body["elements"] = append(elements, core.Args{"tag": "markdown", "content": "文件确认送达后才标记完成。可用 /outputs 查看状态。"})

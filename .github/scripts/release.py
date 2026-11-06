@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import ctypes
 import datetime as dt
 import gzip
 import hashlib
@@ -13,6 +15,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import stat
 import struct
 import subprocess
@@ -22,6 +25,8 @@ import tempfile
 import uuid
 import xml.sax.saxutils
 import zipfile
+
+import artifact_processes
 
 
 TARGETS = (
@@ -848,7 +853,167 @@ def package_msi(meta: dict, binary: Path, arch: str, output: Path, repo: Path, w
     return path
 
 
-def smoke_installer(meta: dict, installer: Path, os_name: str, arch: str) -> None:
+def artifact_journey(meta: dict, binary: Path, buildinfo: Path, repo: Path) -> None:
+    """Run the native/full/upgrade Go fixtures against these exact release bytes."""
+    info = parse_json(buildinfo.read_bytes(), "installed BUILDINFO.json")
+    with binary.open("rb") as source:
+        digest = hashlib.file_digest(source, "sha256").hexdigest()
+    if (info.get("version"), info.get("commit"), info.get("binary_sha256")) != (meta["version"], meta["commit"], digest):
+        raise ReleaseError("journey binary identity differs from the validated release metadata")
+    if not os.environ.get("CLAUDE_NATIVE_PATH"):
+        raise ReleaseError("release journey requires the pinned native CLI fixture")
+    for field in ("PATH", "VERSION", "COMMIT", "SHA256", "BUILDINFO"):
+        if not os.environ.get("FEISHU_PREVIOUS_ARTIFACT_" + field):
+            raise ReleaseError("release journey requires the distinct previous binary upgrade fixture")
+    env = {**os.environ, "FEISHU_ARTIFACT_PATH": str(binary.resolve()),
+           "FEISHU_ARTIFACT_VERSION": meta["version"], "FEISHU_ARTIFACT_COMMIT": meta["commit"],
+           "FEISHU_ARTIFACT_SHA256": digest, "FEISHU_ARTIFACT_BUILDINFO": str(buildinfo.resolve())}
+    result = artifact_processes.run_command(["go", "test", "-race", "-v", "-count=1", "-timeout", "420s",
+                                            "./internal/cli", "-run", "^TestBuiltArtifact"],
+                                           cwd=repo, env=env, timeout=450, cleanup_timeout=35)
+    if result == artifact_processes.TIMEOUT:
+        raise ReleaseError("release artifact journey exceeded 450s; owned-process cleanup completed")
+    if result == artifact_processes.SUPERVISION_FAILED:
+        raise ReleaseError("release artifact process supervision or cleanup could not be confirmed")
+    if result:
+        raise ReleaseError(f"actual release artifact failed its native/TLS/service upgrade journey (exit {result})")
+
+
+@contextlib.contextmanager
+def installer_workspace():
+    root = Path(tempfile.mkdtemp(prefix="feishu-bot-installer-smoke-", dir=os.environ.get("RUNNER_TEMP")))
+    try:
+        yield root
+    except BaseException:
+        print(f"installer diagnostics retained at {root}", file=sys.stderr)
+        raise
+    else:
+        shutil.rmtree(root)
+
+
+def installer_operation(args: list[str], *, cwd: Path, timeout: int, accepted=(0,)) -> None:
+    log = cwd / "operations.log"
+    try:
+        result = subprocess.run(args, cwd=cwd, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        with log.open("a", encoding="utf-8") as output:
+            output.write(f"{Path(args[0]).name} exceeded {timeout}s\n")
+            for partial in (exc.stdout, exc.stderr):
+                if partial:
+                    output.write(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes) else partial)
+        raise ReleaseError(f"installer command exceeded {timeout}s; see {log}") from exc
+    with log.open("a", encoding="utf-8") as output:
+        output.write(f"{args!r}: exit {result.returncode}\n{result.stdout}\n{result.stderr}\n")
+    if result.returncode not in accepted:
+        raise ReleaseError(f"installer command failed ({result.returncode}); see {log}")
+
+
+def deb_installed_identity(root: Path) -> tuple[str, str, str] | None:
+    # Enumerate the status database successfully; an arbitrary query failure
+    # must never be mistaken for an absent package. No localized error parsing.
+    rows = run(["dpkg-query", "--show", "--showformat=${Package}\t${Version}\t${Architecture}\t${db:Status-Status}\n"], cwd=root)
+    if len(rows) > 4 << 20:
+        raise ReleaseError("dpkg status database response exceeds fixture limit")
+    matches = [row.split("\t") for row in rows.splitlines() if row.split("\t", 1)[0] == "feishu-bot"]
+    if not matches:
+        return None
+    if len(matches) != 1 or len(matches[0]) != 4 or not all(matches[0]):
+        raise ReleaseError("installed Debian package identity is ambiguous")
+    return tuple(matches[0][1:])
+
+
+def msi_api():
+    if os.name != "nt":
+        raise ReleaseError("Windows Installer identity queries require Windows")
+    api = ctypes.WinDLL("msi.dll")
+    uint, text, pointer = ctypes.c_uint, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_uint)
+    signatures = {
+        "MsiOpenDatabaseW": [text, text, pointer],
+        "MsiDatabaseOpenViewW": [uint, text, pointer],
+        "MsiViewExecute": [uint, uint],
+        "MsiViewFetch": [uint, pointer],
+        "MsiRecordGetStringW": [uint, uint, text, pointer],
+        "MsiCloseHandle": [uint],
+        "MsiEnumRelatedProductsW": [text, uint, uint, text],
+        "MsiQueryProductStateW": [text],
+        "MsiGetProductInfoW": [text, text, text, pointer],
+    }
+    for name, args in signatures.items():
+        function = getattr(api, name)
+        function.argtypes = args
+        function.restype = ctypes.c_int if name == "MsiQueryProductStateW" else uint
+    return api
+
+
+def msi_package_identity(installer: Path) -> dict[str, str]:
+    api = msi_api()
+    database = ctypes.c_uint()
+    if api.MsiOpenDatabaseW(str(installer), None, ctypes.byref(database)) != 0:  # MSIDBOPEN_READONLY
+        raise ReleaseError("cannot read MSI package identity")
+    try:
+        identity = {}
+        for key in ("ProductCode", "ProductVersion", "UpgradeCode"):
+            view, record = ctypes.c_uint(), ctypes.c_uint()
+            try:
+                query = f"SELECT `Value` FROM `Property` WHERE `Property` = '{key}'"
+                if api.MsiDatabaseOpenViewW(database, query, ctypes.byref(view)) != 0 or api.MsiViewExecute(view, 0) != 0:
+                    raise ReleaseError("cannot query MSI package identity")
+                if api.MsiViewFetch(view, ctypes.byref(record)) != 0:
+                    raise ReleaseError(f"MSI package lacks {key}")
+                size, value = ctypes.c_uint(256), ctypes.create_unicode_buffer(256)
+                if api.MsiRecordGetStringW(record, 1, value, ctypes.byref(size)) != 0:
+                    raise ReleaseError(f"MSI package has an invalid {key}")
+                identity[key] = value.value
+            finally:
+                if record.value:
+                    api.MsiCloseHandle(record)
+                if view.value:
+                    api.MsiCloseHandle(view)
+        return identity
+    finally:
+        api.MsiCloseHandle(database)
+
+
+def msi_related_product(upgrade_code: str) -> str | None:
+    product = ctypes.create_unicode_buffer(39)
+    code = msi_api().MsiEnumRelatedProductsW(upgrade_code, 0, 0, product)
+    if code == 259:  # ERROR_NO_MORE_ITEMS
+        return None
+    if code != 0:
+        raise ReleaseError(f"cannot confirm existing MSI products ({code})")
+    return product.value
+
+
+def msi_installed_version(product_code: str) -> str | None:
+    api = msi_api()
+    state = api.MsiQueryProductStateW(product_code)
+    if state == -1:  # INSTALLSTATE_UNKNOWN
+        return None
+    if state not in (1, 5):  # advertised or installed for this user
+        raise ReleaseError(f"MSI product ownership could not be confirmed (state {state})")
+    size, value = ctypes.c_uint(256), ctypes.create_unicode_buffer(256)
+    code = api.MsiGetProductInfoW(product_code, "VersionString", value, ctypes.byref(size))
+    if code != 0:
+        raise ReleaseError(f"cannot confirm installed MSI version ({code})")
+    return value.value
+
+
+@contextlib.contextmanager
+def installer_cleanup(clean):
+    try:
+        yield
+    except BaseException as original:
+        try:
+            clean()
+        except Exception as recovery:
+            raise ReleaseError(f"installer fixture failed: {original}; cleanup failed: {recovery}") from original
+        raise
+    else:
+        clean()
+
+
+def smoke_installer(meta: dict, installer: Path, os_name: str, arch: str, *, journey: bool = False) -> None:
     validate_metadata(meta)
     if installer.name != installer_name(meta, os_name, arch) or installer.is_symlink() or not installer.is_file():
         raise ReleaseError("installer name, target or file type is incorrect")
@@ -858,14 +1023,31 @@ def smoke_installer(meta: dict, installer: Path, os_name: str, arch: str) -> Non
     if (host_os, host_arch) != (os_name, arch):
         raise ReleaseError(f"installer smoke requires a native {os_name}/{arch} runner; found {host_os}/{host_arch}")
     kind = INSTALLERS.get((os_name, arch))
-    with tempfile.TemporaryDirectory(prefix="feishu-bot-installer-smoke-") as directory:
-        root = Path(directory)
+    with installer_workspace() as root:
         if kind == "deb":
+            payload = read_deb(installer, meta, arch)
             elevate = [] if os.geteuid() == 0 else ["sudo", "-n"]
-            installed = False
-            try:
-                run([*elevate, "dpkg", "-i", str(installer)], cwd=root, timeout=120)
-                installed = True
+            destinations = [Path("/") / name for name in payload]
+            if deb_installed_identity(root) is not None or any(path.exists() or path.is_symlink() for path in destinations):
+                raise ReleaseError("installer smoke refuses an existing Debian package or payload")
+
+            def clean_deb():
+                identity = deb_installed_identity(root)
+                if identity is not None:
+                    if identity[:2] != (meta["version"], arch):
+                        raise ReleaseError("Debian cleanup refused a different installed version or architecture")
+                    if identity[2] not in ("not-installed", "config-files"):
+                        installer_operation([*elevate, "dpkg", "-r", "feishu-bot"], cwd=root, timeout=120)
+                remaining = deb_installed_identity(root)
+                if (remaining is not None and (remaining[:2] != (meta["version"], arch)
+                                              or remaining[2] not in ("not-installed", "config-files"))
+                        or any(path.exists() or path.is_symlink() for path in destinations)):
+                    raise ReleaseError("Debian fixture cleanup could not be confirmed")
+
+            with installer_cleanup(clean_deb):
+                installer_operation([*elevate, "dpkg", "-i", str(installer)], cwd=root, timeout=120)
+                if deb_installed_identity(root) != (meta["version"], arch, "installed"):
+                    raise ReleaseError("Debian install identity differs from release metadata")
                 binary = "/usr/bin/feishu-bot"
                 version = run([binary, "--version"], cwd=root).strip()
                 if version != f"feishu-bot {meta['version']}":
@@ -876,21 +1058,34 @@ def smoke_installer(meta: dict, installer: Path, os_name: str, arch: str) -> Non
                 run([binary, "init", "--config", str(config)], cwd=root)
                 if not config.is_file():
                     raise ReleaseError("installed binary did not create a configuration")
-            finally:
-                if installed:
-                    try:
-                        run([*elevate, "dpkg", "-r", "feishu-bot"], cwd=root, timeout=120)
-                    except ReleaseError:
-                        pass
+                if journey:
+                    artifact_journey(meta, Path(binary), Path("/usr/share/doc/feishu-bot/BUILDINFO.json"), Path.cwd())
         elif kind == "msi":
+            expected = {"ProductCode": _wix_guid(meta["tag"], "product"), "ProductVersion": meta["version"],
+                        "UpgradeCode": _wix_guid("upgrade")}
+            if msi_package_identity(installer) != expected:
+                raise ReleaseError("MSI package identity differs from release metadata")
             install_dir = Path(os.environ["LOCALAPPDATA"]) / "feishu-bot"
-            log = root / "msiexec.log"
-            result = subprocess.run(
-                ["msiexec", "/i", str(installer), "/qn", "/norestart", "/L*v", str(log)],
-                capture_output=True, text=True, encoding="utf-8", timeout=180)
-            if result.returncode not in (0, 3010):
-                raise ReleaseError(f"msiexec install failed ({result.returncode}); see {log}")
-            try:
+            product = expected["ProductCode"]
+            if (msi_related_product(expected["UpgradeCode"]) is not None or msi_installed_version(product) is not None
+                    or install_dir.exists() or install_dir.is_symlink()):
+                raise ReleaseError("installer smoke refuses an existing MSI product or installation directory")
+
+            def clean_msi():
+                version = msi_installed_version(product)
+                if version is not None:
+                    if version != meta["version"]:
+                        raise ReleaseError("MSI cleanup refused a different installed product version")
+                    installer_operation(["msiexec", "/x", product, "/qn", "/norestart", "/L*v", str(root / "uninstall.log")],
+                                        cwd=root, timeout=180, accepted=(0, 3010))
+                if msi_installed_version(product) is not None or install_dir.exists() or install_dir.is_symlink():
+                    raise ReleaseError("MSI fixture cleanup could not be confirmed")
+
+            with installer_cleanup(clean_msi):
+                installer_operation(["msiexec", "/i", str(installer), "/qn", "/norestart", "/L*v", str(root / "install.log")],
+                                    cwd=root, timeout=180, accepted=(0, 3010))
+                if msi_installed_version(product) != meta["version"]:
+                    raise ReleaseError("MSI install identity differs from release metadata")
                 binary = install_dir / "feishu-bot.exe"
                 if not binary.is_file():
                     raise ReleaseError(f"MSI did not install the binary at {binary}")
@@ -903,14 +1098,13 @@ def smoke_installer(meta: dict, installer: Path, os_name: str, arch: str) -> Non
                 run([str(binary), "init", "--config", str(config)], cwd=root)
                 if not config.is_file():
                     raise ReleaseError("installed binary did not create a configuration")
-            finally:
-                subprocess.run(["msiexec", "/x", str(installer), "/qn", "/norestart"],
-                               capture_output=True, text=True, encoding="utf-8", timeout=180)
+                if journey:
+                    artifact_journey(meta, binary, install_dir / "BUILDINFO.json", Path.cwd())
         else:
             raise ReleaseError(f"unsupported installer kind: {os_name}/{arch}")
 
 
-def smoke(meta: dict, archive: Path, os_name: str, arch: str) -> None:
+def smoke(meta: dict, archive: Path, os_name: str, arch: str, *, journey: bool = False) -> None:
     files = read_archive(archive, meta, os_name, arch)
     host_os = {"Linux": "linux", "Windows": "windows", "Darwin": "darwin"}.get(platform.system())
     host_arch = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(platform.machine().lower())
@@ -934,6 +1128,8 @@ def smoke(meta: dict, archive: Path, os_name: str, arch: str) -> None:
         actual = parse_json(config_path.read_bytes(), "initialized configuration")
         if actual != parse_json(files["config.example.json"], "configuration example"):
             raise ReleaseError("packaged binary init differs from the bundled configuration example")
+        if journey:
+            artifact_journey(meta, Path(binary), root / "BUILDINFO.json", Path.cwd())
 
 
 def verify(meta: dict, artifacts: Path) -> dict:
@@ -986,6 +1182,7 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--output", type=Path, required=True)
         elif name == "smoke":
             command.add_argument("--archive", type=Path, required=True)
+            command.add_argument("--journey", action="store_true", help="run exact-artifact native/TLS/upgrade journeys")
         else:
             command.add_argument("--artifacts", type=Path, required=True)
     installer = commands.add_parser("package-installer")
@@ -1000,6 +1197,7 @@ def main(argv: list[str] | None = None) -> int:
     installer_smoke.add_argument("--installer", type=Path, required=True)
     installer_smoke.add_argument("--os", dest="os_name", required=True)
     installer_smoke.add_argument("--arch", required=True)
+    installer_smoke.add_argument("--journey", action="store_true", help="run installed-artifact native/TLS/upgrade journeys")
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
@@ -1009,7 +1207,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "package":
                 print(package(meta, args.binary, args.os_name, args.arch, args.output, Path.cwd()))
             elif args.command == "smoke":
-                smoke(meta, args.archive, args.os_name, args.arch)
+                smoke(meta, args.archive, args.os_name, args.arch, journey=args.journey)
             elif args.command == "package-installer":
                 kind = INSTALLERS.get((args.os_name, args.arch))
                 if kind == "deb":
@@ -1021,7 +1219,7 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     raise ReleaseError(f"unsupported installer target: {args.os_name}/{args.arch}")
             elif args.command == "smoke-installer":
-                smoke_installer(meta, args.installer, args.os_name, args.arch)
+                smoke_installer(meta, args.installer, args.os_name, args.arch, journey=args.journey)
             else:
                 verify(meta, args.artifacts)
         return 0

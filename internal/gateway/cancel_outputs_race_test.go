@@ -49,7 +49,7 @@ func TestCancelStatusWaitsForActualPriorCardUpdate(t *testing.T) {
 				if message != target {
 					t.Errorf("update changed card identity: %s", message)
 				}
-				color, _ := argsOf(value["header"])["template"].(string)
+				color := visibleReplyStatusColor(value)
 				if color == "grey" {
 					greyWrites.Add(1)
 					visibleMu.Lock()
@@ -158,7 +158,7 @@ func TestCancelledKnownTargetIsRecheckedAfterWaitingForCardLock(t *testing.T) {
 		if message != target {
 			t.Errorf("wrong card target: %s", message)
 		}
-		if argsOf(card["header"])["template"] == "grey" {
+		if visibleReplyStatusColor(card) == "grey" {
 			greyWrites.Add(1)
 		} else {
 			oldWrites.Add(1)

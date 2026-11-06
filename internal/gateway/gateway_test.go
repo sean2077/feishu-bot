@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -498,36 +499,44 @@ func TestStopCancelsSlowDownloadWithoutWaitingForProvider(t *testing.T) {
 }
 func TestUnknownCardCreateRequiresExplicitRetryAndRoomOwnership(t *testing.T) {
 	f := newFixture(t, nil)
+	ctx := f.deliveryScenarioContext()
+	done := f.doneReceiptEvent("one")
 	f.tr.cardHook = func(context.Context, core.Room, core.Args) (string, error) {
 		return "", errors.New("lost create response")
 	}
 	f.send(f.message("one", "first", "member"))
-	w := f.worker()
-	d := f.delivery(w)
+	w := awaitFixtureEvent(f, ctx, "worker factory and startup events", f.started)
+	d := awaitFixtureEvent(f, ctx, "input delivered to worker", w.sent)
 	f.finish(w, d, "durable answer")
 	var id, state string
-	eventually(t, func() bool {
-		_ = f.s.DB.QueryRow("SELECT id,state FROM outbox WHERE kind='reply'").Scan(&id, &state)
-		return state == "uncertain"
+	f.awaitDeliveryState(ctx, "unknown create persisted as uncertain", func(ctx context.Context) (bool, error) {
+		err := f.s.DB.QueryRowContext(ctx, "SELECT id,state FROM outbox WHERE kind='reply'").Scan(&id, &state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return state == "uncertain", err
 	})
 	before := f.tr.cardCount()
-	f.g.Sweep(context.Background(), time.Now().UnixMilli())
+	f.g.Sweep(ctx, time.Now().UnixMilli())
 	time.Sleep(30 * time.Millisecond)
 	if f.tr.cardCount() != before {
 		t.Fatal("uncertain create replayed automatically")
 	}
 	other, _ := RoomFor(f.c, "other", "")
-	if ok, e := f.g.deliverOutput(context.Background(), id, other, true); e != nil || ok {
+	if ok, e := f.g.deliverOutput(ctx, id, other, true); e != nil || ok {
 		t.Fatal("foreign room replayed output")
+	}
+	if f.tr.receiptDone("one") {
+		t.Fatal("uncertain output received Done before explicit retry")
 	}
 	f.tr.mu.Lock()
 	f.tr.cardHook = nil
 	f.tr.mu.Unlock()
-	ok, e := f.g.deliverOutput(context.Background(), id, f.room(), true)
+	ok, e := f.g.deliverOutput(ctx, id, f.room(), true)
 	if e != nil || !ok {
 		t.Fatalf("explicit retry: %t %v", ok, e)
 	}
-	eventually(t, func() bool { return f.tr.receiptDone("one") })
+	awaitFixtureEvent(f, ctx, "explicit retry Done receipt", done)
 }
 
 func TestNativeSessionTitleUsesFirstMessageAndRename(t *testing.T) {

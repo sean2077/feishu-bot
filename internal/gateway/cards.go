@@ -117,7 +117,7 @@ func replyStatus(title string, total int, final, success bool) (string, string) 
 
 func replyStatusRow(text, color string) core.Args {
 	return core.Args{
-		"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "medium",
+		"tag": "column_set", "element_id": "reply_status", "flex_mode": "none", "horizontal_spacing": "medium",
 		"columns": []any{
 			core.Args{"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "center", "elements": []any{
 				core.Args{"tag": "markdown", "content": "**飞书助手**"},
@@ -127,6 +127,56 @@ func replyStatusRow(text, color string) core.Args {
 			}},
 		},
 	}
+}
+
+// setReplyCardStatus updates the visible state on a private card copy. Older
+// saved cards may have a header, an unmarked compact row, or both; leaving either
+// old status visible could contradict a pending delivery or cancellation.
+func setReplyCardStatus(card core.Args, text, color string) core.Args {
+	body := argsOf(card["body"])
+	if body == nil {
+		body = core.Args{}
+	}
+	elements, _ := body["elements"].([]any)
+	row := replyStatusRow(cut(text, 40), color)
+	replaced := false
+	for i, value := range elements {
+		element := argsOf(value)
+		if stringArg(element, "element_id") == "reply_status" || (i == 0 && legacyReplyStatusRow(element)) {
+			elements[i] = row
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		elements = append([]any{row}, elements...)
+	}
+	body["elements"] = elements
+	card["body"] = body
+	delete(card, "header")
+	return card
+}
+
+// The first compact-card release had no element_id. Recognize its exact wire
+// shape, including the assistant label and layout, rather than replacing an
+// arbitrary custom column_set or a row that merely contains status-like text.
+func legacyReplyStatusRow(row core.Args) bool {
+	columns, _ := row["columns"].([]any)
+	if len(columns) != 2 {
+		return false
+	}
+	right, _ := argsOf(columns[1])["elements"].([]any)
+	if len(right) != 1 {
+		return false
+	}
+	text := argsOf(argsOf(right[0])["text"])
+	label := stringArg(text, "content")
+	if !strings.HasPrefix(label, "● ") {
+		return false
+	}
+	expected := replyStatusRow(strings.TrimPrefix(label, "● "), stringArg(text, "text_color"))
+	delete(expected, "element_id")
+	return jsonText(row) == jsonText(expected)
 }
 
 // The answer is the only large variable field. Bound metadata separately so

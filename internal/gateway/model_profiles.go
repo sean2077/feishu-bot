@@ -239,11 +239,10 @@ func (g *Gateway) renameCommand(r core.Room, m core.Message, name string) error 
 		g.notify(r, err.Error(), &m)
 		return nil
 	}
-	effective := strings.TrimSpace(name)
-	if effective == "-" {
-		effective = ""
+	g.notify(r, "会话名称变更已保存，原生标题待同步；未运行的会话将在下次启动时同步。用 /sessions 查看；/resume 支持本聊天的名称或唯一短 ID。", &m)
+	if err := g.renameNativeSession(r, id, m); err != nil {
+		g.audit(r.Key, "session_title_read_failed", core.Args{"error": err.Error()})
+		g.notify(r, "会话名称变更已保存，但未能安排原生标题同步。当前任务继续运行。", &m)
 	}
-	g.renameNativeSession(r, id, effective)
-	g.notify(r, "会话名称已更新。用 /sessions 查看；/resume 支持本聊天的名称或唯一短 ID。", &m)
 	return nil
 }

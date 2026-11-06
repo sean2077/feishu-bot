@@ -19,7 +19,10 @@ CREATE TABLE IF NOT EXISTS card_controls(message TEXT PRIMARY KEY, room TEXT NOT
 CREATE INDEX IF NOT EXISTS card_control_expiry ON card_controls(expires);
 CREATE TABLE IF NOT EXISTS card_control_uses(message TEXT NOT NULL REFERENCES card_controls(message) ON DELETE CASCADE, revision TEXT NOT NULL, action TEXT NOT NULL, PRIMARY KEY(message,revision,action));
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	return initializeTitleSync(tx)
 }
 
 type SessionPreferences struct {
@@ -96,6 +99,10 @@ func (s *Store) RenameSession(room, session, name string) error {
 			}
 		}
 		_, err := tx.Exec(`INSERT INTO session_preferences(session,room,name,name_key) VALUES(?,?,?,?) ON CONFLICT(session) DO UPDATE SET name=excluded.name,name_key=excluded.name_key WHERE session_preferences.room=excluded.room`, session, room, name, key)
+		if err != nil {
+			return err
+		}
+		_, err = prepareTitleSync(tx, room, session, "", true)
 		return err
 	})
 }

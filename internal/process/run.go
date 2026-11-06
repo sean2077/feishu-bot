@@ -13,6 +13,22 @@ import (
 // Prepare/Attach directly. Construct cmd with exec.Command, since Run owns its
 // cancellation and confirms descendants even when the direct child exits first.
 func Run(ctx context.Context, cmd *exec.Cmd) error {
+	return runOwned(ctx, cmd, false, nil)
+}
+
+// RunInteractive retains process-tree ownership while lending the foreground
+// terminal to the child. It restores terminal ownership after confirmed cleanup.
+func RunInteractive(ctx context.Context, cmd *exec.Cmd) error {
+	return runOwned(ctx, cmd, true, nil)
+}
+
+// RunInteractiveWith calls beforeStart after every local terminal check and
+// immediately before the child starts. A beforeStart error prevents the start.
+func RunInteractiveWith(ctx context.Context, cmd *exec.Cmd, beforeStart func() error) error {
+	return runOwned(ctx, cmd, true, beforeStart)
+}
+
+func runOwned(ctx context.Context, cmd *exec.Cmd, interactive bool, beforeStart func() error) (result error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -20,6 +36,21 @@ func Run(ctx context.Context, cmd *exec.Cmd) error {
 		cmd.WaitDelay = time.Second
 	}
 	Prepare(cmd)
+	if interactive {
+		restore, err := prepareInteractive(cmd)
+		if err != nil {
+			return err
+		}
+		defer func() { result = errors.Join(result, restore()) }()
+	}
+	if cmd.Err != nil {
+		return cmd.Err
+	}
+	if beforeStart != nil {
+		if err := beforeStart(); err != nil {
+			return err
+		}
+	}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -40,7 +71,6 @@ func Run(ctx context.Context, cmd *exec.Cmd) error {
 	exited := make(chan struct{})
 	waited := make(chan error, 1)
 	go func() { err := cmd.Wait(); waited <- err; close(exited) }()
-	var result error
 	select {
 	case result = <-waited:
 	case <-ctx.Done():

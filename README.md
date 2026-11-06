@@ -71,14 +71,15 @@ Windows 使用 `.\bin\feishu-bot.exe daemon ...`，可省略 `--config`：缺省
 | `/help` | 查看命令、权限和恢复提示 |
 | `/status` | 查看当前会话、后台工作、输入与审批状态 |
 | `/btw <正文>`、`/ps <正文>` | 向正在执行的前台任务补充信息；两者同义，不是旁路问答 |
-| `/sessions`、`/resume <名称或ID>`、`/rename <名称>` | 查看、命名和恢复当前聊天历史；支持唯一短 ID |
+| `/sessions [关键词]`、`/resume <名称或ID>`、`/rename <名称>` | 搜索、翻页、命名和恢复本聊天历史；支持唯一短 ID |
 | `/model [配置名]`、`/profile [配置名]` | 查看或选择管理员定义的模型与 effort 配置，在安全轮次边界生效 |
 | `/artifacts [文件ID]` | 列出或取回本聊天已完成的文件，不启动模型 |
 | `/compact [保留重点]` | 使用 CC 原生压缩；忙时在当前工作轮次结束后执行，不新建会话 |
 | `/new` | 停止当前运行并新建会话，旧历史仍保留 |
 | `/stop` | 停止运行和待交付输入，保留当前会话供下次继续 |
 | `/answer <请求ID> <回答>` | 回答指定追问 |
-| `/outputs`、`/retry-output <ID>` | 查看未确认送达的回复；明确补发 |
+| `/inputs`、`/cancel-input <ID>` | 查看输入及等待原因；核实尚未提交后取消 |
+| `/outputs`、`/retry-output <ID>`、`/discard-output <ID>` | 查看、明确补发或放弃同轮依赖交付；放弃不停止模型、不标 Done |
 | `/usage`、`/usage --json` | 查看所选会话最近结果及累计观测的原生用量；缺失值未知，不估造费用 |
 
 **追问卡片：** 每次选择或未完整提交后，网关刷新同一卡片的按钮版本。回调独立检查请求、消息、会话和操作者归属；多选状态按操作者分别保存。客户端缓存旧按钮或刷新失败时，使用获准聊天内的 `/answer <请求ID> <回答>`，多题使用问题原文为键的 JSON。[处理方式与验证边界](docs/usage.md#追问卡片重复点击)
@@ -125,6 +126,8 @@ Windows 使用 `.\bin\feishu-bot.exe daemon ...`，可省略 `--config`：缺省
 默认使用原生 `acceptEdits`，常规文件编辑不逐次询问；需要更多确认时可使用 `default`。预授权工具由 `allowedTools` 配置，不默认开放任意 shell。[权限与信任范围](SECURITY.md)
 
 Jenkins、GitLab、飞书文档和多维表格只是[可选操作示例](docs/project-actions.md)，不是运行依赖，也不代表任何特定部署环境。
+
+本地排查授权可用 `feishu-bot config explain --chat <聊天ID> --user <用户ID> --mentioned --json`，只读取配置并复用实际路由规则。需要在终端继续现有会话时，先停止服务，再用 `feishu-bot session run --session <完整网关会话ID>`；退出后重启服务。该交接独占服务锁，保留原生身份，详见[部署说明](docs/deployment.md#本地终端交接)。
 
 ## 运行边界与验证
 

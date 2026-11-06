@@ -47,6 +47,10 @@ type render struct {
 	retryAt                                                  time.Time
 	blocked, urgent                                          bool
 	done                                                     chan struct{}
+
+	// detached marks a background result delivered after its originating
+	// turn ended; it does not inherit that turn's delivery discard.
+	detached bool
 }
 
 func newRender(g *Gateway, s *slot, anchor *core.Delivery) *render {
@@ -290,7 +294,9 @@ func (r *render) flush() {
 			r.messageID = target
 			_ = r.g.store.RecordOutput(target, r.room.Key, r.session)
 			if r.finalID != "" {
-				_, _ = r.g.store.DB.Exec("UPDATE outbox SET target=? WHERE id=? AND state='preparing'", target, r.finalID)
+				if e := r.g.acknowledgePreviewTarget(r.ctx, r.finalID, r.room, target); e != nil {
+					r.g.audit(r.room.Key, "preview_target_persistence_failed", core.Args{"output": r.finalID, "error": core.Redact(e.Error(), r.g.secrets)})
+				}
 			}
 			// Include updates received during a rejected initial create.
 			r.dirty = true
@@ -396,7 +402,7 @@ func (r *render) persist(text string, success bool, who []core.Origin, title str
 	id := ""
 	err := r.g.store.Transaction(context.Background(), func(tx *sql.Tx) error {
 		var e error
-		id, e = r.g.saveOutput(tx, r.room, r.session, answer, success, r.messageID, r.replyTo, r.threadID, card, who, name, path, "reply", state)
+		id, e = r.g.saveOutputWith(tx, r.room, r.session, answer, success, r.messageID, r.replyTo, r.threadID, card, who, name, path, "reply", state, !r.detached)
 		if e != nil {
 			return e
 		}
@@ -436,6 +442,9 @@ func (r *render) persist(text string, success bool, who []core.Origin, title str
 			}
 		}
 		if r.ctx.Err() == nil {
+			if discarded, err := r.g.closeDiscardedOutput(r.ctx, id, r.room, target); err != nil || discarded {
+				return
+			}
 			_, _ = r.g.deliverOutput(r.ctx, id, r.room, false)
 		}
 	}, nil

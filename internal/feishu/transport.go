@@ -229,6 +229,7 @@ func (c *Client) Download(ctx context.Context, messageID string, r core.Resource
 	if maxBytes <= 0 {
 		return errors.New("feishu: attachment byte limit must be positive")
 	}
+	maxBytes = min(maxBytes, 100<<20)
 	if c.config.Limits.AttachmentBytes > 0 && maxBytes > c.config.Limits.AttachmentBytes {
 		maxBytes = c.config.Limits.AttachmentBytes
 	}
@@ -240,6 +241,10 @@ func (c *Client) Download(ctx context.Context, messageID string, r core.Resource
 	if err != nil {
 		return err
 	}
+	// One deadline covers authorization/token reads, shared admission and all
+	// body chunks; a slow preflight cannot grant the transfer another minute.
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
 	// Reauthorize the source and exact attachment association before reading any
 	// bytes; Download does not trust an arbitrary key supplied by a tool call.
 	room, err := c.attachmentRoom(ctx, messageID)
@@ -271,52 +276,7 @@ func (c *Client) Download(ctx context.Context, messageID string, r core.Resource
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/open-apis/im/v1/messages/"+message+"/resources/"+key+"?type="+url.QueryEscape(r.Kind), nil)
-	if err != nil {
-		return safeFailure("download", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	httpClient := *c.http
-	httpClient.Timeout = 60 * time.Second
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return safeFailure("download", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return &APIError{Operation: "download", Status: resp.StatusCode}
-	}
-	if resp.ContentLength > maxBytes {
-		return errors.New("feishu: attachment exceeds byte limit")
-	}
-	out, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return errors.New("feishu: attachment destination is unavailable")
-	}
-	success := false
-	defer func() {
-		_ = out.Close()
-		if !success {
-			_ = os.Remove(destination)
-		}
-	}()
-	count, err := io.Copy(out, io.LimitReader(resp.Body, maxBytes+1))
-	if err != nil {
-		return safeFailure("download", err)
-	}
-	if count > maxBytes {
-		return errors.New("feishu: attachment exceeds byte limit")
-	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if err = out.Close(); err != nil {
-		return errors.New("feishu: attachment write failed")
-	}
-	success = true
-	return nil
+	return c.downloadResource(ctx, c.base+"/open-apis/im/v1/messages/"+message+"/resources/"+key+"?type="+url.QueryEscape(r.Kind), token, destination, maxBytes)
 }
 
 func (c *Client) File(ctx context.Context, room core.Room, path, name string) (messageID string, resultErr error) {

@@ -14,6 +14,7 @@ concurrency:
 
 env:
   PYTHONDONTWRITEBYTECODE: '1'
+  FEISHU_ARTIFACT_SYSTEM_TRUST: '1'
 
 jobs:
   prepare:
@@ -103,6 +104,8 @@ jobs:
     timeout-minutes: 30
     env:
       RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      FEISHU_ARTIFACT_MACOS_TRUST_SCOPE: hosted_job
+      FEISHU_ARTIFACT_RUNNER_LABEL: ${{ matrix.runner }}
       RELEASE_OS: ${{ matrix.goos }}
       RELEASE_ARCH: ${{ matrix.goarch }}
       RELEASE_BINARY: ${{ matrix.binary }}
@@ -113,6 +116,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
@@ -158,12 +162,15 @@ jobs:
           python .github/scripts/release.py package \
             --metadata release-meta/release.json --binary "$RELEASE_BINARY" \
             --os "$RELEASE_OS" --arch "$RELEASE_ARCH" --output dist
-      - name: Run the unpacked archive on its native platform
+      - name: Build the pinned previous binary for actual service upgrades
+        shell: bash
+        run: python .github/scripts/artifact_fixture.py baseline --output bin/upgrade-baseline
+      - name: Run full native and service upgrade journeys from the unpacked archive
         shell: bash
         run: |
           python .github/scripts/release.py smoke \
             --metadata release-meta/release.json --archive "dist/$RELEASE_ARCHIVE" \
-            --os "$RELEASE_OS" --arch "$RELEASE_ARCH"
+            --os "$RELEASE_OS" --arch "$RELEASE_ARCH" --journey
       - name: Retain the verified platform archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -185,13 +192,13 @@ jobs:
           python .github/scripts/release.py package-installer "${installer[@]}" --output dist
           python .github/scripts/release.py package-installer "${installer[@]}" --output dist-repro
           cmp "dist/$RELEASE_INSTALLER" "dist-repro/$RELEASE_INSTALLER"
-      - name: Run the installer on its native platform
+      - name: Run full native and service upgrade journeys from the installed binary
         if: matrix.installer-extension != ''
         shell: bash
         run: |
           python .github/scripts/release.py smoke-installer \
             --metadata release-meta/release.json --installer "dist/$RELEASE_INSTALLER" \
-            --os "$RELEASE_OS" --arch "$RELEASE_ARCH"
+            --os "$RELEASE_OS" --arch "$RELEASE_ARCH" --journey
       - name: Retain the verified platform installer
         if: matrix.installer-extension != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -202,6 +209,26 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+      - name: Retain installer failure diagnostics
+        if: failure() && matrix.installer-extension != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installer-diagnostics-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ runner.temp }}/feishu-bot-installer-smoke-*/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Release TLS fixture resources under the declared runner lifetime
+        if: always() && runner.os != 'Linux'
+        shell: bash
+        run: python .github/scripts/artifact_trust.py cleanup-all
+      - name: Retain public TLS fixture lifetime receipts
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tls-fixture-lifetime-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ runner.temp }}/feishu-artifact-trust/*/receipt.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   publish:
     name: Publish the complete GitHub Release
