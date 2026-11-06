@@ -48,12 +48,16 @@ func configuredVerificationTarget(c core.Config, target string) bool {
 		return false
 	}
 	for _, group := range c.Groups {
-		if group.ChatID == target {
+		if group.ChatID == target && group.ChatID != core.AnyGroupChatID {
 			_, found := c.Project(group.ProjectID)
 			return found
 		}
 	}
-	return false
+	if !strings.HasPrefix(target, "oc_") {
+		return false
+	}
+	_, found := c.RoomFor(target, "")
+	return found
 }
 func verificationMessage(c core.Config, target, nonce string, m core.Message) (core.Room, bool) {
 	room, ok := gateway.Route(c, m)

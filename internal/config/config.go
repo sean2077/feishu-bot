@@ -443,7 +443,7 @@ func validate(c *core.Config, base string) error {
 	}
 	seen := map[string]bool{}
 	for _, g := range c.Groups {
-		if !idPattern.MatchString(g.ChatID) || seen[g.ChatID] || !projects[g.ProjectID] {
+		if (g.ChatID != core.AnyGroupChatID && !idPattern.MatchString(g.ChatID)) || seen[g.ChatID] || !projects[g.ProjectID] {
 			return errors.New("invalid group binding")
 		}
 		seen[g.ChatID] = true

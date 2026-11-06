@@ -2,7 +2,7 @@
 
 - Feishu + Claude Code. Preserve native streaming input, compaction and background work; do not add a second planner or business scheduler.
 - Linux, macOS and Windows use the same native service; built-in daemon management is Linux/Windows only. Start sessions on demand and reuse warm processes; reclaim only confirmed idle processes without discarding history.
-- Group triggers require an allowed chat, allowed author and explicit bot mention. A group may opt out of only the mention requirement with `groups[].mentionOptional`; chat and author authorization still apply. DMs require an allowed user. Reject silently before context, downloads or reactions.
+- Group triggers require an allowed chat, allowed author and explicit bot mention. A single `groups[]` binding with `chatId: "*"` covers otherwise unlisted groups; explicit bindings win. `members` adds authors, `allowAllMembers` admits any user in that chat, and project maintainers are always allowed. A group may opt out of only the mention requirement with `groups[].mentionOptional`; chat and author authorization still apply. DMs require an allowed user. Reject silently before context, downloads or reactions.
 - Background pre-injection defaults to zero. History, quotes, pagination and attachments must enforce current chat and author scope; never turn history access into a cross-chat tool.
 - Preserve the native session across process reclamation, restart, stop and compact. Only explicit new-session operations rotate it. Never silently replace a failed resume.
 - Compact is a native command at a turn boundary, not a summarization prompt. No gateway automatic compaction. Preserve approvals while a control command is waiting.

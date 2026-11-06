@@ -6,9 +6,21 @@ Linux、macOS 和 Windows 运行同一个 Go 服务。源码构建需要 Go 1.25
 
 创建飞书自建应用，开启机器人、消息接收和长连接，并配置交互卡片回调。基本交互需要接收群 @／私聊消息、发送回复与操作消息表情的权限。表情写入结果未知时的核对及完成表情回滚会读取本应用的消息表情列表，需要具有 `im:message.reactions:read` 或可用的 `im:message:readonly` 权限；没有读取权限时不应强行重发未知表情。按需历史工具还需要消息历史读取权限；群历史需相应的群消息读取范围，通常包括 `im:message.group_msg`。权限须在控制台申请并发布，最终以应用的实际可用范围为准。
 
-即使拥有读取群消息的权限，也不自动处理所有事件。配置 `groups` 限定群，`members` 限定该群的获准作者，项目维护者也可使用。省略 `members` 仅允许维护者。群里默认只有明确 @ 本机器人才触发；单纯回复机器人、@全体或写出名字不触发。私聊由 `dms` 授权，不需要 @。所有未授权消息静默丢弃。
+即使拥有读取群消息的权限，也不自动处理所有事件。显式 `groups` 绑定限定群，`chatId: "*"` 的唯一条目为未显式绑定的群提供兜底，显式绑定优先。`members` 限定该群的获准作者，项目维护者始终可用；`allowAllMembers: true` 显式放开该群所有用户。省略 `members` 仅允许维护者。群里默认只有明确 @ 本机器人才触发；单纯回复机器人、@全体或写出名字不触发。私聊由 `dms` 授权，不需要 @。所有未授权消息静默丢弃。
 
 `groups[]` 可设置 `mentionOptional: true`，使该群所有获准作者的普通消息和命令无需 @；默认 `false`，只免除 @，不改变群与作者授权，修改后需重启。该能力还要求飞书应用能收到未 @ 机器人的群消息：应用需具备接收群内全部消息的权限（通常为 `im:message.group_msg`，以控制台实际发布范围为准），否则事件不会到达网关。仅建议用于成员很少且互信的小群。
+
+```json
+{
+  "groups": [
+    { "chatId": "oc_example_group", "projectId": "assistant", "members": ["ou_example_member"] },
+    { "chatId": "oc_example_open_group", "projectId": "assistant", "allowAllMembers": true },
+    { "chatId": "*", "projectId": "assistant" }
+  ]
+}
+```
+
+以上是合并到完整配置的群片段。`chatId: "*"` 至多出现一次，只覆盖未显式绑定的群，显式绑定优先；它默认只允许项目维护者。在兜底条目上添加 `members` 会为所有这些群追加获准作者，设置 `allowAllMembers: true` 则对这些群放开所有用户。`allowAllMembers` 不改变管理命令和审批所需的维护者身份，也不作用于私聊。
 
 `limits.backgroundMessages` 默认 **0**，无非 @ 群消息缓存和自动预注入。需要前文时由 Agent 调用当前聊天限定的历史工具，工具仍过滤未授权作者，缺少 API 权限时返回明确错误。参见[对话规则](conversation-contract.md)和[飞书历史接口](https://open.feishu.cn/document/server-docs/im-v1/message/list)。
 
@@ -245,7 +257,7 @@ Windows 常驻启动直接使用 `feishu-bot daemon install`（见上节），�
 
 从旧的脚本式启动（VBS/PowerShell/Node launcher）迁移时，先停止旧服务、确认其原生子进程退出，并删除旧的自启动任务/脚本；然后运行 `feishu-bot daemon install`。服务命令不会猜测或接管其他工具的任务。升级二进制前先 `daemon stop`；可以直接用新二进制的 `daemon install --binary <new-binary>` 完成停止、替换、注册和重启。重复执行 `daemon install` 是幂等的。
 
-旧配置显式非零 `backgroundMessages` 不会自动变为 0，应按新行为设为 0。既有 CC 历史不会因关闭背景而消失；需要干净上下文时显式 `/new`。群 `members` 省略时不再默认放行所有人，普通成员须显式列出。新增 `groups[].mentionOptional` 可省略，缺省仍要求明确 @；启用后修改需重启。
+旧配置显式非零 `backgroundMessages` 不会自动变为 0，应按新行为设为 0。既有 CC 历史不会因关闭背景而消失；需要干净上下文时显式 `/new`。群 `members` 省略时不再默认放行所有人，普通成员须显式列出，或用 `allowAllMembers: true` 放开该群。`chatId: "*"` 可作为未显式绑定群的维护者默认入口；显式绑定仍然优先，私聊不受影响。新增 `groups[].mentionOptional` 可省略，缺省仍要求明确 @；启用后修改需重启。
 
 原生运行不需要 `runtime.mode/image/memory/cpus`；历史 `mode: local` 仍可读取。`autoApproveWorkspace: false` 保持原逐次权限语义，可显式迁移到 `permissionMode`／`allowedTools`；不会静默提权。`model.maxConcurrent` 已停用，模型限流在上游配置。
 

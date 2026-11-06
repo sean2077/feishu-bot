@@ -42,6 +42,19 @@ func TestVerificationRejectsUnknownScopeBeforeCreatingState(t *testing.T) {
 		t.Fatal(o, err)
 	}
 }
+func TestVerificationAcceptsDefaultGroupBinding(t *testing.T) {
+	c := verificationConfig(t)
+	if configuredVerificationTarget(c, "oc_not_allowed") {
+		t.Fatal("unlisted group accepted without a default binding")
+	}
+	c.Groups = append(c.Groups, core.Group{ChatID: core.AnyGroupChatID, ProjectID: "test"})
+	if !configuredVerificationTarget(c, "oc_new_group") {
+		t.Fatal("default group binding was not accepted")
+	}
+	if configuredVerificationTarget(c, core.AnyGroupChatID) || configuredVerificationTarget(c, "not-a-chat") {
+		t.Fatal("invalid verification target accepted")
+	}
+}
 func TestVerificationInputKeepsGroupAndDMBoundaries(t *testing.T) {
 	c := verificationConfig(t)
 	m := core.Message{ID: "om_test", ChatID: "oc_test", ChatType: "group", SenderID: "member", Text: "/verify nonce", Mentioned: true}

@@ -55,38 +55,10 @@ func member(ids []string, id string) bool {
 	return false
 }
 func roomFor(c core.Config, chat, dm string) (core.Room, bool) {
-	project := ""
-	var members []string
-	mentionOptional := false
-	if dm != "" {
-		for _, v := range c.DMs {
-			if v.UserID == dm {
-				project = v.ProjectID
-				break
-			}
-		}
-	} else {
-		for _, v := range c.Groups {
-			if v.ChatID == chat {
-				project = v.ProjectID
-				members = v.Members
-				mentionOptional = v.MentionOptional
-				break
-			}
-		}
-	}
-	p, ok := c.Project(project)
-	if !ok || project == "" || !validID(chat) {
+	if !validID(chat) {
 		return core.Room{}, false
 	}
-	kind := "group"
-	var user any
-	if dm != "" {
-		kind = "p2p"
-		user = dm
-	}
-	key, _ := json.Marshal([]any{c.TenantID, c.AppID, project, kind, chat, user})
-	return core.Room{Key: string(key), ChatID: chat, ProjectID: project, DMUser: dm, Maintainers: p.Maintainers, Members: members, MentionOptional: mentionOptional}, true
+	return c.RoomFor(chat, dm)
 }
 func (c *Client) validatedRoom(room core.Room) (core.Room, error) {
 	var parts []any
@@ -143,13 +115,7 @@ func (c *Client) configuredMaintainer(id string) bool {
 }
 
 func authorizedAuthor(room core.Room, sender string) bool {
-	if sender == "" {
-		return false
-	}
-	if room.DMUser != "" {
-		return room.DMUser == sender
-	}
-	return member(room.Maintainers, sender) || member(room.Members, sender)
+	return room.Authorizes(sender)
 }
 func (c *Client) allowedHeader(event messageEvent) (core.Room, bool) {
 	m := event.Message

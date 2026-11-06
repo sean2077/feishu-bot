@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sean2077/feishu-bot/internal/core"
 )
 
 func fixture(t *testing.T) map[string]any {
@@ -36,6 +38,24 @@ func TestExistingConfigurationDefaults(t *testing.T) {
 	}
 	if len(c.Groups) != 1 || c.Groups[0].MentionOptional {
 		t.Fatal("mentionOptional must default to false")
+	}
+	if c.Groups[0].AllowAllMembers {
+		t.Fatal("allowAllMembers must default to false")
+	}
+}
+func TestDefaultGroupBindingConfig(t *testing.T) {
+	v := fixture(t)
+	v["groups"] = []any{
+		map[string]any{"chatId": core.AnyGroupChatID, "projectId": "assistant"},
+		map[string]any{"chatId": "oc_named", "projectId": "assistant", "allowAllMembers": true},
+	}
+	data, _ := json.Marshal(v)
+	c, err := Parse(data, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Groups) != 2 || c.Groups[0].ChatID != core.AnyGroupChatID || c.Groups[1].AllowAllMembers != true {
+		t.Fatalf("default group binding: %+v", c.Groups)
 	}
 }
 func TestMentionOptionalGroupConfig(t *testing.T) {
@@ -71,10 +91,19 @@ func TestConfigRejectsInvalidAndUnknownValues(t *testing.T) {
 			v["model"].(map[string]any)["extraHeaders"] = map[string]any{"X-Token": "ok\r\nX: no"}
 		},
 		"wildcard maintainer": func(v map[string]any) { v["projects"].([]any)[0].(map[string]any)["maintainers"] = []string{"*"} },
-		"duplicate group":     func(v map[string]any) { g := v["groups"].([]any); v["groups"] = append(g, g[0]) },
-		"mention null":        func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["mentionOptional"] = nil },
-		"mention wrong type":  func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["mentionOptional"] = "true" },
-		"mention casing":      func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["mentionoptional"] = true },
+		"wildcard member":     func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["members"] = []string{"*"} },
+		"duplicate default group": func(v map[string]any) {
+			g := v["groups"].([]any)
+			g[0].(map[string]any)["chatId"] = core.AnyGroupChatID
+			v["groups"] = append(g, map[string]any{"chatId": core.AnyGroupChatID, "projectId": "assistant"})
+		},
+		"allow all wrong type": func(v map[string]any) {
+			v["groups"].([]any)[0].(map[string]any)["allowAllMembers"] = "true"
+		},
+		"duplicate group":    func(v map[string]any) { g := v["groups"].([]any); v["groups"] = append(g, g[0]) },
+		"mention null":       func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["mentionOptional"] = nil },
+		"mention wrong type": func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["mentionOptional"] = "true" },
+		"mention casing":     func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["mentionoptional"] = true },
 		"cwd seed conflict": func(v map[string]any) {
 			p := v["projects"].([]any)[0].(map[string]any)
 			p["cwd"] = "existing"

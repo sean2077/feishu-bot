@@ -182,3 +182,56 @@ func TestMentionOptionalGroupStillRejectsUnauthorizedAuthor(t *testing.T) {
 		t.Fatal("unauthorized author reached gateway")
 	}
 }
+
+func TestDefaultGroupBindingAcceptsMaintainerOnly(t *testing.T) {
+	c, _ := fixtureClient(t, nil, func(http.ResponseWriter, *http.Request) { t.Fatal("unexpected HTTP") })
+	c.config.Groups = append(c.config.Groups, core.Group{ChatID: core.AnyGroupChatID, ProjectID: "fixture"})
+	var received []core.Message
+	c.onMessage = func(_ context.Context, m core.Message) error { received = append(received, m); return nil }
+	for _, event := range []struct {
+		user      string
+		mentioned bool
+	}{
+		{"ou_owner", true},
+		{"ou_member", true},
+		{"ou_owner", false},
+	} {
+		if _, err := c.HandleEvent(context.Background(), rawEvent("oc_unlisted", event.user, "text", `{"text":"hello"}`, event.mentioned)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(received) != 1 || received[0].SenderID != "ou_owner" || received[0].ChatID != "oc_unlisted" {
+		t.Fatalf("default group accepted unexpected events: %+v", received)
+	}
+}
+
+func TestDefaultGroupBindingCanAllowAllMembers(t *testing.T) {
+	c, _ := fixtureClient(t, nil, func(http.ResponseWriter, *http.Request) { t.Fatal("unexpected HTTP") })
+	c.config.Groups = append(c.config.Groups, core.Group{ChatID: core.AnyGroupChatID, ProjectID: "fixture", AllowAllMembers: true})
+	var received []core.Message
+	c.onMessage = func(_ context.Context, m core.Message) error { received = append(received, m); return nil }
+	if _, err := c.HandleEvent(context.Background(), rawEvent("oc_unlisted", "ou_stranger", "text", `{"text":"hello"}`, true)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.HandleEvent(context.Background(), rawEvent("oc_unlisted", "ou_stranger", "text", `{"text":"hello"}`, false)); err != nil {
+		t.Fatal(err)
+	}
+	if len(received) != 1 || received[0].SenderID != "ou_stranger" || !received[0].Mentioned {
+		t.Fatalf("allow-all default group: %+v", received)
+	}
+}
+
+func TestExplicitGroupBindingOverridesDefaultPolicy(t *testing.T) {
+	c, _ := fixtureClient(t, nil, func(http.ResponseWriter, *http.Request) { t.Fatal("unexpected HTTP") })
+	c.config.Groups = append(c.config.Groups, core.Group{ChatID: core.AnyGroupChatID, ProjectID: "fixture", AllowAllMembers: true})
+	var received []core.Message
+	c.onMessage = func(_ context.Context, m core.Message) error { received = append(received, m); return nil }
+	for _, user := range []string{"ou_member", "ou_stranger"} {
+		if _, err := c.HandleEvent(context.Background(), rawEvent("oc_allowed", user, "text", `{"text":"hello"}`, true)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(received) != 1 || received[0].SenderID != "ou_member" {
+		t.Fatalf("explicit binding inherited default policy: %+v", received)
+	}
+}
