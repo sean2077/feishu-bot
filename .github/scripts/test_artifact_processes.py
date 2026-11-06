@@ -171,8 +171,11 @@ class ProcessTests(unittest.TestCase):
             env={**os.environ, "FIXTURE_VALUE": "fixture value"}, timeout=5, cleanup_timeout=3,
         )
         self.assertEqual(result, 7)
-        self.assertEqual(json.loads(destination.read_text()),
-                         [str(self.root), "fixture value", "--timeout literal $value"])
+        observed = json.loads(destination.read_text())
+        # macOS reports /private/var for the /var temporary-directory alias.
+        # Assert the actual directory identity, and retain exact argument/env checks.
+        self.assertTrue(Path(observed[0]).samefile(self.root))
+        self.assertEqual(observed[1:], ["fixture value", "--timeout literal $value"])
 
     def test_hard_timeout_reclaims_service_and_native_groups(self):
         started = time.monotonic()
@@ -365,7 +368,9 @@ class WindowsContracts(unittest.TestCase):
         self.job.close.assert_called_once()
 
     def test_hard_timeout_kills_job_and_waits_for_zero_members(self):
-        self.child.poll.side_effect = [None, None, 1]
+        # Polling frequency depends on the platform clock. A real Popen keeps
+        # returning the terminal status after exit; model that state transition.
+        self.child.poll.side_effect = lambda: 1 if "terminate-job" in self.events else None
         self.job.active.side_effect = [1, 0]
         self.assertEqual(self.run_supervisor(), processes.TIMEOUT)
         self.job.terminate.assert_called_once()

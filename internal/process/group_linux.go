@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 type groupIdentity struct {
@@ -104,6 +105,13 @@ func parseStat(data []byte) (procStat, error) {
 func captureGroup(pid int) (*groupIdentity, error) {
 	return captureGroupFS(os.DirFS("/proc"), os.Getpid(), pid)
 }
+
+// A procfs record can disappear before open (ENOENT) or after open, while the
+// kernel reads it (ESRCH). Neither means that other members of its group exited.
+func procRecordGone(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
+
 func captureGroupFS(proc fs.FS, selfPID, childPID int) (*groupIdentity, error) {
 	raw, err := fs.ReadFile(proc, "self/status")
 	if err != nil {
@@ -138,7 +146,7 @@ func captureGroupFS(proc fs.FS, selfPID, childPID int) (*groupIdentity, error) {
 		}
 		raw, err = fs.ReadFile(proc, entry.Name()+"/status")
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) {
+			if procRecordGone(err) || errors.Is(err, fs.ErrPermission) {
 				continue
 			}
 			return nil, err
@@ -192,7 +200,7 @@ func (g *groupIdentity) active() (bool, error) {
 		if stat.start != g.start {
 			return false, nil
 		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	} else if !procRecordGone(err) {
 		return false, err
 	}
 	entries, err := fs.ReadDir(g.proc, ".")
@@ -205,7 +213,7 @@ func (g *groupIdentity) active() (bool, error) {
 		}
 		raw, err := fs.ReadFile(g.proc, entry.Name()+"/stat")
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
+			if procRecordGone(err) {
 				continue
 			}
 			return false, err
@@ -224,7 +232,7 @@ func (g *groupIdentity) active() (bool, error) {
 		if stat.threads > 1 {
 			tasks, err := fs.ReadDir(g.proc, entry.Name()+"/task")
 			if err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
+				if procRecordGone(err) {
 					continue
 				}
 				return false, err
@@ -232,7 +240,7 @@ func (g *groupIdentity) active() (bool, error) {
 			for _, task := range tasks {
 				raw, err := fs.ReadFile(g.proc, entry.Name()+"/task/"+task.Name()+"/stat")
 				if err != nil {
-					if errors.Is(err, fs.ErrNotExist) {
+					if procRecordGone(err) {
 						continue
 					}
 					return false, err

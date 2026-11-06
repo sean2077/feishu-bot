@@ -21,6 +21,36 @@ func maintenancePolicyNamed(t *testing.T, name string, now int64) maintenancePol
 	return maintenancePolicy{}
 }
 
+// A bounded maintenance call need not visit every table before its budget
+// expires. Require committed progress across calls before checking retention.
+func maintainAllPolicies(t *testing.T, s *Store, now int64) {
+	t.Helper()
+	policies := maintenancePolicies(now, 1)
+	pending := map[string]bool{}
+	for _, policy := range policies {
+		pending[policy.name] = true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var lastReport MaintenanceReport
+	var lastErr error
+	for round := 0; round < 2*len(policies) && ctx.Err() == nil; round++ {
+		lastReport, lastErr = s.Maintain(ctx, now, 1)
+		if lastErr != nil && !errors.Is(lastErr, context.DeadlineExceeded) {
+			t.Fatalf("maintenance round %d: %+v: %v", round+1, lastReport, lastErr)
+		}
+		for _, entry := range lastReport.Policies {
+			if entry.Error == "" {
+				delete(pending, entry.Name)
+			}
+		}
+		if len(pending) == 0 {
+			return
+		}
+	}
+	t.Fatalf("maintenance did not commit every policy: pending=%v context=%v report=%+v error=%v", pending, ctx.Err(), lastReport, lastErr)
+}
+
 func TestMaintenanceBudgetsAndPersistentProgress(t *testing.T) {
 	s := openTest(t)
 	if err := s.Transaction(context.Background(), func(tx *sql.Tx) error {
@@ -104,10 +134,7 @@ func TestMaintenanceRetainsUncertainEvidenceAndUsageDedup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, err := s.Maintain(context.Background(), 200*dayMS, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	maintainAllPolicies(t, s, 200*dayMS)
 	for _, q := range []string{
 		`SELECT count(*) FROM inbox WHERE id='unknown' AND message!='{}'`,
 		`SELECT count(*) FROM inbox WHERE id='related' AND message!='{}'`,
@@ -116,13 +143,13 @@ func TestMaintenanceRetainsUncertainEvidenceAndUsageDedup(t *testing.T) {
 		`SELECT count(*) FROM usage_results`,
 	} {
 		var n int
-		if err = s.DB.QueryRow(q).Scan(&n); err != nil || n != 1 {
+		if err := s.DB.QueryRow(q).Scan(&n); err != nil || n != 1 {
 			t.Fatal(q, n, err)
 		}
 	}
 	for _, q := range []string{`SELECT count(*) FROM action_runs WHERE id='done'`, `SELECT count(*) FROM requests WHERE id='expired'`} {
 		var n int
-		if err = s.DB.QueryRow(q).Scan(&n); err != nil || n != 0 {
+		if err := s.DB.QueryRow(q).Scan(&n); err != nil || n != 0 {
 			t.Fatal(q, n, err)
 		}
 	}
@@ -226,9 +253,7 @@ func TestMaintenancePreservesSessionlessContextDuringActiveWork(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.Maintain(context.Background(), 2*dayMS, 1); err != nil {
-		t.Fatal(err)
-	}
+	maintainAllPolicies(t, s, 2*dayMS)
 	for _, id := range []string{"background", "quoted"} {
 		m, err := s.ContextMessage("active", id)
 		if err != nil || m == nil || len(m.Resources) != 1 {
@@ -247,9 +272,7 @@ func TestMaintenanceKeepsDiscardedOriginDedupWithoutItsBody(t *testing.T) {
 INSERT INTO output_discarded_origins(room,session,origin,output,actor,at) VALUES('r','s','discard-source','discarded','owner',1);`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Maintain(context.Background(), 100*dayMS, 1); err != nil {
-		t.Fatal(err)
-	}
+	maintainAllPolicies(t, s, 100*dayMS)
 	seen, err := s.Seen("r", "discard-source")
 	if err != nil || !seen {
 		t.Fatal("discard origin became eligible for native input replay", seen, err)

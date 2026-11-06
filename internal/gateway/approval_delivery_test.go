@@ -117,6 +117,19 @@ func TestForwardedApprovalLateCardDoesNotReportLiveDelivery(t *testing.T) {
 	f := newFixture(t, nil)
 	r, session := forwardedApprovalRoom(t, f)
 	entered, release, disabled := make(chan struct{}), make(chan struct{}), make(chan struct{}, 2)
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	settled := make(chan struct{}, 1)
+	f.g.logger = func(event string, _ core.Args) {
+		if event == "request_settled" {
+			settled <- struct{}{}
+		}
+	}
 	f.tr.cardHook = func(context.Context, core.Room, core.Args) (string, error) {
 		close(entered)
 		<-release
@@ -130,29 +143,188 @@ func TestForwardedApprovalLateCardDoesNotReportLiveDelivery(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := make(chan struct{})
+	done := make(chan core.Args, 1)
 	go func() {
-		_, _ = f.g.ask(ctx, r, session, "Bash", core.Args{}, "Operation summary", nil)
-		close(done)
+		value, _ := f.g.ask(ctx, r, session, "Bash", core.Args{}, "Operation summary", nil)
+		done <- value
 	}()
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
 		t.Fatal("approval card send did not start")
 	}
-	cancel()
+	func() {
+		// Hold durable settlement behind an explicit barrier. Returning to the
+		// native caller and disabling a late card must not depend on that write.
+		f.g.approvalMu.Lock()
+		defer f.g.approvalMu.Unlock()
+		cancel()
+		select {
+		case value := <-done:
+			if boolArg(value, "approved") {
+				t.Fatal("cancelled native request was approved")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("cancelled approval waited for durable settlement")
+		}
+		close(release)
+		select {
+		case <-disabled:
+		case <-time.After(time.Second):
+			t.Fatal("late forwarded card was not disabled")
+		}
+	}()
+	// Neither ask's return nor the transport's disabled-card ACK is a barrier
+	// for the asynchronous database settlement. Observe its explicit outcome.
 	select {
-	case <-done:
+	case <-settled:
 	case <-time.After(time.Second):
-		t.Fatal("cancelled approval did not return")
-	}
-	close(release)
-	select {
-	case <-disabled:
-	case <-time.After(time.Second):
-		t.Fatal("late forwarded card was not disabled")
+		t.Fatal("cancelled approval was not durably settled")
 	}
 	if hasApprovalNotice(f, "已确认送达") || f.g.approvalCount(session) != 0 {
 		t.Fatal("late card acknowledgement revived a cancelled approval")
+	}
+	var state string
+	if err := f.s.DB.QueryRow("SELECT state FROM requests WHERE session=?", session).Scan(&state); err != nil || state != "denied" {
+		t.Fatal("cancelled approval was not durably denied", state, err)
+	}
+}
+
+// Leave asynchronous settlement pending so cancellation checks cannot pass
+// merely because another goroutine removed the approval from the map first.
+func pendingApprovalFixture(t *testing.T, f *fixture, questions []question) (string, *approval) {
+	t.Helper()
+	r := f.room()
+	session, err := f.s.Session(r.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	id := core.NewID()
+	kind := "permission"
+	if questions != nil {
+		kind = "question"
+	}
+	p := &approval{room: r, session: session.ID, kind: kind, expires: time.Now().Add(time.Minute).UnixMilli(), cards: map[string]string{}, selected: map[string]map[int]map[int]bool{}, questions: questions, outcome: make(chan core.Args, 1), ctx: ctx, cancel: cancel}
+	if _, err := f.s.DB.Exec("INSERT INTO requests(id,room,session,kind,digest,state,expires) VALUES(?,?,?,?,?,'pending',?)", id, r.Key, session.ID, kind, "fixture", p.expires); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	f.g.approvalMu.Lock()
+	f.g.approvals[id] = p
+	f.g.approvalMu.Unlock()
+	t.Cleanup(func() {
+		cancel()
+		f.g.settleApproval(id, core.Args{"approved": false, "reason": "cancelled"}, "system")
+	})
+	return id, p
+}
+
+func TestCancelledApprovalCannotBindOrAcceptCallbacksBeforeSettlement(t *testing.T) {
+	for _, action := range []string{"allow", "select", "submit", "answer"} {
+		t.Run(action, func(t *testing.T) {
+			f := newFixture(t, nil)
+			var questions []question
+			if action != "allow" {
+				questions = []question{{Question: "Pick", Options: []questionOption{{Label: "A"}}}}
+			}
+			id, p := pendingApprovalFixture(t, f, questions)
+			p.selected["owner"] = map[int]map[int]bool{0: {0: true}}
+			if !f.g.bindApprovalCard(id, p, "current-card", p.room) {
+				t.Fatal("live card was not bound")
+			}
+			p.cancel()
+			if f.g.bindApprovalCard(id, p, "late-card", p.room) {
+				t.Fatal("late ACK bound a cancelled approval before settlement")
+			}
+			f.g.approvalMu.Lock()
+			_, late := p.cards["late-card"]
+			present := f.g.approvals[id] == p
+			f.g.approvalMu.Unlock()
+			if late || !present {
+				t.Fatal("cancellation test lost its pending-settlement boundary", late, present)
+			}
+			if action == "answer" {
+				if reply := f.g.answer(p.room, "owner", id, "A"); reply != "问题不存在或已过期" {
+					t.Fatal("cancelled question accepted a text answer", reply)
+				}
+			} else {
+				value := core.Args{"request": id, "decision": action}
+				if action == "select" {
+					value = core.Args{"request": id, "question": 0, "option": 0}
+				}
+				reply, err := f.g.ActionResponse(context.Background(), core.CardAction{UserID: "owner", ChatID: p.room.ChatID, MessageID: "current-card", Value: value})
+				if err != nil || stringArg(argsOf(reply["toast"]), "content") != "请求已结束或过期" || reply["card"] != nil {
+					t.Fatal("cancelled approval accepted a callback", reply, err)
+				}
+			}
+			// Reaching settlement with a previously validated positive value must
+			// also recheck cancellation, independently of the callback entry guard.
+			if f.g.settleApproval(id, core.Args{"approved": true, "answers": map[string]string{"Pick": "A"}}, "owner") {
+				t.Fatal("cancelled decision was reported as accepted")
+			}
+			var state, actor string
+			if err := f.s.DB.QueryRow("SELECT state,actor FROM requests WHERE id=?", id).Scan(&state, &actor); err != nil || state != "denied" || actor != "system" {
+				t.Fatal("cancelled decision was not durably denied", state, actor, err)
+			}
+			select {
+			case result := <-p.outcome:
+				if boolArg(result, "approved") || stringArg(result, "reason") != "cancelled" {
+					t.Fatal("cancelled decision authorized execution", result)
+				}
+			default:
+				t.Fatal("cancelled decision did not release its native caller")
+			}
+		})
+	}
+}
+
+func TestApprovalCancelledWhileWaitingForStorageCannotCommitLater(t *testing.T) {
+	f := newFixture(t, nil)
+	id, p := pendingApprovalFixture(t, f, nil)
+	conn, err := f.s.DB.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := f.s.DB.Stats().WaitCount
+	accepted, returned := make(chan bool, 1), make(chan struct{})
+	go func() {
+		defer close(returned)
+		accepted <- f.g.settleApproval(id, core.Args{"approved": true}, "owner")
+	}()
+	defer func() {
+		_ = conn.Close()
+		select {
+		case <-returned:
+		case <-time.After(time.Second):
+			t.Error("settlement did not finish after releasing fixture storage")
+		}
+	}()
+	// The store has one connection. This counter proves settlement is queued
+	// for it before cancellation, without relying on a scheduling delay.
+	eventually(t, func() bool { return f.s.DB.Stats().WaitCount > before })
+	p.cancel()
+	select {
+	case result := <-p.outcome:
+		if boolArg(result, "approved") {
+			t.Fatal("cancelled storage wait authorized execution", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled positive decision remained queued for storage")
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ok := <-accepted:
+		if ok {
+			t.Fatal("cancelled positive decision reported success")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("settlement did not finish")
+	}
+	var state string
+	if err := f.s.DB.QueryRow("SELECT state FROM requests WHERE id=?", id).Scan(&state); err != nil || state != "pending" {
+		t.Fatal("cancelled transaction committed a decision; pending recovery was expected", state, err)
 	}
 }

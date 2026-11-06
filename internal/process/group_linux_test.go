@@ -3,8 +3,11 @@
 package process
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -122,5 +125,81 @@ func TestTerminationWaitObservesActualExit(t *testing.T) {
 	err := waitGroupInactive(func() (bool, error) { calls++; return calls < 3, nil }, time.Second)
 	if err != nil || calls != 3 {
 		t.Fatal(calls, err)
+	}
+}
+
+type failingProcFS struct {
+	fstest.MapFS
+	failures map[string]error
+}
+
+func (p failingProcFS) ReadFile(name string) ([]byte, error) {
+	if err := p.failures[name]; err != nil {
+		return nil, &fs.PathError{Op: "read", Path: name, Err: err}
+	}
+	return p.MapFS.ReadFile(name)
+}
+
+func (p failingProcFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if err := p.failures[name]; err != nil {
+		return nil, &fs.PathError{Op: "readdir", Path: name, Err: err}
+	}
+	return p.MapFS.ReadDir(name)
+}
+
+func TestCaptureGroupIgnoresUnrelatedProcessThatExitedDuringRead(t *testing.T) {
+	proc := failingProcFS{MapFS: namespaceFixture(), failures: map[string]error{"1500/status": syscall.ESRCH}}
+	proc.MapFS["1500/status"] = &fstest.MapFile{Data: []byte("process exited after directory enumeration")}
+	group, err := captureGroupFS(proc, 5, 7)
+	if err != nil || group == nil || group.group != 2000 || group.start != 1234 {
+		t.Fatal("unrelated exiting process prevented tracking the live child", group, err)
+	}
+}
+
+func TestCaptureGroupStillRequiresMatchedChildIdentity(t *testing.T) {
+	proc := failingProcFS{MapFS: namespaceFixture(), failures: map[string]error{"2000/stat": syscall.ESRCH}}
+	if group, err := captureGroupFS(proc, 5, 7); group != nil || !errors.Is(err, syscall.ESRCH) {
+		t.Fatal("missing matched-child identity was treated as confirmed ownership", group, err)
+	}
+}
+
+func TestExitedProcRecordDoesNotHideLiveGroupMember(t *testing.T) {
+	proc := failingProcFS{MapFS: namespaceFixture(), failures: map[string]error{}}
+	group, err := captureGroupFS(proc, 5, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc.failures["2000/stat"] = syscall.ESRCH
+	if alive, err := group.active(); err != nil || !alive {
+		t.Fatal("vanished leader hid its live descendant", alive, err)
+	}
+	proc.failures["2001/stat"] = syscall.ESRCH
+	if alive, err := group.active(); err != nil || alive {
+		t.Fatal("fully exited group remained unconfirmed", alive, err)
+	}
+	proc.failures["2001/stat"] = syscall.EIO
+	if _, err := group.active(); !errors.Is(err, syscall.EIO) {
+		t.Fatal("unknown read failure was mistaken for an exited process", err)
+	}
+}
+
+func TestExitedProcTaskRecordDoesNotHideLiveThread(t *testing.T) {
+	proc := failingProcFS{MapFS: namespaceFixture(), failures: map[string]error{}}
+	group, err := captureGroupFS(proc, 5, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc.MapFS["2000/stat"].Data = statFixture(2000, 1000, 2000, 'Z', 3, 1234)
+	proc.MapFS["2001/stat"].Data = statFixture(2001, 1, 2000, 'Z', 1, 1240)
+	proc.MapFS["2000/task/2000/stat"] = &fstest.MapFile{Data: statFixture(2000, 1000, 2000, 'Z', 3, 1234)}
+	proc.MapFS["2000/task/2002/stat"] = &fstest.MapFile{Data: statFixture(2002, 1000, 2000, 'S', 1, 1241)}
+	proc.MapFS["2000/task/2003/stat"] = &fstest.MapFile{Data: statFixture(2003, 1000, 2000, 'D', 1, 1242)}
+	proc.failures["2000/task/2002/stat"] = syscall.ESRCH
+	if alive, err := group.active(); err != nil || !alive {
+		t.Fatal("exited task hid another live thread", alive, err)
+	}
+	proc.failures["2000/task"] = syscall.ESRCH
+	if alive, err := group.active(); err != nil || alive {
+		t.Fatal("disappeared thread group remained unconfirmed", alive, err)
 	}
 }
