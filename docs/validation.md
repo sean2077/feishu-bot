@@ -60,15 +60,21 @@ go test -race -count=1 -timeout 180s -v ./internal/native ./internal/integration
 
 各平台的显式产物检查运行本地 TLS／WebSocket／REST 飞书替身与真实原生 CLI 的完整旅程：MCP 历史读取、普通成员审批被拒、维护者批准 Write、断线重连后回答原追问、同卡长回复、完整文件确认之前没有 Done、`/stop`、服务进程重启和同一网关／原生会话的历史恢复。模型请求次数和卡片／文件数量同时断言，防止重复工具执行或重复交付被成功结果掩盖。
 
-Linux 假 CA 只放入测试子进程证书环境。Windows／macOS 的实际产物旅程使用系统校验：仅在 `GITHUB_ACTIONS=true`、`RUNNER_ENVIRONMENT=github-hosted` 且显式 `FEISHU_ARTIFACT_SYSTEM_TRUST=1` 的隔离 runner 中允许安装临时 CA。Windows 使用 CurrentUser Root；macOS 将证书放入专用用户 keychain，并通过 runner 已有的 `sudo -n` 写入限定 SSL 主机的管理员信任域。脚本不改 authorizationdb、不关闭 TLS；用精确证书指纹记录并清理，工作流还有 `always()` 收尾。普通开发机／self-hosted runner 拒绝这类信任写入。
+Linux 假 CA 只放入测试子进程证书环境。Windows／macOS 的实际产物旅程使用系统校验：仅在 `GITHUB_ACTIONS=true`、`RUNNER_ENVIRONMENT=github-hosted` 且显式 `FEISHU_ARTIFACT_SYSTEM_TRUST=1` 的隔离 runner 中允许安装临时 CA。Windows 验证运行身份已经具有管理员权限，使用正常 `LocalMachine Root` 导入，并按 SHA-1／SHA-256 双指纹确认、删除和复查；权限不足直接失败，不启动提权。普通开发机／self-hosted runner 拒绝这类信任写入。
+
+macOS 在安装前额外要求 `FEISHU_ARTIFACT_MACOS_TRUST_SCOPE=hosted_job`，固定 `macos-15`／`macos-15-intel` runner label 与本仓工作流／job，并将 repository、workflow ref、run、attempt 和 job 身份绑定到 journal。证书放在专用用户 keychain，使用 runner 已有的 `sudo -n` 写入仅针对 SSL／`open.feishu.cn` 的管理员信任。每次测试仍须确认服务与原生进程停止、恢复原 keychain 搜索列表、删除专用 keychain；任一步未确认均使验证失败。CA 私钥只在 fixture 进程内，不进入 journal、缓存或 artifact。
+
+macOS 管理员信任记录的生命周期是整个一次性 job；本地收尾明确记录 `awaiting_hosted_runner_teardown`，由 GitHub 在 job 结束后退役该 VM，而非声称测试已同步撤销系统信任。[GitHub 官方文档](https://docs.github.com/en/actions/how-tos/manage-runners/github-hosted-runners/use-github-hosted-runners)说明每个托管 job 新建 VM、结束后自动退役；进程内无法观察最终退役，也不能据此宣称物理介质已安全擦除。该信任在同一 job 的后续步骤仍可能有效，所以 fixture job 仅使用测试身份，不接入真实飞书凭据；发布步骤在独立 job。工作流 `always()` 复查本地资源并输出生命周期记录；旧的逐测试 journal 不会因新环境变量而改用此模式。脚本保持正常 OS 授权与 TLS 验证。
 
 升级旅程另外构建固定基线提交 `f727a9cd074e1001000fa7c14ecad38d25e369d1` 的旧二进制，以真实 `run --service --env-file --log-file` 进程完成首轮，然后在同一私有安装路径替换为当前产物并恢复。检查网关／原生 ID、历史、配置／环境／项目文件字节及服务日志前缀；测试侧读取旧数据库使用只读 SQL，不能在新服务启动前替它迁移。旧、新产物的 commit、version 和 SHA-256 必须不同。它验证服务进程模式的替换与恢复，不替代每种 OS 服务注册器或生产租户升级验收。
 
 普通本地测试未提供产物或原生 CLI 路径时会明确 skip；显式产物检查缺少要求的身份、旧二进制或固定 CLI 时不能报告完整成功。本地终端交接另有 Linux 真 PTY fixture 验证前台进程组、终端输入、启动失败及取消后的恢复和后代清理；macOS／Windows 的实际交互终端体验仍需人工验收。
 
+完整产物旅程由外层进程监督器执行：Go 测试 420 秒截止，外层执行 450 秒截止，另有 35 秒回收预算。Unix 用持续存活的独立 session leader 追踪不同进程组，Windows 在恢复启动前把进程加入持有的 Job Object；Linux 核对 pidfd／启动身份，macOS 核对 SID／libproc 启动时间。退出码 124 表示执行超时且已完成回收，125 表示监督或回收无法确认；都不能成为成功验证。全部原生平台还运行监督器的真实故障用例，覆盖正常父进程退出、命令崩溃、多进程组与硬超时。Unix 监督器自身被 SIGKILL、主动另建 session 的逃逸进程和整机强制结束仍依赖一次性 runner 回收，监督器不是容器隔离。
+
 ## 发布包验证
 
-版本 tag 对应的提交在 Linux amd64／arm64、Windows amd64、macOS amd64／arm64 原生 runner 上分别运行竞态测试、vet 和固定原生 CLI 回归。随后用 `CGO_ENABLED=0` 构建生产二进制，对将要上传的便携包解压，校验 BUILDINFO 中版本／提交／SHA-256，再从解包路径执行基本命令及完整 `TestBuiltArtifact*` 旅程；安装包还须重复构建并逐字节比较，在原生平台实际安装、从已安装二进制运行同一完整旅程，再卸载。交叉编译成功不能代替目标架构或安装包的实际执行。
+版本 tag 对应的提交在 Linux amd64／arm64、Windows amd64、macOS amd64／arm64 原生 runner 上分别运行竞态测试、vet 和固定原生 CLI 回归。随后用 `CGO_ENABLED=0` 构建生产二进制，对将要上传的便携包解压，校验 BUILDINFO 中版本／提交／SHA-256，再从解包路径执行基本命令及完整 `TestBuiltArtifact*` 旅程；安装包还须重复构建并逐字节比较，在原生平台实际安装、从已安装二进制运行同一完整旅程，再卸载。安装前拒绝既有包、相关 MSI 产品或安装目录；安装部分失败也进入身份核验后的收尾，卸载失败或仍有残留文件会使验证失败并保留诊断。交叉编译成功不能代替目标架构或安装包的实际执行。
 
 常规 CI 通过 `python -m unittest discover -s .github/scripts -p 'test_*.py'` 检查版本、发布说明、打包与发布状态机；这些测试不上传附件。发布 job 再核对完整文件集合、构建身份与 SHA-256，上传草稿后重新下载验证，最后公开 Release。具体契约与重跑方式见[版本发布](releasing.md)。
 

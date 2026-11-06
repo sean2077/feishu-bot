@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -53,17 +54,24 @@ class ArtifactIdentityTests(unittest.TestCase):
             env = {"CLAUDE_NATIVE_PATH": "/pinned/native"}
             env.update({"FEISHU_PREVIOUS_ARTIFACT_" + field: "previous-" + field for field in ("PATH", "VERSION", "COMMIT", "SHA256", "BUILDINFO")})
             with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(
-                    release.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as command:
+                    release.artifact_processes, "run_command", return_value=0) as command:
                 release.artifact_journey(info, binary, manifest, root)
                 invocation = command.call_args
                 self.assertEqual(invocation.kwargs["env"]["FEISHU_ARTIFACT_PATH"], str(binary.resolve()))
                 self.assertEqual(invocation.kwargs["env"]["FEISHU_ARTIFACT_COMMIT"], COMMIT)
                 self.assertEqual(invocation.kwargs["env"]["FEISHU_ARTIFACT_SHA256"], digest)
                 self.assertIn("^TestBuiltArtifact", invocation.args[0])
+                self.assertEqual(invocation.kwargs["timeout"], 450)
+                self.assertEqual(invocation.kwargs["cleanup_timeout"], 35)
+                for result, message in ((124, "exceeded 450s"), (125, "cleanup could not be confirmed"),
+                                        (2, "journey \\(exit 2\\)")):
+                    command.return_value = result
+                    with self.assertRaisesRegex(release.ReleaseError, message):
+                        release.artifact_journey(info, binary, manifest, root)
                 del os.environ["FEISHU_PREVIOUS_ARTIFACT_SHA256"]
                 with self.assertRaisesRegex(release.ReleaseError, "previous binary"):
                     release.artifact_journey(info, binary, manifest, root)
-            with mock.patch.object(release.subprocess, "run") as command:
+            with mock.patch.object(release.artifact_processes, "run_command") as command:
                 binary.write_bytes(b"different executable")
                 with self.assertRaisesRegex(release.ReleaseError, "identity"):
                     release.artifact_journey(info, binary, manifest, root)
@@ -76,9 +84,19 @@ class ArtifactTrustTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.environment = mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
-                                                      "FEISHU_ARTIFACT_SYSTEM_TRUST": "1", "RUNNER_TEMP": str(self.root)}, clear=True)
+                                                      "FEISHU_ARTIFACT_SYSTEM_TRUST": "1", "RUNNER_TEMP": str(self.root),
+                                                      "FEISHU_ARTIFACT_MACOS_TRUST_SCOPE": "hosted_job",
+                                                      "FEISHU_ARTIFACT_RUNNER_LABEL": "macos-15",
+                                                      "GITHUB_REPOSITORY": "sean2077/feishu-bot",
+                                                      "GITHUB_WORKFLOW_REF": "sean2077/feishu-bot/.github/workflows/ci.yml@refs/heads/main",
+                                                      "GITHUB_RUN_ID": "12345", "GITHUB_RUN_ATTEMPT": "1",
+                                                      "GITHUB_JOB": "cross-platform"}, clear=True)
         self.environment.start()
         self.addCleanup(self.environment.stop)
+        self.administrator_check = artifact_trust.windows_administrator
+        admin = mock.patch.object(artifact_trust, "windows_administrator")
+        admin.start()
+        self.addCleanup(admin.stop)
         # Command seams are mocked. This is intentionally not a real CA and is
         # never imported into a development machine's certificate store.
         self.certificate = self.root / "input.pem"
@@ -92,7 +110,7 @@ class ArtifactTrustTests(unittest.TestCase):
                     artifact_trust.install(self.certificate)
                 command.assert_not_called()
 
-    def test_windows_only_adds_and_removes_exact_current_user_fingerprint(self):
+    def test_windows_only_adds_and_removes_exact_authorized_machine_fingerprint(self):
         commands, present = [], False
 
         def invoke(args, check=True):
@@ -118,6 +136,7 @@ class ArtifactTrustTests(unittest.TestCase):
             self.assertEqual(command[:5], ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
             self.assertEqual(command[command.index("-Thumbprint") + 1], hashlib.sha1(self.der).hexdigest())
             self.assertEqual(command[command.index("-Sha256") + 1], hashlib.sha256(self.der).hexdigest())
+            self.assertEqual(command[command.index("-StoreScope") + 1], "LocalMachine")
 
     def test_changed_certificate_record_cannot_remove_an_unrelated_root(self):
         with mock.patch.object(artifact_trust.platform, "system", return_value="Windows"), mock.patch.object(
@@ -131,7 +150,7 @@ class ArtifactTrustTests(unittest.TestCase):
                 artifact_trust.cleanup(record)
             command.assert_not_called()
 
-    def test_macos_restores_search_list_and_removes_only_its_temporary_ca(self):
+    def test_legacy_macos_journal_is_not_upgraded_to_job_lifetime_by_environment(self):
         commands, trusted = [], False
         original = "/original/login.keychain-db"
 
@@ -162,6 +181,10 @@ class ArtifactTrustTests(unittest.TestCase):
 
         with mock.patch.object(artifact_trust.platform, "system", return_value="Darwin"), mock.patch.object(artifact_trust, "invoke", side_effect=invoke):
             record = artifact_trust.install(self.certificate)
+            legacy = json.loads(record.read_text())
+            del legacy["trust_scope"]
+            del legacy["job_identity"]
+            artifact_trust.save(record, legacy)
             artifact_trust.cleanup_all()
         self.assertFalse(record.parent.exists())
         self.assertFalse(trusted)
@@ -170,6 +193,105 @@ class ArtifactTrustTests(unittest.TestCase):
         self.assertEqual(imports, [["sudo", "-n", "/usr/bin/security", "trust-settings-import", "-d", str(record.parent / "trust-cleaned.plist")]])
         self.assertFalse(any("remove-trusted-cert" in command for command in commands))
         self.assertFalse(any("authorizationdb" in command for command in commands))
+
+    def macos_commands(self):
+        state = {"commands": [], "search": ["/original/login.keychain-db"], "trusted": False,
+                 "fail_restore": False, "fail_delete": False}
+        def invoke(args, check=True):
+            state["commands"].append(args)
+            output = ""
+            if "list-keychains" in args:
+                if "-s" in args:
+                    items = args[args.index("-s") + 1:]
+                    if state["fail_restore"] and items == ["/original/login.keychain-db"]:
+                        raise artifact_trust.TrustError("user search list restoration denied")
+                    state["search"] = items
+                else:
+                    output = "\n".join('"' + item + '"' for item in state["search"])
+            elif "create-keychain" in args:
+                Path(args[-1]).touch()
+            elif "add-trusted-cert" in args:
+                state["trusted"] = True
+            elif "delete-keychain" in args:
+                if state["fail_delete"]:
+                    raise artifact_trust.TrustError("user keychain deletion denied")
+                Path(args[-1]).unlink()
+            elif "trust-settings-import" in args or "remove-trusted-cert" in args:
+                raise AssertionError("hosted_job lifetime must not request per-test administrator trust removal")
+            return subprocess.CompletedProcess(args, 0, output, "")
+        return state, invoke
+
+    def test_macos_job_lifetime_releases_user_resources_and_reports_deferred_trust(self):
+        state, invoke = self.macos_commands()
+        with mock.patch.object(artifact_trust.platform, "system", return_value="Darwin"), mock.patch.object(
+                artifact_trust, "invoke", side_effect=invoke):
+            record = artifact_trust.install(self.certificate)
+            receipt = artifact_trust.cleanup(record)
+            self.assertTrue(state["trusted"])
+            self.assertEqual(state["search"], ["/original/login.keychain-db"])
+            self.assertFalse((record.parent / "fixture.keychain-db").exists())
+            self.assertTrue(record.is_file())
+            self.assertEqual(receipt["administrator_trust"], "awaiting_hosted_runner_teardown")
+            self.assertEqual(receipt["job_identity"]["run_id"], "12345")
+            self.assertEqual(json.loads((record.parent / "receipt.json").read_text()), receipt)
+            self.assertNotIn("PRIVATE KEY", "".join(path.read_text() for path in record.parent.iterdir()))
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+                artifact_trust.cleanup_all()
+            self.assertEqual(json.loads(output.getvalue()), receipt)
+        self.assertFalse(any("authorizationdb" in command for command in state["commands"]))
+        self.assertEqual(sum("verify-cert" in command for command in state["commands"]), 1)
+
+    def test_macos_job_lifetime_rejects_missing_scope_wrong_vm_and_incomplete_job_before_mutation(self):
+        changes = (("FEISHU_ARTIFACT_MACOS_TRUST_SCOPE", ""), ("FEISHU_ARTIFACT_MACOS_TRUST_SCOPE", "fixture"),
+                   ("FEISHU_ARTIFACT_RUNNER_LABEL", "macos-latest"), ("GITHUB_RUN_ID", ""),
+                   ("GITHUB_RUN_ATTEMPT", "0"), ("GITHUB_JOB", "unrelated"),
+                   ("GITHUB_WORKFLOW_REF", "other/project/.github/workflows/ci.yml@refs/heads/main"))
+        for key, value in changes:
+            with self.subTest(key=key, value=value), mock.patch.dict(os.environ, {key: value}), mock.patch.object(
+                    artifact_trust.platform, "system", return_value="Darwin"), mock.patch.object(artifact_trust, "invoke") as command:
+                with self.assertRaises(artifact_trust.TrustError):
+                    artifact_trust.install(self.certificate)
+                command.assert_not_called()
+                self.assertFalse((self.root / "feishu-artifact-trust").exists())
+
+    def test_macos_job_journal_cannot_be_replayed_in_another_run_attempt_job_or_workflow(self):
+        state, invoke = self.macos_commands()
+        with mock.patch.object(artifact_trust.platform, "system", return_value="Darwin"), mock.patch.object(
+                artifact_trust, "invoke", side_effect=invoke) as command:
+            record = artifact_trust.install(self.certificate)
+            changes = ({"GITHUB_RUN_ID": "56789"}, {"GITHUB_RUN_ATTEMPT": "2"},
+                       {"FEISHU_ARTIFACT_RUNNER_LABEL": "macos-15-intel"},
+                       {"GITHUB_WORKFLOW_REF": "sean2077/feishu-bot/.github/workflows/release.yml@refs/tags/v1.2.3", "GITHUB_JOB": "build"})
+            for env in changes:
+                with self.subTest(env=env), mock.patch.dict(os.environ, env):
+                    command.reset_mock()
+                    with self.assertRaisesRegex(artifact_trust.TrustError, "different hosted job"):
+                        artifact_trust.cleanup(record)
+                    command.assert_not_called()
+                    self.assertTrue(record.is_file())
+
+    def test_macos_user_resource_cleanup_failure_still_fails_the_job_scoped_fixture(self):
+        for failure in ("fail_restore", "fail_delete"):
+            state, invoke = self.macos_commands()
+            with self.subTest(failure=failure), mock.patch.object(artifact_trust.platform, "system", return_value="Darwin"), mock.patch.object(
+                    artifact_trust, "invoke", side_effect=invoke):
+                record = artifact_trust.install(self.certificate)
+                state[failure] = True
+                with self.assertRaisesRegex(artifact_trust.TrustError, "certificate cleanup incomplete"):
+                    artifact_trust.cleanup(record)
+                self.assertTrue(record.is_file())
+                self.assertFalse((record.parent / "receipt.json").exists())
+
+    def test_macos_always_sweep_detects_a_keychain_reintroduced_after_cleanup(self):
+        state, invoke = self.macos_commands()
+        with mock.patch.object(artifact_trust.platform, "system", return_value="Darwin"), mock.patch.object(
+                artifact_trust, "invoke", side_effect=invoke):
+            record = artifact_trust.install(self.certificate)
+            artifact_trust.cleanup(record)
+            state["search"].append(str(record.parent / "fixture.keychain-db"))
+            with self.assertRaisesRegex(artifact_trust.TrustError, "remains in the search list"):
+                artifact_trust.cleanup_all()
+            self.assertFalse((record.parent / "receipt.json").exists())
 
     def test_macos_privileged_security_child_has_its_own_timeout(self):
         args = ["sudo", "-n", "/usr/bin/security", "trust-settings-import", "-d", "/fixture.plist"]
@@ -214,7 +336,7 @@ class ArtifactTrustTests(unittest.TestCase):
         with mock.patch.object(artifact_trust.platform, "system", return_value="Windows"), mock.patch.object(
                 artifact_trust.subprocess, "run", return_value=subprocess.CompletedProcess([], 0x80070005, "", "access denied")) as command:
             for _ in range(2):
-                with self.assertRaisesRegex(artifact_trust.TrustError, "CurrentUser Root inspect.*access denied"):
+                with self.assertRaisesRegex(artifact_trust.TrustError, "LocalMachine Root inspect.*access denied"):
                     artifact_trust.cleanup(record)
                 self.assertTrue(record.is_file())
             self.assertTrue(all(call.args[0][call.args[0].index("-Operation") + 1] == "inspect"
@@ -250,6 +372,16 @@ class ArtifactTrustTests(unittest.TestCase):
                 subprocess.TimeoutExpired(args, 30, output=b"partial import diagnostic")):
             with self.assertRaisesRegex(artifact_trust.TrustError, "CurrentUser Root import: partial import diagnostic"):
                 artifact_trust.invoke(args)
+
+    def test_windows_non_administrator_fails_before_any_trust_mutation_or_journal(self):
+        with mock.patch.object(artifact_trust.platform, "system", return_value="Windows"), mock.patch.object(
+                artifact_trust, "windows_administrator", wraps=self.administrator_check), mock.patch.object(
+                artifact_trust, "invoke", return_value=subprocess.CompletedProcess([], 0, '{"administrator":false}', "")) as command:
+            with self.assertRaisesRegex(artifact_trust.TrustError, "existing administrator token; no elevation attempted"):
+                artifact_trust.install(self.certificate)
+            self.assertEqual(command.call_count, 1)
+            self.assertIn("-Command", command.call_args.args[0])
+            self.assertFalse((self.root / "feishu-artifact-trust").exists())
 
 
 if __name__ == "__main__":

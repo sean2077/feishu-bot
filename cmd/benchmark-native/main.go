@@ -37,24 +37,24 @@ type settings struct {
 	TransportMS int    `json:"transportMs"`
 	Attachments bool   `json:"attachments"`
 	Reclaim     bool   `json:"reclaim"`
-	Concurrent bool `json:"concurrent"`
-	SoakSeconds int `json:"soakSeconds"`
-	MaxTurns int `json:"maxTurns"`
-	SampleMS int `json:"sampleMs"`
+	Concurrent  bool   `json:"concurrent"`
+	SoakSeconds int    `json:"soakSeconds"`
+	MaxTurns    int    `json:"maxTurns"`
+	SampleMS    int    `json:"sampleMs"`
 	Claude      string `json:"-"`
 }
 type turn struct {
-	Sequence int64 `json:"sequence"`
-	StartedMS float64 `json:"startedMs"`
-	ElapsedMS float64 `json:"elapsedMs"`
-	Room     int       `json:"room"`
-	Kind     string    `json:"kind"`
-	Success  bool      `json:"success"`
-	Matched  bool      `json:"fixtureReplyMatched"`
-	First    *float64  `json:"firstOutputMs"`
-	Result   *float64  `json:"nativeResultMs"`
-	Delivery *float64  `json:"mockDeliveryMs"`
-	Usage    core.Args `json:"usage"`
+	Sequence  int64     `json:"sequence"`
+	StartedMS float64   `json:"startedMs"`
+	ElapsedMS float64   `json:"elapsedMs"`
+	Room      int       `json:"room"`
+	Kind      string    `json:"kind"`
+	Success   bool      `json:"success"`
+	Matched   bool      `json:"fixtureReplyMatched"`
+	First     *float64  `json:"firstOutputMs"`
+	Result    *float64  `json:"nativeResultMs"`
+	Delivery  *float64  `json:"mockDeliveryMs"`
+	Usage     core.Args `json:"usage"`
 }
 type sample struct {
 	Index          int               `json:"index"`
@@ -76,9 +76,9 @@ type sample struct {
 	Stop           float64           `json:"stopMs"`
 	Cleanup        bool              `json:"cleanupConfirmed"`
 	ModelRequests  int64             `json:"modelRequests"`
-	Workload workloadStats `json:"workload"`
-	Trends trendSeries `json:"trends"`
-	EvidenceDir string `json:"evidenceDirectory,omitempty"`
+	Workload       workloadStats     `json:"workload"`
+	Trends         trendSeries       `json:"trends"`
+	EvidenceDir    string            `json:"evidenceDirectory,omitempty"`
 }
 type observation struct {
 	id                  string
@@ -132,8 +132,12 @@ func runSample(index int, o settings) (result sample) {
 	if o.UpdateMS <= 0 {
 		o.UpdateMS = 50
 	}
-	if o.MaxTurns<=0{o.MaxTurns=1000}
-	if o.SampleMS<=0{o.SampleMS=1000}
+	if o.MaxTurns <= 0 {
+		o.MaxTurns = 1000
+	}
+	if o.SampleMS <= 0 {
+		o.SampleMS = 1000
+	}
 	result = sample{Index: index, Scenario: o.Scenario, Status: "failed", Stable: true, Cleanup: true, Failures: []string{}, Turns: []turn{}, MemoryPhases: map[string]memory{}}
 	dir, err := os.MkdirTemp("", "feishu-go-baseline-")
 	if err != nil {
@@ -149,8 +153,8 @@ func runSample(index int, o settings) (result sample) {
 	var trends *trendSampler
 	var progress *progressLog
 	var maintenance maintenanceObservations
-	var sequence,inFlight atomic.Int64
-	benchmarkStarted:=time.Now()
+	var sequence, inFlight atomic.Int64
+	benchmarkStarted := time.Now()
 	var mu sync.Mutex
 	byRoom := map[string]*observation{}
 	byID := map[string]*observation{}
@@ -188,7 +192,9 @@ func runSample(index int, o settings) (result sample) {
 		}
 		result.Stop = elapsed(start)
 		result.MemoryPhases["after-stop"] = memorySnapshot(o.Claude)
-		if trends!=nil{result.Trends=trends.stop()}
+		if trends != nil {
+			result.Trends = trends.stop()
+		}
 		if st != nil {
 			if err := st.Close(); err != nil {
 				result.Failures = append(result.Failures, "store-close")
@@ -208,24 +214,36 @@ func runSample(index int, o settings) (result sample) {
 		var after runtime.MemStats
 		runtime.ReadMemStats(&after)
 		result.AllocatedBytes, result.Allocations = after.TotalAlloc-before.TotalAlloc, after.Mallocs-before.Mallocs
-		if progress!=nil {
-			progress.record("cleanup",core.Args{"confirmed":result.Cleanup,"stopMs":result.Stop,"failures":result.Failures})
-			if err:=progress.close();err!=nil{result.Failures=append(result.Failures,"progress-log-write")}
+		if progress != nil {
+			progress.record("cleanup", core.Args{"confirmed": result.Cleanup, "stopMs": result.Stop, "failures": result.Failures})
+			if err := progress.close(); err != nil {
+				result.Failures = append(result.Failures, "progress-log-write")
+			}
 		}
-		sort.Slice(result.Turns,func(i,j int)bool{return result.Turns[i].Sequence<result.Turns[j].Sequence})
-		if len(result.Failures) == 0&&result.Cleanup {
+		sort.Slice(result.Turns, func(i, j int) bool { return result.Turns[i].Sequence < result.Turns[j].Sequence })
+		if len(result.Failures) == 0 && result.Cleanup {
 			result.Status = "passed"
-			if err:=os.RemoveAll(dir);err!=nil{result.Status="failed";result.Failures=append(result.Failures,"temporary-directory-cleanup")}
+			if err := os.RemoveAll(dir); err != nil {
+				result.Status = "failed"
+				result.Failures = append(result.Failures, "temporary-directory-cleanup")
+			}
 		}
-		if result.Status!="passed" {
-			result.EvidenceDir=dir
-			data,marshalErr:=json.MarshalIndent(result,"","  ")
-			if marshalErr!=nil||os.WriteFile(filepath.Join(dir,"benchmark-evidence.json"),data,0600)!=nil{result.Failures=append(result.Failures,"evidence-summary-write")}
+		if result.Status != "passed" {
+			result.EvidenceDir = dir
+			data, marshalErr := json.MarshalIndent(result, "", "  ")
+			if marshalErr != nil || os.WriteFile(filepath.Join(dir, "benchmark-evidence.json"), data, 0600) != nil {
+				result.Failures = append(result.Failures, "evidence-summary-write")
+			}
 		}
 	}()
-	progress,err=newProgressLog(dir)
-	if err!=nil{result.Failures=append(result.Failures,"progress-log-open");return}
-	if o.Concurrent||o.SoakSeconds>0{fmt.Fprintf(os.Stderr,"benchmark sample %d live observations: %s\n",index,filepath.Join(dir,"observations.jsonl"))}
+	progress, err = newProgressLog(dir)
+	if err != nil {
+		result.Failures = append(result.Failures, "progress-log-open")
+		return
+	}
+	if o.Concurrent || o.SoakSeconds > 0 {
+		fmt.Fprintf(os.Stderr, "benchmark sample %d live observations: %s\n", index, filepath.Join(dir, "observations.jsonl"))
+	}
 	start := time.Now()
 	c := config.Defaults()
 	c.TenantID, c.AppID = "tenant_fixture", "cli_fixture"
@@ -277,7 +295,12 @@ func runSample(index int, o settings) (result sample) {
 		active.Add(1)
 		return &observedWorker{Worker: w, stopping: stopping, onStopped: func() { active.Add(-1) }}, nil
 	}
-	g = gateway.New(c, st, tr, wrapped, func(event string,args core.Args){maintenance.record(event,args);if event=="store_maintenance"{progress.record("maintenance",args)}})
+	g = gateway.New(c, st, tr, wrapped, func(event string, args core.Args) {
+		maintenance.record(event, args)
+		if event == "store_maintenance" {
+			progress.record("maintenance", args)
+		}
+	})
 	if err = g.Recover(context.Background()); err != nil {
 		result.Failures = append(result.Failures, "recovery")
 		return
@@ -285,15 +308,18 @@ func runSample(index int, o settings) (result sample) {
 	result.ServiceInit = elapsed(start)
 	result.MemoryPhases["no-session"] = memorySnapshot(o.Claude)
 	sampler = startMemorySampler(o.Claude)
-	maintenanceInterval:=time.Duration(0)
-	if o.Concurrent||o.SoakSeconds>0{maintenanceInterval=5*time.Second}
-	trends=startTrendSampler(o.Claude,filepath.Join(c.DataDir,"gateway.sqlite"),time.Duration(o.SampleMS)*time.Millisecond,maintenanceInterval,active.Load,inFlight.Load,&maintenance,g.Sweep,progress)
+	maintenanceInterval := time.Duration(0)
+	if o.Concurrent || o.SoakSeconds > 0 {
+		maintenanceInterval = 5 * time.Second
+	}
+	trends = startTrendSampler(o.Claude, filepath.Join(c.DataDir, "gateway.sqlite"), time.Duration(o.SampleMS)*time.Millisecond, maintenanceInterval, active.Load, inFlight.Load, &maintenance, g.Sweep, progress)
 	previous := map[int]core.Session{}
-	fail:=func(reason string){mu.Lock();result.Failures=append(result.Failures,reason);mu.Unlock()}
+	fail := func(reason string) { mu.Lock(); result.Failures = append(result.Failures, reason); mu.Unlock() }
 	runTurn := func(roomIndex int, kind string, attach bool) bool {
-		seq:=sequence.Add(1)
-		startedMS:=elapsed(benchmarkStarted)
-		inFlight.Add(1);defer inFlight.Add(-1)
+		seq := sequence.Add(1)
+		startedMS := elapsed(benchmarkStarted)
+		inFlight.Add(1)
+		defer inFlight.Add(-1)
 		input := core.Message{ID: core.NewID(), ChatID: c.Groups[roomIndex].ChatID, ChatType: "group", SenderID: "alice", Text: "Return the local benchmark fixture answer without using tools.", Mentioned: true, Time: time.Now().UnixMilli()}
 		if attach {
 			input.Resources = []core.Resource{{Key: "fixture-attachment", Kind: "file", Name: "benchmark-input.txt"}}
@@ -307,28 +333,31 @@ func runSample(index int, o settings) (result sample) {
 		mu.Lock()
 		byRoom[room.Key], byID[input.ID] = current, current
 		mu.Unlock()
-		turnCtx,stopTurn:=context.WithTimeout(context.Background(),45*time.Second)
-		inboundErr:=g.Message(turnCtx,input)
-		if inboundErr==nil {
+		turnCtx, stopTurn := context.WithTimeout(context.Background(), 45*time.Second)
+		inboundErr := g.Message(turnCtx, input)
+		if inboundErr == nil {
 			select {
 			case <-current.completed:
 			case <-turnCtx.Done():
 			}
-		}else{fail("inbound")}
+		} else {
+			fail("inbound")
+		}
 		stopTurn()
 		mu.Lock()
-		observed := turn{Sequence:seq,StartedMS:startedMS,ElapsedMS:elapsed(current.started),Room: roomIndex, Kind: kind, Success: current.success && current.done != nil && current.matched, Matched: current.matched, First: current.first, Result: current.result, Delivery: current.done, Usage: current.usage}
+		observed := turn{Sequence: seq, StartedMS: startedMS, ElapsedMS: elapsed(current.started), Room: roomIndex, Kind: kind, Success: current.success && current.done != nil && current.matched, Matched: current.matched, First: current.first, Result: current.result, Delivery: current.done, Usage: current.usage}
 		delete(byRoom, room.Key)
 		delete(byID, input.ID)
 		result.Turns = append(result.Turns, observed)
 		mu.Unlock()
-		progress.record("turn",observed)
+		progress.record("turn", observed)
 		if !observed.Success || observed.First == nil {
 			fail("turn-not-delivered")
 			return false
 		}
 		session, err := st.Session(room.Key)
-		mu.Lock();defer mu.Unlock()
+		mu.Lock()
+		defer mu.Unlock()
 		old := previous[roomIndex]
 		if err != nil || session.CCID == "" || (old.ID != "" && (session.ID != old.ID || session.CCID != old.CCID)) {
 			result.Stable = false
@@ -338,8 +367,10 @@ func runSample(index int, o settings) (result sample) {
 		previous[roomIndex] = session
 		return true
 	}
-	result.Workload=executeWorkload(o,runTurn)
-	if result.Workload.StopReason=="turn_failed"{return}
+	result.Workload = executeWorkload(o, runTurn)
+	if result.Workload.StopReason == "turn_failed" {
+		return
+	}
 	if int(workers.Load()) != o.Sessions {
 		result.Failures = append(result.Failures, "unexpected-worker-count")
 		return
@@ -355,11 +386,16 @@ func runSample(index int, o settings) (result sample) {
 		}
 		mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		for active.Load()>0&&ctx.Err()==nil {
-			g.Sweep(ctx,time.Now().UnixMilli()+c.Runtime.IdleMS+1)
-			if active.Load()==0{break}
-			wait:=time.NewTimer(25*time.Millisecond)
-			select{case <-ctx.Done():case <-wait.C:}
+		for active.Load() > 0 && ctx.Err() == nil {
+			g.Sweep(ctx, time.Now().UnixMilli()+c.Runtime.IdleMS+1)
+			if active.Load() == 0 {
+				break
+			}
+			wait := time.NewTimer(25 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+			case <-wait.C:
+			}
 			wait.Stop()
 		}
 		cancel()
@@ -441,8 +477,20 @@ func nativeIdentity(path string) native.VersionCompatibility {
 	return native.Compatibility(output.String())
 }
 
-func boolInt(v bool)int{if v{return 1};return 0}
-func workloadFits(o settings)bool{for _,scenario:=range scenarios(o){if o.MaxTurns<scenario.Sessions*(scenario.WarmTurns+1+boolInt(scenario.Reclaim)){return false}};return true}
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+func workloadFits(o settings) bool {
+	for _, scenario := range scenarios(o) {
+		if o.MaxTurns < scenario.Sessions*(scenario.WarmTurns+1+boolInt(scenario.Reclaim)) {
+			return false
+		}
+	}
+	return true
+}
 
 func main() {
 	var o settings
@@ -456,13 +504,13 @@ func main() {
 	flag.IntVar(&o.TransportMS, "transport-ms", 0, "local mock card latency (0..1000)")
 	flag.BoolVar(&o.Attachments, "attachments", false, "include a 1 MiB synthetic inbound file and observe outgoing exports")
 	flag.BoolVar(&o.Reclaim, "reclaim", false, "reclaim confirmed idle processes and resume the same native IDs")
-	flag.BoolVar(&o.Concurrent,"concurrent",false,"submit turns concurrently across rooms; each room stays serial (warm scenario only)")
-	flag.IntVar(&o.SoakSeconds,"soak-seconds",0,"additional sustained workload window (0..3600); in-flight turn may drain for up to 45 seconds")
-	flag.IntVar(&o.MaxTurns,"max-turns",1000,"maximum turns per sample including warmup and optional resume (1..20000)")
-	flag.IntVar(&o.SampleMS,"sample-ms",1000,"live database/WAL/goroutine/memory trend interval (100..10000 ms)")
+	flag.BoolVar(&o.Concurrent, "concurrent", false, "submit turns concurrently across rooms; each room stays serial (warm scenario only)")
+	flag.IntVar(&o.SoakSeconds, "soak-seconds", 0, "additional sustained workload window (0..3600); in-flight turn may drain for up to 45 seconds")
+	flag.IntVar(&o.MaxTurns, "max-turns", 1000, "maximum turns per sample including warmup and optional resume (1..20000)")
+	flag.IntVar(&o.SampleMS, "sample-ms", 1000, "live database/WAL/goroutine/memory trend interval (100..10000 ms)")
 	flag.StringVar(&o.Claude, "claude", os.Getenv("CLAUDE_NATIVE_PATH"), "native Claude executable")
 	flag.Parse()
-	if flag.NArg() != 0 || o.Samples < 1 || o.Samples > 10 || o.WarmTurns < 0 || o.WarmTurns > 5 || o.IdleMS < 100 || o.IdleMS > 10000 || o.Sessions < 0 || o.Sessions > 8 || o.TextBytes < 0 || o.TextBytes > 100<<10 || o.UpdateMS < 20 || o.UpdateMS > 5000 || o.TransportMS < 0 || o.TransportMS > 1000 || (o.Scenario != "warm" && o.Scenario != "matrix") || o.SoakSeconds<0 || o.SoakSeconds>3600 || o.MaxTurns<1 || o.MaxTurns>20000 || o.SampleMS<100 || o.SampleMS>10000 || ((o.Concurrent||o.SoakSeconds>0)&&(o.Scenario=="matrix"||o.Sessions==0)) || !workloadFits(o) {
+	if flag.NArg() != 0 || o.Samples < 1 || o.Samples > 10 || o.WarmTurns < 0 || o.WarmTurns > 5 || o.IdleMS < 100 || o.IdleMS > 10000 || o.Sessions < 0 || o.Sessions > 8 || o.TextBytes < 0 || o.TextBytes > 100<<10 || o.UpdateMS < 20 || o.UpdateMS > 5000 || o.TransportMS < 0 || o.TransportMS > 1000 || (o.Scenario != "warm" && o.Scenario != "matrix") || o.SoakSeconds < 0 || o.SoakSeconds > 3600 || o.MaxTurns < 1 || o.MaxTurns > 20000 || o.SampleMS < 100 || o.SampleMS > 10000 || ((o.Concurrent || o.SoakSeconds > 0) && (o.Scenario == "matrix" || o.Sessions == 0)) || !workloadFits(o) {
 		fmt.Fprintln(os.Stderr, "invalid benchmark arguments")
 		os.Exit(1)
 	}
@@ -511,7 +559,7 @@ func main() {
 			break
 		}
 	}
-	report := core.Args{"schema": 3, "fixture": "deterministic-text-v2", "settings": o, "native": identity, "environment": core.Args{"platform": runtime.GOOS, "arch": runtime.GOARCH, "go": runtime.Version(), "logicalCpus": runtime.NumCPU()}, "scope": core.Args{"model": "Local deterministic HTTP fixture; synthetic tokens are not model cost.", "transport": "In-memory Feishu substitute; no live acceptance. Slow-card latency is synthetic.", "memory": "Host includes benchmark, gateway, SQLite and fixture. RSS/Working Set sums can double-count shared pages; unavailable is not zero. Native tools and MCP descendants are grouped, not inferred individually.", "allocations": "Process-wide Go allocations include the driver and fixtures; use the isolated render microbenchmarks for the rendering component.", "cold": "Fresh native session, not cold OS caches.", "concurrency":"peakInFlightTurns counts overlapping submitted turns; retained idle workers alone are not concurrency or throughput.", "trends":"Collected live at sampleMs with a bounded 2000-point recent window plus initial sample; observations.jsonl is appended during the run and retained with failed samples. Additional sweep cadence is 5 seconds only for concurrent/soak runs; synthetic fixture completion rate is not model/Feishu throughput.", "liveServiceAccepted": false}, "samples": all, "summary": core.Args{"attemptedSamples": len(all), "passedSamples": passed, "failedSamples": len(all) - passed, "unattemptedSamples": expected - len(all), "coldFirstOutputMs": distribution(cold), "warmFirstOutputMs": distribution(warm), "resumeFirstOutputMs": distribution(resumed), "stopMs": distribution(stops)}}
+	report := core.Args{"schema": 3, "fixture": "deterministic-text-v2", "settings": o, "native": identity, "environment": core.Args{"platform": runtime.GOOS, "arch": runtime.GOARCH, "go": runtime.Version(), "logicalCpus": runtime.NumCPU()}, "scope": core.Args{"model": "Local deterministic HTTP fixture; synthetic tokens are not model cost.", "transport": "In-memory Feishu substitute; no live acceptance. Slow-card latency is synthetic.", "memory": "Host includes benchmark, gateway, SQLite and fixture. RSS/Working Set sums can double-count shared pages; unavailable is not zero. Native tools and MCP descendants are grouped, not inferred individually.", "allocations": "Process-wide Go allocations include the driver and fixtures; use the isolated render microbenchmarks for the rendering component.", "cold": "Fresh native session, not cold OS caches.", "concurrency": "peakInFlightTurns counts overlapping submitted turns; retained idle workers alone are not concurrency or throughput.", "trends": "Collected live at sampleMs with a bounded 2000-point recent window plus initial sample; observations.jsonl is appended during the run and retained with failed samples. Additional sweep cadence is 5 seconds only for concurrent/soak runs; synthetic fixture completion rate is not model/Feishu throughput.", "liveServiceAccepted": false}, "samples": all, "summary": core.Args{"attemptedSamples": len(all), "passedSamples": passed, "failedSamples": len(all) - passed, "unattemptedSamples": expected - len(all), "coldFirstOutputMs": distribution(cold), "warmFirstOutputMs": distribution(warm), "resumeFirstOutputMs": distribution(resumed), "stopMs": distribution(stops)}}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if enc.Encode(report) != nil || passed != expected {

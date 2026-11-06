@@ -90,10 +90,10 @@ EXISTS(SELECT 1 FROM action_runs a WHERE a.session=` + table + `.session AND a.s
 // Background/history metadata predates a selected session and often has no
 // session key. Keep it while any durable work in the room can still refer to it.
 func pendingRoom(table string) string {
-	return `EXISTS(SELECT 1 FROM inbox i WHERE i.room=`+table+`.room AND i.status IN ('queued','sent','consumed','uncertain')) OR
-EXISTS(SELECT 1 FROM outbox o INDEXED BY outbox_room_active WHERE o.room=`+table+`.room AND o.state NOT IN ('done','cancelled')) OR
-EXISTS(SELECT 1 FROM requests r WHERE r.room=`+table+`.room AND r.state='pending') OR
-EXISTS(SELECT 1 FROM action_runs a WHERE a.room=`+table+`.room AND a.state IN ('running','uncertain'))`
+	return `EXISTS(SELECT 1 FROM inbox i WHERE i.room=` + table + `.room AND i.status IN ('queued','sent','consumed','uncertain')) OR
+EXISTS(SELECT 1 FROM outbox o INDEXED BY outbox_room_active WHERE o.room=` + table + `.room AND o.state NOT IN ('done','cancelled')) OR
+EXISTS(SELECT 1 FROM requests r WHERE r.room=` + table + `.room AND r.state='pending') OR
+EXISTS(SELECT 1 FROM action_runs a WHERE a.room=` + table + `.room AND a.state IN ('running','uncertain'))`
 }
 
 func maintenancePolicies(now, backgroundMS int64) []maintenancePolicy {

@@ -45,6 +45,11 @@ jobs:
             native-platform: darwin-arm64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    env:
+      # On these disposable macOS VMs, administrator trust lives until job
+      # teardown. Per-test keychain/search-list cleanup remains mandatory.
+      FEISHU_ARTIFACT_MACOS_TRUST_SCOPE: hosted_job
+      FEISHU_ARTIFACT_RUNNER_LABEL: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -79,11 +84,21 @@ jobs:
         run: python .github/scripts/artifact_fixture.py baseline --output bin/upgrade-baseline
       - name: Verify the actual built artifact against local providers
         shell: bash
-        run: go test -race -v -count=1 -timeout 420s ./internal/cli -run '^TestBuiltArtifact'
-      - name: Remove any temporary artifact CA after interrupted tests
+        run: >-
+          python .github/scripts/artifact_processes.py run --timeout 450 --cleanup-timeout 35 --
+          go test -race -v -count=1 -timeout 420s ./internal/cli -run '^TestBuiltArtifact'
+      - name: Release TLS fixture resources under the declared runner lifetime
         if: always() && runner.os != 'Linux'
         shell: bash
         run: python .github/scripts/artifact_trust.py cleanup-all
+      - name: Retain public TLS fixture lifetime receipts
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tls-fixture-lifetime-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/feishu-artifact-trust/*/receipt.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Record advisory Go formatting patch
         if: always() && matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x'
         shell: python

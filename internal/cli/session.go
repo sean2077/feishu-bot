@@ -96,7 +96,9 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 	}
 	confirmed := true
 	defer func() {
-		if confirmed {
+		// Workspace preparation can own a process tree before the native TUI
+		// starts. An unconfirmed setup exit retains the same handoff lease.
+		if confirmed && !errors.Is(result, process.ErrUnconfirmed) {
 			result = errors.Join(result, unlock())
 		}
 	}()

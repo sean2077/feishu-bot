@@ -128,7 +128,7 @@ func TestLocalSessionFailsClosedOnActiveLockUnknownInputAndUnconfirmedExit(t *te
 	}
 }
 
-func TestLocalSessionRejectsChangedConfigurationAndMissingNativeID(t *testing.T) {
+func TestLocalSessionRejectsChangedConfigurationAndInvalidArguments(t *testing.T) {
 	c, _, s, _ := localSessionFixture(t)
 	c.Projects[0].CWD = t.TempDir()
 	called := false

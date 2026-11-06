@@ -151,14 +151,17 @@ func readJSON(r io.Reader, dst any, limit int64) error {
 	}
 	return json.Unmarshal(b, dst)
 }
+
 type tokenFlight struct {
 	done chan struct{}
-	err error
+	err  error
 }
 
 func (c *Client) accessToken(ctx context.Context) (string, error) {
 	for {
-		if err := ctx.Err(); err != nil { return "", err }
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		c.tokenMu.Lock()
 		if c.token != "" && time.Now().Before(c.tokenUntil) {
 			token := c.token
@@ -171,10 +174,13 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 			// caller's remaining download/service deadline. Never wait on its
 			// HTTP request while holding a mutex or ignoring cancellation.
 			select {
-			case <-ctx.Done(): return "", ctx.Err()
+			case <-ctx.Done():
+				return "", ctx.Err()
 			case <-flight.done:
 			}
-			if err := ctx.Err(); err != nil { return "", err }
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
 			if flight.err == nil || errors.Is(flight.err, context.Canceled) || errors.Is(flight.err, context.DeadlineExceeded) {
 				// Read the cache again; an expired cache or cancelled owner may
 				// require one replacement refresh under this caller's deadline.

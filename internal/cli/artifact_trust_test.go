@@ -50,8 +50,13 @@ func artifactTrustEnvironment(t *testing.T, certificate []byte, directory string
 		t.Fatal("invalid fixture trust cleanup record")
 	}
 	t.Cleanup(func() {
-		if output, err := run("cleanup", "--record", record); err != nil {
-			t.Error("temporary runner certificate cleanup failed", err, output)
+		output, err := run("cleanup", "--record", record)
+		if err != nil {
+			t.Error("temporary runner certificate resource cleanup failed", err, output)
+			return
+		}
+		if output != "" {
+			t.Log("temporary runner TLS fixture lifetime:", output)
 		}
 	})
 	return nil

@@ -17,6 +17,9 @@ runs:
       uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
       with:
         python-version: '3.12'
+    - name: Verify native artifact process supervision and hard timeout cleanup
+      shell: bash
+      run: python -m unittest discover -s .github/scripts -p 'test_artifact_processes.py'
     - name: Set up Node for the test fixture only
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
       with:

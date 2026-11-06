@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import struct
 import subprocess
@@ -495,7 +496,7 @@ class PackagingTests(unittest.TestCase):
         path = self.make_installer(("linux", "amd64"))
         relative = Path(os.path.relpath(path, Path.cwd()))
         calls = []
-        def process(args, *, cwd, timeout=30, env=None):
+        def process(args, *, cwd, timeout=30, env=None, accepted=(0,)):
             calls.append(args)
             if "--version" in args:
                 return "feishu-bot 1.2.3\n"
@@ -509,12 +510,142 @@ class PackagingTests(unittest.TestCase):
         with mock.patch.object(release.platform, "system", return_value="Linux"), \
              mock.patch.object(release.platform, "machine", return_value="x86_64"), \
              mock.patch.object(release.os, "geteuid", return_value=1000, create=True), \
-             mock.patch.object(release, "run", side_effect=process):
+             mock.patch.object(release, "run", side_effect=process), \
+             mock.patch.object(release, "installer_operation", side_effect=process), \
+             mock.patch.object(release, "deb_installed_identity", side_effect=[None, ("1.2.3", "amd64", "installed"),
+                                                                              ("1.2.3", "amd64", "installed"), None]):
             release.smoke_installer(self.meta, relative, "linux", "amd64")
         self.assertEqual(calls[0][:3], ["sudo", "-n", "dpkg"])
         self.assertTrue(Path(calls[0][-1]).is_absolute())
         self.assertEqual(calls[-1][:4], ["sudo", "-n", "dpkg", "-r"])
         self.assertNotIn("sudo", calls[1])
+
+    def test_deb_partial_install_failure_still_removes_its_identified_version(self):
+        path = self.make_installer()
+        operations = []
+        def operation(args, **kwargs):
+            operations.append(args)
+            if "-i" in args:
+                raise release.ReleaseError("partial install timeout")
+        with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.root)}), \
+             mock.patch.object(release.platform, "system", return_value="Linux"), \
+             mock.patch.object(release.platform, "machine", return_value="x86_64"), \
+             mock.patch.object(release, "installer_operation", side_effect=operation), \
+             mock.patch.object(release, "deb_installed_identity", side_effect=[None, ("1.2.3", "amd64", "half-installed"), None]):
+            with self.assertRaisesRegex(release.ReleaseError, "partial install timeout"):
+                release.smoke_installer(self.meta, path, "linux", "amd64")
+        self.assertEqual(["-i" in operation for operation in operations], [True, False])
+        self.assertIn("-r", operations[1])
+        self.assertTrue(list(self.root.glob("feishu-bot-installer-smoke-*")))
+
+    def test_deb_preexisting_or_changed_version_is_never_removed(self):
+        path = self.make_installer()
+        foreign = ("9.9.9", "amd64", "installed")
+        for identities in ([foreign], [None, foreign, foreign]):
+            with self.subTest(identities=identities), mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.root)}), \
+                 mock.patch.object(release.platform, "system", return_value="Linux"), \
+                 mock.patch.object(release.platform, "machine", return_value="x86_64"), \
+                 mock.patch.object(release, "installer_operation") as command, \
+                 mock.patch.object(release, "deb_installed_identity", side_effect=identities):
+                with self.assertRaises(release.ReleaseError):
+                    release.smoke_installer(self.meta, path, "linux", "amd64")
+                self.assertFalse(any("-r" in call.args[0] for call in command.call_args_list))
+                self.assertEqual(command.call_count, 0 if len(identities) == 1 else 1)
+
+    def test_deb_cleanup_failure_is_reported_alongside_the_original_failure(self):
+        path = self.make_installer()
+        with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.root)}), \
+             mock.patch.object(release.platform, "system", return_value="Linux"), \
+             mock.patch.object(release.platform, "machine", return_value="x86_64"), \
+             mock.patch.object(release, "run", side_effect=release.ReleaseError("version check failed")), \
+             mock.patch.object(release, "installer_operation", side_effect=[None, release.ReleaseError("uninstall failed")]), \
+             mock.patch.object(release, "deb_installed_identity", side_effect=[None, ("1.2.3", "amd64", "installed"),
+                                                                              ("1.2.3", "amd64", "installed")]):
+            with self.assertRaisesRegex(release.ReleaseError, "version check failed.*cleanup failed: uninstall failed"):
+                release.smoke_installer(self.meta, path, "linux", "amd64")
+
+    def test_msi_partial_failure_cleans_only_the_verified_product_code(self):
+        path = self.make_installer(("windows", "amd64"))
+        product = release._wix_guid(self.meta["tag"], "product")
+        identity = {"ProductCode": product, "ProductVersion": self.meta["version"], "UpgradeCode": release._wix_guid("upgrade")}
+        install_dir = self.root / "feishu-bot"
+        operations = []
+        def operation(args, **kwargs):
+            operations.append(args)
+            if "/i" in args:
+                install_dir.mkdir()
+                (install_dir / "feishu-bot.exe").write_bytes(b"partial fixture")
+                raise release.ReleaseError("partial MSI timeout")
+            self.assertEqual(args[:3], ["msiexec", "/x", product])
+            shutil.rmtree(install_dir)
+        with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.root), "LOCALAPPDATA": str(self.root)}), \
+             mock.patch.object(release.platform, "system", return_value="Windows"), \
+             mock.patch.object(release.platform, "machine", return_value="AMD64"), \
+             mock.patch.object(release, "msi_package_identity", return_value=identity), \
+             mock.patch.object(release, "msi_related_product", return_value=None), \
+             mock.patch.object(release, "msi_installed_version", side_effect=[None, "1.2.3", None]), \
+             mock.patch.object(release, "installer_operation", side_effect=operation):
+            with self.assertRaisesRegex(release.ReleaseError, "partial MSI timeout"):
+                release.smoke_installer(self.meta, path, "windows", "amd64")
+        self.assertFalse(install_dir.exists())
+        self.assertEqual(len(operations), 2)
+
+    def test_msi_cleanup_failure_or_wrong_product_cannot_pass_the_gate(self):
+        path = self.make_installer(("windows", "amd64"))
+        identity = {"ProductCode": release._wix_guid(self.meta["tag"], "product"), "ProductVersion": "1.2.3",
+                    "UpgradeCode": release._wix_guid("upgrade")}
+        with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(self.root), "LOCALAPPDATA": str(self.root)}), \
+             mock.patch.object(release.platform, "system", return_value="Windows"), \
+             mock.patch.object(release.platform, "machine", return_value="AMD64"), \
+             mock.patch.object(release, "msi_package_identity", return_value=identity) as package, \
+             mock.patch.object(release, "msi_related_product", return_value=None) as related, \
+             mock.patch.object(release, "msi_installed_version", side_effect=[None, "1.2.3"]), \
+             mock.patch.object(release, "installer_operation", side_effect=[release.ReleaseError("install failed"),
+                                                                          release.ReleaseError("uninstall failed")]) as command:
+            with self.assertRaisesRegex(release.ReleaseError, "install failed.*cleanup failed: uninstall failed"):
+                release.smoke_installer(self.meta, path, "windows", "amd64")
+            command.reset_mock()
+            package.return_value = {**identity, "ProductCode": release._wix_guid("unrelated")}
+            with self.assertRaisesRegex(release.ReleaseError, "package identity differs"):
+                release.smoke_installer(self.meta, path, "windows", "amd64")
+            command.assert_not_called()
+            package.return_value = identity
+            related.return_value = release._wix_guid("old-version", "product")
+            with self.assertRaisesRegex(release.ReleaseError, "existing MSI product"):
+                release.smoke_installer(self.meta, path, "windows", "amd64")
+            command.assert_not_called()
+
+
+class InstallerFailureTests(unittest.TestCase):
+    def test_nonzero_uninstall_and_timeout_both_leave_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for result in (subprocess.CompletedProcess([], 1603, "", "uninstall denied"),
+                           subprocess.TimeoutExpired(["msiexec"], 180, output=b"partial install output")):
+                with self.subTest(result=result), mock.patch.object(release.subprocess, "run") as command:
+                    if isinstance(result, Exception):
+                        command.side_effect = result
+                    else:
+                        command.return_value = result
+                    with self.assertRaises(release.ReleaseError):
+                        release.installer_operation(["msiexec", "/x", "fixture"], cwd=root, timeout=180, accepted=(0, 3010))
+            text = (root / "operations.log").read_text()
+            self.assertIn("1603", text)
+            self.assertIn("uninstall denied", text)
+            self.assertIn("partial install output", text)
+
+    def test_failed_identity_lookup_never_proves_absence(self):
+        with mock.patch.object(release, "run", side_effect=release.ReleaseError("dpkg query denied")):
+            with self.assertRaisesRegex(release.ReleaseError, "query denied"):
+                release.deb_installed_identity(Path.cwd())
+        api = mock.Mock()
+        api.MsiEnumRelatedProductsW.return_value = 5
+        api.MsiQueryProductStateW.return_value = -2
+        with mock.patch.object(release, "msi_api", return_value=api):
+            with self.assertRaisesRegex(release.ReleaseError, "cannot confirm existing"):
+                release.msi_related_product("fixture")
+            with self.assertRaisesRegex(release.ReleaseError, "ownership could not be confirmed"):
+                release.msi_installed_version("fixture")
 
 
 if __name__ == "__main__":
