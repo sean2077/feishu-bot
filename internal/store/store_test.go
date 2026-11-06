@@ -49,6 +49,10 @@ func TestUpgradePreservesExistingNativeSession(t *testing.T) {
 	if e = s.DB.QueryRow("SELECT prior_unknown FROM usage_coverage WHERE session=?", session.ID).Scan(&unknown); e != nil || unknown != 1 {
 		t.Fatal("old usage must remain incomplete", unknown, e)
 	}
+	var nativeTitleColumn int
+	if e = s.DB.QueryRow("SELECT count(*) FROM pragma_table_info('session_preferences') WHERE name='native_title'").Scan(&nativeTitleColumn); e != nil || nativeTitleColumn != 1 {
+		t.Fatalf("native title column migration missing: %d %v", nativeTitleColumn, e)
+	}
 	if _, e = s.Resume("other-room", session.ID); e == nil {
 		t.Fatal("cross-chat resume allowed")
 	}

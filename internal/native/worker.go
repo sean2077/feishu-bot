@@ -351,6 +351,27 @@ func (w *worker) Send(ctx context.Context, d core.Delivery) error {
 	w.pending <- frame
 	return nil
 }
+
+// Rename sets the display title of the current native session. The native
+// process persists it as a custom title; the session ID, transcript content and
+// input queue are unchanged. It does not wait for model work or initialization
+// because the request is ordered behind the initialize frame on the same pipe.
+func (w *worker) Rename(ctx context.Context, title string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	title = strings.Join(strings.Fields(title), " ")
+	if title == "" {
+		return fmt.Errorf("native session title required")
+	}
+	w.mu.Lock()
+	unavailable := w.ctx.Err() != nil || w.exiting
+	w.mu.Unlock()
+	if unavailable {
+		return fmt.Errorf("native worker unavailable")
+	}
+	return w.write(args{"type": "control_request", "request_id": core.NewID(), "request": args{"subtype": "rename_session", "title": title, "source": "host"}})
+}
 func timezone() string {
 	if zone := os.Getenv("TZ"); zone != "" {
 		if _, err := time.LoadLocation(zone); err == nil {
@@ -507,6 +528,9 @@ func (w *worker) handleFrame(event args) {
 	case "control_response":
 		response := object(event["response"])
 		if response["request_id"] != w.initID {
+			if response["subtype"] != "success" {
+				w.log("native_control_rejected", args{"requestId": text(response["request_id"]), "error": text(response["error"])})
+			}
 			return
 		}
 		if response["subtype"] != "success" {

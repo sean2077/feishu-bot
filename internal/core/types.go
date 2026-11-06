@@ -240,6 +240,7 @@ type WorkerEvent struct {
 type Worker interface {
 	Send(context.Context, Delivery) error
 	Respond(context.Context, string, Args) error
+	Rename(context.Context, string) error
 	Stop(context.Context) error
 }
 type Workspace struct {

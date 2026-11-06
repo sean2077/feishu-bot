@@ -13,7 +13,7 @@ import (
 
 func initializeConvenience(tx *sql.Tx) error {
 	_, err := tx.Exec(`
-CREATE TABLE IF NOT EXISTS session_preferences(session TEXT PRIMARY KEY REFERENCES sessions(id), room TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', name_key TEXT NOT NULL DEFAULT '', profile TEXT NOT NULL DEFAULT '', requested_profile TEXT, revision TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS session_preferences(session TEXT PRIMARY KEY REFERENCES sessions(id), room TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', name_key TEXT NOT NULL DEFAULT '', profile TEXT NOT NULL DEFAULT '', requested_profile TEXT, revision TEXT NOT NULL DEFAULT '', native_title TEXT NOT NULL DEFAULT '');
 CREATE UNIQUE INDEX IF NOT EXISTS session_name_room ON session_preferences(room,name_key) WHERE name_key!='';
 CREATE TABLE IF NOT EXISTS card_controls(message TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, revision TEXT NOT NULL, expires INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS card_control_expiry ON card_controls(expires);
@@ -23,18 +23,26 @@ CREATE TABLE IF NOT EXISTS card_control_uses(message TEXT NOT NULL REFERENCES ca
 }
 
 type SessionPreferences struct {
-	Name, Profile, Revision string
-	RequestedProfile        *string
+	Name, Profile, Revision, NativeTitle string
+	RequestedProfile                     *string
 }
 
 func (s *Store) Preferences(room, session string) (SessionPreferences, error) {
 	var p SessionPreferences
 	var requested sql.NullString
-	err := s.DB.QueryRow(`SELECT coalesce(p.name,''),coalesce(p.profile,''),p.requested_profile,coalesce(p.revision,'') FROM sessions s LEFT JOIN session_preferences p ON p.session=s.id AND p.room=s.room WHERE s.room=? AND s.id=?`, room, session).Scan(&p.Name, &p.Profile, &requested, &p.Revision)
+	err := s.DB.QueryRow(`SELECT coalesce(p.name,''),coalesce(p.profile,''),p.requested_profile,coalesce(p.revision,''),coalesce(p.native_title,'') FROM sessions s LEFT JOIN session_preferences p ON p.session=s.id AND p.room=s.room WHERE s.room=? AND s.id=?`, room, session).Scan(&p.Name, &p.Profile, &requested, &p.Revision, &p.NativeTitle)
 	if requested.Valid {
 		p.RequestedProfile = &requested.String
 	}
 	return p, err
+}
+
+// SetNativeTitle remembers the automatic Claude Code display title derived from
+// the session's first admitted message. It is display metadata only: unlike
+// RenameSession it never participates in chat-local name lookup.
+func (s *Store) SetNativeTitle(room, session, title string) error {
+	_, err := s.DB.Exec(`INSERT INTO session_preferences(session,room,native_title) VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET native_title=excluded.native_title WHERE session_preferences.room=excluded.room`, session, room, title)
+	return err
 }
 
 func (s *Store) RequestProfile(room, session, profile string) error {
