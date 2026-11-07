@@ -185,7 +185,7 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 				} else if strings.Contains(pattern, "..") {
 					base := cwd
 					if raw, ok := toolInput["path"].(string); ok && raw != "" {
-						base = raw
+						base = msysDrivePath(raw)
 						if !filepath.IsAbs(base) {
 							base = filepath.Join(cwd, base)
 						}
@@ -439,16 +439,13 @@ func plainSearchPath(path string) bool {
 // msysDrivePath converts a Git Bash style path such as /c/Users/x to C:/Users/x
 // on Windows, as Claude Code does before searching.
 func msysDrivePath(path string) string {
-	if runtime.GOOS != "windows" || len(path) < 2 || path[0] != '/' {
+	// Claude Code only translates /x/... (with the slash after the letter).
+	if runtime.GOOS != "windows" || len(path) < 3 || path[0] != '/' || path[2] != '/' {
 		return path
 	}
 	letter := path[1]
-	if !(letter >= 'a' && letter <= 'z' || letter >= 'A' && letter <= 'Z') || len(path) > 2 && path[2] != '/' {
+	if !(letter >= 'a' && letter <= 'z' || letter >= 'A' && letter <= 'Z') {
 		return path
 	}
-	rest := ""
-	if len(path) > 2 {
-		rest = path[2:]
-	}
-	return strings.ToUpper(string(letter)) + ":" + rest + map[bool]string{true: "/", false: ""}[rest == ""]
+	return strings.ToUpper(string(letter)) + ":" + path[2:]
 }

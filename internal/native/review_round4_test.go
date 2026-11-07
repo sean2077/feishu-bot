@@ -82,6 +82,16 @@ func TestAmbiguousSearchPathsAreDenied(t *testing.T) {
 					tool  string
 					input args
 					deny  bool
+				}{"Glob", args{"path": msysForm(work), "pattern": "../../*/inbound/*"}, true},
+				struct {
+					tool  string
+					input args
+					deny  bool
+				}{"Grep", args{"path": "/c"}, true},
+				struct {
+					tool  string
+					input args
+					deny  bool
 				}{"Glob", args{"pattern": "/Users/example/rooms/*/inbound/*"}, true},
 				struct {
 					tool  string
@@ -150,4 +160,17 @@ func msysForm(path string) string {
 		return filepath.ToSlash(path)
 	}
 	return "/" + strings.ToLower(volume[:1]) + filepath.ToSlash(path[2:])
+}
+
+func TestMsysDrivePathOnlyTranslatesOnWindows(t *testing.T) {
+	cases := map[string]string{"/c/x": "C:/x", "/C/": "C:/", "/c": "/c", "/cx/y": "/cx/y", "//server/share": "//server/share"}
+	for in, want := range cases {
+		got := msysDrivePath(in)
+		if runtime.GOOS != "windows" {
+			want = in
+		}
+		if got != want {
+			t.Fatalf("%q -> %q, want %q", in, got, want)
+		}
+	}
 }

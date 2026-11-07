@@ -445,10 +445,7 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		return err
 	}
 	g.acceptReceipt(room, session.ID, m)
-	if g.stopIsBlocked(room.Key) {
-		g.mu.Lock()
-		g.stopHeld[room.Key]++
-		g.mu.Unlock()
+	if g.holdForBlockedStop(room.Key) {
 		g.notify(room, stopBlockedNotice, &m)
 		return nil
 	}
@@ -467,6 +464,19 @@ func (g *Gateway) pendingInChat(r core.Room) (int, error) {
 		return g.store.CountPending(r.Key)
 	}
 	return g.store.CountPendingChat(r.ChatKey)
+}
+
+// holdForBlockedStop reports whether room is blocked by a failed stop and, if
+// so, counts the input as held, in one step so a concurrent successful stop
+// cannot leave a stale count behind.
+func (g *Gateway) holdForBlockedStop(key string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.stopBlocked[key] {
+		return false
+	}
+	g.stopHeld[key]++
+	return true
 }
 
 // stopStateNotice explains a stop whose process part completed while its

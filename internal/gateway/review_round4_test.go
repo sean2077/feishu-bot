@@ -218,3 +218,17 @@ func TestMessageDuringStopRetryIsToldItWillBeCancelled(t *testing.T) {
 	}
 	eventually(t, func() bool { return noticeContains(f, "停止期间暂存的输入已一并取消") })
 }
+
+func TestNormalStopSendsNoHeldInputNotice(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("busy", "work", "member"))
+	w := f.worker()
+	f.delivery(w)
+	if e := f.g.stopRoom(context.Background(), f.room()); e != nil {
+		t.Fatal(e)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if noticeContains(f, "停止期间暂存的输入") {
+		t.Fatal("held-input notice sent for an ordinary stop")
+	}
+}
