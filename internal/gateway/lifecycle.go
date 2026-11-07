@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -174,12 +175,17 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 	}
 	if session != "" && g.stopIsBlocked(r.Key) {
 		// Inputs held while blocked were cancelled with the session's queue;
-		// clear their processing reactions as well.
+		// clear their processing reactions and say the stop has completed.
 		g.cancelReceipts(session)
 	}
 	g.mu.Lock()
+	held := g.stopHeld[r.Key]
 	delete(g.stopBlocked, r.Key)
+	delete(g.stopHeld, r.Key)
 	g.mu.Unlock()
+	if held > 0 {
+		g.notify(r, "本聊天的停止已完成；停止期间暂存的输入已一并取消，如仍需要请重新发送。", nil)
+	}
 	g.kickWaiting()
 	return nil
 }
@@ -456,7 +462,10 @@ func (g *Gateway) reconcileOrphanedInputs(ctx context.Context) {
 		}
 		s.mu.Unlock()
 		for _, o := range orphans {
-			if g.store.Mark(o.uuid, "uncertain") == nil {
+			// Conditional: a result may have finished the input since it
+			// was read; never overwrite done with uncertain.
+			res, err := g.store.DB.ExecContext(ctx, "UPDATE inbox SET status='uncertain' WHERE uuid=? AND room=? AND status IN ('sent','consumed')", o.uuid, key)
+			if n, _ := rowsAffected(res, err); n == 1 {
 				g.audit(key, "orphaned_input_uncertain", core.Args{"session": session})
 				if o.from.ID != "" {
 					g.settleReceipts(key, session, []core.Origin{o.from}, false)
@@ -465,4 +474,11 @@ func (g *Gateway) reconcileOrphanedInputs(ctx context.Context) {
 		}
 		unlock()
 	}
+}
+
+func rowsAffected(res sql.Result, err error) (int64, error) {
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

@@ -216,4 +216,5 @@ func TestMessageDuringStopRetryIsToldItWillBeCancelled(t *testing.T) {
 	if f.g.stopIsBlocked(f.room().Key) {
 		t.Fatal("room stayed blocked after the retry succeeded")
 	}
+	eventually(t, func() bool { return noticeContains(f, "停止期间暂存的输入已一并取消") })
 }

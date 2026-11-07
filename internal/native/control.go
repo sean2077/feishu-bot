@@ -163,17 +163,19 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			if !ok {
 				continue
 			}
-			if search && key == "path" && !plainSearchPath(raw) {
+			if search && key == "path" {
 				// Claude Code resolves search paths itself (trimming, "~",
-				// rooted Windows forms); refuse forms this check could resolve
-				// differently from the search.
-				return denyHook("Use an absolute or plain relative search path"), nil
+				// rooted Windows forms); translate what it translates and
+				// refuse what this check could resolve differently.
+				if raw = msysDrivePath(raw); !plainSearchPath(raw) {
+					return denyHook("Use an absolute or plain relative search path"), nil
+				}
 			}
 			candidates = append(candidates, raw)
 		}
 		if name == "Glob" {
 			if pattern, ok := toolInput["pattern"].(string); ok {
-				if !plainSearchPath(pattern) {
+				if pattern = msysDrivePath(pattern); !plainSearchPath(pattern) {
 					return denyHook("Use an absolute or plain relative glob pattern"), nil
 				}
 				// An absolute pattern names its search root directly; a
@@ -421,7 +423,9 @@ func foldCase(path string) string {
 // home expansion and, on Windows, no rooted path without a drive and no
 // drive-relative path.
 func plainSearchPath(path string) bool {
-	if strings.TrimSpace(path) != path || strings.HasPrefix(path, "~") {
+	if strings.TrimSpace(path) != path || path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
+		// Only these forms are home-expanded; names such as "~backup" or
+		// "~$report.docx" are ordinary relative names.
 		return false
 	}
 	if runtime.GOOS == "windows" && !filepath.IsAbs(path) && (strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") || filepath.VolumeName(path) != "") {
@@ -430,4 +434,21 @@ func plainSearchPath(path string) bool {
 		return false
 	}
 	return true
+}
+
+// msysDrivePath converts a Git Bash style path such as /c/Users/x to C:/Users/x
+// on Windows, as Claude Code does before searching.
+func msysDrivePath(path string) string {
+	if runtime.GOOS != "windows" || len(path) < 2 || path[0] != '/' {
+		return path
+	}
+	letter := path[1]
+	if !(letter >= 'a' && letter <= 'z' || letter >= 'A' && letter <= 'Z') || len(path) > 2 && path[2] != '/' {
+		return path
+	}
+	rest := ""
+	if len(path) > 2 {
+		rest = path[2:]
+	}
+	return strings.ToUpper(string(letter)) + ":" + rest + map[bool]string{true: "/", false: ""}[rest == ""]
 }

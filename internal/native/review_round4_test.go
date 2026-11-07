@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/sean2077/feishu-bot/internal/core"
@@ -43,7 +44,7 @@ func TestAmbiguousSearchPathsAreDenied(t *testing.T) {
 		}
 	}
 	for _, mode := range []string{"isolated", "inherit"} {
-		w := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: inbound, NativeConfig: mode}, events: make(chan core.WorkerEvent, 16), eventsDone: make(chan struct{})}
+		w := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: inbound, NativeConfig: mode}, events: make(chan core.WorkerEvent, 256), eventsDone: make(chan struct{})}
 		cases := []struct {
 			tool  string
 			input args
@@ -55,6 +56,8 @@ func TestAmbiguousSearchPathsAreDenied(t *testing.T) {
 			{"Glob", args{"pattern": "~/**/*"}, true},
 			{"Glob", args{"pattern": "../../*/inbound/*"}, true},
 			{"Grep", args{"path": "src"}, false},
+			{"Grep", args{"path": "~backup"}, false},
+			{"Glob", args{"pattern": "~$report.docx"}, false},
 			{"Glob", args{"pattern": "**/*.go"}, false},
 			{"Grep", args{"pattern": "TODO"}, false},
 		}
@@ -69,7 +72,12 @@ func TestAmbiguousSearchPathsAreDenied(t *testing.T) {
 					tool  string
 					input args
 					deny  bool
-				}{"Grep", args{"path": "/c/Users/example"}, true},
+				}{"Grep", args{"path": msysForm(filepath.Join(base, "rooms"))}, true},
+				struct {
+					tool  string
+					input args
+					deny  bool
+				}{"Grep", args{"path": msysForm(work)}, false},
 				struct {
 					tool  string
 					input args
@@ -124,7 +132,7 @@ func TestRelativeSearchPathsFollowTheSessionDirectory(t *testing.T) {
 		{"isolated", filepath.Join("..", "lib"), false},
 		{"isolated", filepath.Join("..", "..", "topic-inbound", "b"), true},
 	} {
-		w := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: mine, NativeConfig: tc.mode}, events: make(chan core.WorkerEvent, 16), eventsDone: make(chan struct{})}
+		w := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: mine, NativeConfig: tc.mode}, events: make(chan core.WorkerEvent, 256), eventsDone: make(chan struct{})}
 		result, err := w.hook(context.Background(), "tool", args{"hook_event_name": "PreToolUse", "tool_name": "Grep", "cwd": filepath.Join(work, "src"), "tool_input": args{"path": tc.path}})
 		if err != nil {
 			t.Fatal(err)
@@ -133,4 +141,13 @@ func TestRelativeSearchPathsFollowTheSessionDirectory(t *testing.T) {
 			t.Fatalf("%s %s denied=%v want %v", tc.mode, tc.path, denied, tc.deny)
 		}
 	}
+}
+
+// msysForm renders an absolute Windows path as Git Bash would print it.
+func msysForm(path string) string {
+	volume := filepath.VolumeName(path)
+	if len(volume) != 2 {
+		return filepath.ToSlash(path)
+	}
+	return "/" + strings.ToLower(volume[:1]) + filepath.ToSlash(path[2:])
 }
