@@ -282,6 +282,10 @@ func (s *Store) SetCC(id, cc string) error {
 // native ID (or no longer exists). Retrying cannot resolve it.
 var ErrIdentityConflict = errors.New("native session identity changed or session no longer exists")
 
+// ErrLaunchIdentityChanged requires an explicit configuration or session
+// choice. Retrying must not move the existing native history to another cwd.
+var ErrLaunchIdentityChanged = errors.New("会话启动身份与当前配置不匹配。请恢复原配置，或显式使用 /new；原会话已保留")
+
 func (s *Store) SetCc(id, cc string) error { return s.SetCC(id, cc) }
 func samePath(a, b string) bool {
 	a, _ = filepath.Abs(a)
@@ -320,7 +324,7 @@ func (s *Store) BindLaunchIdentity(session core.Session, w core.Workspace, expli
 		err := tx.QueryRow("SELECT work,native_config,config_dir,config_override FROM session_launch_identity WHERE session=?", session.ID).Scan(&work, &savedMode, &dir, &savedOverride)
 		if err == nil {
 			if savedMode != mode || savedOverride != override || !samePath(work, w.Work) || !samePath(dir, configDir) {
-				return errors.New("会话启动身份与当前配置不匹配。请恢复原配置，或显式使用 /new；原会话已保留")
+				return ErrLaunchIdentityChanged
 			}
 			return nil
 		}
@@ -328,7 +332,7 @@ func (s *Store) BindLaunchIdentity(session core.Session, w core.Workspace, expli
 			return err
 		}
 		if cc.Valid && cc.String != "" && (explicitCWD || mode != "isolated") {
-			return errors.New("旧会话缺少接入身份记录，不能静默迁入现有目录或用户配置；请恢复原配置或使用 /new")
+			return fmt.Errorf("%w；旧会话缺少接入身份记录，不能静默迁入现有目录或用户配置", ErrLaunchIdentityChanged)
 		}
 		_, err = tx.Exec("INSERT INTO session_launch_identity(session,work,native_config,config_dir,config_override) VALUES(?,?,?,?,?)", session.ID, w.Work, mode, configDir, override)
 		return err

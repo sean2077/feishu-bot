@@ -442,13 +442,23 @@ func validate(c *core.Config, base string) error {
 		}
 	}
 	seen := map[string]bool{}
-	for _, g := range c.Groups {
+	for i := range c.Groups {
+		g := &c.Groups[i]
 		if (g.ChatID != core.AnyGroupChatID && !idPattern.MatchString(g.ChatID)) || seen[g.ChatID] || !projects[g.ProjectID] {
 			return errors.New("invalid group binding")
 		}
 		seen[g.ChatID] = true
 		if !core.ValidSessionScope(g.SessionScope) {
 			return errors.New("invalid group sessionScope")
+		}
+		if len(g.ThreadWorkspaces) > 0 && (g.SessionScope != core.SessionScopeThread || g.ChatID == core.AnyGroupChatID) {
+			return errors.New("threadWorkspaces requires an explicit group with sessionScope thread")
+		}
+		for root, path := range g.ThreadWorkspaces {
+			if !core.ValidThreadRoot(root) || !nonempty(path) {
+				return errors.New("invalid thread workspace binding")
+			}
+			g.ThreadWorkspaces[root] = absolute(base, path)
 		}
 		for _, m := range g.Members {
 			if !idPattern.MatchString(m) {

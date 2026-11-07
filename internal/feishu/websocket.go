@@ -27,6 +27,14 @@ import (
 // it has no SDK private-field access or copied upstream implementation.
 
 func (c *Client) Start(parent context.Context, onMessage func(context.Context, core.Message) error, onAction func(context.Context, core.CardAction) (core.Args, error)) error {
+	return c.start(parent, onMessage, onAction, websocketTiming{tick: time.Second, inboundTimeout: 30 * time.Second})
+}
+
+type websocketTiming struct {
+	tick, inboundTimeout time.Duration
+}
+
+func (c *Client) start(parent context.Context, onMessage func(context.Context, core.Message) error, onAction func(context.Context, core.CardAction) (core.Args, error), timing websocketTiming) error {
 	c.lifeMu.Lock()
 	if c.closed || c.started {
 		c.lifeMu.Unlock()
@@ -54,11 +62,17 @@ func (c *Client) Start(parent context.Context, onMessage func(context.Context, c
 		}
 		c.setBotOpenID(bot.ID)
 	}
+	events := c.dispatchEvents(ctx)
+	defer func() {
+		cancel()
+		events.workers.Wait()
+		c.wsStats.stop()
+	}()
 	backoff := time.Second
 	for ctx.Err() == nil {
 		endpoint, err := c.endpoint(ctx)
 		if err == nil {
-			err = c.connection(ctx, endpoint)
+			err = c.connection(ctx, endpoint, events, timing)
 			backoff = time.Second
 		}
 		if ctx.Err() != nil {
@@ -160,9 +174,51 @@ type connectionJob struct {
 	frame    larkws.Frame
 	event    pendingEvent
 	received time.Time
+	ack      func(larkws.Frame, any, error, time.Time)
 }
 
-func (c *Client) connection(parent context.Context, endpoint *larkws.Endpoint) error {
+type eventDispatcher struct {
+	jobs    [4]chan connectionJob
+	actions chan connectionJob
+	workers sync.WaitGroup
+}
+
+// Event admission belongs to Start, not to a particular socket. Reconnection
+// must neither cancel an accepted handler nor discard/reorder its queued chat
+// inputs. The same bounded lanes survive reconnection; only shutdown joins them.
+func (c *Client) dispatchEvents(ctx context.Context) *eventDispatcher {
+	d := &eventDispatcher{actions: make(chan connectionJob, 8)}
+	run := func(queue <-chan connectionJob) {
+		defer d.workers.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case job := <-queue:
+				if ctx.Err() != nil {
+					return
+				}
+				c.wsStats.queued(job.received)
+				started := time.Now()
+				reply, err := c.runEvent(ctx, job.event, job.received)
+				job.frame.Headers = append(job.frame.Headers, larkws.Header{Key: larkws.HeaderBizRt, Value: strconv.FormatInt(time.Since(started).Milliseconds(), 10)})
+				// The acknowledgement still belongs to the receiving socket. A late
+				// failure cannot close or write a response on its replacement.
+				job.ack(job.frame, reply, err, job.received)
+			}
+		}
+	}
+	for i := range d.jobs {
+		d.jobs[i] = make(chan connectionJob, 8)
+		d.workers.Add(1)
+		go run(d.jobs[i])
+	}
+	d.workers.Add(1)
+	go run(d.actions)
+	return d
+}
+
+func (c *Client) connection(parent context.Context, endpoint *larkws.Endpoint, events *eventDispatcher, timing websocketTiming) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	conn, response, err := c.dialer.DialContext(ctx, endpoint.Url, nil)
@@ -220,35 +276,8 @@ func (c *Client) connection(parent context.Context, endpoint *larkws.Endpoint) e
 			_ = conn.Close()
 		}
 	}
-	// Per-chat hashing preserves arrival order with bounded storage. Actions get
-	// their own queue, so a queued chat cannot hold up a permission callback.
-	var jobs [4]chan connectionJob
-	actionJobs := make(chan connectionJob, 8)
-	var workers sync.WaitGroup
-	run := func(queue <-chan connectionJob) {
-		defer workers.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case job := <-queue:
-				c.wsStats.queued(job.received)
-				started := time.Now()
-				reply, err := c.runEvent(ctx, job.event, job.received)
-				job.frame.Headers = append(job.frame.Headers, larkws.Header{Key: larkws.HeaderBizRt, Value: strconv.FormatInt(time.Since(started).Milliseconds(), 10)})
-				ack(job.frame, reply, err, job.received)
-			}
-		}
-	}
-	for i := range jobs {
-		jobs[i] = make(chan connectionJob, 8)
-		workers.Add(1)
-		go run(jobs[i])
-	}
-	workers.Add(1)
-	go run(actionJobs)
-	c.wsStats.connect([5]<-chan connectionJob{jobs[0], jobs[1], jobs[2], jobs[3], actionJobs})
-	defer func() { cancel(); _ = conn.Close(); workers.Wait(); c.wsStats.disconnect() }()
+	c.wsStats.connect([5]<-chan connectionJob{events.jobs[0], events.jobs[1], events.jobs[2], events.jobs[3], events.actions})
+	defer c.wsStats.disconnect()
 	var lastInbound atomic.Int64
 	lastInbound.Store(time.Now().UnixNano())
 	var pingNanos atomic.Int64
@@ -258,7 +287,7 @@ func (c *Client) connection(parent context.Context, endpoint *larkws.Endpoint) e
 	pingDone := make(chan struct{})
 	go func() {
 		defer close(pingDone)
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(timing.tick)
 		defer ticker.Stop()
 		next := time.Now()
 		nextDiagnostics := next.Add(30 * time.Second)
@@ -276,7 +305,7 @@ func (c *Client) connection(parent context.Context, endpoint *larkws.Endpoint) e
 				if !pending.IsZero() && lastInbound.Load() >= pending.UnixNano() {
 					pending = time.Time{}
 				}
-				if !pending.IsZero() && now.Sub(pending) > 30*time.Second {
+				if !pending.IsZero() && now.Sub(pending) > timing.inboundTimeout {
 					c.wsStats.watchdog()
 					c.emit("feishu_ws_watchdog", nil)
 					_ = conn.Close()
@@ -295,7 +324,11 @@ func (c *Client) connection(parent context.Context, endpoint *larkws.Endpoint) e
 			}
 		}
 	}()
-	defer func() { cancel(); <-pingDone }()
+	defer func() {
+		cancel()
+		_ = conn.Close()
+		<-pingDone
+	}()
 	assembler := newAssembler()
 	for {
 		_, payload, err := conn.ReadMessage()
@@ -359,16 +392,16 @@ func (c *Client) connection(parent context.Context, endpoint *larkws.Endpoint) e
 			ack(frame, nil, nil, received)
 			continue
 		}
-		queue := actionJobs
+		queue := events.actions
 		lane := 4
 		if event.message != nil {
 			hash := fnv.New32a()
 			_, _ = hash.Write([]byte(event.message.ChatID))
-			lane = int(hash.Sum32() % uint32(len(jobs)))
-			queue = jobs[lane]
+			lane = int(hash.Sum32() % uint32(len(events.jobs)))
+			queue = events.jobs[lane]
 		}
 		select {
-		case queue <- connectionJob{frame: frame, event: event, received: received}:
+		case queue <- connectionJob{frame: frame, event: event, received: received, ack: ack}:
 			c.wsStats.admitted(lane)
 		default:
 			c.wsStats.refused(lane)

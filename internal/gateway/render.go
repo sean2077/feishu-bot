@@ -175,14 +175,14 @@ func (r *render) cardFitLocked(title, answer string, final, success bool) (core.
 	d := r.details
 	d.Model = core.Redact(d.Model, r.g.secrets)
 	d.ProjectPath = core.Redact(d.ProjectPath, r.g.secrets)
-	card, truncated := boundedReplyCard(title, answer, r.thinkingLocked(), r.thinkingCount, final, d, time.Duration(max(int64(0), time.Now().UnixMilli()-r.started))*time.Millisecond, success, r.g.quickControls(r.room, r.session, r.turn, r.finalID))
+	card, needsFile := boundedReplyCard(title, answer, r.thinkingLocked(), r.thinkingCount, final, d, time.Duration(max(int64(0), time.Now().UnixMilli()-r.started))*time.Millisecond, success, r.g.quickControls(r.room, r.session, r.turn, r.finalID))
 	if r.waiting > 0 && !final {
 		cfg := argsOf(card["config"])
 		cfg["streaming_mode"] = false
 		delete(cfg, "streaming_config")
 		card["config"] = cfg
 	}
-	return card, truncated
+	return card, needsFile
 }
 func (r *render) cardLocked(title, answer string, final, success bool) core.Args {
 	card, _ := r.cardFitLocked(title, answer, final, success)
@@ -384,9 +384,9 @@ func (r *render) persistWith(text string, success bool, who []core.Origin, title
 			title = "执行失败"
 		}
 	}
-	card, truncated := r.cardFitLocked(title, answer, true, success)
+	card, needsFile := r.cardFitLocked(title, answer, true, success)
 	name, path := "", ""
-	if truncated {
+	if needsFile {
 		name = "reply.md"
 		path = filepath.Join(r.g.config.DataDir, "exports", core.Hash(r.room.Key)[:32], core.NewID()+".md")
 	}

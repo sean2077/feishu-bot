@@ -13,7 +13,6 @@ func TestOversizedQuestionCardFitsWithoutDroppingOptions(t *testing.T) {
 		kind:     "question",
 		room:     core.Room{Key: "room"},
 		revision: "revision",
-		selected: map[string]map[int]map[int]bool{},
 		questions: []question{{
 			Question: long,
 			Header:   long,
@@ -29,10 +28,10 @@ func TestOversizedQuestionCardFitsWithoutDroppingOptions(t *testing.T) {
 		t.Fatalf("oversized question card: size=%d err=%v", size, err)
 	}
 	text := jsonText(card)
-	if !strings.Contains(text, "提交选择") || !strings.Contains(text, "取消") {
+	if !strings.Contains(text, "提交回答") || !strings.Contains(text, "取消") {
 		t.Fatal("submit controls were dropped while fitting the card")
 	}
-	if !strings.Contains(text, `"option":0`) || !strings.Contains(text, `"option":1`) {
+	if !strings.Contains(text, `"value":"0"`) || !strings.Contains(text, `"value":"1"`) || !strings.Contains(text, `"name":"custom_0"`) {
 		t.Fatal("option values were dropped while fitting the card")
 	}
 	if !strings.Contains(text, "…") {

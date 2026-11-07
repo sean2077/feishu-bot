@@ -125,11 +125,10 @@ func TestApprovalCallbackDeadlineLeavesDecisionPending(t *testing.T) {
 				questions = []question{{Question: "Pick", Options: []questionOption{{Label: "A"}}}}
 			}
 			id, p := pendingApprovalFixture(t, f, questions)
-			p.selected["owner"] = map[int]map[int]bool{0: {0: true}}
 			if !f.g.bindApprovalCard(id, p, "approval-card", p.room) {
 				t.Fatal("approval card was not bound")
 			}
-			a := core.CardAction{UserID: "owner", ChatID: p.room.ChatID, MessageID: "approval-card", Value: core.Args{"request": id, "decision": decision}}
+			a := core.CardAction{UserID: "owner", ChatID: p.room.ChatID, MessageID: "approval-card", Value: core.Args{"request": id, "decision": decision, "session": p.session, "revision": p.revision}, FormValue: core.Args{"question_0": "0"}}
 			cancelWhileStorageWaits(t, f, func(ctx context.Context) error {
 				_, err := f.g.Action(ctx, a)
 				return err

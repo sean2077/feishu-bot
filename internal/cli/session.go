@@ -159,7 +159,7 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 	if err != nil {
 		return err
 	}
-	if err = st.BindLaunchIdentity(s, w, p.CWD != ""); err != nil {
+	if err = st.BindLaunchIdentity(s, w, r.WorkingDirectory(p) != ""); err != nil {
 		return err
 	}
 	s.State = "open"
