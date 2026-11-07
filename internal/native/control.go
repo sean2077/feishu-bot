@@ -66,7 +66,14 @@ func denyHook(reason string) args {
 	return args{"hookSpecificOutput": args{"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}
 }
 
-type nativeFileScope struct{ work, home, inbound, rooms string }
+type nativeFileScope struct {
+	work, home, inbound, rooms string
+	// File identities of the same directories, and of every ancestor of the
+	// rooms tree, so that alias spellings (macOS firmlinks, Unicode or case
+	// variants, bind mounts) are recognised by identity rather than text.
+	workID, homeID, inboundID, roomsID os.FileInfo
+	roomsAncestors                     []os.FileInfo
+}
 
 // Resolve spelling/8.3 aliases once, before a native process can change files.
 // Comparing a canonical tool target with a short-path root rejects legitimate
@@ -97,10 +104,90 @@ func (w *worker) fileScope() (nativeFileScope, error) {
 			expected := filepath.Join(root, rel)
 			if !valid || !core.Inside(expected, w.scope.inbound) || !core.Inside(w.scope.inbound, expected) {
 				w.scopeErr = fmt.Errorf("conversation attachment directory was redirected")
+				return
+			}
+			w.scope.inboundID, _ = os.Stat(w.scope.inbound)
+		}
+		w.scope.workID, _ = os.Stat(w.scope.work)
+		w.scope.homeID, _ = os.Stat(w.scope.home)
+		if w.scope.roomsID, w.scopeErr = os.Stat(w.scope.rooms); w.scopeErr != nil {
+			return
+		}
+		for current := filepath.Dir(w.scope.rooms); ; current = filepath.Dir(current) {
+			if info, err := os.Stat(current); err == nil {
+				w.scope.roomsAncestors = append(w.scope.roomsAncestors, info)
+			}
+			if filepath.Dir(current) == current {
+				break
 			}
 		}
 	})
 	return w.scope, w.scopeErr
+}
+
+// identityEntry is one existing component of a path with its file identity.
+type identityEntry struct {
+	name string
+	info os.FileInfo
+}
+
+// identityChain returns the existing components of path from the path itself
+// up to the volume root.
+func identityChain(path string) []identityEntry {
+	var chain []identityEntry
+	for current := path; ; current = filepath.Dir(current) {
+		if info, err := os.Stat(current); err == nil {
+			chain = append(chain, identityEntry{filepath.Base(current), info})
+		}
+		if filepath.Dir(current) == current {
+			return chain
+		}
+	}
+}
+
+// insideByIdentity reports whether target is one of the chain's directories.
+func insideByIdentity(chain []identityEntry, target os.FileInfo) bool {
+	if target == nil {
+		return false
+	}
+	for _, entry := range chain {
+		if os.SameFile(entry.info, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// roomsPartsByIdentity returns the components below the rooms tree when the
+// chain passes through it.
+func roomsPartsByIdentity(chain []identityEntry, rooms os.FileInfo) ([]string, bool) {
+	if rooms == nil {
+		return nil, false
+	}
+	for i, entry := range chain {
+		if os.SameFile(entry.info, rooms) {
+			parts := make([]string, 0, i)
+			for j := i - 1; j >= 0; j-- {
+				parts = append(parts, chain[j].name)
+			}
+			return parts, true
+		}
+	}
+	return nil, false
+}
+
+// ancestorOfRooms reports whether the path itself is an ancestor of the rooms
+// tree by file identity.
+func ancestorOfRooms(chain []identityEntry, ancestors []os.FileInfo) bool {
+	if len(chain) == 0 {
+		return false
+	}
+	for _, info := range ancestors {
+		if os.SameFile(chain[0].info, info) {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *worker) hook(ctx context.Context, id string, input args) (args, error) {
@@ -184,7 +271,9 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 		if search {
 			// Without a path the search runs in the session directory, which
 			// "cd" in Bash can move anywhere.
-			if raw, ok := toolInput["path"].(string); !ok || raw == "" {
+			pattern, _ := toolInput["pattern"].(string)
+			absoluteGlob := name == "Glob" && filepath.IsAbs(msysDrivePath(pattern))
+			if raw, ok := toolInput["path"].(string); (!ok || raw == "") && !absoluteGlob {
 				if !cwdKnown {
 					return denyHook("Use an absolute search path"), nil
 				}
@@ -227,29 +316,44 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			if err != nil {
 				return denyHook("Unable to verify conversation file scope"), nil
 			}
-			attachment := w.workspace.Inbound != "" && core.Inside(scope.inbound, physical)
+			// Text and file identity are both consulted: deny if either places
+			// the path in a protected area, allow if either places it in an
+			// allowed one. Identity covers alias spellings that text cannot.
+			chain := identityChain(physical)
+			attachment := w.workspace.Inbound != "" && (core.Inside(scope.inbound, physical) || insideByIdentity(chain, scope.inboundID))
 			rooms := scope.rooms
 			otherAttachment := false
+			var parts []string
+			inRooms := false
 			// macOS volumes are usually case-insensitive while path
-			// comparison is not; fold case for the room-boundary checks.
+			// comparison is not; fold case for the text checks.
 			foldedRooms, foldedPath := foldCase(rooms), foldCase(physical)
 			if core.Inside(foldedRooms, foldedPath) {
-				relative, err := filepath.Rel(foldedRooms, foldedPath)
-				if err == nil {
-					parts := strings.Split(relative, string(filepath.Separator))
-					otherAttachment = len(parts) >= 2 && (strings.EqualFold(parts[1], "inbound") || strings.EqualFold(parts[1], core.TopicInbound)) && !attachment
-					// A search rooted at a room directory itself would recurse
-					// into every attachment directory of that chat.
-					if search && (relative == "." || len(parts) == 1) {
-						otherAttachment = true
+				if relative, err := filepath.Rel(foldedRooms, foldedPath); err == nil {
+					inRooms = true
+					if relative != "." {
+						parts = strings.Split(relative, string(filepath.Separator))
 					}
 				}
-			} else if search && core.Inside(foldedPath, foldedRooms) {
+			}
+			if !inRooms {
+				parts, inRooms = roomsPartsByIdentity(chain, scope.roomsID)
+			}
+			if inRooms {
+				otherAttachment = len(parts) >= 2 && (strings.EqualFold(parts[1], "inbound") || strings.EqualFold(parts[1], core.TopicInbound)) && !attachment
+				// A search rooted at the rooms tree or a room directory itself
+				// would recurse into every attachment directory there.
+				if search && len(parts) <= 1 {
+					otherAttachment = true
+				}
+			} else if search && (core.Inside(foldedPath, foldedRooms) || ancestorOfRooms(chain, scope.roomsAncestors)) {
 				// Searching an ancestor of the room tree (for example the user
 				// HOME in inherit mode) would reach every room's attachments.
 				return denyHook("This search would cover the gateway's conversation state directory; search the project or a narrower directory instead"), nil
 			}
-			if otherAttachment || w.workspace.NativeConfig != "inherit" && !core.Inside(scope.work, physical) && !core.Inside(scope.home, physical) && !attachment || attachment && name != "Read" && name != "Grep" && name != "Glob" {
+			inWork := core.Inside(scope.work, physical) || insideByIdentity(chain, scope.workID)
+			inHome := core.Inside(scope.home, physical) || insideByIdentity(chain, scope.homeID)
+			if otherAttachment || w.workspace.NativeConfig != "inherit" && !inWork && !inHome && !attachment || attachment && name != "Read" && name != "Grep" && name != "Glob" {
 				return denyHook("Outside conversation file scope or attempting to edit an incoming attachment"), nil
 			}
 		}
