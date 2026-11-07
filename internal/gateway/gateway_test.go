@@ -311,7 +311,9 @@ func (f *fixture) delivery(w *fakeWorker) core.Delivery {
 }
 func eventually(t *testing.T, fn func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	// Generous for race-enabled Windows/macOS CI runners; it only delays a
+	// genuine failure and never changes what a passing condition proves.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if fn() {
 			return

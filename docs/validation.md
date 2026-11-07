@@ -45,7 +45,7 @@ go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 
 ## 平台 CI
 
-工作流定义在 `.github/workflows/`；三个工作流共用组合 action [`.github/actions/verify`](../.github/actions/verify/action.yml)：`go test -race -count=1 -timeout 180s ./...`、`go vet ./...`、进程监督器单测，以及安装并核对固定原生 CLI 后的[协议回归](#真实-claude-协议-fixture)。
+工作流定义在 `.github/workflows/`；三个工作流共用组合 action [`.github/actions/verify`](../.github/actions/verify/action.yml)：`go test -race -count=1 -timeout 360s ./...`、`go vet ./...`、进程监督器单测，以及安装并核对固定原生 CLI 后的[协议回归](#真实-claude-协议-fixture)。
 
 | 工作流（名称） | 触发 | 内容 |
 |---|---|---|
