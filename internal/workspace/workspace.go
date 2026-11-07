@@ -3,6 +3,7 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -209,56 +210,137 @@ func lockPrepare(ctx context.Context, root string) (func(), error) {
 // migrateTopicAttachments moves per-topic attachment directories from the
 // earlier inbound/topics/<id> layout, nested inside the chat's own attachment
 // directory, to the sibling topic-inbound/<id> layout. Only real directories
-// move, never over an existing target; failures leave the old layout for the
-// next preparation. The caller holds the room's preparation lock.
-func migrateTopicAttachments(root string) {
+// move, never over a different target. A failed migration stops preparation:
+// leftover topic uploads must not become the chat room's own attachments.
+// The caller holds the room's preparation lock and supplies its canonical root
+// from PrepareContext; directory aliases are resolved before this boundary.
+func migrateTopicAttachments(ctx context.Context, root string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	legacy := filepath.Join(root, "inbound", "topics")
 	info, err := os.Lstat(legacy)
-	if err != nil || !info.IsDir() {
-		return
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot inspect legacy topic attachments: %w", err)
+	}
+	if !info.IsDir() {
+		return errors.New("legacy topic attachment directory was replaced")
 	}
 	entries, err := os.ReadDir(legacy)
 	if err != nil {
-		return
+		return fmt.Errorf("cannot list legacy topic attachments: %w", err)
 	}
 	target := filepath.Join(root, core.TopicInbound)
 	if err = os.MkdirAll(target, 0700); err != nil {
-		return
+		return fmt.Errorf("cannot prepare topic attachment migration: %w", err)
+	}
+	if err = ownDirectory(target, target); err != nil {
+		return err
 	}
 	for _, entry := range entries {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
 		source := filepath.Join(legacy, entry.Name())
-		if st, e := os.Lstat(source); e != nil || !st.IsDir() {
-			continue
+		st, e := os.Lstat(source)
+		if e != nil {
+			return fmt.Errorf("cannot inspect a legacy topic attachment directory: %w", e)
 		}
-		destination := filepath.Join(target, entry.Name())
-		st, e := os.Lstat(destination)
-		if errors.Is(e, os.ErrNotExist) {
-			_ = os.Rename(source, destination)
-			continue
+		if !st.IsDir() {
+			return errors.New("legacy topic attachments contain an unexpected entry")
 		}
-		if e != nil || !st.IsDir() {
-			continue
-		}
-		// An earlier partial migration already created the target: merge
-		// file by file so nothing is left under the chat's own inbound.
 		files, e := os.ReadDir(source)
 		if e != nil {
-			continue
+			return fmt.Errorf("cannot list a legacy topic attachment directory: %w", e)
 		}
 		for _, file := range files {
-			from, to := filepath.Join(source, file.Name()), filepath.Join(destination, file.Name())
-			if _, e := os.Lstat(to); errors.Is(e, os.ErrNotExist) {
-				_ = os.Rename(from, to)
-			} else if e == nil {
-				// Attachment names are derived from the message and resource,
-				// so an existing target is the same upload re-fetched; drop the
-				// legacy copy rather than leave it in the chat's inbound.
-				_ = os.Remove(from)
+			st, e := os.Lstat(filepath.Join(source, file.Name()))
+			if e != nil {
+				return e
+			}
+			if !st.Mode().IsRegular() {
+				return errors.New("legacy topic attachments contain a non-regular file")
 			}
 		}
-		_ = os.Remove(source)
+		destination := filepath.Join(target, entry.Name())
+		st, e = os.Lstat(destination)
+		if errors.Is(e, os.ErrNotExist) {
+			if err = os.Rename(source, destination); err != nil {
+				return fmt.Errorf("cannot move legacy topic attachments: %w", err)
+			}
+			continue
+		}
+		if e != nil {
+			return e
+		}
+		if !st.IsDir() {
+			return errors.New("topic attachment migration target is not a directory")
+		}
+		// An earlier partial migration already created the target: merge
+		// file by file, retaining both copies if their contents disagree.
+		for _, file := range files {
+			if err = ctx.Err(); err != nil {
+				return err
+			}
+			from, to := filepath.Join(source, file.Name()), filepath.Join(destination, file.Name())
+			if _, e := os.Lstat(to); errors.Is(e, os.ErrNotExist) {
+				if err = os.Rename(from, to); err != nil {
+					return fmt.Errorf("cannot migrate a legacy topic attachment: %w", err)
+				}
+			} else if e != nil {
+				return e
+			} else {
+				same, e := sameAttachmentContents(ctx, from, to)
+				if e != nil {
+					return e
+				}
+				if !same {
+					return errors.New("legacy topic attachment conflicts with its migration target; both copies were kept")
+				}
+				if err = os.Remove(from); err != nil {
+					return fmt.Errorf("cannot remove a migrated duplicate attachment: %w", err)
+				}
+			}
+		}
+		if err = os.Remove(source); err != nil {
+			return fmt.Errorf("cannot finish legacy topic attachment migration: %w", err)
+		}
 	}
-	_ = os.Remove(legacy)
+	if err = os.Remove(legacy); err != nil {
+		return fmt.Errorf("cannot finish legacy topic attachment migration: %w", err)
+	}
+	return nil
+}
+
+func sameAttachmentContents(ctx context.Context, first, second string) (bool, error) {
+	digest := func(path string) ([]byte, error) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, errors.New("topic attachment migration target is not a regular file")
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+		hash := sha256.New()
+		if _, err = io.Copy(hash, contextReader{ctx: ctx, reader: file}); err != nil {
+			return nil, err
+		}
+		return hash.Sum(nil), nil
+	}
+	a, err := digest(first)
+	if err != nil {
+		return false, err
+	}
+	b, err := digest(second)
+	return string(a) == string(b), err
 }
 func Prepare(c core.Config, room core.Room, session core.Session, p core.Project) (core.Workspace, error) {
 	return PrepareContext(context.Background(), c, room, session, p)
@@ -293,7 +375,9 @@ func PrepareContext(ctx context.Context, c core.Config, room core.Room, _ core.S
 	if err = ownDirectory(root, root); err != nil {
 		return core.Workspace{}, err
 	}
-	migrateTopicAttachments(root)
+	if err = migrateTopicAttachments(ctx, root); err != nil {
+		return core.Workspace{}, err
+	}
 	w := core.Workspace{Root: root, Work: filepath.Join(root, "workspace"), Home: filepath.Join(root, "home"), Inbound: room.AttachmentDir(root), NativeConfig: "isolated", ConfigDirOverride: true}
 	if p.CWD != "" {
 		work, err := physicalDirectory(p.CWD)
@@ -442,6 +526,9 @@ func TranslateOutput(w core.Workspace, path string) (string, string, error) {
 		path = filepath.Join(w.Work, path)
 	}
 	path = filepath.Clean(path)
+	if core.LegacyTopicAttachmentPath(w.Root, path) {
+		return "", "", errors.New("legacy topic attachments require a successful migration")
+	}
 	for _, root := range []string{w.Work, w.Inbound} {
 		if root == "" || !core.Inside(root, path) {
 			continue

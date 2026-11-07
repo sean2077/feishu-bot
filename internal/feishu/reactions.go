@@ -133,12 +133,15 @@ func (c *Client) Receipt(ctx context.Context, id, state, previous string) error 
 		delete(c.processingIDs, id)
 		c.receiptMu.Unlock()
 	} else if previous != "done" && previous != "clear" {
-		if err := c.removeOwnedReactions(ctx, id, "OnIt", previous == "attempt:processing" || previous == "processing"); err != nil {
+		// A confirmed create cannot arrive later. After a lost DELETE ACK or
+		// restart, a complete empty read therefore proves cleanup succeeded.
+		// An unconfirmed create may still arrive and must keep reconciling.
+		if err := c.removeOwnedReactions(ctx, id, "OnIt", previous == "attempt:processing"); err != nil {
 			return err
 		}
 	}
 	if state == "clear" && (previous == "done" || previous == "attempt:done") {
-		return c.removeOwnedReactions(ctx, id, "Done", true)
+		return c.removeOwnedReactions(ctx, id, "Done", previous == "attempt:done")
 	}
 	if state == "done" {
 		if previous == "attempt:done" || previous == "done" {

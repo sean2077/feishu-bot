@@ -2,14 +2,67 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
+
+type delayedEventWorker struct {
+	core.Worker
+	entered chan struct{}
+	drained chan struct{}
+}
+
+func (w *delayedEventWorker) WaitEvents(ctx context.Context) error {
+	select {
+	case w.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-w.drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestObservedWorkerPreservesFinalEventDrain(t *testing.T) {
+	native := &delayedEventWorker{entered: make(chan struct{}, 1), drained: make(chan struct{})}
+	var worker core.Worker = &observedWorker{Worker: native}
+	events, ok := worker.(core.WorkerEvents)
+	if !ok {
+		t.Fatal("benchmark wrapper hid native final-event draining")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- events.WaitEvents(ctx) }()
+	select {
+	case <-native.entered:
+	case <-ctx.Done():
+		t.Fatal("benchmark wrapper never entered the native event drain")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("drain returned before final native callbacks: %v", err)
+	default:
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("native drain cancellation was lost: %v", err)
+	}
+	close(native.drained)
+	if err := events.WaitEvents(context.Background()); err != nil {
+		t.Fatalf("completed native drain failed: %v", err)
+	}
+}
 
 func TestUnconfirmedCleanupStopsIndependentSampling(t *testing.T) {
 	calls := 0

@@ -99,15 +99,29 @@ func (m windowsManager) Uninstall(ctx context.Context, name string) error {
 }
 
 func (m windowsManager) Present(ctx context.Context, name string) (bool, error) {
-	_, err := runTool(ctx, "schtasks", "/Query", "/TN", name)
-	if err == nil {
-		return true, nil
+	return scheduledTaskPresent(ctx, name)
+}
+
+func (m windowsManager) Snapshot(ctx context.Context, name string) (serviceDefinition, error) {
+	present, err := m.Present(ctx, name)
+	if err != nil || !present {
+		return serviceDefinition{}, err
 	}
-	var tool *toolError
-	if errors.As(err, &tool) {
-		return false, nil
+	text, err := queryTaskXML(ctx, name)
+	return serviceDefinition{Present: err == nil, Data: []byte(text)}, err
+}
+
+func (m windowsManager) Restore(ctx context.Context, name string, definition serviceDefinition) error {
+	if !definition.Present {
+		return m.Uninstall(ctx, name)
 	}
-	return false, err
+	path, err := writeTaskXML(string(definition.Data))
+	if err != nil {
+		return err
+	}
+	defer os.Remove(path)
+	_, err = runTool(ctx, "schtasks", "/Create", "/TN", name, "/XML", path, "/F")
+	return err
 }
 
 func windowsUser() (string, error) {

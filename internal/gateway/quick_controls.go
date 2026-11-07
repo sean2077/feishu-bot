@@ -210,24 +210,33 @@ func (g *Gateway) bindQuickControls(message string, card core.Args) error {
 	})
 }
 
-func (g *Gateway) quickBound(a core.CardAction, p quickControl) bool {
+func (g *Gateway) quickBound(ctx context.Context, a core.CardAction, p quickControl) bool {
 	var n int
-	err := g.store.DB.QueryRow(`SELECT count(*) FROM card_controls c JOIN sessions s ON s.id=c.session AND s.room=c.room WHERE c.message=? AND c.room=? AND c.session=? AND c.revision=? AND c.expires>? AND s.state='open'`, a.MessageID, p.Room, p.Session, p.Revision, time.Now().UnixMilli()).Scan(&n)
+	err := g.store.DB.QueryRowContext(ctx, `SELECT count(*) FROM card_controls c JOIN sessions s ON s.id=c.session AND s.room=c.room WHERE c.message=? AND c.room=? AND c.session=? AND c.revision=? AND c.expires>? AND s.state='open'`, a.MessageID, p.Room, p.Session, p.Revision, time.Now().UnixMilli()).Scan(&n)
 	return err == nil && n == 1
 }
 
-func (g *Gateway) claimQuick(a core.CardAction, p quickControl) (bool, error) {
-	result, err := g.store.DB.Exec(`INSERT OR IGNORE INTO card_control_uses(message,revision,action) SELECT message,revision,? FROM card_controls WHERE message=? AND room=? AND session=? AND revision=? AND expires>?`, p.Action, a.MessageID, p.Room, p.Session, p.Revision, time.Now().UnixMilli())
-	if err != nil {
-		return false, err
-	}
-	n, err := result.RowsAffected()
-	return n == 1, err
+func (g *Gateway) claimQuick(ctx context.Context, a core.CardAction, p quickControl) (bool, error) {
+	claimed := false
+	err := g.store.Transaction(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO card_control_uses(message,revision,action)
+SELECT c.message,c.revision,? FROM card_controls c JOIN sessions s ON s.id=c.session AND s.room=c.room
+WHERE c.message=? AND c.room=? AND c.session=? AND c.revision=? AND c.expires>? AND s.state='open'`, p.Action, a.MessageID, p.Room, p.Session, p.Revision, time.Now().UnixMilli())
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		claimed = n == 1
+		return err
+	})
+	return claimed && err == nil, err
 }
 
-func (g *Gateway) quickRate(r core.Room, actor string) bool {
+func (g *Gateway) quickRate(ctx context.Context, r core.Room, actor string) bool {
+	if !lockWithin(ctx, &g.mu) {
+		return false
+	}
 	now := time.Now().UnixMilli()
-	g.mu.Lock()
 	defer g.mu.Unlock()
 	// Same budget as messages: per chat and author across all topics.
 	key := r.WorkspaceKey() + ":" + actor
@@ -250,6 +259,9 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 	if token == "" {
 		return "", false, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return "", true, err
+	}
 	p, valid := g.readQuick(token)
 	if !valid {
 		return "此快捷操作已失效，请使用最新卡片或命令。", true, nil
@@ -258,14 +270,23 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 	if !allowed || a.ChatID != r.ChatID || a.MessageID == "" || !AuthorizedAuthor(r, a.UserID) {
 		return "", true, nil
 	}
-	if !g.quickBound(a, p) {
+	if !g.quickBound(ctx, a, p) {
+		if err := ctx.Err(); err != nil {
+			return "", true, err
+		}
 		return "卡片已刷新、过期或会话已切换，请使用最新卡片。", true, nil
 	}
 	if (p.Action == "stop" || p.Action == "retry" || p.Action == "resume") && !canManage(r, a.UserID) {
 		return "此操作需要本聊天维护者。", true, nil
 	}
-	if p.Action != "stop" && !g.quickRate(r, a.UserID) {
+	if p.Action != "stop" && !g.quickRate(ctx, r, a.UserID) {
+		if err := ctx.Err(); err != nil {
+			return "", true, err
+		}
 		return "操作过于频繁，请稍后再试。", true, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return "", true, err
 	}
 	m := core.Message{ID: a.MessageID, ChatID: r.ChatID, SenderID: a.UserID}
 	switch p.Action {
@@ -273,7 +294,9 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 		g.task(func() { g.refreshStatusCard(r, a.UserID) })
 		return "正在刷新状态卡片。", true, nil
 	case "answer":
-		g.approvalMu.Lock()
+		if !lockWithin(ctx, &g.approvalMu) {
+			return "", true, ctx.Err()
+		}
 		ids := []string{}
 		for id, request := range g.approvals {
 			if request.room.Key == r.Key && request.session == p.Session && request.kind == "question" && request.expires > time.Now().UnixMilli() {
@@ -296,7 +319,7 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 		return text, true, err
 	case "sessions":
 		g.task(func() {
-			if !g.quickBound(a, p) {
+			if !g.quickBound(g.ctx, a, p) {
 				return
 			}
 			m.Text = "/sessions " + p.Query
@@ -309,18 +332,21 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 		})
 		return "已请求会话列表。", true, nil
 	case "resume":
-		id, err := g.store.ResolveSession(r.Key, p.TargetSession)
+		id, err := g.store.ResolveSessionContext(ctx, r.Key, p.TargetSession)
+		if ctx.Err() != nil {
+			return "", true, ctx.Err()
+		}
 		if err != nil || p.TargetSession == "" || id != p.TargetSession || id == p.Session {
 			return "所选历史会话不存在或不属于当前聊天。", true, nil
 		}
-		claimed, err := g.claimQuick(a, p)
+		claimed, err := g.claimQuick(ctx, a, p)
 		if err != nil || !claimed {
 			return "会话恢复已提交或卡片已失效。", true, err
 		}
 		g.task(func() {
 			unlock := g.inputLocks.lock(r.Key)
 			defer unlock()
-			if !g.quickBound(a, p) {
+			if !g.quickBound(g.ctx, a, p) {
 				return
 			}
 			ctx, cancel := context.WithTimeout(g.ctx, 15*time.Second)
@@ -332,30 +358,37 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 		})
 		return "已请求停止当前运行并选择历史会话；下一条消息才恢复模型。", true, nil
 	case "stop":
-		target := g.foregroundTarget(r)
+		target, err := g.callbackTarget(ctx, r)
+		if err != nil {
+			return "", true, err
+		}
 		if p.Turn == "" || target == nil || target.UUID != p.Turn || target.SessionID != p.Session {
 			return "本轮已经结束；旧按钮不会停止后续任务。", true, nil
 		}
-		claimed, err := g.claimQuick(a, p)
+		claimed, err := g.claimQuick(ctx, a, p)
 		if err != nil || !claimed {
 			return "停止请求已提交或卡片已失效。", true, err
 		}
 		g.task(func() { g.quickStop(r, a, p) })
 		return "已请求停止这次前台运行。", true, nil
 	case "retry":
-		o, err := g.output(p.Output)
-		if err != nil || p.Output == "" || o.Room != r.Key || o.Session != p.Session || !g.outputAllowed(o, r) {
+		o, err := g.outputContext(ctx, p.Output)
+		allowed := err == nil && p.Output != "" && o.Room == r.Key && o.Session == p.Session && g.outputAllowedContext(ctx, o, r)
+		if ctx.Err() != nil {
+			return "", true, ctx.Err()
+		}
+		if !allowed {
 			return "交付记录不存在或已失效。", true, nil
 		}
 		if !contains([]string{"pending", "uncertain", "blocked"}, o.State) {
 			return "输出已送达或正在发送，无需重复提交。", true, nil
 		}
-		claimed, err := g.claimQuick(a, p)
+		claimed, err := g.claimQuick(ctx, a, p)
 		if err != nil || !claimed {
 			return "补发已提交；后续操作请查看 /outputs。", true, err
 		}
 		g.task(func() {
-			if g.quickBound(a, p) {
+			if g.quickBound(g.ctx, a, p) {
 				_, _ = g.deliverOutput(g.ctx, p.Output, r, true)
 			}
 		})
@@ -367,30 +400,43 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 func (g *Gateway) quickStop(r core.Room, a core.CardAction, p quickControl) {
 	unlock := g.inputLocks.lock(r.Key)
 	defer unlock()
-	if !g.quickBound(a, p) {
+	if !g.quickBound(g.ctx, a, p) {
 		return
 	}
 	s := g.getSlot(r.Key)
 	if s == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(g.ctx, 10*time.Second)
+	defer cancel()
 	s.events.Lock()
 	s.mu.Lock()
 	eligible := s.live && s.busy && s.session.ID == p.Session && s.anchor == p.Turn && s.compacting == ""
-	if eligible {
-		// Invalidate while holding the native event lock: a result cannot advance
-		// to a later turn between the stale check and stopRoom's cancellation.
-		s.live = false
-		s.cancel()
-	}
 	s.mu.Unlock()
-	s.events.Unlock()
 	if !eligible {
+		s.events.Unlock()
 		return
 	}
-	ctx, cancel := context.WithTimeout(g.ctx, 10*time.Second)
-	err := g.stopRoom(ctx, r)
-	cancel()
+	// Keep the event lock across the durable pause and invalidation: a result
+	// must not advance to a later turn after the stale check. As with /stop,
+	// save intent before the first cancellation, including the fallback marker
+	// when SQLite cannot record it. stopRoomGeneration can safely save it again.
+	pauseErr := g.persistStopPause(ctx, r.Key, p.Session)
+	if pauseErr != nil {
+		g.audit(r.Key, "stop_pause_persistence_failed", core.Args{"session": p.Session, "error": pauseErr.Error()})
+		if ctx.Err() != nil {
+			s.events.Unlock()
+			g.notify(r, "停止尚未确认，请检查 /status 和服务诊断。", nil)
+			return
+		}
+	}
+	g.blockAfterFailedStop(r.Key)
+	s.mu.Lock()
+	s.live = false
+	s.cancel()
+	s.mu.Unlock()
+	s.events.Unlock()
+	err := g.stopRoomGeneration(ctx, r, s)
 	if err != nil {
 		text := "停止尚未确认，请检查 /status 和服务诊断。"
 		if errors.Is(err, errStopState) {
@@ -412,10 +458,16 @@ func (g *Gateway) quickSupplement(ctx context.Context, r core.Room, a core.CardA
 		return "请稍后重新提交。", err
 	}
 	defer unlock()
-	if !g.quickBound(a, p) {
+	if !g.quickBound(ctx, a, p) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		return "卡片已更新，请重新填写最新卡片。", nil
 	}
-	s := g.getSlot(r.Key)
+	s, err := g.callbackSlot(ctx, r.Key)
+	if err != nil {
+		return "", err
+	}
 	if s == nil {
 		return "本轮已经结束，补充未提交。", nil
 	}
@@ -425,24 +477,20 @@ func (g *Gateway) quickSupplement(ctx context.Context, r core.Room, a core.CardA
 		return "请稍后重新提交。", ctx.Err()
 	}
 	defer s.events.Unlock()
-	target := g.foregroundTarget(r)
+	target, err := g.callbackTarget(ctx, r)
+	if err != nil {
+		return "", err
+	}
 	if p.Turn == "" || target == nil || target.UUID != p.Turn || target.SessionID != p.Session {
 		return "本轮已经结束，补充未提交；如需新任务请发送普通消息。", nil
 	}
 	id := "card:" + core.Hash(jsonText([]string{a.MessageID, p.Revision, a.UserID, text}))
-	seen, err := g.store.Seen(r.Key, id)
+	seen, err := g.store.SeenContext(ctx, r.Key, id)
 	if err != nil {
 		return "", err
 	}
 	if seen {
 		return "这段补充已接收，无需重复提交。", nil
-	}
-	n, err := g.pendingInChat(r)
-	if err != nil {
-		return "", err
-	}
-	if n >= g.config.Limits.InboxPerRoom {
-		return "本聊天待交付输入已达上限，请查看 /status。", nil
 	}
 	now := time.Now().UnixMilli()
 	m := core.Message{ID: id, InteractionMessageID: a.MessageID, ChatID: r.ChatID, ChatType: "group", SenderID: a.UserID, Text: text, Time: now, Mentioned: true, Resources: []core.Resource{}}
@@ -454,9 +502,50 @@ func (g *Gateway) quickSupplement(ctx context.Context, r core.Room, a core.CardA
 		// Feishu has already reported a timeout to the user; do not commit.
 		return "请稍后重新提交。", err
 	}
-	if err := g.queueInput(d, now); err != nil {
+	if err := g.queueInput(ctx, d, now); err != nil {
+		if errors.Is(err, errInboxFull) {
+			return "本聊天待交付输入已达上限，请查看 /status。", nil
+		}
 		return "", err
 	}
 	g.kick(r)
 	return "补充已保存，等待交给本轮原生输入流。", nil
+}
+
+// Callback validation waits on the same mutexes as ordinary input, but does
+// not outlive the platform deadline while another input waits for storage.
+func (g *Gateway) beginCallback(ctx context.Context) bool {
+	if !lockWithin(ctx, &g.mu) {
+		return false
+	}
+	defer g.mu.Unlock()
+	if g.closing {
+		return false
+	}
+	g.wg.Add(1)
+	return true
+}
+
+func (g *Gateway) callbackSlot(ctx context.Context, room string) (*slot, error) {
+	if !lockWithin(ctx, &g.mu) {
+		return nil, ctx.Err()
+	}
+	defer g.mu.Unlock()
+	return g.slots[room], nil
+}
+
+func (g *Gateway) callbackTarget(ctx context.Context, r core.Room) (*core.Delivery, error) {
+	s, err := g.callbackSlot(ctx, r.Key)
+	if err != nil || s == nil {
+		return nil, err
+	}
+	if !lockWithin(ctx, &s.mu) {
+		return nil, ctx.Err()
+	}
+	defer s.mu.Unlock()
+	d, ok := s.deliveries[s.anchor]
+	if !s.live || !s.busy || s.compacting != "" || s.anchor == "" || !ok || d.Command != nil {
+		return nil, nil
+	}
+	return &d, nil
 }

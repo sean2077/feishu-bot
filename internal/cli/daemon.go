@@ -60,6 +60,8 @@ type serviceManager interface {
 	Uninstall(ctx context.Context, name string) error
 	Start(ctx context.Context, name string) error
 	Present(ctx context.Context, name string) (bool, error)
+	Snapshot(ctx context.Context, name string) (serviceDefinition, error)
+	Restore(ctx context.Context, name string, definition serviceDefinition) error
 }
 
 func newServiceManager() (serviceManager, error) {
@@ -131,7 +133,7 @@ func resolveConfigPath(o Options) (string, bool, error) {
 	return o.ConfigPath, false, nil
 }
 
-func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdout, stderr io.Writer) error {
+func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdout, stderr io.Writer) (resultErr error) {
 	configPath, found, err := resolveConfigPath(o)
 	if err != nil {
 		return err
@@ -212,6 +214,43 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 	if err := envFile.Stage(); err != nil {
 		return err
 	}
+	stagedBinary := ""
+	if !samePath(binarySource, binaryPath) {
+		stagedBinary, err = stageExecutable(binarySource, binaryPath)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(stagedBinary)
+	}
+	metaPath, err := daemonMetaPath()
+	if err != nil {
+		return err
+	}
+	backup, err := prepareInstallBackup(ctx, workDir, mgr, binaryPath, envPath, metaPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if resultErr == nil || !backup.changed {
+			backup.cleanup()
+			return
+		}
+		if backup.committed {
+			// Registration and files form a complete installation. Once Start
+			// was attempted it may have spawned a process even if it returned an
+			// error; never replace its executable or environment underneath it.
+			resultErr = fmt.Errorf("installation committed, but startup was not confirmed: %w; inspect daemon status/logs, then use daemon start; prior installation recovery files: %s", resultErr, backup.Directory)
+			return
+		}
+		recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if rollbackErr := backup.rollback(recoveryCtx, mgr); rollbackErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("installation rollback incomplete: %w; recovery files: %s", rollbackErr, backup.Directory))
+		} else {
+			backup.cleanup()
+			resultErr = fmt.Errorf("%w; previous installation restored", resultErr)
+		}
+	}()
 
 	oldMeta, oldErr := loadDaemonMeta()
 	hadMeta := oldErr == nil
@@ -219,16 +258,29 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 	if hadMeta && oldMeta.DataDir != "" {
 		dataDir = oldMeta.DataDir
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if _, statErr := os.Stat(filepath.Join(dataDir, "gateway.lock")); statErr == nil {
-		if _, err := stopRunning(ctx, dataDir); err != nil {
-			return err
+		alreadyStopped, err := stopRunning(ctx, dataDir)
+		if err != nil {
+			// The stop request may already have been written: the previous
+			// gateway can still finish shutting down after this returns, and
+			// nothing here restarts it. Nothing was replaced yet.
+			return fmt.Errorf("%w; installation not changed, but the running gateway may have been asked to stop: check daemon status and use daemon start if it exited", err)
 		}
+		backup.wasRunning = !alreadyStopped
+		backup.changed = backup.wasRunning
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return errors.New("cannot inspect gateway.lock")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
-	if !samePath(binarySource, binaryPath) {
-		if err := copyExecutable(binarySource, binaryPath); err != nil {
+	backup.changed = true
+	if stagedBinary != "" {
+		if err := os.Rename(stagedBinary, binaryPath); err != nil {
 			return err
 		}
 	}
@@ -259,6 +311,7 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 	if err := saveDaemonMeta(meta); err != nil {
 		return err
 	}
+	backup.committed = true
 
 	started := false
 	if !o.NoStart {
@@ -853,19 +906,34 @@ func toolDetail(err error) string {
 	return ""
 }
 
+// toolOutputLimit bounds ordinary service-manager queries. Complete
+// inventories such as a system-wide unit-file listing use a larger bound.
+const (
+	toolOutputLimit    = 64 << 10
+	listingOutputLimit = 8 << 20
+)
+
 type boundedOutput struct {
-	buf bytes.Buffer
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
 }
 
 func (b *boundedOutput) Write(p []byte) (int, error) {
 	n := len(p)
-	const limit = 64 << 10
+	limit := b.limit
+	if limit <= 0 {
+		limit = toolOutputLimit
+	}
 	if b.buf.Len() < limit {
 		remaining := limit - b.buf.Len()
 		if len(p) > remaining {
+			b.truncated = true
 			p = p[:remaining]
 		}
 		_, _ = b.buf.Write(p)
+	} else if len(p) > 0 {
+		b.truncated = true
 	}
 	return n, nil
 }
@@ -873,10 +941,16 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 func (b *boundedOutput) String() string { return b.buf.String() }
 
 func runTool(ctx context.Context, name string, args ...string) (string, error) {
+	return runToolLimit(ctx, toolOutputLimit, name, args...)
+}
+
+// runToolLimit rejects output beyond limit rather than returning a prefix, so
+// a truncated inventory can never be mistaken for a complete one.
+func runToolLimit(ctx context.Context, limit int, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
-	var out boundedOutput
+	out := boundedOutput{limit: limit}
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	err := process.Run(ctx, cmd)
@@ -886,6 +960,9 @@ func runTool(ctx context.Context, name string, args ...string) (string, error) {
 			code = cmd.ProcessState.ExitCode()
 		}
 		return out.String(), &toolError{Name: name, Code: code, Output: out.String()}
+	}
+	if out.truncated {
+		return out.String(), fmt.Errorf("%s output exceeded the %d KiB inspection limit", name, limit>>10)
 	}
 	return out.String(), nil
 }

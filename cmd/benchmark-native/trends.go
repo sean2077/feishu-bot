@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -90,6 +91,11 @@ type trendPoint struct {
 	DBBytes       *int64                 `json:"databaseBytes"`
 	WALBytes      *int64                 `json:"walBytes"`
 	Goroutines    int                    `json:"goroutines"`
+	HeapBytes     uint64                 `json:"goHeapBytes"`
+	HeapInUse     uint64                 `json:"goHeapInUseBytes"`
+	DataBytes     *int64                 `json:"dataDirectoryBytes"`
+	DataFiles     *int64                 `json:"dataDirectoryFiles"`
+	DataAtMS      float64                `json:"dataDirectoryObservedMs"`
 	ActiveWorkers int64                  `json:"activeWorkers"`
 	InFlight      int64                  `json:"inFlightTurns"`
 	Memory        memory                 `json:"memory"`
@@ -134,9 +140,46 @@ func startTrendSampler(program, dbPath string, interval, maintenanceInterval tim
 		started := time.Now()
 		result := trendSeries{IntervalMS: int(interval / time.Millisecond), MaintenanceIntervalMS: int(maintenanceInterval / time.Millisecond), Points: []trendPoint{}}
 		next := 0
+		var diskBytes, diskFiles *int64
+		var diskAt float64
+		var nextDisk time.Time
 		capture := func() {
 			begin := time.Now()
 			point := trendPoint{ElapsedMS: elapsed(started), Goroutines: runtime.NumGoroutine(), ActiveWorkers: workers(), InFlight: inFlight(), Memory: memorySnapshot(program), Maintenance: observed.snapshot()}
+			var heap runtime.MemStats
+			runtime.ReadMemStats(&heap)
+			point.HeapBytes, point.HeapInUse = heap.HeapAlloc, heap.HeapInuse
+			if !begin.Before(nextDisk) {
+				var bytes, files int64
+				err := filepath.WalkDir(filepath.Dir(dbPath), func(path string, entry fs.DirEntry, err error) error {
+					if os.IsNotExist(err) {
+						return nil
+					}
+					if err != nil {
+						return err
+					}
+					if entry.Type().IsRegular() {
+						info, err := entry.Info()
+						if os.IsNotExist(err) {
+							return nil
+						}
+						if err != nil {
+							return err
+						}
+						bytes += info.Size()
+						files++
+					}
+					return nil
+				})
+				if err != nil {
+					diskBytes, diskFiles = nil, nil
+					point.Errors = append(point.Errors, "data-directory-stat")
+				} else {
+					diskBytes, diskFiles = &bytes, &files
+				}
+				diskAt, nextDisk = elapsed(started), begin.Add(10*time.Second)
+			}
+			point.DataBytes, point.DataFiles, point.DataAtMS = diskBytes, diskFiles, diskAt
 			// Phase/peak observations retain the detailed PID tree. Keeping only
 			// aggregates here avoids multiplying that tree by 2000 trend points.
 			point.Memory.Processes = nil

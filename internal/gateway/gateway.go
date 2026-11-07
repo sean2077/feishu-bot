@@ -7,10 +7,8 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -33,8 +31,13 @@ type slot struct {
 	ctx                                 context.Context
 	cancel                              context.CancelFunc
 	live, busy, pinned, stopUnconfirmed bool
+	handedOff, exitPending              bool
+	identityObserved                    bool
+	exitInterrupted                     bool
+	exitApprovals                       int
 	background                          int
 	lastActivity                        int64
+	inputsServed                        uint32
 	workspace                           core.Workspace
 	deliveries                          map[string]core.Delivery
 	order                               []string
@@ -48,6 +51,10 @@ type slot struct {
 	requests                            map[string]bool
 	activeRequests                      int
 	titleSync                           *sessionTitleSync
+	// topicRootUnavailable names the session whose topic root was fetched
+	// successfully but is absent or not readable in this room. It avoids a
+	// Feishu lookup on every reply; fetch errors are still retried.
+	topicRootUnavailable string
 }
 type actionExecution struct {
 	room        string
@@ -78,11 +85,17 @@ type Gateway struct {
 	slots                                                        map[string]*slot
 	rates                                                        map[string][]int64
 	waiting                                                      map[string]bool
+	capacityWait                                                 map[string]capacityWait
+	residentBytes                                                func(context.Context) (int64, error)
 	profileWait                                                  map[string]string
 	wakes                                                        map[string]*dispatchWake
 	imageTimers                                                  map[string]imageWake
 	inputLocks, dispatchLocks, receiptLocks, approvalUpdateLocks keyedLocks
+	usageLocks                                                   keyedLocks
+	usageRetryMu                                                 sync.Mutex
+	usageCursor                                                  int64
 	outTargetLocks                                               keyedLocks
+	attachmentLocks                                              keyedLocks
 	statusLocks                                                  keyedLocks
 	poolMu, sweepMu                                              sync.Mutex
 	outMu                                                        sync.Mutex
@@ -109,6 +122,8 @@ func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerF
 		panic("cannot initialize history cursor authentication")
 	}
 	g.secrets = config.Secrets(c)
+	g.capacityWait = map[string]capacityWait{}
+	g.residentBytes = process.ResidentTreeBytes
 	g.task(func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -176,9 +191,24 @@ func (g *Gateway) active(s *slot) bool {
 }
 
 func (g *Gateway) Recover(ctx context.Context) error {
+	paused, err := g.store.PausedStopRooms(ctx)
+	if err != nil {
+		return err
+	}
+	marked, err := g.stopPauseMarkers()
+	if err != nil {
+		return err
+	}
+	paused = append(paused, marked...)
+	g.mu.Lock()
+	for _, key := range paused {
+		g.stopBlocked[key] = true
+	}
+	g.mu.Unlock()
 	if err := g.recoverInterrupted(ctx); err != nil {
 		return err
 	}
+	g.retryUsage(ctx)
 	if recovery, ok := g.transport.(core.CardRecovery); ok {
 		repairCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		count, err := recovery.RecoverCards(repairCtx)
@@ -396,13 +426,7 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		return err
 	}
 	if total >= g.config.Limits.InboxPerRoom {
-		_, err = g.store.Insert(room.Key, m, "cancelled")
-		text := "本群待交付输入已达上限，请查看 /status 或联系维护者。"
-		if room.Thread != "" {
-			text = "本群所有话题的待交付输入合计已达上限，请在各话题内用 /status 查看，或等待已有任务完成后再发送。"
-		}
-		g.notify(g.refusalRoom(room, m), text, &m)
-		return err
+		return g.rejectFullInbox(room, m)
 	}
 	var command *core.Command
 	if supplementTo == "" && cmd == "/compact" {
@@ -446,11 +470,14 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	held := false
 	g.mu.Lock()
 	held = g.stopBlocked[room.Key]
-	err = g.queueInput(d, now)
+	err = g.queueInput(ctx, d, now)
 	if held && err == nil {
 		g.stopHeld[room.Key]++
 	}
 	g.mu.Unlock()
+	if errors.Is(err, errInboxFull) {
+		return g.rejectFullInbox(room, m)
+	}
 	if err != nil {
 		return err
 	}
@@ -468,6 +495,16 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	return nil
 }
 
+func (g *Gateway) rejectFullInbox(room core.Room, m core.Message) error {
+	_, err := g.store.Insert(room.Key, m, "cancelled")
+	text := "本群待交付输入已达上限，请查看 /status 或联系维护者。"
+	if room.Thread != "" {
+		text = "本群所有话题的待交付输入合计已达上限，请在各话题内用 /status 查看，或等待已有任务完成后再发送。"
+	}
+	g.notify(g.refusalRoom(room, m), text, &m)
+	return err
+}
+
 // pendingInChat counts pending inputs for the chat that owns r. Topic rooms
 // of one chat share the chat's inboxPerRoom budget, as a chat room did before
 // topics existed.
@@ -481,8 +518,8 @@ func (g *Gateway) pendingInChat(r core.Room) (int, error) {
 // stopStateNotice explains a stop whose process part completed while its
 // state update failed; stopBlockedNotice answers inputs that arrive meanwhile.
 const (
-	stopStateNotice   = "原生进程已停止，但取消待交付内容的状态未能保存，因此本聊天暂停交付、未切换会话。请检查服务诊断后重新发送 /stop；暂停只在本次服务运行内有效。"
-	stopBlockedNotice = "本聊天上次停止未能完成（状态保存失败），暂不交付新输入。维护者重新发送 /stop 成功后，暂存的输入会随停止一并取消，届时请重新发送；若期间服务重启，暂存输入会被正常交付。"
+	stopStateNotice   = "原生进程已停止，但取消待交付内容的状态未能保存，因此本聊天暂停交付、未切换会话。请检查服务诊断后重新发送 /stop；已保存的暂停在服务重启后仍有效。"
+	stopBlockedNotice = "本聊天上次停止未能完成（状态保存失败），暂不交付新输入。维护者重新发送 /stop 成功后，暂存的输入会随停止一并取消，届时请重新发送；服务重启不会解除已保存的暂停。"
 )
 
 // refusalRoom picks where to explain a refused input. A refused top-level
@@ -640,6 +677,18 @@ func (g *Gateway) kickWaiting() {
 	if e != nil {
 		return
 	}
+	active := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		active[key] = true
+	}
+	g.mu.Lock()
+	for key := range g.capacityWait {
+		if !active[key] {
+			delete(g.capacityWait, key)
+			delete(g.waiting, key)
+		}
+	}
+	g.mu.Unlock()
 	for _, key := range keys {
 		r, ok := RoomFromKey(g.config, key)
 		if ok {
@@ -685,26 +734,8 @@ func (g *Gateway) reserve(r core.Room) (*slot, error) {
 		return s, nil
 	}
 	slots := g.allSlots()
-	if len(slots) >= g.config.Runtime.MaxWorkers {
-		sort.Slice(slots, func(i, j int) bool {
-			slots[i].mu.Lock()
-			a := slots[i].lastActivity
-			slots[i].mu.Unlock()
-			slots[j].mu.Lock()
-			b := slots[j].lastActivity
-			slots[j].mu.Unlock()
-			return a < b
-		})
-		found := false
-		for _, s := range slots {
-			if g.reclaimable(s) {
-				found = g.releaseIdle(g.ctx, s)
-				break
-			}
-		}
-		if !found {
-			return nil, nil
-		}
+	if !g.admitWorker(r, slots) {
+		return nil, nil
 	}
 	ss, e := g.store.Session(r.Key)
 	if e != nil {
@@ -723,7 +754,14 @@ func (g *Gateway) reserve(r core.Room) (*slot, error) {
 	}
 	g.slots[r.Key] = s
 	delete(g.waiting, r.Key)
+	wait := g.capacityWait[r.Key]
+	delete(g.capacityWait, r.Key)
 	g.mu.Unlock()
+	detail := core.Args{"session": ss.ID, "resume": ss.CCID != "", "queueWaitMs": int64(0)}
+	if !wait.since.IsZero() {
+		detail["queueWaitMs"] = time.Since(wait.since).Milliseconds()
+	}
+	g.audit(r.Key, "worker_slot_reserved", detail)
 	return s, nil
 }
 func (g *Gateway) dispatch(r core.Room) error {
@@ -764,6 +802,10 @@ func (g *Gateway) dispatch(r core.Room) error {
 	}
 	if len(pending) == 0 {
 		g.clearImageTimer(r.Key)
+		g.mu.Lock()
+		delete(g.waiting, r.Key)
+		delete(g.capacityWait, r.Key)
+		g.mu.Unlock()
 		return nil
 	}
 	if g.waitImages(r, pending[0]) {
@@ -779,7 +821,7 @@ func (g *Gateway) dispatch(r core.Room) error {
 		g.waiting[r.Key] = true
 		g.mu.Unlock()
 		if !already {
-			g.notify(r, "当前会话都在工作、监控或停止尚未确认，输入已保存。正常空闲后会自动处理；停止未确认时请维护者检查服务诊断。", &pending[0].Message)
+			g.notify(r, g.capacityNotice(r.Key), &pending[0].Message)
 		}
 		return nil
 	}
@@ -837,7 +879,16 @@ func (g *Gateway) dispatch(r core.Room) error {
 				g.audit(r.Key, "session_identity_recovered", core.Args{"session": s.session.ID})
 			}
 		}
-		if s.session.CCID == "" && g.sessionIdentityLost(s.session.ID) {
+		unresolved, pendingErr := g.store.NativeIdentityPending(s.session.ID)
+		if pendingErr != nil {
+			s.mu.Lock()
+			s.live = false
+			s.mu.Unlock()
+			s.cancel()
+			g.removeSlot(s)
+			return pendingErr
+		}
+		if s.session.CCID == "" && (unresolved || g.sessionIdentityLost(s.session.ID)) {
 			s.mu.Lock()
 			s.live = false
 			s.mu.Unlock()
@@ -857,6 +908,14 @@ func (g *Gateway) dispatch(r core.Room) error {
 		s.mu.Lock()
 		s.workspace = w
 		s.mu.Unlock()
+		if err = g.store.BeginNativeLaunch(s.ctx, s.session); err != nil {
+			s.mu.Lock()
+			s.live = false
+			s.mu.Unlock()
+			s.cancel()
+			g.removeSlot(s)
+			return err
+		}
 		worker, err = g.factory(s.ctx, r, s.session, w, func(ev core.WorkerEvent) { g.event(s, ev) })
 		if err != nil {
 			s.mu.Lock()
@@ -868,6 +927,9 @@ func (g *Gateway) dispatch(r core.Room) error {
 			s.mu.Unlock()
 			s.cancel()
 			if !keep {
+				// The factory failed before any Send and confirmed its cleanup.
+				// Retrying this launch cannot replace a user-created context.
+				err = errors.Join(err, g.clearUnsentLaunch(s))
 				g.removeSlot(s)
 			}
 			return err
@@ -879,12 +941,15 @@ func (g *Gateway) dispatch(r core.Room) error {
 		s.mu.Unlock()
 		if !live || g.isClosing() {
 			stopCtx, cancelStop := context.WithTimeout(context.Background(), 10*time.Second)
-			err = providerVoid(stopCtx, func() error { return worker.Stop(stopCtx) })
+			err = stopWorker(stopCtx, worker)
 			cancelStop()
 			if err != nil {
 				s.mu.Lock()
 				s.stopUnconfirmed = true
 				s.mu.Unlock()
+				return err
+			}
+			if err = g.clearUnsentLaunch(s); err != nil {
 				return err
 			}
 			g.removeSlot(s)
@@ -963,8 +1028,7 @@ func (g *Gateway) dispatch(r core.Room) error {
 			return nil
 		}
 		handedOff := false
-		paths := []string{}
-		err = g.prepareInputs(s, r, members, &paths)
+		err = g.prepareInputs(s, r, members)
 		if err == nil {
 			err = g.store.Transaction(s.ctx, func(tx *sql.Tx) error {
 				for _, m := range members {
@@ -975,6 +1039,11 @@ func (g *Gateway) dispatch(r core.Room) error {
 					n, _ := res.RowsAffected()
 					if n != 1 {
 						return errors.New("input preparation cancelled")
+					}
+					if carriesTopicRoot(m, r.Thread) {
+						if e = g.store.StageTopicRoot(tx, r.Key, s.session.ID, r.Thread, m.UUID); e != nil {
+							return e
+						}
 					}
 				}
 				return nil
@@ -1023,11 +1092,12 @@ func (g *Gateway) dispatch(r core.Room) error {
 				wire.BatchInputs = members
 			}
 			handedOff = true
+			s.mu.Lock()
+			s.handedOff = true
+			s.mu.Unlock()
 			err = worker.Send(s.ctx, wire)
-		}
-		if !handedOff {
-			for _, path := range paths {
-				_ = os.Remove(path)
+			if err == nil {
+				g.recordWorkerInput(s)
 			}
 		}
 		if err != nil {
@@ -1071,7 +1141,7 @@ func (g *Gateway) dispatch(r core.Room) error {
 			g.notify(r, "本条交付未确认，不会自动重放："+core.Redact(err.Error(), g.secrets), &d.Message)
 			if handedOff {
 				stopCtx, cancelStop := context.WithTimeout(context.Background(), 10*time.Second)
-				stopErr := providerVoid(stopCtx, func() error { return worker.Stop(stopCtx) })
+				stopErr := stopWorker(stopCtx, worker)
 				cancelStop()
 				confirmed := stopErr == nil
 				g.event(s, core.WorkerEvent{Type: "exit", CleanupConfirmed: &confirmed})
@@ -1103,7 +1173,7 @@ func (g *Gateway) stillQueued(d core.Delivery) bool {
 	e := g.store.DB.QueryRow("SELECT 1 FROM inbox WHERE uuid=? AND room=? AND session=? AND status='queued'", d.UUID, d.RoomKey, d.SessionID).Scan(&n)
 	return e == nil && n == 1
 }
-func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery, paths *[]string) error {
+func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery) error {
 	batch := members[0].ImageBatch
 	totalImages := 0
 	for _, d := range members {
@@ -1113,6 +1183,7 @@ func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery, p
 		return errors.New("image count limit")
 	}
 	total := int64(0)
+	rootPrepared := false
 	check := func() error {
 		if !g.active(s) {
 			return context.Canceled
@@ -1131,14 +1202,23 @@ func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery, p
 			return e
 		}
 		quote := d.Message.ReplyTo
-		if quote != "" && d.Command == nil && r.Thread != "" && d.Message.ThreadID != "" && quote == r.Thread {
+		topicRoot := quote != "" && d.Command == nil && r.Thread != "" && d.Message.ThreadID != "" && quote == r.Thread
+		if topicRoot {
 			// Inside a topic Feishu sets parent_id to the topic root on every
-			// reply. Supply the root until this session has actually received an
-			// input, e.g. when a session joins a topic started without the bot or
-			// after /new; a cached root alone does not mean the model saw it.
-			received, e := g.store.SessionReceivedInput(r.Key, d.SessionID)
-			if e != nil {
-				return e
+			// reply. Only delivery of the root itself suppresses later quotes;
+			// a temporary Fetch failure must not lose that context forever.
+			received := rootPrepared
+			if !received {
+				s.mu.Lock()
+				received = s.topicRootUnavailable == d.SessionID
+				s.mu.Unlock()
+			}
+			if !received {
+				var e error
+				received, e = g.topicRootKnown(s)
+				if e != nil {
+					return e
+				}
 			}
 			if received {
 				quote = ""
@@ -1148,6 +1228,11 @@ func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery, p
 			quoted, e := provider(s.ctx, func() (*core.Message, error) { return g.transport.Fetch(s.ctx, quote, r) })
 			if s.ctx.Err() != nil {
 				return s.ctx.Err()
+			}
+			if e == nil && topicRoot && (quoted == nil || !Readable(r, *quoted)) {
+				s.mu.Lock()
+				s.topicRootUnavailable = d.SessionID
+				s.mu.Unlock()
 			}
 			if e == nil && quoted != nil && Readable(r, *quoted) {
 				quoted.Text = cut(quoted.Text, g.config.Limits.TextChars)
@@ -1160,23 +1245,12 @@ func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery, p
 				}
 			}
 		}
-		for index, res := range d.Message.Resources {
+		rootPrepared = rootPrepared || carriesTopicRoot(*d, r.Thread)
+		for _, res := range d.Message.Resources {
 			if e := check(); e != nil {
 				return e
 			}
-			name := safeAttachmentName(res.Name)
-			path := filepath.Join(s.workspace.Inbound, fmt.Sprintf("%s-%d-%s", core.Hash(d.Message.ID)[:16], index, name))
-			*paths = append(*paths, path)
-			e := providerVoid(s.ctx, func() error {
-				err := g.transport.Download(s.ctx, d.Message.ID, res, path, g.config.Limits.AttachmentBytes)
-				// An adapter may complete after cancellation. Clean its late file
-				// without touching SQLite or reviving the cancelled input.
-				if s.ctx.Err() != nil {
-					_ = os.Remove(path)
-					return s.ctx.Err()
-				}
-				return err
-			})
+			path, e := g.downloadAttachment(s.ctx, s.workspace, d.Message.ID, res)
 			if e != nil {
 				return e
 			}

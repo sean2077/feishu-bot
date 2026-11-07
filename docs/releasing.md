@@ -4,9 +4,9 @@
 
 ## 触发与版本来源
 
-独立的 [Release 工作流](../.github/workflows/release.yml) 仅由推送稳定版本 tag 触发。入口过滤后严格校验 `vMAJOR.MINOR.PATCH`，每段为没有多余前导零的非负整数，例如 `v1.2.3`。本流程不接受 beta／rc 等预发布标签。
+独立的 [Release 工作流](../.github/workflows/release.yml)（`Release`）仅由推送版本 tag 触发：入口过滤 `v[0-9]+.[0-9]+.[0-9]+`，删除 tag 的推送被忽略；随后 `release.py prepare` 严格校验 `vMAJOR.MINOR.PATCH`，每段为没有多余前导零的非负整数，例如 `v1.2.3`。本流程不接受 beta／rc 等预发布标签。
 
-普通分支 push、PR、定时事件和手动工作流按钮均不触发发布；也不监听 `release.published`。现有 [普通 CI](../.github/workflows/ci.yml) 继续检查代码、平台兼容性和发布工具，但不会创建 Release 或上传公开附件。新工作流需要先进入待发布提交，已存在的旧 tag 不会被自动补发。
+普通分支 push、PR、定时事件和手动工作流按钮均不触发发布，也不监听 `release.published`。[普通 CI](../.github/workflows/ci.yml) 继续检查代码、平台兼容性和发布工具，但不创建 Release、不上传公开附件。工作流文件必须已存在于被打 tag 的提交中；已存在的旧 tag 不会被自动补发。
 
 版本身份按以下映射保持一致：
 
@@ -52,21 +52,25 @@ macOS 包提供原生网关和前台 `run`，内置 `daemon` 管理仍限 Linux�
 
 ## 检查、构建与公开
 
-1. **绑定发布身份。** 检出 tag 对应的准确提交，验证 tag、commit 和 CHANGELOG，生成发布元数据与说明。
-2. **在各目标上检查。** 五个平台使用匹配架构的原生 runner，执行 `go test -race`、`go vet` 及固定 Claude CLI 配合本地确定性模型的协议回归。检查 CLI 文件确实存在、平台和版本匹配；缺失不能作为 skip 放行。竞态检测保留平台 C 工具链，`CGO_ENABLED=0` 仅用于生产构建。
-3. **验证最终包。** 注入版本，构建、打包后解压；校验 BUILDINFO 的版本、准确提交和二进制 SHA-256，实际执行其中二进制的基本命令及 `TestBuiltArtifact*` 完整本地 TLS／WS／REST／真实原生旅程（`smoke --journey`）。先构建固定旧提交的真实二进制，再验证 `run --service` 模式下的原路径替换、同一状态和原生历史恢复；缺少旧产物或固定 CLI 直接失败。安装包还要重复构建并逐字节比较，实际安装后从安装路径运行同一旅程（`smoke-installer --journey`），最后卸载。编译成功不代表另一个架构或安装包已经实际运行过。
-4. **汇总完整产物。** 所有目标成功后才进入唯一发布 job，核对五个便携包、三个安装包、构建身份和 SHA-256。构建 job 只有只读权限，发布 job 获得 `contents: write`，发布令牌只传给发布步骤。
-5. **先草稿，后公开。** 创建该 tag 的 draft Release，上传附件，重新下载逐一验证，再确认远端 tag 仍指向原提交，最后公开。发布说明使用已校验的 CHANGELOG 内容。
+| Job | Runner | 时限 | 权限 |
+|---|---|---|---|
+| `prepare` | `ubuntu-24.04` | 10 分钟 | 只读 |
+| `build`（五个目标） | `ubuntu-24.04`、`ubuntu-24.04-arm`、`windows-2022`、`macos-15-intel`、`macos-15` | 30 分钟 | 只读 |
+| `publish` | `ubuntu-24.04` | 15 分钟 | `contents: write`，令牌只传给发布步骤 |
 
-Windows／macOS 的假 CA 安装仅允许隔离的 GitHub-hosted runner 显式启用。Windows 使用已有管理员权限写入系统证书存储并按双指纹精确撤销；macOS 安装前声明一次性 job 生命周期，普通进程／keychain 资源须确认收尾，管理员信任记录明确等待 GitHub 在 job 结束时退役 VM。工作流 `always()` 保留准确的收尾状态；该 job 不使用真实飞书凭据，公开发布在独立 job。完整旅程另有外层监督器回收硬超时后的不同进程组／Job Object；安装、卸载及回收未确认均阻断发布。TLS 维持系统验证。具体生命周期约束、进程监督边界与固定升级基线见[实际构建产物回归](validation.md#实际构建产物回归)。
+1. **绑定发布身份**：`prepare` 检出 tag 对应的准确提交，验证 tag、commit 和 CHANGELOG，生成发布元数据与说明（artifact `release-metadata`）。
+2. **在各目标上检查**：每个 `build` 在匹配架构的原生 runner 上运行与 CI 相同的[共用验证 action](validation.md#平台-ci)：`go test -race`、`go vet`、进程监督器用例及固定 Claude CLI 配合本地确定性模型的协议回归。CLI 文件必须存在且平台、版本匹配，缺失不能作为 skip 放行。竞态检测保留平台 C 工具链，`CGO_ENABLED=0` 仅用于生产构建。
+3. **验证最终包**：注入版本（`-buildvcs=false`）构建，打包后解压；校验 BUILDINFO 的版本、准确提交和二进制 SHA-256，从解包路径运行基本命令及 `TestBuiltArtifact*` 完整旅程和固定旧二进制升级旅程（`release.py smoke --journey`）；缺少旧产物或固定 CLI 直接失败。安装包重复构建并逐字节比较，实际安装后从安装路径运行同一旅程（`release.py smoke-installer --journey`），最后卸载；安装、卸载或进程回收未确认均阻断发布。旅程内容、测试 CA 生命周期与进程监督边界见[实际构建产物回归](validation.md#实际构建产物回归)；这些 job 不使用真实飞书凭据，生产路径保持系统 TLS 验证。
+4. **汇总完整产物**：所有目标成功后才进入唯一的 `publish` job，下载 `release-assets-*` 与 `release-installers-*`，核对五个便携包、三个安装包、构建身份和 SHA-256，并生成两个清单文件。
+5. **先草稿，后公开**：创建该 tag 的 draft Release，上传附件，重新下载逐一验证，确认远端 tag 仍指向原提交，最后公开（`make_latest=legacy`，由 GitHub 按其规则判断最新版本）。发布说明使用已校验的 CHANGELOG 内容。
 
 同一 tag 的工作流串行处理，不取消正在进行的发布。构建或验证失败时不会公开缺少附件的版本；上传阶段失败可以留下草稿，以便按下节规则继续。
 
-构建、打包和离线校验由 [.github/scripts/release.py](../.github/scripts/release.py) 提供；GitHub 发布状态由 [.github/scripts/publish_release.py](../.github/scripts/publish_release.py) 管理。它们属于项目发布实现，不修改 `.agents/tools/` 中的 scaffold runtime。
+构建、打包和离线校验由 [.github/scripts/release.py](../.github/scripts/release.py) 提供；GitHub 发布状态由 [.github/scripts/publish_release.py](../.github/scripts/publish_release.py) 管理，二者的离线测试在 CI 的 `release-tools` job 运行。它们属于项目发布实现，不修改 `.agents/tools/` 中的 scaffold runtime。
 
 ## 维护者操作
 
-1. 通过正常变更流程准备选定版本的 CHANGELOG、相关迁移说明和发布材料，完成检查并合入要发布的提交。公开范围沿用[公开发布检查](publication.md)。
+1. 选定版本：可先运行只读分析 `python .agents/tools/release/release-plan.py --repo . --json`，它按 Conventional Commit 前缀推断版本，未分类提交需人工确认；通用流程见 [.agents/tools/release/README.md](../.agents/tools/release/README.md)，本页规则优先。通过正常变更流程准备该版本的 CHANGELOG 章节、相关迁移说明和发布材料，完成检查并合入要发布的提交。公开范围沿用[公开发布检查](publication.md)。
 2. 在该准确提交上创建新的注释 tag，显式推送这一个 tag。下面的 `vX.Y.Z` 是占位符，需替换成已选定版本；不要移动或重建已有 tag。
 
    ```sh
@@ -81,7 +85,7 @@ Windows／macOS 的假 CA 安装仅允许隔离的 GitHub-hosted runner 显式�
 
 ## 失败与重跑
 
-重跑前先查看失败步骤，保留原 tag 和原提交。建议重跑失败 jobs，以便沿用已经通过的平台压缩包；完整重跑也必须产出相同的发布身份和内容。
+重跑前先查看失败步骤，保留原 tag 和原提交。建议重跑失败 jobs，以便沿用已经通过的平台产物；完整重跑也必须产出相同的发布身份和内容。中间 artifact（`release-metadata`、`release-assets-*`、`release-installers-*`，安装失败时另有 `installer-diagnostics-*`）只保留 7 天，超期后重跑失败 job 可能无法下载已验证的元数据或附件，此时应完整重跑原工作流。
 
 - **尚未创建草稿：** 修复环境或暂时性外部问题后，可以重新运行原工作流。需要修改源码、发布说明或产物时，应使用新的提交和新版本 tag。
 - **草稿已存在：** 只有 tag、完整 commit SHA 与发布清单一致，才补上传缺失文件。已有附件必须内容一致；未知附件、相同名字的不同内容或 tag 已移动均使流程失败。GitHub 上传失败可能留下 `state=starter`、大小为零的占位附件；仅当名称属于本次预期文件集合时，脚本才会删除该失败占位并重传。已上传或非空附件不会自动删除、覆盖。

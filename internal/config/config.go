@@ -468,6 +468,8 @@ func validate(c *core.Config, base string) error {
 		v, min, max int64
 	}{
 		{"maxWorkers", int64(c.Runtime.MaxWorkers), 1, 128}, {"idleMs", c.Runtime.IdleMS, 0, 86400000},
+		{"maxWorkersPerChat", int64(c.Runtime.MaxWorkersPerChat), 0, int64(c.Runtime.MaxWorkers)},
+		{"maxRssMiB", c.Runtime.MaxRSSMiB, 0, 1048576}, {"idleMinMs", c.Runtime.IdleMinMS, 0, c.Runtime.IdleMS},
 		{"backgroundMessages", int64(c.Limits.BackgroundMessages), 0, 200}, {"backgroundMs", c.Limits.BackgroundMS, 0, 86400000},
 		{"textChars", int64(c.Limits.TextChars), 100, 200000}, {"inboxPerRoom", int64(c.Limits.InboxPerRoom), 1, 64},
 		{"attachmentBytes", c.Limits.AttachmentBytes, 1024, 100 << 20}, {"approvalMs", c.Limits.ApprovalMS, 1000, 3600000},

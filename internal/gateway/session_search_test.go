@@ -54,7 +54,7 @@ func TestSessionSearchCursorScopeTamperAndCurrentIdentity(t *testing.T) {
 	}
 	a := core.CardAction{ChatID: r.ChatID, UserID: "member", MessageID: "wrong-message", Value: testQuickValue(t, f.g, card, "sessions")}
 	control, valid := f.g.readQuick(stringArg(a.Value, "quick_control"))
-	if !valid || f.g.quickBound(a, control) {
+	if !valid || f.g.quickBound(context.Background(), a, control) {
 		t.Fatal("page control was not bound to the actual delivered card")
 	}
 	if _, err := f.g.Action(context.Background(), a); err != nil {
@@ -77,10 +77,10 @@ func TestSessionActivityIgnoresRecoveryAndDuplicateAdmission(t *testing.T) {
 	}
 	m := f.message("catalog-input", "hello", "member")
 	d := core.Delivery{UUID: core.NewID(), RoomKey: r.Key, SessionID: s.ID, Message: m}
-	if err := f.g.queueInput(d, 100); err != nil {
+	if err := f.g.queueInput(context.Background(), d, 100); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.g.queueInput(d, 900); err != nil {
+	if err := f.g.queueInput(context.Background(), d, 900); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.s.Queue(d); err != nil {

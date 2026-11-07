@@ -315,11 +315,18 @@ func selectionSummary(p *approval, actor string) string {
 	return "**当前选择**\n" + strings.Join(lines, "\n")
 }
 func (g *Gateway) settleApproval(id string, value core.Args, actor string) bool {
-	g.approvalMu.Lock()
+	accepted, _ := g.settleApprovalContext(context.Background(), id, value, actor)
+	return accepted
+}
+
+func (g *Gateway) settleApprovalContext(ctx context.Context, id string, value core.Args, actor string) (bool, error) {
+	if !lockWithin(ctx, &g.approvalMu) {
+		return false, ctx.Err()
+	}
 	p := g.approvals[id]
 	if p == nil {
 		g.approvalMu.Unlock()
-		return false
+		return false, nil
 	}
 	accepted := true
 	// Recheck after acquiring the settlement lock: a callback can have validated
@@ -337,13 +344,33 @@ func (g *Gateway) settleApproval(id string, value core.Args, actor string) bool 
 	} else if stringArg(value, "reason") == "expired" {
 		state = "expired"
 	}
-	writeCtx := context.Background()
+	writeCtx := ctx
 	if state == "approved" {
+		deadline := time.UnixMilli(p.expires)
+		if callbackDeadline, ok := ctx.Deadline(); ok && callbackDeadline.Before(deadline) {
+			deadline = callbackDeadline
+		}
 		var cancelWrite context.CancelFunc
-		writeCtx, cancelWrite = context.WithDeadline(p.ctx, time.UnixMilli(p.expires))
+		// Keep the native request as the parent so stop/expiry cancellation
+		// still reaches its transaction directly. The earlier callback deadline
+		// also applies, including manual cancellation while storage is queued.
+		writeCtx, cancelWrite = context.WithDeadline(p.ctx, deadline)
 		defer cancelWrite()
+		stopCancel := context.AfterFunc(ctx, cancelWrite)
+		defer stopCancel()
+		if ctx.Err() != nil {
+			cancelWrite()
+		}
 	}
 	durable := g.persistApproval(writeCtx, id, state, actor)
+	if !durable && ctx.Err() != nil {
+		// The callback was never accepted. Keep the request and its card live
+		// so a later click can try again; its own expiry/cancellation still
+		// settles independently. A committed decision must continue below even
+		// if the callback expires immediately after Commit.
+		g.approvalMu.Unlock()
+		return false, ctx.Err()
+	}
 	fallback := ""
 	if !durable && state == "approved" && writeCtx.Err() != nil {
 		// The approval lost its window while waiting for storage. The native
@@ -392,7 +419,7 @@ func (g *Gateway) settleApproval(id string, value core.Args, actor string) bool 
 			_ = providerVoid(g.ctx, func() error { return g.transport.Update(g.ctx, mid, DisplayCard(title, text)) })
 		})
 	}
-	return durable && accepted
+	return durable && accepted, nil
 }
 
 func (g *Gateway) persistApproval(ctx context.Context, id, state, actor string) bool {
@@ -458,7 +485,13 @@ func actionToast(text string) core.Args {
 // returns the card callback payload, including an updated raw card when the
 // caller's own selection needs immediate, persistent feedback.
 func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.Args, error) {
-	if !g.beginCall() {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !g.beginCallback(ctx) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return core.Args{}, nil
 	}
 	defer g.wg.Done()
@@ -469,12 +502,17 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 	if id == "" {
 		return core.Args{}, nil
 	}
-	g.approvalMu.Lock()
+	if !lockWithin(ctx, &g.approvalMu) {
+		return nil, ctx.Err()
+	}
 	p := g.approvals[id]
 	if p == nil {
 		g.approvalMu.Unlock()
 		var key string
-		e := g.store.DB.QueryRow("SELECT room FROM requests WHERE id=?", id).Scan(&key)
+		e := g.store.DB.QueryRowContext(ctx, "SELECT room FROM requests WHERE id=?", id).Scan(&key)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		r, ok := RoomFromKey(g.config, key)
 		if e == nil && ok && r.ChatID == a.ChatID && AuthorizedAuthor(r, a.UserID) {
 			return actionToast("请求已结束或过期"), nil
@@ -510,7 +548,11 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 	decision := stringArg(a.Value, "decision")
 	if decision == "deny" {
 		g.approvalMu.Unlock()
-		if g.settleApproval(id, core.Args{"approved": false, "reason": "denied"}, a.UserID) {
+		accepted, err := g.settleApprovalContext(ctx, id, core.Args{"approved": false, "reason": "denied"}, a.UserID)
+		if err != nil {
+			return nil, err
+		}
+		if accepted {
 			return actionToast("已拒绝"), nil
 		}
 		return actionToast("请求已结束或过期"), nil
@@ -520,7 +562,11 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 		if decision != "allow" {
 			return actionToast("无效决定"), nil
 		}
-		if g.settleApproval(id, core.Args{"approved": true}, a.UserID) {
+		accepted, err := g.settleApprovalContext(ctx, id, core.Args{"approved": true}, a.UserID)
+		if err != nil {
+			return nil, err
+		}
+		if accepted {
 			return actionToast("已批准一次"), nil
 		}
 		return actionToast("请求已结束或过期"), nil
@@ -549,7 +595,11 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 		if len(missing) > 0 {
 			return actionToast("请先回答第 " + strings.Join(missing, "、") + " 题，再提交。"), nil
 		}
-		if g.settleApproval(id, core.Args{"approved": true, "answers": answers}, a.UserID) {
+		accepted, err := g.settleApprovalContext(ctx, id, core.Args{"approved": true, "answers": answers}, a.UserID)
+		if err != nil {
+			return nil, err
+		}
+		if accepted {
 			return actionToast("已提交"), nil
 		}
 		return actionToast("请求已结束或过期"), nil
@@ -561,6 +611,10 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 		return actionToast("无效选项，请使用最新卡片或 /answer 回答。"), nil
 	}
 	q := p.questions[qi]
+	if err := ctx.Err(); err != nil {
+		g.approvalMu.Unlock()
+		return nil, err
+	}
 	choices := p.selected[a.UserID]
 	if choices == nil {
 		choices = map[int]map[int]bool{}

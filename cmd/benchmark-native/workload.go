@@ -96,12 +96,22 @@ func executeWorkload(o settings, run func(int, string, bool) bool) workloadStats
 	if !failed.Load() && o.SoakSeconds > 0 && o.Sessions > 0 {
 		soakStart := time.Now()
 		deadline := soakStart.Add(time.Duration(o.SoakSeconds) * time.Second)
+		pace := func() {
+			if o.TurnIntervalMS > 0 && !failed.Load() {
+				wait := min(time.Duration(o.TurnIntervalMS)*time.Millisecond, time.Until(deadline))
+				if wait > 0 {
+					timer := time.NewTimer(wait)
+					<-timer.C
+				}
+			}
+		}
 		if o.Concurrent {
 			eachRoom(func(room int) {
 				for time.Now().Before(deadline) && !failed.Load() {
 					if !attempt(room, "soak-native", false) {
 						return
 					}
+					pace()
 				}
 			})
 		} else {
@@ -109,6 +119,7 @@ func executeWorkload(o settings, run func(int, string, bool) bool) workloadStats
 				if !attempt(room, "soak-native", false) {
 					break
 				}
+				pace()
 			}
 		}
 		soakMS = elapsed(soakStart)

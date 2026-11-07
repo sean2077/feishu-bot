@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -105,6 +106,12 @@ func (w *worker) fileScope() (nativeFileScope, error) {
 			if !valid || !core.Inside(expected, w.scope.inbound) || !core.Inside(w.scope.inbound, expected) {
 				w.scopeErr = fmt.Errorf("conversation attachment directory was redirected")
 				return
+			}
+			if rel == "inbound" {
+				if _, err := os.Lstat(filepath.Join(w.scope.inbound, "topics")); !errors.Is(err, os.ErrNotExist) {
+					w.scopeErr = fmt.Errorf("legacy topic attachment migration is incomplete")
+					return
+				}
 			}
 			w.scope.inboundID, _ = os.Stat(w.scope.inbound)
 		}
@@ -343,6 +350,14 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			}
 			if inRooms {
 				otherAttachment = len(parts) >= 2 && (strings.EqualFold(parts[1], "inbound") || strings.EqualFold(parts[1], core.TopicInbound)) && !attachment
+				if len(parts) >= 3 && strings.EqualFold(parts[1], "inbound") && strings.EqualFold(parts[2], "topics") {
+					otherAttachment = true
+				}
+				if search && attachment && len(parts) == 2 && strings.EqualFold(parts[1], "inbound") {
+					if _, err := os.Lstat(filepath.Join(scope.inbound, "topics")); !errors.Is(err, os.ErrNotExist) {
+						otherAttachment = true
+					}
+				}
 				// A search rooted at the rooms tree or a room directory itself
 				// would recurse into every attachment directory there.
 				if search && len(parts) <= 1 {
@@ -400,7 +415,7 @@ func objectSchema(properties args, required ...string) args {
 func (w *worker) tools() []args {
 	list := []args{
 		{"name": "read_chat_history", "description": "Read one bounded page of authorized messages from THIS conversation only when earlier context is needed. Never fetch all history automatically. Query timestamps use Unix seconds. Pass a returned cursor alone to continue; threadId must already be known in this chat and does not accept time ranges. In a topic session only the current topic is readable and is selected automatically.", "inputSchema": objectSchema(args{"limit": args{"type": "integer", "minimum": 1, "maximum": 50}, "startTime": args{"type": "integer", "minimum": 0}, "endTime": args{"type": "integer", "minimum": 0}, "cursor": args{"type": "string", "maxLength": 16000}, "threadId": args{"type": "string", "maxLength": 200}})},
-		{"name": "fetch_attachment", "description": "Download an attachment from this conversation. Use IDs and file keys present in the input context.", "inputSchema": objectSchema(args{"messageId": stringSchema(), "key": stringSchema()}, "messageId", "key")},
+		{"name": "fetch_attachment", "description": "Download an attachment from this conversation. Use IDs and file keys present in the input context. The result keeps the original display name separately from its local path; pass that name to send_file when echoing it.", "inputSchema": objectSchema(args{"messageId": stringSchema(), "key": stringSchema()}, "messageId", "key")},
 		{"name": "send_file", "description": "Send a workspace file or echo an inbound attachment owned by this conversation. Other conversation and external paths are rejected.", "inputSchema": objectSchema(args{"path": stringSchema(), "name": stringSchema()}, "path")},
 	}
 	if len(w.project.Actions) > 0 {

@@ -82,13 +82,17 @@ func (g *Gateway) prepareProfile(r core.Room) (bool, error) {
 		s.mu.Unlock()
 		s.events.Unlock()
 		ctx, cancel := context.WithTimeout(g.ctx, 10*time.Second)
-		err = providerVoid(ctx, func() error { return worker.Stop(ctx) })
+		err = stopWorker(ctx, worker)
 		cancel()
 		if err != nil {
 			s.mu.Lock()
 			s.stopUnconfirmed = true
 			s.mu.Unlock()
 			g.audit(r.Key, "profile_stop_unconfirmed", core.Args{"session": id})
+			return false, err
+		}
+		if err = g.clearUnsentLaunch(s); err != nil {
+			g.retryExitedRelease(s)
 			return false, err
 		}
 		g.removeSlot(s)

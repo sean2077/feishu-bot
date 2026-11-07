@@ -112,15 +112,17 @@ func TestDaemonMetaRoundTrip(t *testing.T) {
 }
 
 type fakeServiceManager struct {
-	platform   string
-	present    bool
-	owned      bool
-	checkErr   error
-	installErr error
-	startErr   error
-	installed  bool
-	started    bool
-	spec       serviceSpec
+	platform    string
+	present     bool
+	owned       bool
+	checkErr    error
+	installErr  error
+	startErr    error
+	installed   bool
+	started     bool
+	spec        serviceSpec
+	restored    bool
+	installHook func()
 }
 
 func (f *fakeServiceManager) Platform() string { return f.platform }
@@ -136,6 +138,9 @@ func (f *fakeServiceManager) Check(_ context.Context, _ serviceSpec, replace boo
 func (f *fakeServiceManager) Install(_ context.Context, spec serviceSpec, _ bool) error {
 	f.installed = true
 	f.spec = spec
+	if f.installHook != nil {
+		f.installHook()
+	}
 	return f.installErr
 }
 func (f *fakeServiceManager) Uninstall(context.Context, string) error { return nil }
@@ -145,6 +150,14 @@ func (f *fakeServiceManager) Start(context.Context, string) error {
 }
 func (f *fakeServiceManager) Present(context.Context, string) (bool, error) {
 	return f.present, nil
+}
+func (f *fakeServiceManager) Snapshot(context.Context, string) (serviceDefinition, error) {
+	return serviceDefinition{Present: f.present, Data: []byte("original definition")}, nil
+}
+func (f *fakeServiceManager) Restore(_ context.Context, _ string, d serviceDefinition) error {
+	f.restored = true
+	f.present = d.Present
+	return nil
 }
 
 func writeInstallConfig(t *testing.T, dir string) string {

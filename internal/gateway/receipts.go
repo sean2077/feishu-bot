@@ -173,7 +173,9 @@ func (g *Gateway) flushReceipt(id string) {
 					// No processing reaction exists, so record it as cleared:
 					// a later "done" then creates Done directly instead of
 					// trying to remove a reaction that was never added.
-					_, _ = g.store.DB.Exec("UPDATE receipts SET applied='clear',desired='clear' WHERE id=? AND desired='processing'", id)
+					if g.clearUncreatedProcessing(id) == nil {
+						continue
+					}
 					return
 				}
 				_, _ = g.store.DB.Exec("UPDATE receipts SET applied=desired WHERE id=? AND desired=?", id, desired)
@@ -196,7 +198,9 @@ func (g *Gateway) flushReceipt(id string) {
 						continue
 					}
 				case next == "processing":
-					_, _ = g.store.DB.Exec("UPDATE receipts SET applied='clear',desired='clear' WHERE id=? AND desired='processing'", id)
+					if g.clearUncreatedProcessing(id) == nil {
+						continue
+					}
 				default:
 					_, _ = g.store.DB.Exec("UPDATE receipts SET applied=desired WHERE id=? AND desired=?", id, desired)
 				}
@@ -209,6 +213,16 @@ func (g *Gateway) flushReceipt(id string) {
 			return
 		}
 	}
+}
+
+// A final reply or cancellation may advance desired while OnIt is in flight.
+// Keep that newer goal but remember that this create did not happen, so Done
+// does not wait for an imaginary, unconfirmed processing reaction.
+func (g *Gateway) clearUncreatedProcessing(id string) error {
+	_, err := g.store.DB.Exec(`UPDATE receipts SET applied='clear',
+desired=CASE WHEN desired='processing' THEN 'clear' ELSE desired END
+WHERE id=? AND applied='attempt:processing'`, id)
+	return err
 }
 
 // receiptUnconfirmedTTL bounds reconciliation of a reaction whose creation

@@ -70,9 +70,12 @@ func (g *Gateway) saveOutputWith(db sqlExec, r core.Room, session, text string, 
 	return id, e
 }
 func (g *Gateway) output(id string) (outgoing, error) {
+	return g.outputContext(context.Background(), id)
+}
+func (g *Gateway) outputContext(ctx context.Context, id string) (outgoing, error) {
 	var o outgoing
 	var target, reply, thread, card, name, path, ft, raw, key, initial sql.NullString
-	err := g.store.DB.QueryRow(`SELECT id,kind,room,session,text,target,reply_to,thread_id,success,state,card,origins,file_name,file_path,file_target,file_state,delivery_key,initial_card,retry_count,retry_after FROM outbox WHERE id=?`, id).Scan(&o.ID, &o.Kind, &o.Room, &o.Session, &o.Text, &target, &reply, &thread, &o.Success, &o.State, &card, &raw, &name, &path, &ft, &o.FileState, &key, &initial, &o.RetryCount, &o.RetryAfter)
+	err := g.store.DB.QueryRowContext(ctx, `SELECT id,kind,room,session,text,target,reply_to,thread_id,success,state,card,origins,file_name,file_path,file_target,file_state,delivery_key,initial_card,retry_count,retry_after FROM outbox WHERE id=?`, id).Scan(&o.ID, &o.Kind, &o.Room, &o.Session, &o.Text, &target, &reply, &thread, &o.Success, &o.State, &card, &raw, &name, &path, &ft, &o.FileState, &key, &initial, &o.RetryCount, &o.RetryAfter)
 	if err != nil {
 		return o, err
 	}
@@ -104,6 +107,9 @@ func (g *Gateway) output(id string) (outgoing, error) {
 	return o, nil
 }
 func (g *Gateway) outputAllowed(o outgoing, r core.Room) bool {
+	return g.outputAllowedContext(context.Background(), o, r)
+}
+func (g *Gateway) outputAllowedContext(ctx context.Context, o outgoing, r core.Room) bool {
 	current, ok := RoomFromKey(g.config, r.Key)
 	if !ok {
 		return false
@@ -119,7 +125,7 @@ func (g *Gateway) outputAllowed(o outgoing, r core.Room) bool {
 	if o.ReplyTo == "" {
 		return true
 	}
-	m, err := g.store.ContextMessage(r.Key, o.ReplyTo)
+	m, err := g.store.ContextMessageContext(ctx, r.Key, o.ReplyTo)
 	return err == nil && m != nil && Readable(current, *m)
 }
 func (g *Gateway) permittedOutput(o outgoing, r core.Room) bool {

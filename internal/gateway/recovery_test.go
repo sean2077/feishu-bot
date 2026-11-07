@@ -24,7 +24,7 @@ func TestRecoveryTransitionAndWarningsCommitTogether(t *testing.T) {
 	}
 	m := f.message("interrupted", "work", "member")
 	d := core.Delivery{UUID: core.NewID(), RoomKey: r.Key, SessionID: s.ID, Message: m}
-	if err = f.g.queueInput(d, time.Now().UnixMilli()); err != nil {
+	if err = f.g.queueInput(context.Background(), d, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	if err = f.s.Mark(d.UUID, "sent"); err != nil {
@@ -207,8 +207,17 @@ func TestUncertainAttachmentBlocksDoneUntilExplicitRetry(t *testing.T) {
 	if ok, e := f.g.deliverOutput(context.Background(), fileID, f.room(), true); e != nil || !ok {
 		t.Fatal("explicit attachment retry failed", ok, e)
 	}
-	if ok, e := f.g.deliverOutput(context.Background(), replyID, f.room(), false); e != nil || !ok {
-		t.Fatal("final reply could not settle", ok, e)
-	}
+	// The completed attachment may let the gateway deliver the waiting reply
+	// concurrently; either path must settle it without another explicit retry.
+	eventually(t, func() bool {
+		if ok, e := f.g.deliverOutput(context.Background(), replyID, f.room(), false); e != nil {
+			t.Fatal("final reply could not settle", e)
+		} else if ok {
+			return true
+		}
+		var state string
+		_ = f.s.DB.QueryRow("SELECT state FROM outbox WHERE id=?", replyID).Scan(&state)
+		return state == "done"
+	})
 	eventually(t, func() bool { return f.tr.receiptDone("one") })
 }

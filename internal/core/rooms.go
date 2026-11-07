@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -199,6 +200,16 @@ func (r Room) AttachmentDir(root string) string {
 
 // TopicInbound is the workspace-root directory holding per-topic attachments.
 const TopicInbound = "topic-inbound"
+
+// LegacyTopicAttachmentPath identifies the retired nested layout even if a
+// migration was interrupted. A chat must never claim these topic uploads.
+func LegacyTopicAttachmentPath(root, path string) bool {
+	legacy := filepath.Join(root, "inbound", "topics")
+	if runtime.GOOS == "darwin" {
+		legacy, path = strings.ToLower(legacy), strings.ToLower(path)
+	}
+	return Inside(legacy, path)
+}
 
 // AttachmentRel returns the path of inbound relative to root when it is a
 // valid AttachmentDir layout: "inbound" or "topic-inbound/<id>".

@@ -3,7 +3,10 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,14 +58,14 @@ func TestQuickControlsDeterministicAndRevisionBound(t *testing.T) {
 	}
 	a := core.CardAction{ChatID: r.ChatID, UserID: "member", MessageID: "bound-card", Value: testQuickValue(t, f.g, card, "status")}
 	p, _ := f.g.readQuick(stringArg(a.Value, "quick_control"))
-	if !f.g.quickBound(a, p) {
+	if !f.g.quickBound(context.Background(), a, p) {
 		t.Fatal("successfully delivered card was not bound")
 	}
 	updated := replaceQuickControls(card, f.g.quickControls(r, s.ID, "turn-two", ""))
 	if err := f.g.bindQuickControls("bound-card", updated); err != nil {
 		t.Fatal(err)
 	}
-	if f.g.quickBound(a, p) {
+	if f.g.quickBound(context.Background(), a, p) {
 		t.Fatal("old card revision remained active")
 	}
 	for _, attack := range []core.CardAction{
@@ -167,7 +170,7 @@ func TestCancelledQuickSupplementRepliesToRealCardMessage(t *testing.T) {
 			Text:                 "supplement",
 		},
 	}
-	if err := f.g.queueInput(d, time.Now().UnixMilli()); err != nil {
+	if err := f.g.queueInput(context.Background(), d, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	if !f.g.cancelSupplement(r, d, "测试", false, "queued") {
@@ -204,6 +207,65 @@ func TestQuickStopIsAuthorizedOnceAndPreservesSession(t *testing.T) {
 	after, _ := f.s.Session(r.Key)
 	if w.stops.Load() != 1 || before.ID != after.ID || before.CCID != after.CCID || f.starts.Load() != 1 {
 		t.Fatal("duplicate quick stop changed session or started native generation", before, after, w.stops.Load())
+	}
+}
+
+func TestQuickStopPersistsPauseBeforeFirstCancellation(t *testing.T) {
+	for _, fallback := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fallback=%t", fallback), func(t *testing.T) {
+			f := newFixture(t, nil)
+			f.send(f.message("original", "work", "member"))
+			w := f.worker()
+			d := f.delivery(w)
+			r := f.room()
+			card := DisplayCard("fixture", "reply", f.g.quickControls(r, d.SessionID, d.UUID, "")...)
+			if err := f.g.bindQuickControls("bound-card", card); err != nil {
+				t.Fatal(err)
+			}
+			if fallback {
+				if _, err := f.s.DB.Exec(`CREATE TRIGGER fail_quick_stop_intent BEFORE INSERT ON room_stop_pauses BEGIN SELECT RAISE(ABORT,'fixture'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s := f.g.getSlot(r.Key)
+			observed := make(chan error, 1)
+			var once sync.Once
+			s.mu.Lock()
+			cancelSlot := s.cancel
+			s.cancel = func() {
+				once.Do(func() {
+					var err error
+					if fallback {
+						_, err = os.Stat(f.g.stopPausePath(r.Key))
+					} else {
+						var count int
+						err = f.s.DB.QueryRow("SELECT count(*) FROM room_stop_pauses WHERE room=? AND session=?", r.Key, d.SessionID).Scan(&count)
+						if err == nil && count != 1 {
+							err = fmt.Errorf("durable stop pauses at cancellation = %d, want 1", count)
+						}
+					}
+					observed <- err
+				})
+				cancelSlot()
+			}
+			s.mu.Unlock()
+			a := core.CardAction{ChatID: r.ChatID, UserID: "owner", MessageID: "bound-card", Value: testQuickValue(t, f.g, card, "stop")}
+			if _, err := f.g.Action(context.Background(), a); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-observed:
+				if err != nil {
+					t.Fatalf("native cancellation preceded durable stop intent: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("quick stop never cancelled the native generation")
+			}
+			eventually(t, func() bool { return f.g.getSlot(r.Key) == nil && !f.g.stopIsBlocked(r.Key) })
+			if f.status("original") != "cancelled" || w.stops.Load() != 1 {
+				t.Fatal("durable pause prevented stop completion")
+			}
+		})
 	}
 }
 

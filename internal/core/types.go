@@ -112,9 +112,12 @@ type Project struct {
 	Actions          []ActionSpec `json:"actions"`
 }
 type RuntimeConfig struct {
-	MaxWorkers       int    `json:"maxWorkers"`
-	IdleMS           int64  `json:"idleMs"`
-	ClaudeExecutable string `json:"claudeExecutable,omitempty"`
+	MaxWorkers        int    `json:"maxWorkers"`
+	MaxWorkersPerChat int    `json:"maxWorkersPerChat,omitempty"`
+	MaxRSSMiB         int64  `json:"maxRssMiB,omitempty"`
+	IdleMS            int64  `json:"idleMs"`
+	IdleMinMS         int64  `json:"idleMinMs,omitempty"`
+	ClaudeExecutable  string `json:"claudeExecutable,omitempty"`
 }
 type ModelConfig struct {
 	BaseURL      string            `json:"baseUrl"`
@@ -250,6 +253,12 @@ type Worker interface {
 	Respond(context.Context, string, Args) error
 	Rename(context.Context, string) error
 	Stop(context.Context) error
+}
+
+// WorkerEvents separates process termination from completion of its final
+// callbacks. WaitEvents must be called outside a worker event callback.
+type WorkerEvents interface {
+	WaitEvents(context.Context) error
 }
 type Workspace struct {
 	Root, Work, Home, Inbound string

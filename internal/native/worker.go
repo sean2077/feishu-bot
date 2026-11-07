@@ -20,6 +20,7 @@ import (
 
 	"github.com/sean2077/feishu-bot/internal/config"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/process"
 )
 
 const maxFrameBytes = 2 * 1024 * 1024
@@ -248,7 +249,11 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 			w.fail("Claude initialization write failed", err)
 			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer stopCancel()
-			_ = w.Stop(stopCtx)
+			stopErr := w.Stop(stopCtx)
+			drainErr := w.WaitEvents(stopCtx)
+			if stopErr != nil || drainErr != nil {
+				return nil, errors.Join(err, process.ErrUnconfirmed, stopErr, drainErr)
+			}
 			return nil, err
 		}
 		return w, nil
@@ -817,6 +822,17 @@ func (w *worker) Stop(ctx context.Context) error {
 	select {
 	case <-w.done:
 		return w.cleanupErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// WaitEvents is deliberately separate from Stop: callbacks may request Stop,
+// but they cannot wait for their own event consumer to return.
+func (w *worker) WaitEvents(ctx context.Context) error {
+	select {
+	case <-w.eventsDone:
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}

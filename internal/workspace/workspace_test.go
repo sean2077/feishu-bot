@@ -326,7 +326,12 @@ func TestLegacyTopicAttachmentsMoveOutOfTheChatInbound(t *testing.T) {
 }
 
 func TestPartialLegacyMigrationIsMerged(t *testing.T) {
-	root := t.TempDir()
+	// Direct helper calls use the same canonical root as PrepareContext.
+	// TempDir may contain /var aliases or Windows short/case-normalized names.
+	root, err := physicalDirectory(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	legacy := filepath.Join(root, "inbound", "topics", "topic-a")
 	target := filepath.Join(root, "topic-inbound", "topic-a")
 	for _, p := range []string{legacy, target} {
@@ -345,7 +350,9 @@ func TestPartialLegacyMigrationIsMerged(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	migrateTopicAttachments(root)
+	if err := migrateTopicAttachments(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
 	if data, err := os.ReadFile(filepath.Join(target, "old.txt")); err != nil || string(data) != "x" {
 		t.Fatalf("legacy upload not merged: %q %v", data, err)
 	}

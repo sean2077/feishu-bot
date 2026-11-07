@@ -53,8 +53,29 @@ func (g *Gateway) notice(ctx context.Context, r core.Room, text string, m *core.
 	return nil
 }
 func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
-	g.clearImageTimer(r.Key)
+	return g.stopRoomGeneration(ctx, r, nil)
+}
+
+// An asynchronous failure belongs to the generation that observed it. A late
+// stop must never stop a replacement selected by /new or /resume meanwhile.
+func (g *Gateway) stopGeneration(ctx context.Context, s *slot) error {
+	unlock, err := g.inputLocks.lockContext(ctx, s.room.Key)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return g.stopRoomGeneration(ctx, s.room, s)
+}
+
+func (g *Gateway) stopRoomGeneration(ctx context.Context, r core.Room, expected *slot) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s := g.getSlot(r.Key)
+	if expected != nil && s != expected {
+		return nil
+	}
+	g.clearImageTimer(r.Key)
 	session := ""
 	if s != nil {
 		s.mu.Lock()
@@ -62,11 +83,8 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 			s.mu.Unlock()
 			return errors.New("native worker termination remains unconfirmed")
 		}
-		s.live = false
-		s.cancel()
 		session = s.session.ID
 		s.mu.Unlock()
-		s.events.Lock()
 	} else {
 		sessions, e := g.store.ListSessions(r.Key)
 		if e != nil {
@@ -78,6 +96,24 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 				break
 			}
 		}
+	}
+	if session != "" {
+		// Commit the stop intent before cancelling inputs or the process. A
+		// later failure must remain paused when this service is restarted.
+		if e := g.persistStopPause(ctx, r.Key, session); e != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			g.audit(r.Key, "stop_pause_persistence_failed", core.Args{"session": session, "error": e.Error()})
+		}
+		g.blockAfterFailedStop(r.Key)
+	}
+	if s != nil {
+		s.mu.Lock()
+		s.live = false
+		s.cancel()
+		s.mu.Unlock()
+		s.events.Lock()
 	}
 	// A database failure must not abandon the half-stopped slot: it is already
 	// cancelled and inactive, so returning early would leave a dead slot that
@@ -133,7 +169,7 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 		s.mu.Unlock()
 		var err error
 		if worker != nil {
-			err = providerVoid(ctx, func() error { return worker.Stop(ctx) })
+			err = stopWorker(ctx, worker)
 		}
 		for _, r := range renders {
 			r.cancel("已停止")
@@ -149,6 +185,9 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 			s.mu.Lock()
 			s.stopUnconfirmed = true
 			s.mu.Unlock()
+			return err
+		}
+		if err := g.clearUnsentLaunch(s); err != nil {
 			return err
 		}
 		s.mu.Lock()
@@ -171,16 +210,24 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 		// room until a later stop succeeds, so the stop's intent holds even
 		// though sweeps and other rooms wake dispatch globally.
 		g.blockAfterFailedStop(r.Key)
+		// If storage was unavailable when the stop began, try once more to
+		// keep its pause before returning. The process is stopped regardless.
+		if e := g.persistStopPause(ctx, r.Key, session); e != nil {
+			stateErr = errors.Join(stateErr, e)
+		}
 		return errors.Join(errStopState, stateErr)
 	}
 	held := 0
-	if session != "" && g.stopIsBlocked(r.Key) {
+	if session != "" {
 		// Inputs held while blocked may have been queued after the cancel at
 		// the start of this stop. Message counts and queues a held input
 		// under g.mu, so cancelling and unblocking under g.mu here makes
 		// every counted input cancelled and every later one ordinary.
 		g.mu.Lock()
-		e := g.store.StopSession(session)
+		e := g.store.FinishRoomStop(ctx, r.Key, session)
+		if e == nil {
+			e = g.removeStopPauseMarker(r.Key)
+		}
 		if e == nil {
 			held = g.stopHeld[r.Key]
 			delete(g.stopBlocked, r.Key)
@@ -222,6 +269,47 @@ func (g *Gateway) stopIsBlocked(key string) bool {
 	defer g.mu.Unlock()
 	return g.stopBlocked[key]
 }
+
+// Stop confirms the process tree; WaitEvents additionally confirms that its
+// queued ready/exit callbacks no longer access session state. Never call this
+// helper while holding s.events or from a native callback itself.
+func stopWorker(ctx context.Context, worker core.Worker) error {
+	if err := providerVoid(ctx, func() error { return worker.Stop(ctx) }); err != nil {
+		return err
+	}
+	if events, ok := worker.(core.WorkerEvents); ok {
+		return events.WaitEvents(ctx)
+	}
+	return nil
+}
+
+func (g *Gateway) clearUnsentLaunch(s *slot) error {
+	s.mu.Lock()
+	created, session := s.handedOff || s.identityObserved, s.session.ID
+	s.mu.Unlock()
+	if !created {
+		return g.store.ClearUnsentNativeLaunch(session)
+	}
+	return nil
+}
+
+// Release capacity before waking queued work. Earlier kicks may have already
+// observed this inactive slot or a full pool and gone back to sleep. Register
+// the wake as a gateway task so Close either waits for its database reads or
+// declines it; the native callback performs no state access after removal.
+// retryExitedRelease hands a confirmed-stopped slot whose exit state could not
+// be saved to Sweep reconciliation. Otherwise the inactive slot would keep its
+// room reserved without any path that retries or removes it.
+func (g *Gateway) retryExitedRelease(s *slot) {
+	s.mu.Lock()
+	s.exitPending = true
+	s.mu.Unlock()
+}
+
+func (g *Gateway) releaseExited(s *slot) {
+	g.removeSlot(s)
+	g.task(func() { g.kickWaiting() })
+}
 func (g *Gateway) reclaimable(s *slot) bool {
 	s.mu.Lock()
 	eligible := s.live && s.worker != nil && !s.busy && !s.pinned && s.background == 0 && s.activeRequests == 0 && len(s.deliveries) == 0 && !s.stopUnconfirmed
@@ -245,7 +333,7 @@ func (g *Gateway) releaseIdle(ctx context.Context, s *slot) bool {
 	worker := s.worker
 	s.mu.Unlock()
 	s.events.Unlock()
-	if e := providerVoid(ctx, func() error { return worker.Stop(ctx) }); e != nil {
+	if e := stopWorker(ctx, worker); e != nil {
 		s.mu.Lock()
 		s.stopUnconfirmed = true
 		s.mu.Unlock()
@@ -253,7 +341,15 @@ func (g *Gateway) releaseIdle(ctx context.Context, s *slot) bool {
 		g.notify(s.room, "闲置进程停止失败，尚未确认退出；已保留进程名额以避免并行执行。请检查服务诊断。", nil)
 		return false
 	}
+	if err := g.clearUnsentLaunch(s); err != nil {
+		g.retryExitedRelease(s)
+		g.audit(s.room.Key, "idle_identity_clear_failed", core.Args{"error": err.Error()})
+		return false
+	}
 	g.removeSlot(s)
+	if g.getSlot(s.room.Key) == s {
+		return false
+	}
 	g.audit(s.room.Key, "idle_process_released", core.Args{"session": s.session.ID})
 	return true
 }
@@ -271,11 +367,12 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 			s.mu.Lock()
 			last := s.lastActivity
 			s.mu.Unlock()
-			if now-last > g.config.Runtime.IdleMS && g.reclaimable(s) {
+			if now-last > g.idleLifetime(s) && g.reclaimable(s) {
 				g.releaseIdle(ctx, s)
 			}
 		}
 	}
+	g.reclaimPressure(ctx)
 	g.poolMu.Unlock()
 	g.kickWaiting()
 	g.pruneExports(now)
@@ -292,6 +389,7 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 	}
 	g.retainCards(ctx, now)
 	g.reconcileOrphanedInputs(ctx)
+	g.retryUsage(ctx)
 	g.retryReceipts()
 	g.mu.Lock()
 	for key, values := range g.rates {
@@ -369,7 +467,10 @@ func (g *Gateway) Close(ctx context.Context) error {
 			s.mu.Unlock()
 			s.events.Unlock()
 			if worker != nil {
-				err := providerVoid(ctx, func() error { return worker.Stop(ctx) })
+				err := stopWorker(ctx, worker)
+				if err == nil {
+					err = g.clearUnsentLaunch(s)
+				}
 				s.mu.Lock()
 				s.stopUnconfirmed = err != nil
 				s.mu.Unlock()
@@ -437,15 +538,38 @@ func (g *Gateway) reconcileOrphanedInputs(ctx context.Context) {
 	for _, s := range g.allSlots() {
 		s.mu.Lock()
 		live := s.live && s.worker != nil
+		exited := s.exitPending && !s.stopUnconfirmed
 		key, session := s.room.Key, s.session.ID
 		s.mu.Unlock()
-		if !live || ctx.Err() != nil {
+		if (!live && !exited) || ctx.Err() != nil {
 			continue
 		}
 		lockCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
 		unlock, err := g.dispatchLocks.lockContext(lockCtx, key)
 		cancel()
 		if err != nil {
+			continue
+		}
+		if exited {
+			s.events.Lock()
+			s.mu.Lock()
+			pending, cleanupFailed := s.exitPending, s.stopUnconfirmed
+			interrupted, approvals := s.exitInterrupted, s.exitApprovals
+			s.mu.Unlock()
+			if pending && !cleanupFailed {
+				notice, e := g.persistExited(ctx, s, false, interrupted, approvals)
+				if e == nil {
+					s.mu.Lock()
+					s.exitPending = false
+					s.mu.Unlock()
+					if notice != "" {
+						g.task(func() { _, _ = g.deliverOutput(g.ctx, notice, s.room, false) })
+					}
+					g.releaseExited(s)
+				}
+			}
+			s.events.Unlock()
+			unlock()
 			continue
 		}
 		rows, err := g.store.DB.QueryContext(ctx, "SELECT uuid,message FROM inbox WHERE room=? AND session=? AND status IN ('sent','consumed')", key, session)
