@@ -156,7 +156,13 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 		// current directory, which follows "cd" in Bash, not the launch
 		// directory; resolve them the same way here.
 		cwd := text(input["cwd"])
-		if cwd == "" || !filepath.IsAbs(cwd) || !plainSearchPath(cwd) {
+		cwdKnown := true
+		if cwd == "" {
+			cwd = w.workspace.Work
+		} else if !filepath.IsAbs(cwd) || !plainSearchPath(cwd) {
+			// The session directory cannot be resolved the way Claude Code
+			// resolves it; relative search paths would be checked elsewhere.
+			cwdKnown = false
 			cwd = w.workspace.Work
 		}
 		candidates := []string{}
@@ -169,7 +175,7 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 				// Claude Code resolves search paths itself (trimming, "~",
 				// rooted Windows forms); translate what it translates and
 				// refuse what this check could resolve differently.
-				if raw = msysDrivePath(raw); !plainSearchPath(raw) {
+				if raw = msysDrivePath(raw); !plainSearchPath(raw) || !cwdKnown && !filepath.IsAbs(raw) {
 					return denyHook("Use an absolute or plain relative search path"), nil
 				}
 			}
@@ -177,7 +183,7 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 		}
 		if name == "Glob" {
 			if pattern, ok := toolInput["pattern"].(string); ok {
-				if pattern = msysDrivePath(pattern); !plainSearchPath(pattern) {
+				if pattern = msysDrivePath(pattern); !plainSearchPath(pattern) || !cwdKnown && !filepath.IsAbs(pattern) {
 					return denyHook("Use an absolute or plain relative glob pattern"), nil
 				}
 				// An absolute pattern names its search root directly; a
@@ -245,7 +251,11 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 func physicalPath(path string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err == nil {
-		return filepath.Abs(resolved)
+		resolved, err = filepath.Abs(resolved)
+		if err == nil && runtime.GOOS == "windows" {
+			err = noReparsePoints(resolved)
+		}
+		return resolved, err
 	}
 	if !os.IsNotExist(err) {
 		return "", err
@@ -436,6 +446,11 @@ func plainSearchPath(path string) bool {
 		// "~$report.docx" are ordinary relative names.
 		return false
 	}
+	if runtime.GOOS == "windows" && (strings.HasPrefix(path, "\\\\") || strings.HasPrefix(path, "//") || strings.HasPrefix(path, "\\/") || strings.HasPrefix(path, "/\\")) {
+		// UNC and device paths (\\?\, \\.\, \\server\share) can name local
+		// directories under another volume spelling; use a drive letter.
+		return false
+	}
 	if runtime.GOOS == "windows" && !filepath.IsAbs(path) && (strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") || filepath.VolumeName(path) != "") {
 		// Drive-relative forms such as C:..\x resolve against a per-drive
 		// working directory, unlike a join onto the workspace.
@@ -473,4 +488,20 @@ func edgeInvisible(path string) bool {
 		}
 	}
 	return false
+}
+
+// noReparsePoints fails when any existing component of path is a junction,
+// mount point or other reparse point. Since Go 1.23 EvalSymlinks no longer
+// follows those, so the resolved path would not reflect where it leads.
+func noReparsePoints(path string) error {
+	for current := path; ; {
+		if info, err := os.Lstat(current); err == nil && info.Mode()&(os.ModeIrregular|os.ModeSymlink) != 0 {
+			return fmt.Errorf("path contains a reparse point")
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil
+		}
+		current = parent
+	}
 }

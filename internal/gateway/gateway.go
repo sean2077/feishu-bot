@@ -445,11 +445,11 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	// or unblocks first, making this an ordinary delivered input.
 	held := false
 	g.mu.Lock()
-	if g.stopBlocked[room.Key] {
-		g.stopHeld[room.Key]++
-		held = true
-	}
+	held = g.stopBlocked[room.Key]
 	err = g.queueInput(d, now)
+	if held && err == nil {
+		g.stopHeld[room.Key]++
+	}
 	g.mu.Unlock()
 	if err != nil {
 		return err
