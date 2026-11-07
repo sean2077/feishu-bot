@@ -88,6 +88,9 @@ func explainRoute(c core.Config, o Options) core.Args {
 		view["roomKey"] = r.Key
 		view["allowAllMembers"] = r.AllowAllMembers
 		view["mentionOptional"] = r.MentionOptional
+		if r.DMUser == "" {
+			view["sessionScope"] = r.SessionScope
+		}
 		if p, ok := c.Project(r.ProjectID); ok {
 			view["permissionMode"] = p.PermissionMode
 			view["nativeConfig"] = p.NativeConfig

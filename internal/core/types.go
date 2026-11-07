@@ -24,6 +24,7 @@ type Message struct {
 	ReplyTo              string     `json:"replyTo,omitempty"`
 	InteractionMessageID string     `json:"interactionMessageId,omitempty"`
 	ThreadID             string     `json:"threadId,omitempty"`
+	RootID               string     `json:"rootId,omitempty"`
 	Resources            []Resource `json:"resources"`
 	InputIssue           string     `json:"inputIssue,omitempty"`
 	ImageOnly            bool       `json:"imageOnly,omitempty"`
@@ -37,6 +38,12 @@ type Room struct {
 	Members         []string `json:"members,omitempty"`
 	MentionOptional bool     `json:"mentionOptional"`
 	AllowAllMembers bool     `json:"allowAllMembers,omitempty"`
+	// SessionScope is the configured group scope. Thread is the topic root
+	// message of a thread-scoped room; ChatKey is the chat room key shared by
+	// every topic of that chat for workspace and native HOME placement.
+	SessionScope string `json:"sessionScope,omitempty"`
+	Thread       string `json:"thread,omitempty"`
+	ChatKey      string `json:"chatKey,omitempty"`
 }
 type Session struct {
 	ID        string `json:"id"`
@@ -132,6 +139,7 @@ type Group struct {
 	Members         []string `json:"members,omitempty"`
 	MentionOptional bool     `json:"mentionOptional"`
 	AllowAllMembers bool     `json:"allowAllMembers,omitempty"`
+	SessionScope    string   `json:"sessionScope,omitempty"`
 }
 type DM struct {
 	UserID    string `json:"userId"`

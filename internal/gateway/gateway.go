@@ -280,6 +280,11 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	if !ok || (!Triggers(room, original) && g.config.Limits.BackgroundMessages == 0) {
 		return nil
 	}
+	if room.Thread != "" && original.ThreadID == "" && !Triggers(room, original) {
+		// In a thread-scoped group only a trigger starts a topic; top-level
+		// chatter never creates a room or background context.
+		return nil
+	}
 	unlock := g.inputLocks.lock(room.Key)
 	defer unlock()
 	if g.isClosing() {
@@ -342,6 +347,17 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		}
 		g.notify(room, "消息未提交："+reason, &m)
 		return err
+	}
+	if room.Thread != "" && m.ThreadID == "" && contains(topicCommands, cmd) {
+		// A top-level command in a thread-scoped group has no topic to act on.
+		// Never guess the most recent topic; answer on the chat timeline.
+		if _, err = g.store.Insert(room.Key, m, "done"); err != nil {
+			return err
+		}
+		if chat, ok := RoomFor(g.config, room.ChatID, ""); ok {
+			g.notify(chat, "本群按话题会话运行："+cmd+" 只作用于单个话题，请在对应话题内 @ 我发送。在群里直接 @ 我提出新问题会开启新话题和新会话。", &m)
+		}
+		return nil
 	}
 	if contains([]string{"/help", "/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/model", "/profile", "/rename", "/artifacts", "/inputs", "/cancel-input", "/discard-output"}, cmd) {
 		if _, err = g.store.Insert(room.Key, m, "done"); err != nil {
@@ -429,6 +445,11 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	}
 	return nil
 }
+
+// topicCommands act on one session. In a thread-scoped group they are
+// accepted only inside the topic that owns that session.
+var topicCommands = []string{"/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/model", "/profile", "/rename", "/artifacts", "/inputs", "/cancel-input", "/discard-output", "/compact", "/btw", "/ps"}
+
 func (g *Gateway) foregroundTarget(r core.Room) *core.Delivery {
 	s := g.getSlot(r.Key)
 	if s == nil {
@@ -985,8 +1006,21 @@ func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery, p
 		if e := check(); e != nil {
 			return e
 		}
-		if d.Message.ReplyTo != "" && d.Command == nil {
-			quoted, e := provider(s.ctx, func() (*core.Message, error) { return g.transport.Fetch(s.ctx, d.Message.ReplyTo, r) })
+		quote := d.Message.ReplyTo
+		if quote != "" && d.Command == nil && r.Thread != "" && d.Message.ThreadID != "" && quote == r.Thread {
+			// Inside a topic Feishu sets parent_id to the topic root on every
+			// reply. Supply the root once, for example when a session joins a
+			// topic started without the bot; later replies already share it.
+			known, e := g.store.ContextMessage(r.Key, r.Thread)
+			if e != nil {
+				return e
+			}
+			if known != nil {
+				quote = ""
+			}
+		}
+		if quote != "" && d.Command == nil {
+			quoted, e := provider(s.ctx, func() (*core.Message, error) { return g.transport.Fetch(s.ctx, quote, r) })
 			if s.ctx.Err() != nil {
 				return s.ctx.Err()
 			}

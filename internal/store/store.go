@@ -529,6 +529,39 @@ func (s *Store) HasContextThread(room, id string) (bool, error) {
 	}
 	return n == 1, e
 }
+
+// TopicThread returns the Feishu thread ID observed for the topic rooted at
+// root in this room. Quoted messages from other topics never qualify.
+func (s *Store) TopicThread(room, root string) (string, error) {
+	var id string
+	e := s.DB.QueryRow(`SELECT t FROM (
+		SELECT json_extract(message,'$.threadId') AS t, json_extract(message,'$.id') AS i, json_extract(message,'$.rootId') AS r FROM context_refs WHERE room=?
+		UNION ALL SELECT json_extract(message,'$.threadId'), json_extract(message,'$.id'), json_extract(message,'$.rootId') FROM inbox WHERE room=?
+	) WHERE t IS NOT NULL AND t<>'' AND (i=? OR r=?) LIMIT 1`, room, room, root, root).Scan(&id)
+	if e == sql.ErrNoRows {
+		return "", nil
+	}
+	return id, e
+}
+
+// RecentOutputs returns up to limit bot message IDs delivered in this room,
+// oldest first.
+func (s *Store) RecentOutputs(room string, limit int) ([]string, error) {
+	rows, e := s.DB.Query("SELECT id FROM outputs WHERE room=? ORDER BY at,id LIMIT ?", room, limit)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if e = rows.Scan(&id); e != nil {
+			return nil, e
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
 func (s *Store) DiscardInput(room, id string) error {
 	_, e := s.DB.Exec("UPDATE inbox SET status='cancelled',message='{}',payload=NULL WHERE room=? AND id=?", room, id)
 	return e

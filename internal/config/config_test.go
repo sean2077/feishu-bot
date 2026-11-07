@@ -70,6 +70,27 @@ func TestMentionOptionalGroupConfig(t *testing.T) {
 		t.Fatal("mentionOptional was not applied")
 	}
 }
+func TestThreadSessionScopeGroupConfig(t *testing.T) {
+	v := fixture(t)
+	v["groups"] = []any{
+		map[string]any{"chatId": core.AnyGroupChatID, "projectId": "assistant", "sessionScope": core.SessionScopeThread},
+		map[string]any{"chatId": "oc_named", "projectId": "assistant", "sessionScope": core.SessionScopeChat},
+	}
+	data, _ := json.Marshal(v)
+	c, err := Parse(data, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Groups[0].SessionScope != core.SessionScopeThread || c.Groups[1].SessionScope != core.SessionScopeChat {
+		t.Fatalf("session scope: %+v", c.Groups)
+	}
+	if r, ok := c.RoomFor("oc_named", ""); !ok || r.SessionScope != core.SessionScopeChat {
+		t.Fatalf("explicit chat scope: %+v", r)
+	}
+	if r, ok := c.RoomFor("oc_unlisted", ""); !ok || r.SessionScope != core.SessionScopeThread {
+		t.Fatalf("wildcard thread scope: %+v", r)
+	}
+}
 func TestEmbeddedExampleMatchesRepositoryExample(t *testing.T) {
 	data, err := os.ReadFile("../../examples/config.example.json")
 	if err != nil {
@@ -104,6 +125,15 @@ func TestConfigRejectsInvalidAndUnknownValues(t *testing.T) {
 		"mention null":       func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["mentionOptional"] = nil },
 		"mention wrong type": func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["mentionOptional"] = "true" },
 		"mention casing":     func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["mentionoptional"] = true },
+		"unknown session scope": func(v map[string]any) {
+			v["groups"].([]any)[0].(map[string]any)["sessionScope"] = "user"
+		},
+		"session scope casing": func(v map[string]any) {
+			v["groups"].([]any)[0].(map[string]any)["sessionScope"] = "Thread"
+		},
+		"session scope wrong type": func(v map[string]any) {
+			v["groups"].([]any)[0].(map[string]any)["sessionScope"] = true
+		},
 		"cwd seed conflict": func(v map[string]any) {
 			p := v["projects"].([]any)[0].(map[string]any)
 			p["cwd"] = "existing"

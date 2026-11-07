@@ -190,6 +190,15 @@ func inherited(w core.Workspace) (core.Workspace, error) {
 	w.ConfigDirOverride = override
 	return w, nil
 }
+
+var prepareLocks sync.Map
+
+func lockPrepare(root string) func() {
+	value, _ := prepareLocks.LoadOrStore(root, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
 func Prepare(c core.Config, room core.Room, session core.Session, p core.Project) (core.Workspace, error) {
 	return PrepareContext(context.Background(), c, room, session, p)
 }
@@ -208,7 +217,12 @@ func PrepareContext(ctx context.Context, c core.Config, room core.Room, _ core.S
 	if err != nil {
 		return core.Workspace{}, err
 	}
-	root := filepath.Join(rooms, core.Hash(room.Key)[:32])
+	// Every topic of a thread-scoped chat shares the chat room's directories.
+	root := filepath.Join(rooms, core.Hash(room.WorkspaceKey())[:32])
+	// Topics of one chat can start concurrently; serialize only preparation so
+	// seed copies and Git initialization run once per shared directory.
+	unlock := lockPrepare(root)
+	defer unlock()
 	if err = os.MkdirAll(root, 0700); err != nil {
 		return core.Workspace{}, err
 	}

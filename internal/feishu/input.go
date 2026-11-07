@@ -61,25 +61,11 @@ func roomFor(c core.Config, chat, dm string) (core.Room, bool) {
 	return c.RoomFor(chat, dm)
 }
 func (c *Client) validatedRoom(room core.Room) (core.Room, error) {
-	var parts []any
-	if json.Unmarshal([]byte(room.Key), &parts) != nil || len(parts) != 6 {
+	chat, _, thread, ok := core.ParseRoomKey(room.Key)
+	if !ok || chat != room.ChatID || !validID(chat) || thread != "" && !validID(thread) {
 		return core.Room{}, fmt.Errorf("feishu: invalid room scope")
 	}
-	chat, ok := parts[4].(string)
-	if !ok || chat != room.ChatID {
-		return core.Room{}, fmt.Errorf("feishu: invalid room scope")
-	}
-	kind, _ := parts[3].(string)
-	dm := ""
-	if kind == "p2p" {
-		dm, ok = parts[5].(string)
-		if !ok || dm == "" {
-			return core.Room{}, fmt.Errorf("feishu: invalid room scope")
-		}
-	} else if kind != "group" {
-		return core.Room{}, fmt.Errorf("feishu: invalid room scope")
-	}
-	current, ok := roomFor(c.config, chat, dm)
+	current, ok := c.config.RoomForKey(room.Key)
 	if !ok || current.Key != room.Key {
 		return core.Room{}, fmt.Errorf("feishu: invalid room scope")
 	}
@@ -89,11 +75,7 @@ func (c *Client) validatedRoom(room core.Room) (core.Room, error) {
 // approvalRecipient validates the gateway's explicit maintainer-forward target
 // against the original configured DM, without trusting caller-supplied roles.
 func (c *Client) approvalRecipient(target core.Room) (string, error) {
-	var key []any
-	if json.Unmarshal([]byte(target.Key), &key) != nil || len(key) != 6 {
-		return "", fmt.Errorf("feishu: invalid approval destination")
-	}
-	chat, ok := key[4].(string)
+	chat, _, _, ok := core.ParseRoomKey(target.Key)
 	if !ok || !validID(target.ChatID) || target.ChatID != target.DMUser {
 		return "", fmt.Errorf("feishu: invalid approval destination")
 	}
@@ -123,13 +105,10 @@ func (c *Client) allowedHeader(event messageEvent) (core.Room, bool) {
 	if !validID(m.ID) || !validID(m.ChatID) || !validID(sender) || event.Sender.Type != "user" {
 		return core.Room{}, false
 	}
-	dm := ""
-	if m.ChatType == "p2p" {
-		dm = sender
-	} else if m.ChatType != "group" {
+	if m.ChatType != "p2p" && m.ChatType != "group" {
 		return core.Room{}, false
 	}
-	room, ok := roomFor(c.config, m.ChatID, dm)
+	room, ok := c.config.MessageRoom(core.Message{ID: m.ID, ChatID: m.ChatID, ChatType: m.ChatType, SenderID: sender, ThreadID: m.ThreadID, RootID: m.RootID})
 	return room, ok && authorizedAuthor(room, sender)
 }
 func botMentioned(m eventMessage, botID string) bool {
@@ -160,7 +139,7 @@ func NormalizeEvent(raw []byte, botID string) (core.Message, error) {
 func normalizeMessage(event messageEvent, botID string, strip bool) core.Message {
 	raw := event.Message
 	timestamp, _ := strconv.ParseInt(raw.CreateTime, 10, 64)
-	m := core.Message{ID: raw.ID, ChatID: raw.ChatID, ChatType: raw.ChatType, SenderID: event.Sender.ID.OpenID, SenderName: event.Sender.Name, SenderIsBot: event.Sender.Type != "user", Text: "", Time: timestamp, Mentioned: botMentioned(raw, botID), ReplyTo: raw.ParentID, ThreadID: raw.ThreadID, Resources: []core.Resource{}}
+	m := core.Message{ID: raw.ID, ChatID: raw.ChatID, ChatType: raw.ChatType, SenderID: event.Sender.ID.OpenID, SenderName: event.Sender.Name, SenderIsBot: event.Sender.Type != "user", Text: "", Time: timestamp, Mentioned: botMentioned(raw, botID), ReplyTo: raw.ParentID, ThreadID: raw.ThreadID, RootID: raw.RootID, Resources: []core.Resource{}}
 	issue := ""
 	if raw.Type == "merge_forward" {
 		issue = forwardedInput
