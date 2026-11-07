@@ -8,7 +8,7 @@ on:
         options: ['600', '1800', '3600']
         default: '1800'
   schedule:
-    # Sunday 10:00 Singapore time. The schedule takes effect only on main.
+    # Sunday 02:00 UTC. The schedule takes effect only on main.
     - cron: '0 2 * * 0'
   pull_request:
     paths:
@@ -17,7 +17,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: endurance-${{ github.ref }}
+  # Keep scheduled and manual soaks from cancelling each other.
+  group: endurance-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   observe:
@@ -30,7 +31,8 @@ jobs:
           - os: windows-latest
             native-platform: win32-x64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
+    # The 3600 s option plus the shared verify suite and build.
+    timeout-minutes: 100
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       SOAK_SECONDS: ${{ github.event_name == 'pull_request' && '30' || inputs.soak_seconds || '1800' }}

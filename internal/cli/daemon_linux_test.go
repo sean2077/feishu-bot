@@ -269,12 +269,17 @@ func TestLinuxSnapshotRequiresKnownDefinitionAndQuery(t *testing.T) {
 			t.Fatal("treated an unknown query failure as missing")
 		}
 	})
-	t.Run("truncated-list", func(t *testing.T) {
+	t.Run("large-list", func(t *testing.T) {
 		f := newSystemctlFixture(t)
-		f.setState(t, "enabled") // Existing definition is after the output limit.
+		f.setState(t, "enabled") // Existing definition follows >64 KiB of other units.
 		t.Setenv("FEISHU_TEST_SYSTEMCTL_LARGE_LIST", "1")
-		if _, err := f.manager.Snapshot(context.Background(), serviceName); err == nil || !strings.Contains(err.Error(), "inspection limit") {
-			t.Fatal("treated incomplete inventory as task absence", err)
+		if _, err := f.manager.Snapshot(context.Background(), serviceName); err == nil || !strings.Contains(err.Error(), "outside the managed path") {
+			t.Fatal("a large unit inventory hid the existing definition", err)
+		}
+		missing := newSystemctlFixture(t)
+		t.Setenv("FEISHU_TEST_SYSTEMCTL_LARGE_LIST", "1")
+		if definition, err := missing.manager.Snapshot(context.Background(), serviceName); err != nil || definition.Present {
+			t.Fatal("a large unit inventory blocked a first installation", definition, err)
 		}
 	})
 	t.Run("cancelled", func(t *testing.T) {

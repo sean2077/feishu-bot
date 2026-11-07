@@ -264,7 +264,10 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 	if _, statErr := os.Stat(filepath.Join(dataDir, "gateway.lock")); statErr == nil {
 		alreadyStopped, err := stopRunning(ctx, dataDir)
 		if err != nil {
-			return err
+			// The stop request may already have been written: the previous
+			// gateway can still finish shutting down after this returns, and
+			// nothing here restarts it. Nothing was replaced yet.
+			return fmt.Errorf("%w; installation not changed, but the running gateway may have been asked to stop: check daemon status and use daemon start if it exited", err)
 		}
 		backup.wasRunning = !alreadyStopped
 		backup.changed = backup.wasRunning
@@ -903,14 +906,25 @@ func toolDetail(err error) string {
 	return ""
 }
 
+// toolOutputLimit bounds ordinary service-manager queries. Complete
+// inventories such as a system-wide unit-file listing use a larger bound.
+const (
+	toolOutputLimit    = 64 << 10
+	listingOutputLimit = 8 << 20
+)
+
 type boundedOutput struct {
 	buf       bytes.Buffer
+	limit     int
 	truncated bool
 }
 
 func (b *boundedOutput) Write(p []byte) (int, error) {
 	n := len(p)
-	const limit = 64 << 10
+	limit := b.limit
+	if limit <= 0 {
+		limit = toolOutputLimit
+	}
 	if b.buf.Len() < limit {
 		remaining := limit - b.buf.Len()
 		if len(p) > remaining {
@@ -927,10 +941,16 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 func (b *boundedOutput) String() string { return b.buf.String() }
 
 func runTool(ctx context.Context, name string, args ...string) (string, error) {
+	return runToolLimit(ctx, toolOutputLimit, name, args...)
+}
+
+// runToolLimit rejects output beyond limit rather than returning a prefix, so
+// a truncated inventory can never be mistaken for a complete one.
+func runToolLimit(ctx context.Context, limit int, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
-	var out boundedOutput
+	out := boundedOutput{limit: limit}
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	err := process.Run(ctx, cmd)
@@ -942,7 +962,7 @@ func runTool(ctx context.Context, name string, args ...string) (string, error) {
 		return out.String(), &toolError{Name: name, Code: code, Output: out.String()}
 	}
 	if out.truncated {
-		return out.String(), fmt.Errorf("%s output exceeded the 64 KiB inspection limit", name)
+		return out.String(), fmt.Errorf("%s output exceeded the %d KiB inspection limit", name, limit>>10)
 	}
 	return out.String(), nil
 }

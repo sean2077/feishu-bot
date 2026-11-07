@@ -49,6 +49,13 @@ func (m linuxManager) command(ctx context.Context, args ...string) (string, erro
 	return runTool(ctx, "systemctl", args...)
 }
 
+func (m linuxManager) listing(ctx context.Context, args ...string) (string, error) {
+	if !m.root {
+		args = append([]string{"--user"}, args...)
+	}
+	return runToolLimit(ctx, listingOutputLimit, "systemctl", args...)
+}
+
 func (m linuxManager) control(ctx context.Context, action string, units ...string) error {
 	args := append([]string{action}, units...)
 	if _, err := m.command(ctx, args...); err != nil {
@@ -243,8 +250,10 @@ func (m linuxManager) missingDefinition(ctx context.Context, name string) (bool,
 	// Older systemd versions report a missing is-enabled target only as a
 	// localized error. An exact-name list-unit-files query can also return a
 	// failure status for no matches. Require a successful complete listing;
-	// runTool rejects truncated output, so a missing tail cannot prove absence.
-	output, err := m.command(ctx, "list-unit-files", "--no-legend", "--no-pager", "--full", "--plain")
+	// The listing is bounded generously because system managers commonly have
+	// well over 64 KiB of unit files; truncated output is still rejected, so a
+	// missing tail cannot prove absence.
+	output, err := m.listing(ctx, "list-unit-files", "--no-legend", "--no-pager", "--full", "--plain")
 	if ctx.Err() != nil {
 		return false, ctx.Err()
 	}

@@ -33,13 +33,15 @@ func TestRunToolRejectsIncompleteInspectionOutput(t *testing.T) {
 	}
 	for _, tt := range []struct {
 		name   string
+		limit  int
 		count  int
 		stderr bool
 		failed bool
 	}{
-		{"exact-limit", 64 << 10, false, false},
-		{"stdout-overflow", (64 << 10) + 1, false, true},
-		{"later-stderr-overflow", 64 << 10, true, true},
+		{"exact-limit", toolOutputLimit, 64 << 10, false, false},
+		{"stdout-overflow", toolOutputLimit, (64 << 10) + 1, false, true},
+		{"later-stderr-overflow", toolOutputLimit, 64 << 10, true, true},
+		{"custom-limit-overflow", 1 << 10, (1 << 10) + 1, false, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("FEISHU_TEST_TOOL_OUTPUT_HELPER", "1")
@@ -48,8 +50,8 @@ func TestRunToolRejectsIncompleteInspectionOutput(t *testing.T) {
 			if tt.stderr {
 				t.Setenv("FEISHU_TEST_TOOL_OUTPUT_STDERR", "1")
 			}
-			output, err := runTool(context.Background(), executable, "-test.run=^TestRunToolOutputHelper$")
-			if len(output) != 64<<10 || (err != nil) != tt.failed {
+			output, err := runToolLimit(context.Background(), tt.limit, executable, "-test.run=^TestRunToolOutputHelper$")
+			if len(output) != min(tt.count, tt.limit) || (err != nil) != tt.failed {
 				t.Fatal("inspection result did not distinguish complete output", len(output), err)
 			}
 			if tt.failed && !strings.Contains(err.Error(), "inspection limit") {
