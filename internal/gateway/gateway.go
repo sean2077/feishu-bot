@@ -51,6 +51,10 @@ type slot struct {
 	requests                            map[string]bool
 	activeRequests                      int
 	titleSync                           *sessionTitleSync
+	// topicRootUnavailable names the session whose topic root was fetched
+	// successfully but is absent or not readable in this room. It avoids a
+	// Feishu lookup on every reply; fetch errors are still retried.
+	topicRootUnavailable string
 }
 type actionExecution struct {
 	room        string
@@ -1198,11 +1202,17 @@ func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery) e
 			return e
 		}
 		quote := d.Message.ReplyTo
-		if quote != "" && d.Command == nil && r.Thread != "" && d.Message.ThreadID != "" && quote == r.Thread {
+		topicRoot := quote != "" && d.Command == nil && r.Thread != "" && d.Message.ThreadID != "" && quote == r.Thread
+		if topicRoot {
 			// Inside a topic Feishu sets parent_id to the topic root on every
 			// reply. Only delivery of the root itself suppresses later quotes;
 			// a temporary Fetch failure must not lose that context forever.
 			received := rootPrepared
+			if !received {
+				s.mu.Lock()
+				received = s.topicRootUnavailable == d.SessionID
+				s.mu.Unlock()
+			}
 			if !received {
 				var e error
 				received, e = g.topicRootKnown(s)
@@ -1218,6 +1228,11 @@ func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery) e
 			quoted, e := provider(s.ctx, func() (*core.Message, error) { return g.transport.Fetch(s.ctx, quote, r) })
 			if s.ctx.Err() != nil {
 				return s.ctx.Err()
+			}
+			if e == nil && topicRoot && (quoted == nil || !Readable(r, *quoted)) {
+				s.mu.Lock()
+				s.topicRootUnavailable = d.SessionID
+				s.mu.Unlock()
 			}
 			if e == nil && quoted != nil && Readable(r, *quoted) {
 				quoted.Text = cut(quoted.Text, g.config.Limits.TextChars)

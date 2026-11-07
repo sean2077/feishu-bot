@@ -52,6 +52,29 @@ func TestTopicRootFetchFailureIsRetriedAfterAnOrdinaryInput(t *testing.T) {
 	}
 }
 
+func TestUnavailableTopicRootIsNotFetchedForEveryReply(t *testing.T) {
+	f := topicFixture(t)
+	var attempts atomic.Int64
+	f.tr.fetchHook = func(context.Context, string, core.Room) (*core.Message, error) {
+		attempts.Add(1)
+		return nil, nil // Deleted or otherwise unavailable root.
+	}
+	const root = "deleted-topic"
+	f.send(inTopic(f.message("first", "start", "second"), root, "omt_human"))
+	w := f.worker()
+	first := f.delivery(w)
+	if first.Quote != nil {
+		t.Fatal("an unavailable root produced a quote")
+	}
+	w.emit(core.WorkerEvent{Type: "consumed", UUID: first.UUID})
+	f.finish(w, first, "first answer")
+	f.send(inTopic(f.message("second", "continue", "second"), root, "omt_human"))
+	second := f.delivery(w)
+	if second.Quote != nil || attempts.Load() != 1 {
+		t.Fatalf("an unavailable root was fetched again: %+v attempts=%d", second, attempts.Load())
+	}
+}
+
 func TestUnconfirmedTopicRootCanBeProvidedAfterStop(t *testing.T) {
 	f := topicFixture(t)
 	root := f.message("human-topic", "the project context", "member")

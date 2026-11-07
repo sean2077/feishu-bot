@@ -516,7 +516,18 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 
 func (g *Gateway) persistExited(ctx context.Context, s *slot, cleanupFailed, interrupted bool, approvals int) (string, error) {
 	notice := ""
+	s.mu.Lock()
+	created := s.handedOff || s.identityObserved
+	s.mu.Unlock()
 	err := g.store.Transaction(ctx, func(tx *sql.Tx) error {
+		if !cleanupFailed && !created {
+			// The process exited on its own before any input was handed off
+			// and is reaped, so no native context can exist or appear later.
+			// Keeping the launch fence would refuse this session permanently.
+			if _, e := tx.ExecContext(ctx, "DELETE FROM native_identity_pending WHERE session=?", s.session.ID); e != nil {
+				return e
+			}
+		}
 		res, e := tx.ExecContext(ctx, "UPDATE inbox SET status='uncertain' WHERE room=? AND session=? AND status IN ('sent','consumed')", s.room.Key, s.session.ID)
 		if e != nil {
 			return e

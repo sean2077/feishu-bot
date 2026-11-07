@@ -92,6 +92,7 @@ func (g *Gateway) prepareProfile(r core.Room) (bool, error) {
 			return false, err
 		}
 		if err = g.clearUnsentLaunch(s); err != nil {
+			g.retryExitedRelease(s)
 			return false, err
 		}
 		g.removeSlot(s)

@@ -341,3 +341,99 @@ func TestReleasedExitCapacityWakesPersistedInputsWithoutAnotherSweep(t *testing.
 		t.Fatalf("released capacity did not wake saved work: %+v", got)
 	}
 }
+
+func TestNaturalExitBeforeFirstInputDoesNotFenceSession(t *testing.T) {
+	f := newFixture(t, nil)
+	f.readyMode = "input" // The real CLI reports its session only after input.
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.tr.mu.Lock()
+	f.tr.downloadHook = func(ctx context.Context, _ string, _ core.Resource, _ string, _ int64) error {
+		once.Do(func() { close(entered) })
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	f.tr.mu.Unlock()
+	m := f.message("first", "read this", "member")
+	m.Resources = []core.Resource{{Key: "file-key", Kind: "file", Name: "report.txt"}}
+	f.send(m)
+	w := f.worker()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("input preparation did not start")
+	}
+	session := f.openSession(f.room().Key)
+	if pending, err := f.s.NativeIdentityPending(session.ID); err != nil || !pending {
+		t.Fatalf("launch fence missing before handoff: %v %v", pending, err)
+	}
+	// The process exits on its own (bad flag, init timeout) before any Send.
+	w.emit(core.WorkerEvent{Type: "exit"})
+	close(release)
+	if pending, err := f.s.NativeIdentityPending(session.ID); err != nil || pending {
+		t.Fatalf("a launch that never received input kept the identity fence: %v %v", pending, err)
+	}
+	eventually(t, func() bool { return f.g.getSlot(f.room().Key) == nil })
+	f.send(f.message("next", "continue", "member"))
+	next := f.delivery(f.worker())
+	if next.SessionID != session.ID {
+		t.Fatalf("the unsent launch was not retried in the same session: %+v", next)
+	}
+}
+
+func TestIdleReleaseRetriesAFailedFenceClear(t *testing.T) {
+	f := newFixture(t, nil)
+	f.readyMode = "input"
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.tr.mu.Lock()
+	f.tr.downloadHook = func(ctx context.Context, _ string, _ core.Resource, _ string, _ int64) error {
+		once.Do(func() { close(entered) })
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	f.tr.mu.Unlock()
+	m := f.message("first", "read this", "member")
+	m.Resources = []core.Resource{{Key: "file-key", Kind: "file", Name: "report.txt"}}
+	f.send(m)
+	f.worker()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("input preparation did not start")
+	}
+	session := f.openSession(f.room().Key)
+	// The input is withdrawn before handoff, leaving a warm unsent launch.
+	if _, err := f.s.DB.Exec("UPDATE inbox SET status='cancelled',payload=NULL WHERE id='first'"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	s := f.g.getSlot(f.room().Key)
+	eventually(t, func() bool { return s != nil && f.g.reclaimable(s) })
+	if _, err := f.s.DB.Exec(`CREATE TRIGGER fail_fence_clear BEFORE DELETE ON native_identity_pending BEGIN SELECT RAISE(ABORT,'fixture'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if f.g.releaseIdle(context.Background(), s) {
+		t.Fatal("release reported success although the fence was kept")
+	}
+	if _, err := f.s.DB.Exec("DROP TRIGGER fail_fence_clear"); err != nil {
+		t.Fatal(err)
+	}
+	f.g.Sweep(context.Background(), time.Now().UnixMilli())
+	eventually(t, func() bool { return f.g.getSlot(f.room().Key) == nil })
+	if pending, err := f.s.NativeIdentityPending(session.ID); err != nil || pending {
+		t.Fatalf("reconciliation kept the unsent launch fence: %v %v", pending, err)
+	}
+	f.send(f.message("next", "continue", "member"))
+	if next := f.delivery(f.worker()); next.SessionID != session.ID {
+		t.Fatalf("room did not recover after the storage fault: %+v", next)
+	}
+}

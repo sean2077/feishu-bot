@@ -297,6 +297,15 @@ func (g *Gateway) clearUnsentLaunch(s *slot) error {
 // observed this inactive slot or a full pool and gone back to sleep. Register
 // the wake as a gateway task so Close either waits for its database reads or
 // declines it; the native callback performs no state access after removal.
+// retryExitedRelease hands a confirmed-stopped slot whose exit state could not
+// be saved to Sweep reconciliation. Otherwise the inactive slot would keep its
+// room reserved without any path that retries or removes it.
+func (g *Gateway) retryExitedRelease(s *slot) {
+	s.mu.Lock()
+	s.exitPending = true
+	s.mu.Unlock()
+}
+
 func (g *Gateway) releaseExited(s *slot) {
 	g.removeSlot(s)
 	g.task(func() { g.kickWaiting() })
@@ -333,6 +342,7 @@ func (g *Gateway) releaseIdle(ctx context.Context, s *slot) bool {
 		return false
 	}
 	if err := g.clearUnsentLaunch(s); err != nil {
+		g.retryExitedRelease(s)
 		g.audit(s.room.Key, "idle_identity_clear_failed", core.Args{"error": err.Error()})
 		return false
 	}
