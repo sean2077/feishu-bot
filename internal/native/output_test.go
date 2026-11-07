@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -176,8 +178,8 @@ func TestTopicAttachmentsStayWithTheirTopic(t *testing.T) {
 	room := filepath.Join(root, "room")
 	work := filepath.Join(room, "work")
 	home := filepath.Join(room, "home")
-	mine := filepath.Join(room, "inbound", "topics", "topic-a")
-	theirs := filepath.Join(room, "inbound", "topics", "topic-b")
+	mine := filepath.Join(room, "topic-inbound", "topic-a")
+	theirs := filepath.Join(room, "topic-inbound", "topic-b")
 	for _, p := range []string{work, home, mine, theirs} {
 		if err := os.MkdirAll(p, 0700); err != nil {
 			t.Fatal(err)
@@ -203,5 +205,116 @@ func TestTopicAttachmentsStayWithTheirTopic(t *testing.T) {
 	invalid := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: filepath.Join(room, "inbound", "elsewhere")}}
 	if _, err := invalid.fileScope(); err == nil {
 		t.Fatal("an attachment directory outside the topic layout was admitted")
+	}
+}
+
+func TestOffsetZoneNamesLocalOffsetInsteadOfUTC(t *testing.T) {
+	for _, tc := range []struct {
+		offset int
+		want   string
+	}{
+		{0, "UTC"},
+		{8 * 3600, "UTC+08:00"},
+		{-5 * 3600, "UTC-05:00"},
+		{5*3600 + 1800, "UTC+05:30"},
+		{-(3*3600 + 1800), "UTC-03:30"},
+	} {
+		now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("Local", tc.offset))
+		if got := offsetZone(now); got != tc.want {
+			t.Fatalf("offset %d: %q want %q", tc.offset, got, tc.want)
+		}
+	}
+	if !strings.HasPrefix(offsetZone(time.Now()), "UTC") {
+		t.Fatal("local offset must be reported in UTC±hh:mm form")
+	}
+}
+
+func TestPackageEmbedsTheTimeZoneDatabase(t *testing.T) {
+	// Release builds use -trimpath and have no GOROOT zoneinfo on Windows, so
+	// a configured TZ only loads from the embedded database.
+	data, err := os.ReadFile("tzdata.go")
+	if err != nil || !strings.Contains(string(data), `import _ "time/tzdata"`) {
+		t.Fatalf("time/tzdata is not embedded: %v", err)
+	}
+}
+
+func TestConfiguredZoneLoadsFromEmbeddedDatabase(t *testing.T) {
+	t.Setenv("ZONEINFO", "")
+	t.Setenv("TZ", "America/New_York")
+	if got := timezone(); got != "America/New_York" {
+		t.Fatalf("configured TZ ignored: %q", got)
+	}
+}
+
+func TestChatRoomDoesNotClaimTopicAttachments(t *testing.T) {
+	root := t.TempDir()
+	room := filepath.Join(root, "room")
+	work := filepath.Join(room, "work")
+	home := filepath.Join(room, "home")
+	inbound := filepath.Join(room, "inbound")
+	topic := filepath.Join(room, "topic-inbound", "topic-a")
+	for _, p := range []string{work, home, topic} {
+		if err := os.MkdirAll(p, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: inbound}, events: make(chan core.WorkerEvent, 16), eventsDone: make(chan struct{})}
+	for _, mode := range []string{"isolated", "inherit"} {
+		w.workspace.NativeConfig = mode
+		for _, tc := range []struct {
+			tool, key, path string
+			deny            bool
+		}{
+			{"Read", "file_path", filepath.Join(inbound, "chat.txt"), false},
+			{"Read", "file_path", filepath.Join(topic, "upload.txt"), true},
+			{"Grep", "path", topic, true},
+			{"Glob", "path", filepath.Join(room, "topic-inbound"), true},
+		} {
+			result, err := w.hook(context.Background(), "tool", args{"hook_event_name": "PreToolUse", "tool_name": tc.tool, "tool_input": args{tc.key: tc.path}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if denied := object(result["hookSpecificOutput"])["permissionDecision"] == "deny"; denied != tc.deny {
+				t.Fatalf("%s %s %s denied=%v want %v", mode, tc.tool, tc.path, denied, tc.deny)
+			}
+		}
+	}
+}
+
+func TestSearchesAboveAttachmentDirectoriesAreDenied(t *testing.T) {
+	base := t.TempDir()
+	rooms := filepath.Join(base, "rooms")
+	room := filepath.Join(rooms, "room")
+	work := filepath.Join(room, "workspace")
+	home := filepath.Join(room, "home")
+	mine := filepath.Join(room, "topic-inbound", "topic-a")
+	for _, p := range []string{work, home, mine, filepath.Join(room, "topic-inbound", "topic-b")} {
+		if err := os.MkdirAll(p, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: mine, NativeConfig: "inherit"}, events: make(chan core.WorkerEvent, 16), eventsDone: make(chan struct{})}
+	for _, tc := range []struct {
+		tool  string
+		input args
+		deny  bool
+	}{
+		{"Grep", args{"path": room}, true},
+		{"Grep", args{"path": rooms}, true},
+		{"Grep", args{"path": base}, true},
+		{"Glob", args{"pattern": filepath.Join(room, "**", "*.txt")}, true},
+		{"Glob", args{"pattern": filepath.Join(base, "*", "*", "topic-inbound", "*")}, true},
+		{"Grep", args{"path": work}, false},
+		{"Glob", args{"pattern": filepath.Join(work, "**", "*.go")}, false},
+		{"Grep", args{"path": mine}, false},
+		{"Read", args{"file_path": filepath.Join(work, "notes.txt")}, false},
+	} {
+		result, err := w.hook(context.Background(), "tool", args{"hook_event_name": "PreToolUse", "tool_name": tc.tool, "tool_input": tc.input})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if denied := object(result["hookSpecificOutput"])["permissionDecision"] == "deny"; denied != tc.deny {
+			t.Fatalf("%s %v denied=%v want %v", tc.tool, tc.input, denied, tc.deny)
+		}
 	}
 }

@@ -376,7 +376,24 @@ func timezone() string {
 			return zone
 		}
 	}
-	return "UTC"
+	// Windows (and Linux hosts with a copied /etc/localtime) expose no IANA
+	// name. The local offset is still known; reporting UTC would be wrong.
+	return offsetZone(time.Now())
+}
+
+// offsetZone names the current local offset as UTC±hh:mm. The value is only
+// shown to the model, so it avoids the inverted-sign Etc/GMT form.
+func offsetZone(now time.Time) string {
+	_, offset := now.Zone()
+	if offset == 0 {
+		return "UTC"
+	}
+	sign := '+'
+	if offset < 0 {
+		sign = '-'
+		offset = -offset
+	}
+	return fmt.Sprintf("UTC%c%02d:%02d", sign, offset/3600, offset%3600/60)
 }
 func (w *worker) pumpInputs() {
 	select {
@@ -530,6 +547,14 @@ func (w *worker) handleFrame(event args) {
 		return
 	}
 	if w.ctx.Err() != nil {
+		// After a stop, results and activity no longer matter, but the native
+		// session report still does: the context exists and its ID must reach
+		// the gateway so the next launch resumes instead of starting afresh.
+		if event["type"] == "system" && event["subtype"] == "init" {
+			if id := text(event["session_id"]); id != "" && (w.session.CCID == "" || id == w.session.CCID) {
+				w.emit(core.WorkerEvent{Type: "ready", CCID: id})
+			}
+		}
 		return
 	}
 	w.mu.Lock()

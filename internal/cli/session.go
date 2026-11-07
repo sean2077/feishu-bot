@@ -163,7 +163,12 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 		return err
 	}
 	s.State = "open"
+	previous := ""
+	if err = st.DB.QueryRowContext(ctx, "SELECT id FROM sessions WHERE room=? AND state='open'", r.Key).Scan(&previous); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	committed := false
+	undoStart := func() error { return nil }
 	commit := func() error {
 		// Select the session and mark local usage only after the launch checks
 		// pass, so a start that fails early never switches the chat's session.
@@ -173,21 +178,51 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 		if _, err := st.Resume(r.Key, s.ID); err != nil {
 			return err
 		}
-		committed = true
+		var priorUnknown sql.NullInt64
+		if err := st.DB.QueryRowContext(ctx, "SELECT prior_unknown FROM usage_coverage WHERE session=?", s.ID).Scan(&priorUnknown); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return rollbackSelection(st, r.Key, previous, s.ID, err)
+		}
+		// Any later failure prevents the start, so undo the selection and the
+		// usage marker here.
+		rollback := func(cause error) error {
+			return rollbackSelection(st, r.Key, previous, s.ID, errors.Join(cause, restorePriorUnknown(st, s.ID, priorUnknown)))
+		}
+		undoStart = func() error {
+			return restorePriorUnknown(st, s.ID, priorUnknown)
+		}
 		// Native local turns are not observed by the gateway's SDK result ledger.
 		if _, err := st.DB.ExecContext(ctx, "UPDATE usage_coverage SET prior_unknown=1 WHERE session=?", s.ID); err != nil {
-			return err
+			return rollback(err)
 		}
 		if _, err := st.DB.ExecContext(ctx, "INSERT INTO audit(at,room,event,detail) VALUES(?,?,'local_session_started',?)", time.Now().UnixMilli(), r.Key, sessionDetail(core.Args{"session": s.ID, "nativeSessionId": s.CCID})); err != nil {
-			return err
+			return rollback(err)
 		}
-		_, err := fmt.Fprintf(out, "Local session %s; gateway remains locked until native exit is confirmed.\n", s.ID)
-		return err
+		if _, err := fmt.Fprintf(out, "Local session %s; gateway remains locked until native exit is confirmed.\n", s.ID); err != nil {
+			return rollback(err)
+		}
+		committed = true
+		return nil
 	}
 	result = run(ctx, c, r, s, w, commit)
 	confirmed = !errors.Is(result, process.ErrUnconfirmed)
 	if !committed {
 		return result
+	}
+	if errors.Is(result, process.ErrNotStarted) && confirmed {
+		// The terminal never ran, so restore the chat's previous selection
+		// instead of leaving a switch that nothing used.
+		restore := previous
+		if restore == "" {
+			restore = s.ID
+		}
+		if restore != s.ID {
+			if _, err := st.Resume(r.Key, restore); err != nil {
+				result = errors.Join(result, err)
+			}
+		}
+		result = errors.Join(result, undoStart())
+		_, auditErr := st.DB.Exec("INSERT INTO audit(at,room,event,detail) VALUES(?,?,'local_session_finished',?)", time.Now().UnixMilli(), r.Key, sessionDetail(core.Args{"session": s.ID, "state": "not_started", "restored": restore}))
+		return errors.Join(result, auditErr)
 	}
 	state := "exited"
 	if result != nil {
@@ -205,3 +240,24 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 }
 
 func sessionDetail(v core.Args) string { data, _ := json.Marshal(v); return string(data) }
+
+// rollbackSelection reopens the chat's previous session after a local start
+// that will not run, and returns cause joined with any rollback failure.
+func rollbackSelection(st *store.Store, room, previous, selected string, cause error) error {
+	if previous != "" && previous != selected {
+		if _, err := st.Resume(room, previous); err != nil {
+			return errors.Join(cause, err)
+		}
+	}
+	return cause
+}
+
+// restorePriorUnknown reverts the local-usage marker set for a start that never
+// ran. A session without a coverage row is left without one.
+func restorePriorUnknown(st *store.Store, session string, previous sql.NullInt64) error {
+	if !previous.Valid {
+		return nil
+	}
+	_, err := st.DB.Exec("UPDATE usage_coverage SET prior_unknown=? WHERE session=?", previous.Int64, session)
+	return err
+}

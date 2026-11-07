@@ -205,6 +205,61 @@ func lockPrepare(ctx context.Context, root string) (func(), error) {
 		return nil, ctx.Err()
 	}
 }
+
+// migrateTopicAttachments moves per-topic attachment directories from the
+// earlier inbound/topics/<id> layout, nested inside the chat's own attachment
+// directory, to the sibling topic-inbound/<id> layout. Only real directories
+// move, never over an existing target; failures leave the old layout for the
+// next preparation. The caller holds the room's preparation lock.
+func migrateTopicAttachments(root string) {
+	legacy := filepath.Join(root, "inbound", "topics")
+	info, err := os.Lstat(legacy)
+	if err != nil || !info.IsDir() {
+		return
+	}
+	entries, err := os.ReadDir(legacy)
+	if err != nil {
+		return
+	}
+	target := filepath.Join(root, core.TopicInbound)
+	if err = os.MkdirAll(target, 0700); err != nil {
+		return
+	}
+	for _, entry := range entries {
+		source := filepath.Join(legacy, entry.Name())
+		if st, e := os.Lstat(source); e != nil || !st.IsDir() {
+			continue
+		}
+		destination := filepath.Join(target, entry.Name())
+		st, e := os.Lstat(destination)
+		if errors.Is(e, os.ErrNotExist) {
+			_ = os.Rename(source, destination)
+			continue
+		}
+		if e != nil || !st.IsDir() {
+			continue
+		}
+		// An earlier partial migration already created the target: merge
+		// file by file so nothing is left under the chat's own inbound.
+		files, e := os.ReadDir(source)
+		if e != nil {
+			continue
+		}
+		for _, file := range files {
+			from, to := filepath.Join(source, file.Name()), filepath.Join(destination, file.Name())
+			if _, e := os.Lstat(to); errors.Is(e, os.ErrNotExist) {
+				_ = os.Rename(from, to)
+			} else if e == nil {
+				// Attachment names are derived from the message and resource,
+				// so an existing target is the same upload re-fetched; drop the
+				// legacy copy rather than leave it in the chat's inbound.
+				_ = os.Remove(from)
+			}
+		}
+		_ = os.Remove(source)
+	}
+	_ = os.Remove(legacy)
+}
 func Prepare(c core.Config, room core.Room, session core.Session, p core.Project) (core.Workspace, error) {
 	return PrepareContext(context.Background(), c, room, session, p)
 }
@@ -238,6 +293,7 @@ func PrepareContext(ctx context.Context, c core.Config, room core.Room, _ core.S
 	if err = ownDirectory(root, root); err != nil {
 		return core.Workspace{}, err
 	}
+	migrateTopicAttachments(root)
 	w := core.Workspace{Root: root, Work: filepath.Join(root, "workspace"), Home: filepath.Join(root, "home"), Inbound: room.AttachmentDir(root), NativeConfig: "isolated", ConfigDirOverride: true}
 	if p.CWD != "" {
 		work, err := physicalDirectory(p.CWD)

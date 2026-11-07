@@ -333,7 +333,13 @@ func (c *Client) api(ctx context.Context, method, path string, query url.Values,
 	}
 }
 func (c *Client) doAPI(req *http.Request, dst any, mutation bool) error {
-	resp, err := c.doHTTP(req, c.http)
+	return c.doAPIWith(c.http, req, dst, mutation)
+}
+
+// doAPIWith sends an API request through client. Long transfers pass a client
+// whose total timeout matches their own request deadline.
+func (c *Client) doAPIWith(client *http.Client, req *http.Request, dst any, mutation bool) error {
+	resp, err := c.doHTTP(req, client)
 	if err != nil {
 		var rejected *APIError
 		if errors.As(err, &rejected) {

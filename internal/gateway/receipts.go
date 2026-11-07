@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"database/sql"
+	"errors"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"strings"
 	"time"
 )
 
@@ -150,11 +152,73 @@ func (g *Gateway) flushReceipt(id string) {
 			return
 		}
 		if e != nil {
-			g.audit(room, "receipt_retry_pending", core.Args{"messageId": id})
+			var failure core.DeliveryFailure
+			definite := errors.As(e, &failure) && !failure.DeliveryUncertain()
+			switch {
+			case definite && !failure.DeliveryRetryable():
+				// A definite, non-retryable rejection (for example a missing
+				// reaction permission) will not succeed on the next sweep.
+				// Settle this step so the receipt neither polls forever nor
+				// blocks retention; the reaction is cosmetic. An intermediate
+				// step (clearing "processing" on the way to "done") only
+				// settles itself, so the next step is still attempted.
+				g.audit(room, "receipt_rejected", core.Args{"messageId": id, "state": next})
+				if next != desired {
+					if _, e = g.store.DB.Exec("UPDATE receipts SET applied=? WHERE id=? AND desired=?", next, id, desired); e == nil {
+						continue
+					}
+					return
+				}
+				if next == "processing" {
+					// No processing reaction exists, so record it as cleared:
+					// a later "done" then creates Done directly instead of
+					// trying to remove a reaction that was never added.
+					_, _ = g.store.DB.Exec("UPDATE receipts SET applied='clear',desired='clear' WHERE id=? AND desired='processing'", id)
+					return
+				}
+				_, _ = g.store.DB.Exec("UPDATE receipts SET applied=desired WHERE id=? AND desired=?", id, desired)
+			case definite && (next == "processing" || next == "done") && !strings.HasPrefix(applied.String, "attempt:"):
+				// This create was definitely not written: restore the prior
+				// state so the next retry creates again instead of reconciling
+				// an unknown write that never happened.
+				_, _ = g.store.DB.Exec("UPDATE receipts SET applied=? WHERE id=? AND applied=?", applied, id, "attempt:"+next)
+				g.audit(room, "receipt_retry_pending", core.Args{"messageId": id})
+			case strings.HasPrefix(applied.String, "attempt:") && g.receiptStale(id):
+				// An uncertain create is reconciled, never recreated. After a
+				// bounded period stop polling a reaction that never appeared,
+				// settling only this step: an absent processing reaction is
+				// recorded as cleared, and an intermediate step lets the next
+				// step (creating Done) still run.
+				g.audit(room, "receipt_unconfirmed_settled", core.Args{"messageId": id, "state": next})
+				switch {
+				case next != desired:
+					if _, e = g.store.DB.Exec("UPDATE receipts SET applied=? WHERE id=? AND desired=?", next, id, desired); e == nil {
+						continue
+					}
+				case next == "processing":
+					_, _ = g.store.DB.Exec("UPDATE receipts SET applied='clear',desired='clear' WHERE id=? AND desired='processing'", id)
+				default:
+					_, _ = g.store.DB.Exec("UPDATE receipts SET applied=desired WHERE id=? AND desired=?", id, desired)
+				}
+			default:
+				g.audit(room, "receipt_retry_pending", core.Args{"messageId": id})
+			}
 			return
 		}
 		if _, e = g.store.DB.Exec("UPDATE receipts SET applied=? WHERE id=?", next, id); e != nil {
 			return
 		}
 	}
+}
+
+// receiptUnconfirmedTTL bounds reconciliation of a reaction whose creation
+// result was unknown and that has not been observed since.
+var receiptUnconfirmedTTL = time.Hour
+
+func (g *Gateway) receiptStale(id string) bool {
+	var at int64
+	if g.store.DB.QueryRow("SELECT at FROM receipts WHERE id=?", id).Scan(&at) != nil {
+		return false
+	}
+	return time.Now().UnixMilli()-at > receiptUnconfirmedTTL.Milliseconds()
 }

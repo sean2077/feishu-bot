@@ -88,6 +88,9 @@ type Gateway struct {
 	outMu                                                        sync.Mutex
 	outActive                                                    map[string]bool
 	outCursor                                                    map[string]outputCursor
+	stopBlocked                                                  map[string]bool
+	identityLost                                                 map[string]bool
+	stopHeld                                                     map[string]int
 	receiptMu                                                    sync.Mutex
 	receiptActive                                                map[string]*dispatchWake
 	receiptCursor                                                outputCursor
@@ -101,7 +104,7 @@ type Gateway struct {
 func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerFactory, log core.Logger) *Gateway {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{config: c, store: st, transport: tr, factory: factory, logger: log, ctx: ctx, cancel: cancel,
-		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
+		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
 	if _, err := rand.Read(g.historyKey[:]); err != nil {
 		panic("cannot initialize history cursor authentication")
 	}
@@ -328,7 +331,7 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		g.mu.Unlock()
 		if limited {
 			_, err = g.store.Insert(room.Key, m, "cancelled")
-			g.notify(room, "消息过于频繁，请稍后再试。", &m)
+			g.notify(g.refusalRoom(room, m), "消息过于频繁，请稍后再试。", &m)
 			return err
 		}
 	}
@@ -340,7 +343,7 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		if reason == "" {
 			reason = "正文或附件数量超过本次输入上限，请分开发送。"
 		}
-		g.notify(room, "消息未提交："+reason, &m)
+		g.notify(g.refusalRoom(room, m), "消息未提交："+reason, &m)
 		return err
 	}
 	if room.Thread != "" && m.ThreadID == "" && contains(topicCommands, cmd) {
@@ -394,7 +397,11 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	}
 	if total >= g.config.Limits.InboxPerRoom {
 		_, err = g.store.Insert(room.Key, m, "cancelled")
-		g.notify(room, "本群待交付输入已达上限，请查看 /status 或联系维护者。", &m)
+		text := "本群待交付输入已达上限，请查看 /status 或联系维护者。"
+		if room.Thread != "" {
+			text = "本群所有话题的待交付输入合计已达上限，请在各话题内用 /status 查看，或等待已有任务完成后再发送。"
+		}
+		g.notify(g.refusalRoom(room, m), text, &m)
 		return err
 	}
 	var command *core.Command
@@ -433,9 +440,25 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		}
 	}
 	d := core.Delivery{UUID: core.NewID(), RoomKey: room.Key, SessionID: session.ID, Message: m, Background: bg, Command: command, SupplementTo: supplementTo}
+	// Decide "held" and queue while g.mu is held, so a stop finishing
+	// concurrently either sees this input in its final cancel (and counted)
+	// or unblocks first, making this an ordinary delivered input.
+	held := false
+	g.mu.Lock()
+	held = g.stopBlocked[room.Key]
 	err = g.queueInput(d, now)
+	if held && err == nil {
+		g.stopHeld[room.Key]++
+	}
+	g.mu.Unlock()
 	if err != nil {
 		return err
+	}
+	if held {
+		// A held input is cancelled by the next successful stop; it gets no
+		// processing reaction that a concurrent stop could leave behind.
+		g.notify(room, stopBlockedNotice, &m)
+		return nil
 	}
 	g.acceptReceipt(room, session.ID, m)
 	g.kick(room)
@@ -453,6 +476,27 @@ func (g *Gateway) pendingInChat(r core.Room) (int, error) {
 		return g.store.CountPending(r.Key)
 	}
 	return g.store.CountPendingChat(r.ChatKey)
+}
+
+// stopStateNotice explains a stop whose process part completed while its
+// state update failed; stopBlockedNotice answers inputs that arrive meanwhile.
+const (
+	stopStateNotice   = "原生进程已停止，但取消待交付内容的状态未能保存，因此本聊天暂停交付、未切换会话。请检查服务诊断后重新发送 /stop；暂停只在本次服务运行内有效。"
+	stopBlockedNotice = "本聊天上次停止未能完成（状态保存失败），暂不交付新输入。维护者重新发送 /stop 成功后，暂存的输入会随停止一并取消，届时请重新发送；若期间服务重启，暂存输入会被正常交付。"
+)
+
+// refusalRoom picks where to explain a refused input. A refused top-level
+// message in a thread-scoped group never became a topic, so the notice replies
+// on the chat timeline instead of opening a topic (which Feishu also refuses
+// for aggregated messages such as merge forwards).
+func (g *Gateway) refusalRoom(room core.Room, m core.Message) core.Room {
+	if room.Thread == "" || m.ThreadID != "" {
+		return room
+	}
+	if chat, ok := RoomFor(g.config, room.ChatID, ""); ok {
+		return chat
+	}
+	return room
 }
 
 // topicCommands act on one session. In a thread-scoped group they are
@@ -532,7 +576,7 @@ func (g *Gateway) cancelLostSupplements(r core.Room) {
 }
 func (g *Gateway) kick(r core.Room) {
 	g.mu.Lock()
-	if g.closing || g.profileWait[r.Key] != "" {
+	if g.closing || g.profileWait[r.Key] != "" || g.stopBlocked[r.Key] {
 		g.mu.Unlock()
 		return
 	}
@@ -683,7 +727,9 @@ func (g *Gateway) reserve(r core.Room) (*slot, error) {
 	return s, nil
 }
 func (g *Gateway) dispatch(r core.Room) error {
-	if g.isClosing() {
+	if g.isClosing() || g.stopIsBlocked(r.Key) {
+		// A kick may have been waiting on the dispatch lock while a stop
+		// failed; the block must hold for it too.
 		return nil
 	}
 	_, profileErr := g.prepareProfile(r)
@@ -763,6 +809,50 @@ func (g *Gateway) dispatch(r core.Room) error {
 				g.removeSlot(s)
 			}
 			return err
+		}
+		if s.session.CCID == "" && !g.sessionIdentityLost(s.session.ID) {
+			// An earlier process may have reported its native session while
+			// the database rejected the ID; adopt the workspace marker so this
+			// launch resumes that context instead of starting another.
+			ccid, ok, markerErr := readIdentityMarker(w.Root, s.session.ID)
+			if markerErr != nil {
+				// An unreadable marker is not an absent one: refuse below.
+				g.audit(r.Key, "session_identity_marker_unreadable", core.Args{"session": s.session.ID, "error": markerErr.Error()})
+				g.mu.Lock()
+				g.identityLost[s.session.ID] = true
+				g.mu.Unlock()
+			} else if ok {
+				if err = g.store.SetCC(s.session.ID, ccid); err != nil {
+					s.mu.Lock()
+					s.live = false
+					s.mu.Unlock()
+					s.cancel()
+					g.removeSlot(s)
+					return err
+				}
+				s.mu.Lock()
+				s.session.CCID = ccid
+				s.mu.Unlock()
+				removeIdentityMarker(w.Root, s.session.ID)
+				g.audit(r.Key, "session_identity_recovered", core.Args{"session": s.session.ID})
+			}
+		}
+		if s.session.CCID == "" && g.sessionIdentityLost(s.session.ID) {
+			s.mu.Lock()
+			s.live = false
+			s.mu.Unlock()
+			s.cancel()
+			g.removeSlot(s)
+			// These inputs never reached a process; cancel them so later
+			// sweeps do not repeat the refusal.
+			if err := g.store.StopSession(s.session.ID); err != nil {
+				return err
+			}
+			// Inputs queued during preparation were cancelled too; clear
+			// every processing reaction of this session, not only pending's.
+			g.cancelReceipts(s.session.ID)
+			g.notify(r, identityFailureNotice, &pending[0].Message)
+			return nil
 		}
 		s.mu.Lock()
 		s.workspace = w
@@ -868,6 +958,10 @@ func (g *Gateway) dispatch(r core.Room) error {
 				}
 			}
 		}
+		if g.stopIsBlocked(r.Key) {
+			// A failed stop may have landed after this pass began.
+			return nil
+		}
 		handedOff := false
 		paths := []string{}
 		err = g.prepareInputs(s, r, members, &paths)
@@ -946,6 +1040,28 @@ func (g *Gateway) dispatch(r core.Room) error {
 			}
 			if !handedOff && d.ImageBatch != nil {
 				g.rejectBatch(r, members, true)
+				continue
+			}
+			if !handedOff {
+				// Preparation failed before the queued→sent commit, so the
+				// model definitely never received these inputs. Report that
+				// plainly instead of as an unconfirmed delivery.
+				stateErr := error(nil)
+				for _, m := range members {
+					if _, e := g.store.DB.Exec("UPDATE inbox SET status='cancelled',payload=NULL WHERE uuid=? AND room=? AND status='queued'", m.UUID, r.Key); e != nil {
+						if e = g.store.Mark(m.UUID, "uncertain"); e != nil {
+							stateErr = e
+						}
+					}
+					g.settleReceipts(r.Key, m.SessionID, origin(m.Message), false)
+				}
+				if stateErr != nil {
+					// The input is still queued; picking it up again at once
+					// would loop. Leave it for a later dispatch.
+					g.audit(r.Key, "input_state_unconfirmed", core.Args{"session": s.session.ID})
+					return stateErr
+				}
+				g.notify(r, "本条输入未提交给模型："+core.Redact(err.Error(), g.secrets)+"。请处理后重新发送。", &d.Message)
 				continue
 			}
 			for _, m := range members {

@@ -229,7 +229,8 @@ func (g *Gateway) quickRate(r core.Room, actor string) bool {
 	now := time.Now().UnixMilli()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	key := r.Key + ":" + actor
+	// Same budget as messages: per chat and author across all topics.
+	key := r.WorkspaceKey() + ":" + actor
 	recent := g.rates[key][:0]
 	for _, at := range g.rates[key] {
 		if at > now-60000 {
@@ -391,7 +392,11 @@ func (g *Gateway) quickStop(r core.Room, a core.CardAction, p quickControl) {
 	err := g.stopRoom(ctx, r)
 	cancel()
 	if err != nil {
-		g.notify(r, "停止尚未确认，请检查 /status 和服务诊断。", nil)
+		text := "停止尚未确认，请检查 /status 和服务诊断。"
+		if errors.Is(err, errStopState) {
+			text = stopStateNotice
+		}
+		g.notify(r, text, nil)
 		return
 	}
 	g.notify(r, "已停止本聊天运行，保留原生上下文和会话 ID。", nil)
@@ -414,7 +419,11 @@ func (g *Gateway) quickSupplement(ctx context.Context, r core.Room, a core.CardA
 	if s == nil {
 		return "本轮已经结束，补充未提交。", nil
 	}
-	s.events.Lock()
+	// The event lock is held while a result is persisted; wait for it only
+	// within the callback deadline.
+	if !lockWithin(ctx, &s.events) {
+		return "请稍后重新提交。", ctx.Err()
+	}
 	defer s.events.Unlock()
 	target := g.foregroundTarget(r)
 	if p.Turn == "" || target == nil || target.UUID != p.Turn || target.SessionID != p.Session {
@@ -441,6 +450,10 @@ func (g *Gateway) quickSupplement(ctx context.Context, r core.Room, a core.CardA
 		m.ChatType = "p2p"
 	}
 	d := core.Delivery{UUID: core.NewID(), RoomKey: r.Key, SessionID: p.Session, Message: m, SupplementTo: p.Turn}
+	if err := ctx.Err(); err != nil {
+		// Feishu has already reported a timeout to the user; do not commit.
+		return "请稍后重新提交。", err
+	}
 	if err := g.queueInput(d, now); err != nil {
 		return "", err
 	}

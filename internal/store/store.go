@@ -264,10 +264,15 @@ func (s *Store) SetCC(id, cc string) error {
 		return err
 	}
 	if changed != 1 {
-		return errors.New("native session identity changed or session no longer exists")
+		return ErrIdentityConflict
 	}
 	return nil
 }
+
+// ErrIdentityConflict reports that the session row already holds a different
+// native ID (or no longer exists). Retrying cannot resolve it.
+var ErrIdentityConflict = errors.New("native session identity changed or session no longer exists")
+
 func (s *Store) SetCc(id, cc string) error { return s.SetCC(id, cc) }
 func samePath(a, b string) bool {
 	a, _ = filepath.Abs(a)
@@ -478,9 +483,9 @@ func (s *Store) CountPendingChat(chatKey string) (int, error) {
 
 // SessionReceivedInput reports whether this room's session has handed an
 // input to the native process (sent, consumed or done). Gateway context caches
-// are not evidence of native delivery. Uncertain inputs are excluded because
-// failed preparation is also recorded as uncertain; callers that only avoid a
-// repeated quote therefore err toward supplying context again.
+// are not evidence of native delivery. Uncertain inputs are excluded (their
+// outcome is unknown, e.g. a send error before the write or an interrupted
+// turn); callers that only avoid a repeated quote err toward supplying context.
 func (s *Store) SessionReceivedInput(room, session string) (bool, error) {
 	var n int
 	e := s.DB.QueryRow("SELECT 1 FROM inbox WHERE room=? AND session=? AND status IN ('sent','consumed','done') LIMIT 1", room, session).Scan(&n)

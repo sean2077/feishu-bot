@@ -270,6 +270,9 @@ func TestTopicsShareWorkspaceButNotAttachments(t *testing.T) {
 	if _, _, err := TranslateOutput(wb, upload); err == nil {
 		t.Fatal("another topic's attachment was accepted for output")
 	}
+	if _, _, err := TranslateOutput(wc, upload); err == nil {
+		t.Fatal("the chat room accepted a topic attachment for output")
+	}
 }
 
 func TestSharedPreparationWaitHonorsCancellation(t *testing.T) {
@@ -289,4 +292,64 @@ func TestSharedPreparationWaitHonorsCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	again()
+}
+
+func TestLegacyTopicAttachmentsMoveOutOfTheChatInbound(t *testing.T) {
+	base := t.TempDir()
+	c := core.Config{DataDir: filepath.Join(base, "state")}
+	chat := core.Room{Key: `["tenant","app","project","group","chat",null]`}
+	chat.ChatKey = chat.Key
+	topic := chat
+	topic.Key, topic.Thread = `["tenant","app","project","group","chat",null,"om_a"]`, "om_a"
+	wc, e := Prepare(c, chat, core.Session{}, core.Project{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	id := filepath.Base(topic.AttachmentDir(wc.Root))
+	legacy := filepath.Join(wc.Root, "inbound", "topics", id)
+	if e = os.MkdirAll(legacy, 0700); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(filepath.Join(legacy, "upload.txt"), []byte("x"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	wt, e := Prepare(c, topic, core.Session{}, core.Project{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if data, e := os.ReadFile(filepath.Join(wt.Inbound, "upload.txt")); e != nil || string(data) != "x" {
+		t.Fatalf("legacy topic upload not moved: %q %v", data, e)
+	}
+	if _, e := os.Stat(filepath.Join(wc.Root, "inbound", "topics")); !os.IsNotExist(e) {
+		t.Fatal("legacy topics directory left inside the chat inbound")
+	}
+}
+
+func TestPartialLegacyMigrationIsMerged(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, "inbound", "topics", "topic-a")
+	target := filepath.Join(root, "topic-inbound", "topic-a")
+	for _, p := range []string{legacy, target} {
+		if err := os.MkdirAll(p, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "old.txt"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "new.txt"), []byte("y"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{legacy, target} {
+		if err := os.WriteFile(filepath.Join(dir, "same.txt"), []byte("z"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	migrateTopicAttachments(root)
+	if data, err := os.ReadFile(filepath.Join(target, "old.txt")); err != nil || string(data) != "x" {
+		t.Fatalf("legacy upload not merged: %q %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "inbound", "topics")); !os.IsNotExist(err) {
+		t.Fatal("legacy topics directory left inside the chat inbound")
+	}
 }

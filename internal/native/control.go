@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -63,7 +66,14 @@ func denyHook(reason string) args {
 	return args{"hookSpecificOutput": args{"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}
 }
 
-type nativeFileScope struct{ work, home, inbound, rooms string }
+type nativeFileScope struct {
+	work, home, inbound, rooms string
+	// File identities of the same directories, and of every ancestor of the
+	// rooms tree, so that alias spellings (macOS firmlinks, Unicode or case
+	// variants, bind mounts) are recognised by identity rather than text.
+	workID, homeID, inboundID, roomsID os.FileInfo
+	roomsAncestors                     []os.FileInfo
+}
 
 // Resolve spelling/8.3 aliases once, before a native process can change files.
 // Comparing a canonical tool target with a short-path root rejects legitimate
@@ -94,10 +104,92 @@ func (w *worker) fileScope() (nativeFileScope, error) {
 			expected := filepath.Join(root, rel)
 			if !valid || !core.Inside(expected, w.scope.inbound) || !core.Inside(w.scope.inbound, expected) {
 				w.scopeErr = fmt.Errorf("conversation attachment directory was redirected")
+				return
+			}
+			w.scope.inboundID, _ = os.Stat(w.scope.inbound)
+		}
+		w.scope.workID, _ = os.Stat(w.scope.work)
+		w.scope.homeID, _ = os.Stat(w.scope.home)
+		if w.scope.roomsID, w.scopeErr = os.Stat(w.scope.rooms); w.scopeErr != nil {
+			return
+		}
+		for current := filepath.Dir(w.scope.rooms); ; current = filepath.Dir(current) {
+			if info, err := os.Stat(current); err == nil {
+				w.scope.roomsAncestors = append(w.scope.roomsAncestors, info)
+			}
+			if filepath.Dir(current) == current {
+				break
 			}
 		}
 	})
 	return w.scope, w.scopeErr
+}
+
+// identityEntry is one existing component of a path with its file identity.
+type identityEntry struct {
+	name string
+	info os.FileInfo
+}
+
+// identityChain returns the existing components of path from the path itself
+// up to the volume root.
+func identityChain(path string) []identityEntry {
+	var chain []identityEntry
+	for current := path; ; current = filepath.Dir(current) {
+		if info, err := os.Stat(current); err == nil {
+			chain = append(chain, identityEntry{filepath.Base(current), info})
+		}
+		if filepath.Dir(current) == current {
+			return chain
+		}
+	}
+}
+
+// insideByIdentity reports whether target is one of the chain's directories.
+func insideByIdentity(chain []identityEntry, target os.FileInfo) bool {
+	if target == nil {
+		return false
+	}
+	for _, entry := range chain {
+		if os.SameFile(entry.info, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// roomsPartsByIdentity returns the components below the rooms tree when the
+// chain passes through it.
+func roomsPartsByIdentity(chain []identityEntry, rooms os.FileInfo) ([]string, bool) {
+	if rooms == nil {
+		return nil, false
+	}
+	for i, entry := range chain {
+		if os.SameFile(entry.info, rooms) {
+			parts := make([]string, 0, i)
+			for j := i - 1; j >= 0; j-- {
+				parts = append(parts, chain[j].name)
+			}
+			return parts, true
+		}
+	}
+	return nil, false
+}
+
+// ancestorOfRooms reports whether the path itself is an ancestor of the rooms
+// tree by file identity.
+func ancestorOfRooms(chain []identityEntry, ancestors []os.FileInfo, path string) bool {
+	// Only the path itself counts: a missing path whose nearest existing
+	// parent is an ancestor would search nothing there.
+	if len(chain) == 0 || filepath.Base(path) != chain[0].name {
+		return false
+	}
+	for _, info := range ancestors {
+		if os.SameFile(chain[0].info, info) {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *worker) hook(ctx context.Context, id string, input args) (args, error) {
@@ -148,30 +240,122 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 		if name == "Grep" || name == "Glob" {
 			keys = append(keys, "path")
 		}
+		search := name == "Grep" || name == "Glob"
+		// Claude Code resolves relative tool paths against the session's
+		// current directory, which follows "cd" in Bash, not the launch
+		// directory; resolve them the same way here.
+		cwd := text(input["cwd"])
+		cwdKnown := true
+		if cwd == "" {
+			cwd = w.workspace.Work
+		} else if !filepath.IsAbs(cwd) || !plainSearchPath(cwd) {
+			// The session directory cannot be resolved the way Claude Code
+			// resolves it; relative search paths would be checked elsewhere.
+			cwdKnown = false
+			cwd = w.workspace.Work
+		}
+		candidates := []string{}
 		for _, key := range keys {
 			raw, ok := toolInput[key].(string)
 			if !ok {
 				continue
 			}
+			if search && key == "path" {
+				// Claude Code resolves search paths itself (trimming, "~",
+				// rooted Windows forms); translate what it translates and
+				// refuse what this check could resolve differently.
+				if raw = msysDrivePath(raw); !plainSearchPath(raw) || !cwdKnown && !filepath.IsAbs(raw) {
+					return denyHook("Use an absolute or plain relative search path"), nil
+				}
+			}
+			candidates = append(candidates, raw)
+		}
+		if search {
+			// Without a path the search runs in the session directory, which
+			// "cd" in Bash can move anywhere.
+			pattern, _ := toolInput["pattern"].(string)
+			absoluteGlob := name == "Glob" && filepath.IsAbs(msysDrivePath(pattern))
+			if raw, ok := toolInput["path"].(string); (!ok || raw == "") && !absoluteGlob {
+				if !cwdKnown {
+					return denyHook("Use an absolute search path"), nil
+				}
+				candidates = append(candidates, cwd)
+			}
+		}
+		if name == "Glob" {
+			if pattern, ok := toolInput["pattern"].(string); ok {
+				if pattern = msysDrivePath(pattern); !plainSearchPath(pattern) || !cwdKnown && !filepath.IsAbs(pattern) {
+					return denyHook("Use an absolute or plain relative glob pattern"), nil
+				}
+				// An absolute pattern names its search root directly; a
+				// relative one may climb out of its base with "..".
+				if filepath.IsAbs(pattern) {
+					root := globRoot(pattern)
+					if runtime.GOOS == "windows" && len(root) == 3 && strings.HasSuffix(root, ":"+string(filepath.Separator)) && !strings.HasPrefix(toolInput["pattern"].(string), root[:2]) {
+						// A translated "/x/*" leaves Claude Code a bare "/x"
+						// base, which it resolves differently; refuse it.
+						return denyHook("Use an absolute or plain relative glob pattern"), nil
+					}
+					candidates = append(candidates, root)
+				} else if strings.Contains(pattern, "..") {
+					base := cwd
+					if raw, ok := toolInput["path"].(string); ok && raw != "" {
+						base = msysDrivePath(raw)
+						if !filepath.IsAbs(base) {
+							base = filepath.Join(cwd, base)
+						}
+					}
+					candidates = append(candidates, globRoot(filepath.Join(base, pattern)))
+				}
+			}
+		}
+		for _, raw := range candidates {
 			path := raw
 			if !filepath.IsAbs(path) {
-				path = filepath.Join(w.workspace.Work, path)
+				path = filepath.Join(cwd, path)
 			}
 			physical, err := physicalPath(path)
 			if err != nil {
 				return denyHook("Unable to verify conversation file scope"), nil
 			}
-			attachment := w.workspace.Inbound != "" && core.Inside(scope.inbound, physical)
+			// Text and file identity are both consulted: deny if either places
+			// the path in a protected area, allow if either places it in an
+			// allowed one. Identity covers alias spellings that text cannot.
+			chain := identityChain(physical)
+			attachment := w.workspace.Inbound != "" && (core.Inside(scope.inbound, physical) || insideByIdentity(chain, scope.inboundID))
 			rooms := scope.rooms
 			otherAttachment := false
-			if core.Inside(rooms, physical) {
-				relative, err := filepath.Rel(rooms, physical)
-				if err == nil {
-					parts := strings.Split(relative, string(filepath.Separator))
-					otherAttachment = len(parts) >= 2 && strings.EqualFold(parts[1], "inbound") && !attachment
+			var parts []string
+			inRooms := false
+			// macOS volumes are usually case-insensitive while path
+			// comparison is not; fold case for the text checks.
+			foldedRooms, foldedPath := foldCase(rooms), foldCase(physical)
+			if core.Inside(foldedRooms, foldedPath) {
+				if relative, err := filepath.Rel(foldedRooms, foldedPath); err == nil {
+					inRooms = true
+					if relative != "." {
+						parts = strings.Split(relative, string(filepath.Separator))
+					}
 				}
 			}
-			if otherAttachment || w.workspace.NativeConfig != "inherit" && !core.Inside(scope.work, physical) && !core.Inside(scope.home, physical) && !attachment || attachment && name != "Read" && name != "Grep" && name != "Glob" {
+			if !inRooms {
+				parts, inRooms = roomsPartsByIdentity(chain, scope.roomsID)
+			}
+			if inRooms {
+				otherAttachment = len(parts) >= 2 && (strings.EqualFold(parts[1], "inbound") || strings.EqualFold(parts[1], core.TopicInbound)) && !attachment
+				// A search rooted at the rooms tree or a room directory itself
+				// would recurse into every attachment directory there.
+				if search && len(parts) <= 1 {
+					otherAttachment = true
+				}
+			} else if search && (core.Inside(foldedPath, foldedRooms) || ancestorOfRooms(chain, scope.roomsAncestors, physical)) {
+				// Searching an ancestor of the room tree (for example the user
+				// HOME in inherit mode) would reach every room's attachments.
+				return denyHook("This search would cover the gateway's conversation state directory; search the project or a narrower directory instead"), nil
+			}
+			inWork := core.Inside(scope.work, physical) || insideByIdentity(chain, scope.workID)
+			inHome := core.Inside(scope.home, physical) || insideByIdentity(chain, scope.homeID)
+			if otherAttachment || w.workspace.NativeConfig != "inherit" && !inWork && !inHome && !attachment || attachment && name != "Read" && name != "Grep" && name != "Glob" {
 				return denyHook("Outside conversation file scope or attempting to edit an incoming attachment"), nil
 			}
 		}
@@ -183,7 +367,13 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 func physicalPath(path string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err == nil {
-		return filepath.Abs(resolved)
+		resolved, err = filepath.Abs(resolved)
+		if err == nil && runtime.GOOS == "windows" {
+			if err = noReparsePoints(resolved); err == nil {
+				resolved, err = finalPath(resolved)
+			}
+		}
+		return resolved, err
 	}
 	if !os.IsNotExist(err) {
 		return "", err
@@ -344,4 +534,107 @@ func validateHistory(input args) error {
 		}
 	}
 	return nil
+}
+
+// globRoot returns the directory prefix of an absolute glob pattern before its
+// first wildcard element.
+func globRoot(pattern string) string {
+	// Match Claude Code: split the raw pattern at the last separator before
+	// its first wildcard and clean only that literal base. Cleaning the whole
+	// pattern would let ".." inside a brace group cancel base elements. With
+	// no wildcard Claude Code searches the parent directory.
+	i := strings.IndexAny(pattern, "*?[{")
+	if i < 0 {
+		return filepath.Dir(filepath.Clean(pattern))
+	}
+	separators := "/"
+	if runtime.GOOS == "windows" {
+		separators = "/\\"
+	}
+	j := strings.LastIndexAny(pattern[:i], separators)
+	if j < 0 {
+		return "."
+	}
+	base := pattern[:j]
+	if base == "" || strings.HasSuffix(base, ":") {
+		base += string(filepath.Separator)
+	}
+	return filepath.Clean(base)
+}
+
+func foldCase(path string) string {
+	if runtime.GOOS == "darwin" {
+		return strings.ToLower(path)
+	}
+	return path
+}
+
+// plainSearchPath reports whether a Grep/Glob path or pattern means the same
+// location to this hook and to Claude Code: no surrounding whitespace, no "~"
+// home expansion and, on Windows, no rooted path without a drive and no
+// drive-relative path.
+func plainSearchPath(path string) bool {
+	if edgeInvisible(path) || path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
+		// Only these forms are home-expanded; names such as "~backup" or
+		// "~$report.docx" are ordinary relative names.
+		return false
+	}
+	if runtime.GOOS == "windows" && (strings.HasPrefix(path, "\\\\") || strings.HasPrefix(path, "//") || strings.HasPrefix(path, "\\/") || strings.HasPrefix(path, "/\\")) {
+		// UNC and device paths (\\?\, \\.\, \\server\share) can name local
+		// directories under another volume spelling; use a drive letter.
+		return false
+	}
+	if runtime.GOOS == "windows" && !filepath.IsAbs(path) && (strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") || filepath.VolumeName(path) != "") {
+		// Drive-relative forms such as C:..\x resolve against a per-drive
+		// working directory, unlike a join onto the workspace.
+		return false
+	}
+	return true
+}
+
+// msysDrivePath converts a Git Bash style path such as /c/Users/x to C:/Users/x
+// on Windows, as Claude Code does before searching.
+func msysDrivePath(path string) string {
+	// Claude Code only translates /x/... (with the slash after the letter).
+	if runtime.GOOS != "windows" || len(path) < 3 || path[0] != '/' || path[2] != '/' {
+		return path
+	}
+	letter := path[1]
+	if !(letter >= 'a' && letter <= 'z' || letter >= 'A' && letter <= 'Z') {
+		return path
+	}
+	return strings.ToUpper(string(letter)) + ":" + path[2:]
+}
+
+// edgeInvisible reports a leading or trailing rune that JavaScript trim() or a
+// Unicode-aware resolver could strip (white space, format characters such as
+// U+FEFF and zero-width spaces), so the path would differ from this check's.
+func edgeInvisible(path string) bool {
+	if path == "" {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(path)
+	last, _ := utf8.DecodeLastRuneInString(path)
+	for _, r := range []rune{first, last} {
+		if unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zs, r) || r == utf8.RuneError {
+			return true
+		}
+	}
+	return false
+}
+
+// noReparsePoints fails when any existing component of path is a junction,
+// mount point or other reparse point. Since Go 1.23 EvalSymlinks no longer
+// follows those, so the resolved path would not reflect where it leads.
+func noReparsePoints(path string) error {
+	for current := path; ; {
+		if info, err := os.Lstat(current); err == nil && info.Mode()&(os.ModeIrregular|os.ModeSymlink) != 0 {
+			return fmt.Errorf("path contains a reparse point")
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil
+		}
+		current = parent
+	}
 }

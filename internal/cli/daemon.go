@@ -155,10 +155,11 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 		return errors.New("cannot create work directory")
 	}
 	envPath := filepath.Join(workDir, "service.env")
-	values, err := prepareEnvFile(c, o.EnvFile, envPath)
+	values, envFile, err := prepareEnvFile(c, o.EnvFile, envPath)
 	if err != nil {
 		return err
 	}
+	defer envFile.Abort()
 	for key, value := range values {
 		if err := os.Setenv(key, value); err != nil {
 			return fmt.Errorf("cannot apply environment variable %s", key)
@@ -198,6 +199,19 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 	if err := mgr.Check(ctx, spec, o.Replace); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
+		return errors.New("cannot create log directory")
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return errors.New("log file is not writable")
+	}
+	logFile.Close()
+	// Write the new environment now, while the old service still runs, so a
+	// full disk or permission problem cannot fail after it was stopped.
+	if err := envFile.Stage(); err != nil {
+		return err
+	}
 
 	oldMeta, oldErr := loadDaemonMeta()
 	hadMeta := oldErr == nil
@@ -218,15 +232,12 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 			return err
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
-		return errors.New("cannot create log directory")
-	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		return errors.New("log file is not writable")
-	}
-	logFile.Close()
 
+	// Publish the staged service.env only once every check has passed,
+	// immediately before the service definition that will read it.
+	if err := envFile.Commit(); err != nil {
+		return err
+	}
 	if err := mgr.Install(ctx, spec, o.Replace); err != nil {
 		return err
 	}
@@ -267,14 +278,17 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 	return nil
 }
 
-func prepareEnvFile(c core.Config, source, target string) (map[string]string, error) {
+// prepareEnvFile reads and validates the service environment. It returns an
+// update that callers stage before stopping the old service and commit only
+// after every installation check has passed.
+func prepareEnvFile(c core.Config, source, target string) (map[string]string, *envUpdate, error) {
 	var data []byte
 	var err error
 	writeTarget := false
 	if source != "" {
 		data, err = os.ReadFile(source)
 		if err != nil {
-			return nil, fmt.Errorf("cannot read environment file %s", source)
+			return nil, nil, fmt.Errorf("cannot read environment file %s", source)
 		}
 		writeTarget = !samePath(source, target)
 	} else if existing, readErr := os.ReadFile(target); readErr == nil {
@@ -283,61 +297,103 @@ func prepareEnvFile(c core.Config, source, target string) (map[string]string, er
 		var missing []string
 		data, missing, err = buildEnvFile(c)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if len(missing) > 0 {
-			return nil, fmt.Errorf("missing credentials: %s; provide --env-file with KEY=VALUE lines", strings.Join(missing, ", "))
+			return nil, nil, fmt.Errorf("missing credentials: %s; provide --env-file with KEY=VALUE lines", strings.Join(missing, ", "))
 		}
 		writeTarget = true
 	} else {
-		return nil, errors.New("cannot read environment file")
+		return nil, nil, errors.New("cannot read environment file")
 	}
 	values, err := parseEnvFile(data)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if missing := missingCredentials(c, values); len(missing) > 0 {
-		return nil, fmt.Errorf("environment file is missing: %s", strings.Join(missing, ", "))
+		return nil, nil, fmt.Errorf("environment file is missing: %s", strings.Join(missing, ", "))
 	}
-	if writeTarget {
-		if err := writePrivate(target, data); err != nil {
-			return nil, err
+	update := &envUpdate{target: target, data: data, write: writeTarget}
+	return values, update, nil
+}
+
+// envUpdate replaces service.env in two steps: Stage writes a private
+// temporary file while the old service still runs, Commit renames it into
+// place, and Abort discards an uncommitted stage.
+type envUpdate struct {
+	target, staged string
+	data           []byte
+	write          bool
+}
+
+func (u *envUpdate) Stage() error {
+	if !u.write || u.staged != "" {
+		return nil
+	}
+	staged, err := stagePrivate(u.target, u.data)
+	u.staged = staged
+	return err
+}
+func (u *envUpdate) Commit() error {
+	if u.staged != "" {
+		if err := os.Rename(u.staged, u.target); err != nil {
+			return errors.New("cannot replace environment file")
 		}
+		u.staged = ""
 	}
-	_ = os.Chmod(target, 0600)
-	return values, nil
+	_ = os.Chmod(u.target, 0600)
+	return nil
+}
+func (u *envUpdate) Abort() {
+	if u.staged != "" {
+		_ = os.Remove(u.staged)
+		u.staged = ""
+	}
 }
 
 func writePrivate(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return errors.New("cannot create environment directory")
-	}
-	tmp, err := os.CreateTemp(dir, ".feishu-bot-env-*")
+	staged, err := stagePrivate(path, data)
 	if err != nil {
-		return errors.New("cannot write environment file")
+		return err
 	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
-		return errors.New("cannot secure environment file")
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return errors.New("cannot write environment file")
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return errors.New("cannot flush environment file")
-	}
-	if err := tmp.Close(); err != nil {
-		return errors.New("cannot close environment file")
-	}
-	if err := os.Rename(name, path); err != nil {
+	defer os.Remove(staged)
+	if err := os.Rename(staged, path); err != nil {
 		return errors.New("cannot replace environment file")
 	}
 	return nil
+}
+
+// stagePrivate writes data to a private temporary file beside path and returns
+// its name. Publishing is a single rename, so a staged write cannot fail late.
+func stagePrivate(path string, data []byte) (string, error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", errors.New("cannot create environment directory")
+	}
+	tmp, err := os.CreateTemp(dir, ".feishu-bot-env-*")
+	if err != nil {
+		return "", errors.New("cannot write environment file")
+	}
+	name := tmp.Name()
+	fail := func(message string) (string, error) {
+		_ = tmp.Close()
+		_ = os.Remove(name)
+		return "", errors.New(message)
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		return fail("cannot secure environment file")
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fail("cannot write environment file")
+	}
+	if err := tmp.Sync(); err != nil {
+		return fail("cannot flush environment file")
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", errors.New("cannot close environment file")
+	}
+	return name, nil
 }
 
 func copyExecutable(source, target string) error {

@@ -251,6 +251,48 @@ func TestInstallRefusesForeignService(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(o.WorkDir, "bin", executableName())); !os.IsNotExist(err) {
 		t.Fatal("copied a binary before ownership check")
 	}
+	if _, err := os.Stat(filepath.Join(o.WorkDir, "service.env")); !os.IsNotExist(err) {
+		t.Fatal("wrote service.env before ownership check")
+	}
+}
+
+func TestFailedInstallCheckKeepsExistingServiceEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("FEISHU_BOT_HOME", filepath.Join(dir, "home"))
+	configPath := writeInstallConfig(t, dir)
+	work := filepath.Join(dir, "work")
+	if err := os.MkdirAll(work, 0700); err != nil {
+		t.Fatal(err)
+	}
+	existing := "TEST_APP_SECRET=old-app\nTEST_MODEL_TOKEN=old-model\n"
+	if err := os.WriteFile(filepath.Join(work, "service.env"), []byte(existing), 0600); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(dir, "new.env")
+	if err := os.WriteFile(envPath, []byte("TEST_APP_SECRET=new-app\nTEST_MODEL_TOKEN=new-model\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldPrecheck := installPrecheck
+	defer func() { installPrecheck = oldPrecheck }()
+	for name, setup := range map[string]func() *fakeServiceManager{
+		"precheck": func() *fakeServiceManager {
+			installPrecheck = func(context.Context, core.Config) error { return errors.New("fixture precheck") }
+			return &fakeServiceManager{platform: "test"}
+		},
+		"ownership": func() *fakeServiceManager {
+			installPrecheck = func(context.Context, core.Config) error { return nil }
+			return &fakeServiceManager{platform: "test", present: true, owned: false}
+		},
+	} {
+		manager := setup()
+		o := Options{Command: "daemon", Subcommand: "install", ConfigPath: configPath, ConfigExplicit: true, EnvFile: envPath, WorkDir: work, NoStart: true}
+		if err := installWithManager(context.Background(), o, manager, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+			t.Fatalf("%s: install succeeded", name)
+		}
+		if data, _ := os.ReadFile(filepath.Join(work, "service.env")); string(data) != existing {
+			t.Fatalf("%s: service.env replaced by a failed install: %q", name, data)
+		}
+	}
 }
 
 func TestTailLines(t *testing.T) {

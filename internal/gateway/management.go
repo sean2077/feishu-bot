@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/sean2077/feishu-bot/internal/core"
 	"strings"
@@ -409,7 +410,11 @@ func (g *Gateway) command(ctx context.Context, r core.Room, m core.Message) erro
 		arg = id
 	}
 	if e := g.stopRoom(ctx, r); e != nil {
-		g.notify(r, "原生进程停止失败，尚未确认退出。当前会话保留，不能启动替代进程或切换会话；请先检查服务诊断并核实进程。", &m)
+		text := "原生进程停止失败，尚未确认退出。当前会话保留，不能启动替代进程或切换会话；请先检查服务诊断并核实进程。"
+		if errors.Is(e, errStopState) {
+			text = stopStateNotice
+		}
+		g.notify(r, text, &m)
 		return e
 	}
 	switch cmd {

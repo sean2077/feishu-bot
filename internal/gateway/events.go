@@ -3,8 +3,12 @@ package gateway
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/store"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -48,6 +52,14 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 	s.events.Lock()
 	defer s.events.Unlock()
 	if !g.active(s) {
+		if ev.Type == "ready" {
+			// A stop may land between the first input and the native init.
+			// The context still exists, so its ID must be kept even though
+			// this process no longer accepts work.
+			if nativeIDPattern.MatchString(ev.CCID) && !g.keepNativeIdentity(s, ev.CCID) {
+				g.notify(s.room, identityFailureNotice, nil)
+			}
+		}
 		return
 	}
 	s.mu.Lock()
@@ -68,7 +80,18 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 			})
 			return
 		}
-		if e := g.store.SetCC(s.session.ID, ev.CCID); e != nil {
+		if old == "" {
+			if !g.keepNativeIdentity(s, ev.CCID) {
+				// The ID is neither in the database nor in the workspace
+				// marker. Continuing would let the next launch silently start a
+				// different context, so stop instead of accepting more work.
+				g.task(func() {
+					_ = g.stopRoom(g.ctx, s.room)
+					g.notify(s.room, identityFailureNotice, nil)
+				})
+				return
+			}
+		} else if e := g.store.SetCC(s.session.ID, ev.CCID); e != nil {
 			g.audit(s.room.Key, "session_identity_persistence_failed", core.Args{"error": e.Error()})
 			return
 		}
@@ -233,10 +256,21 @@ func (s *slot) advanceAnchorLocked() {
 }
 func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	disposition := ""
-	err := g.store.Transaction(context.Background(), func(tx *sql.Tx) error { var e error; disposition, e = g.recordUsage(tx, s, ev); return e })
+	record := func() error {
+		return g.store.Transaction(context.Background(), func(tx *sql.Tx) error { var e error; disposition, e = g.recordUsage(tx, s, ev); return e })
+	}
+	err := record()
+	for attempt := 0; err != nil && attempt < len(finalPersistRetry) && !g.isClosing(); attempt++ {
+		time.Sleep(finalPersistRetry[attempt])
+		err = record()
+	}
 	if err != nil {
+		// Usage is bookkeeping. The native process will not repeat this
+		// result, so dropping it here would leave the turn busy forever; keep
+		// handling the reply. This turn's usage is missing from /usage; the
+		// audit entry records the failure.
 		g.audit(s.room.Key, "usage_persistence_failed", core.Args{"session": s.session.ID, "error": err.Error()})
-		return
+		disposition = "unrecorded"
 	}
 	if disposition == "duplicate" {
 		return
@@ -338,8 +372,19 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	r.detached = len(finished) == 0 && ev.Source == "background"
 	r.mu.Unlock()
 	drain, err := r.persist(answer, ev.Success, who, title, finished)
+	for attempt := 0; err != nil && attempt < len(finalPersistRetry) && !g.isClosing(); attempt++ {
+		// Usage is already recorded, so a duplicate result cannot retry this.
+		// A transient database failure gets bounded retries here instead.
+		time.Sleep(finalPersistRetry[attempt])
+		drain, err = r.persist(answer, ev.Success, who, title, finished)
+	}
 	if err != nil {
 		g.audit(s.room.Key, "final_reply_persistence_failed", core.Args{"session": s.session.ID, "error": err.Error()})
+		g.abandonResult(s, key, r, finished, nativeIDs, who)
+		if excerpt != nil {
+			// Already detached from s.renders; nothing else would close it.
+			g.task(func() { excerpt.cancel("后台续轮已结束") })
+		}
 		g.notify(s.room, "回复保存失败，本轮不标记完成；未确认输入不会自动重放。请检查服务诊断和磁盘状态。", nil)
 		return
 	}
@@ -455,3 +500,142 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 }
 
 var _ = fmt.Sprint
+
+// identityFailureNotice explains a native session whose ID could not be kept.
+const identityFailureNotice = "原生会话 ID 未能保存或与已记录的会话冲突，已停止本聊天运行，未启动替代上下文。请检查服务诊断；维护者可用 /resume 选择已记录的会话或用 /new 明确开启新会话。"
+
+// identityPersistRetry bounds retries of saving a new native session ID.
+var identityPersistRetry = []time.Duration{20 * time.Millisecond, 200 * time.Millisecond, time.Second}
+
+// finalPersistRetry bounds synchronous retries of a final reply whose database
+// transaction failed. The event reader is blocked meanwhile, so keep it short.
+var finalPersistRetry = []time.Duration{100 * time.Millisecond, 400 * time.Millisecond, time.Second}
+
+// abandonResult releases a turn whose final reply could not be saved. The
+// render and deliveries must not stay attached to the slot: a closed render
+// would otherwise swallow every later reply in this room, and the deliveries
+// would keep the process busy forever. The model did process the inputs, so
+// they become uncertain rather than cancelled, and are never replayed.
+func (g *Gateway) abandonResult(s *slot, key string, r *render, finished, nativeIDs []string, who []core.Origin) {
+	s.mu.Lock()
+	if s.renders[key] == r {
+		delete(s.renders, key)
+	}
+	for _, id := range finished {
+		delete(s.deliveries, id)
+		delete(s.accepted, id)
+	}
+	for _, id := range nativeIDs {
+		delete(s.inputGroups, id)
+	}
+	if contains(finished, s.compacting) {
+		s.compacting = ""
+	}
+	s.busy = len(s.deliveries) > 0
+	s.advanceAnchorLocked()
+	s.mu.Unlock()
+	for _, id := range finished {
+		if e := g.store.Mark(id, "uncertain"); e != nil {
+			g.audit(s.room.Key, "input_state_unconfirmed", core.Args{"session": s.session.ID})
+		}
+	}
+	g.settleReceipts(s.room.Key, s.session.ID, who, false)
+	g.task(func() { r.cancel("回复保存失败") })
+	g.kickWaiting()
+}
+
+// keepNativeIdentity durably records a newly reported native session ID: in
+// the database, or, if that keeps failing, in a marker file in the room's
+// workspace that the next launch adopts before starting. It reports whether
+// either record exists, i.e. whether the native context stays resumable.
+func (g *Gateway) keepNativeIdentity(s *slot, ccid string) bool {
+	if !nativeIDPattern.MatchString(ccid) {
+		return false
+	}
+	s.mu.Lock()
+	old, session, root := s.session.CCID, s.session.ID, s.workspace.Root
+	s.mu.Unlock()
+	if old != "" {
+		return old == ccid
+	}
+	e := g.store.SetCC(session, ccid)
+	for attempt := 0; e != nil && !errors.Is(e, store.ErrIdentityConflict) && attempt < len(identityPersistRetry); attempt++ {
+		time.Sleep(identityPersistRetry[attempt])
+		e = g.store.SetCC(session, ccid)
+	}
+	if e == nil {
+		removeIdentityMarker(root, session)
+		return true
+	}
+	// The native ID is recorded so a maintainer can recover the context by
+	// hand if neither the database nor the marker keeps it.
+	g.audit(s.room.Key, "session_identity_persistence_failed", core.Args{"session": session, "nativeSessionId": ccid, "error": e.Error()})
+	if errors.Is(e, store.ErrIdentityConflict) {
+		// The row already names another native context (for example a ready
+		// event from a stopped process raced a fresh launch). A marker would
+		// hide the conflict; report it instead.
+		return false
+	}
+	if root != "" && writeIdentityMarker(root, session, ccid) == nil {
+		g.audit(s.room.Key, "session_identity_marked", core.Args{"session": session})
+		return true
+	}
+	// Neither record exists: never launch this session again without an
+	// explicit /new or /resume, which select a different session.
+	g.mu.Lock()
+	g.identityLost[session] = true
+	g.mu.Unlock()
+	return false
+}
+
+func (g *Gateway) sessionIdentityLost(session string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.identityLost[session]
+}
+
+func identityMarkerPath(root, session string) string {
+	return filepath.Join(root, "native-session-"+core.Hash(session)[:24])
+}
+
+// writeIdentityMarker atomically records session→native ID beside the
+// workspace, outside the database whose write just failed.
+func writeIdentityMarker(root, session, ccid string) error {
+	path := identityMarkerPath(root, session)
+	tmp := path + ".tmp-" + core.NewID()[:8]
+	if err := os.WriteFile(tmp, []byte(session+"\n"+ccid+"\n"), 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// readIdentityMarker returns the kept native ID of session. A missing marker
+// is ("", false, nil); any other unreadable or malformed marker is an error,
+// because treating it as absent would launch a fresh native context.
+func readIdentityMarker(root, session string) (string, bool, error) {
+	if root == "" {
+		return "", false, nil
+	}
+	data, err := os.ReadFile(identityMarkerPath(root, session))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil || len(data) > 512 {
+		return "", false, errors.New("native session marker is unreadable")
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 || strings.TrimSpace(lines[0]) != session || !nativeIDPattern.MatchString(strings.TrimSpace(lines[1])) {
+		return "", false, errors.New("native session marker is malformed")
+	}
+	return strings.TrimSpace(lines[1]), true, nil
+}
+
+func removeIdentityMarker(root, session string) {
+	if root != "" {
+		_ = os.Remove(identityMarkerPath(root, session))
+	}
+}

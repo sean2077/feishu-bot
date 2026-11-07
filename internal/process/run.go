@@ -22,6 +22,12 @@ func RunInteractive(ctx context.Context, cmd *exec.Cmd) error {
 	return runOwned(ctx, cmd, true, nil)
 }
 
+// ErrNotStarted wraps a failure of the child's start itself, after beforeStart
+// ran. The child never executed, so callers can undo state committed in
+// beforeStart. Ownership failures after start are not included: on POSIX the
+// child may already have run.
+var ErrNotStarted = errors.New("process did not start")
+
 // RunInteractiveWith calls beforeStart after every local terminal check and
 // immediately before the child starts. A beforeStart error prevents the start.
 func RunInteractiveWith(ctx context.Context, cmd *exec.Cmd, beforeStart func() error) error {
@@ -52,7 +58,7 @@ func runOwned(ctx context.Context, cmd *exec.Cmd, interactive bool, beforeStart 
 		}
 	}
 	if err := cmd.Start(); err != nil {
-		return err
+		return errors.Join(ErrNotStarted, err)
 	}
 	tree, err := Attach(cmd)
 	if err != nil {

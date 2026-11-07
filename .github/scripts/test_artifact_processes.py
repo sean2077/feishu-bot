@@ -136,9 +136,14 @@ class ProcessTests(unittest.TestCase):
                 api.OpenProcess.restype = ctypes.c_void_p
                 handle = api.OpenProcess(0x00100000 | 0x0001, False, pid)
                 if not handle:
-                    if outcome == "exit" and record is records[0]:
+                    error = ctypes.get_last_error()
+                    # ERROR_INVALID_PARAMETER: no such process. When the command
+                    # exits normally the supervisor may reclaim its descendants
+                    # before these handles are opened; they have nothing left
+                    # to wait for. Other outcomes keep requiring live fixtures.
+                    if outcome == "exit" and (error == 87 or record is records[0]):
                         continue
-                    self.fail(f"could not acquire fixture process handle for PID {pid}")
+                    self.fail(f"could not acquire fixture process handle for PID {pid} (error {error})")
             else:
                 handle = record["sid"]
             self.children.append((pid, handle))
