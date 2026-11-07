@@ -178,8 +178,10 @@ func roomsPartsByIdentity(chain []identityEntry, rooms os.FileInfo) ([]string, b
 
 // ancestorOfRooms reports whether the path itself is an ancestor of the rooms
 // tree by file identity.
-func ancestorOfRooms(chain []identityEntry, ancestors []os.FileInfo) bool {
-	if len(chain) == 0 {
+func ancestorOfRooms(chain []identityEntry, ancestors []os.FileInfo, path string) bool {
+	// Only the path itself counts: a missing path whose nearest existing
+	// parent is an ancestor would search nothing there.
+	if len(chain) == 0 || filepath.Base(path) != chain[0].name {
 		return false
 	}
 	for _, info := range ancestors {
@@ -346,7 +348,7 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 				if search && len(parts) <= 1 {
 					otherAttachment = true
 				}
-			} else if search && (core.Inside(foldedPath, foldedRooms) || ancestorOfRooms(chain, scope.roomsAncestors)) {
+			} else if search && (core.Inside(foldedPath, foldedRooms) || ancestorOfRooms(chain, scope.roomsAncestors, physical)) {
 				// Searching an ancestor of the room tree (for example the user
 				// HOME in inherit mode) would reach every room's attachments.
 				return denyHook("This search would cover the gateway's conversation state directory; search the project or a narrower directory instead"), nil
@@ -367,7 +369,9 @@ func physicalPath(path string) (string, error) {
 	if err == nil {
 		resolved, err = filepath.Abs(resolved)
 		if err == nil && runtime.GOOS == "windows" {
-			err = noReparsePoints(resolved)
+			if err = noReparsePoints(resolved); err == nil {
+				resolved, err = finalPath(resolved)
+			}
 		}
 		return resolved, err
 	}
