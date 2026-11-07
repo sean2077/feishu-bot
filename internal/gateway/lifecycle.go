@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/sean2077/feishu-bot/internal/core"
@@ -93,8 +94,11 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 		g.cancelReceipts(session)
 		if stateErr = stopState(); stateErr != nil {
 			g.audit(r.Key, "stop_state_failed", core.Args{"session": session, "error": core.Redact(stateErr.Error(), g.secrets)})
+			// Block at once: inputs arriving while the stop retries are told
+			// the room is paused and that a successful stop cancels them,
+			// instead of being cancelled without notice by a later retry.
+			g.blockAfterFailedStop(r.Key)
 			if s == nil {
-				g.blockAfterFailedStop(r.Key)
 				return errors.Join(errStopState, stateErr)
 			}
 		}
@@ -167,6 +171,11 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 		// though sweeps and other rooms wake dispatch globally.
 		g.blockAfterFailedStop(r.Key)
 		return errors.Join(errStopState, stateErr)
+	}
+	if session != "" && g.stopIsBlocked(r.Key) {
+		// Inputs held while blocked were cancelled with the session's queue;
+		// clear their processing reactions as well.
+		g.cancelReceipts(session)
 	}
 	g.mu.Lock()
 	delete(g.stopBlocked, r.Key)
@@ -261,6 +270,7 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 		g.logger("store_maintenance", detail)
 	}
 	g.retainCards(ctx, now)
+	g.reconcileOrphanedInputs(ctx)
 	g.retryReceipts()
 	g.mu.Lock()
 	for key, values := range g.rates {
@@ -394,4 +404,65 @@ func (g *Gateway) beginCall() bool {
 // withTimeout is used only for nonessential cosmetic updates after cancellation.
 func withTimeout() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 5*time.Second)
+}
+
+// reconcileOrphanedInputs finds inputs still recorded as handed to a live
+// process although that process no longer owns them, for example a turn whose
+// final reply and input state both failed to save. They become uncertain
+// (never replayed) so the room's process can be reclaimed again. The room's
+// dispatch lock excludes the short window between marking an input sent and
+// registering it with the process.
+func (g *Gateway) reconcileOrphanedInputs(ctx context.Context) {
+	for _, s := range g.allSlots() {
+		s.mu.Lock()
+		live := s.live && s.worker != nil
+		key, session := s.room.Key, s.session.ID
+		s.mu.Unlock()
+		if !live || ctx.Err() != nil {
+			continue
+		}
+		lockCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+		unlock, err := g.dispatchLocks.lockContext(lockCtx, key)
+		cancel()
+		if err != nil {
+			continue
+		}
+		rows, err := g.store.DB.QueryContext(ctx, "SELECT uuid,message FROM inbox WHERE room=? AND session=? AND status IN ('sent','consumed')", key, session)
+		if err != nil {
+			unlock()
+			continue
+		}
+		type orphan struct {
+			uuid string
+			from core.Origin
+		}
+		var candidates []orphan
+		for rows.Next() {
+			var uuid, raw string
+			if rows.Scan(&uuid, &raw) != nil {
+				continue
+			}
+			var m core.Message
+			_ = json.Unmarshal([]byte(raw), &m)
+			candidates = append(candidates, orphan{uuid, core.Origin{ID: m.ID, SenderID: m.SenderID}})
+		}
+		rows.Close()
+		s.mu.Lock()
+		var orphans []orphan
+		for _, c := range candidates {
+			if _, owned := s.deliveries[c.uuid]; !owned && s.live {
+				orphans = append(orphans, c)
+			}
+		}
+		s.mu.Unlock()
+		for _, o := range orphans {
+			if g.store.Mark(o.uuid, "uncertain") == nil {
+				g.audit(key, "orphaned_input_uncertain", core.Args{"session": session})
+				if o.from.ID != "" {
+					g.settleReceipts(key, session, []core.Origin{o.from}, false)
+				}
+			}
+		}
+		unlock()
+	}
 }

@@ -103,3 +103,34 @@ func TestAmbiguousSearchPathsAreDenied(t *testing.T) {
 		}
 	}
 }
+
+func TestRelativeSearchPathsFollowTheSessionDirectory(t *testing.T) {
+	base := t.TempDir()
+	room := filepath.Join(base, "rooms", "room")
+	work := filepath.Join(room, "workspace")
+	home := filepath.Join(room, "home")
+	mine := filepath.Join(room, "topic-inbound", "a")
+	other := filepath.Join(room, "topic-inbound", "b")
+	for _, p := range []string{filepath.Join(work, "src"), filepath.Join(work, "lib"), home, mine, other} {
+		if err := os.MkdirAll(p, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		mode, path string
+		deny       bool
+	}{
+		{"inherit", filepath.Join("..", "..", "topic-inbound", "b"), true},
+		{"isolated", filepath.Join("..", "lib"), false},
+		{"isolated", filepath.Join("..", "..", "topic-inbound", "b"), true},
+	} {
+		w := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: mine, NativeConfig: tc.mode}, events: make(chan core.WorkerEvent, 16), eventsDone: make(chan struct{})}
+		result, err := w.hook(context.Background(), "tool", args{"hook_event_name": "PreToolUse", "tool_name": "Grep", "cwd": filepath.Join(work, "src"), "tool_input": args{"path": tc.path}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if denied := object(result["hookSpecificOutput"])["permissionDecision"] == "deny"; denied != tc.deny {
+			t.Fatalf("%s %s denied=%v want %v", tc.mode, tc.path, denied, tc.deny)
+		}
+	}
+}

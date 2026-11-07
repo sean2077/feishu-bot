@@ -143,3 +143,77 @@ func TestUnreadableIdentityMarkerRefusesFreshLaunch(t *testing.T) {
 		t.Fatal("an unreadable marker was treated as absent and a fresh context started")
 	}
 }
+
+func TestSweepReleasesInputsOrphanedByAFailedTurn(t *testing.T) {
+	savedFinal := finalPersistRetry
+	finalPersistRetry = []time.Duration{time.Millisecond}
+	t.Cleanup(func() { finalPersistRetry = savedFinal })
+	f := newFixture(t, nil)
+	f.send(f.message("first", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	for _, trigger := range []string{
+		`CREATE TRIGGER fixture_reply_failure BEFORE INSERT ON outbox WHEN NEW.kind='reply' BEGIN SELECT RAISE(ABORT,'fixture'); END`,
+		`CREATE TRIGGER fixture_mark_failure BEFORE UPDATE OF status ON inbox WHEN NEW.status='uncertain' BEGIN SELECT RAISE(ABORT,'fixture'); END`,
+	} {
+		if _, e := f.s.DB.Exec(trigger); e != nil {
+			t.Fatal(e)
+		}
+	}
+	f.finish(w, d, "lost answer")
+	s := f.g.getSlot(f.room().Key)
+	eventually(t, func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return len(s.deliveries) == 0
+	})
+	if f.status("first") != "sent" {
+		t.Fatalf("fixture precondition: status=%s", f.status("first"))
+	}
+	for _, name := range []string{"fixture_reply_failure", "fixture_mark_failure"} {
+		if _, e := f.s.DB.Exec("DROP TRIGGER " + name); e != nil {
+			t.Fatal(e)
+		}
+	}
+	f.g.Sweep(context.Background(), time.Now().UnixMilli())
+	if got := f.status("first"); got != "uncertain" {
+		t.Fatalf("orphaned input not released: %s", got)
+	}
+	if !f.g.reclaimable(s) {
+		t.Fatal("process still not reclaimable after reconciliation")
+	}
+}
+
+func TestMessageDuringStopRetryIsToldItWillBeCancelled(t *testing.T) {
+	saved := stopStateRetry
+	stopStateRetry = []time.Duration{200 * time.Millisecond}
+	t.Cleanup(func() { stopStateRetry = saved })
+	f := newFixture(t, nil)
+	f.send(f.message("busy", "work", "member"))
+	w := f.worker()
+	f.delivery(w)
+	if _, e := f.s.DB.Exec(`CREATE TRIGGER fixture_stop_failure BEFORE UPDATE OF status ON inbox WHEN NEW.status='cancelled' BEGIN SELECT RAISE(ABORT,'fixture'); END`); e != nil {
+		t.Fatal(e)
+	}
+	done := make(chan error, 1)
+	go func() { done <- f.g.stopRoom(context.Background(), f.room()) }()
+	eventually(t, func() bool { return f.g.stopIsBlocked(f.room().Key) })
+	f.send(f.message("during", "next instruction", "member"))
+	if _, e := f.s.DB.Exec("DROP TRIGGER fixture_stop_failure"); e != nil {
+		t.Fatal(e)
+	}
+	if e := <-done; e != nil {
+		t.Fatalf("retry should have succeeded: %v", e)
+	}
+	if f.status("during") != "cancelled" || !noticeContains(f, "暂存的输入会随停止一并取消") {
+		t.Fatalf("held input not explained: status=%s notices=%v", f.status("during"), f.tr.notices)
+	}
+	var desired string
+	_ = f.s.DB.QueryRow("SELECT desired FROM receipts WHERE id='during'").Scan(&desired)
+	if desired == "processing" {
+		t.Fatal("cancelled input kept its processing reaction")
+	}
+	if f.g.stopIsBlocked(f.room().Key) {
+		t.Fatal("room stayed blocked after the retry succeeded")
+	}
+}

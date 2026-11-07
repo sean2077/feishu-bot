@@ -150,6 +150,13 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			keys = append(keys, "path")
 		}
 		search := name == "Grep" || name == "Glob"
+		// Claude Code resolves relative tool paths against the session's
+		// current directory, which follows "cd" in Bash, not the launch
+		// directory; resolve them the same way here.
+		cwd := text(input["cwd"])
+		if cwd == "" || !filepath.IsAbs(cwd) || !plainSearchPath(cwd) {
+			cwd = w.workspace.Work
+		}
 		candidates := []string{}
 		for _, key := range keys {
 			raw, ok := toolInput[key].(string)
@@ -174,11 +181,11 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 				if filepath.IsAbs(pattern) {
 					candidates = append(candidates, globRoot(pattern))
 				} else if strings.Contains(pattern, "..") {
-					base := w.workspace.Work
+					base := cwd
 					if raw, ok := toolInput["path"].(string); ok && raw != "" {
 						base = raw
 						if !filepath.IsAbs(base) {
-							base = filepath.Join(w.workspace.Work, base)
+							base = filepath.Join(cwd, base)
 						}
 					}
 					candidates = append(candidates, globRoot(filepath.Join(base, pattern)))
@@ -188,7 +195,7 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 		for _, raw := range candidates {
 			path := raw
 			if !filepath.IsAbs(path) {
-				path = filepath.Join(w.workspace.Work, path)
+				path = filepath.Join(cwd, path)
 			}
 			physical, err := physicalPath(path)
 			if err != nil {
@@ -214,7 +221,7 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			} else if search && core.Inside(foldedPath, foldedRooms) {
 				// Searching an ancestor of the room tree (for example the user
 				// HOME in inherit mode) would reach every room's attachments.
-				otherAttachment = true
+				return denyHook("This search would cover the gateway's conversation state directory; search the project or a narrower directory instead"), nil
 			}
 			if otherAttachment || w.workspace.NativeConfig != "inherit" && !core.Inside(scope.work, physical) && !core.Inside(scope.home, physical) && !attachment || attachment && name != "Read" && name != "Grep" && name != "Glob" {
 				return denyHook("Outside conversation file scope or attempting to edit an incoming attachment"), nil

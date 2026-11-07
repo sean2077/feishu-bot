@@ -835,9 +835,9 @@ func (g *Gateway) dispatch(r core.Room) error {
 			if err := g.store.StopSession(s.session.ID); err != nil {
 				return err
 			}
-			for _, d := range pending {
-				g.settleReceipts(r.Key, d.SessionID, origin(d.Message), false)
-			}
+			// Inputs queued during preparation were cancelled too; clear
+			// every processing reaction of this session, not only pending's.
+			g.cancelReceipts(s.session.ID)
 			g.notify(r, identityFailureNotice, &pending[0].Message)
 			return nil
 		}
