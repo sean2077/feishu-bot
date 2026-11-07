@@ -39,45 +39,11 @@ func (g *Gateway) request(s *slot, ev core.WorkerEvent) (core.Args, error) {
 		if resource == nil {
 			return nil, errors.New("unknown attachment")
 		}
-		// The "f-" prefix marks the atomic publish scheme below; files that an
-		// older version wrote in place (possibly truncated) are never reused.
-		name := "f-" + core.Hash(id + key)[:24] + "-" + safeAttachmentName(resource.Name)
-		path := filepath.Join(s.workspace.Inbound, name)
-		if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
-			// The final name only appears after a complete download (below),
-			// so an existing regular file is that earlier result.
-			return core.Args{"ok": true, "path": path, "reused": true}, nil
-		}
-		// Download to a private name and publish it atomically: a repeated or
-		// concurrent fetch reuses the finished file instead of failing on the
-		// exclusive create, and readers never observe a partial file.
-		partial := path + ".part-" + core.NewID()[:8]
-		e = providerVoid(s.ctx, func() error {
-			err := g.transport.Download(s.ctx, id, *resource, partial, g.config.Limits.AttachmentBytes)
-			if s.ctx.Err() != nil {
-				_ = os.Remove(partial)
-				return s.ctx.Err()
-			}
-			return err
-		})
+		path, e := g.downloadAttachment(s.ctx, s.workspace, id, *resource)
 		if e != nil {
-			_ = os.Remove(partial)
 			return nil, e
 		}
-		if e = os.Link(partial, path); e != nil {
-			if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-				// Some file systems lack hard links; a rename is still atomic.
-				e = os.Rename(partial, path)
-			}
-		}
-		_ = os.Remove(partial)
-		if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
-			return nil, errors.New("attachment could not be stored in this conversation")
-		}
-		if s.ctx.Err() != nil {
-			return nil, s.ctx.Err()
-		}
-		return core.Args{"ok": true, "path": path}, nil
+		return core.Args{"ok": true, "path": path, "name": resource.Name}, nil
 	case "send_file":
 		root, path, e := workspace.TranslateOutput(s.workspace, stringArg(ev.Input, "path"))
 		if e != nil {

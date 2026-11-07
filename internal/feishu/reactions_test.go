@@ -53,15 +53,45 @@ func TestReactionCleanupTouchesOnlyThisApplicationsReaction(t *testing.T) {
 		t.Fatalf("foreign reaction modified: %v %d", removed, adds)
 	}
 }
-func TestReactionCompletionClearedAfterRestartRequiresObservation(t *testing.T) {
-	writes := 0
+
+func TestReactionRemovalAfterRestartDistinguishesConfirmedAndUnknownCreates(t *testing.T) {
+	for _, prior := range []string{"processing", "done", "attempt:processing", "attempt:done"} {
+		t.Run(prior, func(t *testing.T) {
+			writes := 0
+			// A fresh Client has lost the reaction ID. The previous DELETE took
+			// effect before its acknowledgement/local state survived the crash.
+			c, _ := fixtureClient(t, nil, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "GET" {
+					writes++
+				}
+				apiResponse(w, map[string]any{"items": []any{}, "has_more": false})
+			})
+			err := c.Receipt(context.Background(), "om_origin", "clear", prior)
+			unknown := strings.HasPrefix(prior, "attempt:")
+			if (err != nil) != unknown || writes != 0 {
+				t.Fatalf("cleanup prior=%s err=%v writes=%d", prior, err, writes)
+			}
+		})
+	}
+}
+
+func TestConfirmedProcessingCleanupAfterRestartCanComplete(t *testing.T) {
+	adds := 0
 	c, _ := fixtureClient(t, nil, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" {
-			writes++
+		switch r.Method {
+		case "GET":
+			apiResponse(w, map[string]any{"items": []any{}, "has_more": false})
+		case "POST":
+			adds++
+			apiResponse(w, map[string]string{"reaction_id": "reaction_done"})
+		default:
+			t.Error("empty observation must not remove a foreign reaction", r.Method)
 		}
-		apiResponse(w, map[string]any{"items": []any{}, "has_more": false})
 	})
-	if err := c.Receipt(context.Background(), "om_origin", "clear", "done"); err == nil || writes != 0 {
-		t.Fatal("unobserved completed reaction treated as removed")
+	if err := c.Receipt(context.Background(), "om_origin", "clear", "processing"); err != nil {
+		t.Fatal("confirmed removal never converged after restart", err)
+	}
+	if err := c.Receipt(context.Background(), "om_origin", "done", "clear"); err != nil || adds != 1 {
+		t.Fatalf("Done remained blocked: adds=%d err=%v", adds, err)
 	}
 }

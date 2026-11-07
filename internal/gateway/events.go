@@ -74,8 +74,11 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		old := s.session.CCID
 		s.mu.Unlock()
 		if old != "" && old != ev.CCID {
+			s.mu.Lock()
+			s.live = false
+			s.mu.Unlock()
 			g.task(func() {
-				_ = g.stopRoom(g.ctx, s.room)
+				_ = g.stopGeneration(g.ctx, s)
 				g.notify(s.room, "原会话恢复返回了不同 ID，已停止，未重置历史。请检查原生会话文件。", nil)
 			})
 			return
@@ -85,8 +88,11 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 				// The ID is neither in the database nor in the workspace
 				// marker. Continuing would let the next launch silently start a
 				// different context, so stop instead of accepting more work.
+				s.mu.Lock()
+				s.live = false
+				s.mu.Unlock()
 				g.task(func() {
-					_ = g.stopRoom(g.ctx, s.room)
+					_ = g.stopGeneration(g.ctx, s)
 					g.notify(s.room, identityFailureNotice, nil)
 				})
 				return
@@ -141,14 +147,19 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 			}
 		}
 		s.mu.Unlock()
-		_ = g.store.Transaction(context.Background(), func(tx *sql.Tx) error {
+		if err := g.store.Transaction(context.Background(), func(tx *sql.Tx) error {
 			for _, id := range valid {
 				if _, e := tx.Exec("UPDATE inbox SET status='consumed' WHERE uuid=? AND room=? AND session=? AND status='sent'", id, s.room.Key, s.session.ID); e != nil {
 					return e
 				}
+				if e := g.store.ConfirmTopicRoot(tx, s.room.Key, s.session.ID, id); e != nil {
+					return e
+				}
 			}
 			return nil
-		})
+		}); err != nil {
+			g.audit(s.room.Key, "input_consumption_persistence_failed", core.Args{"error": err.Error()})
+		}
 	case "activity":
 		s.mu.Lock()
 		if ev.Background != nil {
@@ -256,6 +267,11 @@ func (s *slot) advanceAnchorLocked() {
 }
 func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	disposition := ""
+	// A bookkeeping retry must not insert usage_results between staging and
+	// the first native result's deduplication check, or that first answer
+	// would be mistaken for a duplicate and discarded.
+	finishUsage := g.stageResultUsage(s, ev)
+	defer finishUsage()
 	record := func() error {
 		return g.store.Transaction(context.Background(), func(tx *sql.Tx) error { var e error; disposition, e = g.recordUsage(tx, s, ev); return e })
 	}
@@ -267,8 +283,8 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	if err != nil {
 		// Usage is bookkeeping. The native process will not repeat this
 		// result, so dropping it here would leave the turn busy forever; keep
-		// handling the reply. This turn's usage is missing from /usage; the
-		// audit entry records the failure.
+		// handling the reply while the pending observation makes /usage's
+		// incomplete coverage explicit and permits a later accounting retry.
 		g.audit(s.room.Key, "usage_persistence_failed", core.Args{"session": s.session.ID, "error": err.Error()})
 		disposition = "unrecorded"
 	}
@@ -371,12 +387,20 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	r.mu.Lock()
 	r.detached = len(finished) == 0 && ev.Source == "background"
 	r.mu.Unlock()
-	drain, err := r.persist(answer, ev.Success, who, title, finished)
+	persist := func() (func(), error) {
+		return r.persistWith(answer, ev.Success, who, title, finished, func(tx *sql.Tx) error {
+			if disposition == "unrecorded" {
+				return g.stageUsage(tx, s, ev)
+			}
+			return nil
+		})
+	}
+	drain, err := persist()
 	for attempt := 0; err != nil && attempt < len(finalPersistRetry) && !g.isClosing(); attempt++ {
 		// Usage is already recorded, so a duplicate result cannot retry this.
 		// A transient database failure gets bounded retries here instead.
 		time.Sleep(finalPersistRetry[attempt])
-		drain, err = r.persist(answer, ev.Success, who, title, finished)
+		drain, err = persist()
 	}
 	if err != nil {
 		g.audit(s.room.Key, "final_reply_persistence_failed", core.Args{"session": s.session.ID, "error": err.Error()})
@@ -442,30 +466,15 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 	approvals := g.approvalCount(s.session.ID)
 	g.cancelApprovals(s.session.ID)
 	g.cancelReceipts(s.session.ID)
-	notice := ""
-	err := g.store.Transaction(context.Background(), func(tx *sql.Tx) error {
-		res, e := tx.Exec("UPDATE inbox SET status='uncertain' WHERE room=? AND session=? AND status IN ('sent','consumed')", s.room.Key, s.session.ID)
-		if e != nil {
-			return e
-		}
-		n, _ := res.RowsAffected()
-		if cleanupFailed || interrupted || approvals > 0 || n > 0 {
-			text := "原生工作进程意外退出。当前审批／追问已取消；未确认的输入与外部操作不会自动重放。请先核实结果。会话记录仍保留，可以继续原会话。"
-			if cleanupFailed {
-				text = "原生进程异常退出，但后代清理未确认。本聊天已暂停；不会启动替代进程或重放未确认操作。请维护者核实进程状态。"
-			}
-			notice, e = g.saveOutput(tx, s.room, s.session.ID, text, false, "", "", "", DisplayCard("工作中断", text), nil, "", "", "recovery", "")
-			return e
-		}
-		return nil
-	})
+	notice, err := g.persistExited(context.Background(), s, cleanupFailed, interrupted, approvals)
+	s.mu.Lock()
+	s.exitPending, s.exitInterrupted, s.exitApprovals = err != nil, interrupted, approvals
+	s.mu.Unlock()
 	if err != nil {
 		g.audit(s.room.Key, "worker_exit_persistence_failed", core.Args{"error": err.Error()})
 	}
 	if cleanupFailed {
 		g.audit(s.room.Key, "worker_descendants_unconfirmed", core.Args{"session": s.session.ID})
-	} else {
-		g.removeSlot(s)
 	}
 	g.cancelLostSupplements(s.room)
 	for _, r := range renders {
@@ -497,6 +506,39 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 			}
 		}
 	}
+	if !cleanupFailed && err == nil {
+		// Keep this generation discoverable until its last state access is
+		// complete. Close either sees this slot and drains its callbacks, or
+		// sees it already removed after all callback-owned persistence.
+		g.releaseExited(s)
+	}
+}
+
+func (g *Gateway) persistExited(ctx context.Context, s *slot, cleanupFailed, interrupted bool, approvals int) (string, error) {
+	notice := ""
+	err := g.store.Transaction(ctx, func(tx *sql.Tx) error {
+		res, e := tx.ExecContext(ctx, "UPDATE inbox SET status='uncertain' WHERE room=? AND session=? AND status IN ('sent','consumed')", s.room.Key, s.session.ID)
+		if e != nil {
+			return e
+		}
+		n, e := res.RowsAffected()
+		if e != nil {
+			return e
+		}
+		if cleanupFailed || interrupted || approvals > 0 || n > 0 {
+			text := "原生工作进程意外退出。当前审批／追问已取消；未确认的输入与外部操作不会自动重放。请先核实结果。会话记录仍保留，可以继续原会话。"
+			if cleanupFailed {
+				text = "原生进程异常退出，但后代清理未确认。本聊天已暂停；不会启动替代进程或重放未确认操作。请维护者核实进程状态。"
+			}
+			notice, e = g.saveOutput(tx, s.room, s.session.ID, text, false, "", "", "", DisplayCard("工作中断", text), nil, "", "", "recovery", "")
+			return e
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return notice, nil
 }
 
 var _ = fmt.Sprint
@@ -553,6 +595,7 @@ func (g *Gateway) keepNativeIdentity(s *slot, ccid string) bool {
 		return false
 	}
 	s.mu.Lock()
+	s.identityObserved = true
 	old, session, root := s.session.CCID, s.session.ID, s.workspace.Root
 	s.mu.Unlock()
 	if old != "" {
@@ -601,16 +644,7 @@ func identityMarkerPath(root, session string) string {
 // writeIdentityMarker atomically records session→native ID beside the
 // workspace, outside the database whose write just failed.
 func writeIdentityMarker(root, session, ccid string) error {
-	path := identityMarkerPath(root, session)
-	tmp := path + ".tmp-" + core.NewID()[:8]
-	if err := os.WriteFile(tmp, []byte(session+"\n"+ccid+"\n"), 0600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
+	return syncStateMarker(identityMarkerPath(root, session), []byte(session+"\n"+ccid+"\n"))
 }
 
 // readIdentityMarker returns the kept native ID of session. A missing marker

@@ -27,21 +27,22 @@ import (
 )
 
 type settings struct {
-	Samples     int    `json:"samples"`
-	WarmTurns   int    `json:"warmTurns"`
-	IdleMS      int    `json:"idleMs"`
-	Scenario    string `json:"scenario"`
-	Sessions    int    `json:"sessions"`
-	TextBytes   int    `json:"textBytes"`
-	UpdateMS    int    `json:"updateMs"`
-	TransportMS int    `json:"transportMs"`
-	Attachments bool   `json:"attachments"`
-	Reclaim     bool   `json:"reclaim"`
-	Concurrent  bool   `json:"concurrent"`
-	SoakSeconds int    `json:"soakSeconds"`
-	MaxTurns    int    `json:"maxTurns"`
-	SampleMS    int    `json:"sampleMs"`
-	Claude      string `json:"-"`
+	Samples        int    `json:"samples"`
+	WarmTurns      int    `json:"warmTurns"`
+	IdleMS         int    `json:"idleMs"`
+	Scenario       string `json:"scenario"`
+	Sessions       int    `json:"sessions"`
+	TextBytes      int    `json:"textBytes"`
+	UpdateMS       int    `json:"updateMs"`
+	TransportMS    int    `json:"transportMs"`
+	Attachments    bool   `json:"attachments"`
+	Reclaim        bool   `json:"reclaim"`
+	Concurrent     bool   `json:"concurrent"`
+	SoakSeconds    int    `json:"soakSeconds"`
+	TurnIntervalMS int    `json:"turnIntervalMs"`
+	MaxTurns       int    `json:"maxTurns"`
+	SampleMS       int    `json:"sampleMs"`
+	Claude         string `json:"-"`
 }
 type turn struct {
 	Sequence  int64     `json:"sequence"`
@@ -122,6 +123,13 @@ func (w *observedWorker) Stop(ctx context.Context) error {
 		w.once.Do(w.onStopped)
 	}
 	return err
+}
+
+func (w *observedWorker) WaitEvents(ctx context.Context) error {
+	if events, ok := w.Worker.(core.WorkerEvents); ok {
+		return events.WaitEvents(ctx)
+	}
+	return nil
 }
 
 func runSample(index int, o settings) (result sample) {
@@ -506,11 +514,12 @@ func main() {
 	flag.BoolVar(&o.Reclaim, "reclaim", false, "reclaim confirmed idle processes and resume the same native IDs")
 	flag.BoolVar(&o.Concurrent, "concurrent", false, "submit turns concurrently across rooms; each room stays serial (warm scenario only)")
 	flag.IntVar(&o.SoakSeconds, "soak-seconds", 0, "additional sustained workload window (0..3600); in-flight turn may drain for up to 45 seconds")
+	flag.IntVar(&o.TurnIntervalMS, "turn-interval-ms", 0, "delay after each producer's soak turn (0..60000); bounds long-run turn volume")
 	flag.IntVar(&o.MaxTurns, "max-turns", 1000, "maximum turns per sample including warmup and optional resume (1..20000)")
 	flag.IntVar(&o.SampleMS, "sample-ms", 1000, "live database/WAL/goroutine/memory trend interval (100..10000 ms)")
 	flag.StringVar(&o.Claude, "claude", os.Getenv("CLAUDE_NATIVE_PATH"), "native Claude executable")
 	flag.Parse()
-	if flag.NArg() != 0 || o.Samples < 1 || o.Samples > 10 || o.WarmTurns < 0 || o.WarmTurns > 5 || o.IdleMS < 100 || o.IdleMS > 10000 || o.Sessions < 0 || o.Sessions > 8 || o.TextBytes < 0 || o.TextBytes > 100<<10 || o.UpdateMS < 20 || o.UpdateMS > 5000 || o.TransportMS < 0 || o.TransportMS > 1000 || (o.Scenario != "warm" && o.Scenario != "matrix") || o.SoakSeconds < 0 || o.SoakSeconds > 3600 || o.MaxTurns < 1 || o.MaxTurns > 20000 || o.SampleMS < 100 || o.SampleMS > 10000 || ((o.Concurrent || o.SoakSeconds > 0) && (o.Scenario == "matrix" || o.Sessions == 0)) || !workloadFits(o) {
+	if flag.NArg() != 0 || o.Samples < 1 || o.Samples > 10 || o.WarmTurns < 0 || o.WarmTurns > 5 || o.IdleMS < 100 || o.IdleMS > 10000 || o.Sessions < 0 || o.Sessions > 8 || o.TextBytes < 0 || o.TextBytes > 100<<10 || o.UpdateMS < 20 || o.UpdateMS > 5000 || o.TransportMS < 0 || o.TransportMS > 1000 || (o.Scenario != "warm" && o.Scenario != "matrix") || o.SoakSeconds < 0 || o.SoakSeconds > 3600 || o.TurnIntervalMS < 0 || o.TurnIntervalMS > 60000 || o.MaxTurns < 1 || o.MaxTurns > 20000 || o.SampleMS < 100 || o.SampleMS > 10000 || ((o.Concurrent || o.SoakSeconds > 0) && (o.Scenario == "matrix" || o.Sessions == 0)) || !workloadFits(o) {
 		fmt.Fprintln(os.Stderr, "invalid benchmark arguments")
 		os.Exit(1)
 	}

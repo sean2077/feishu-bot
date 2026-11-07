@@ -24,7 +24,7 @@ func TestRecoveryTransitionAndWarningsCommitTogether(t *testing.T) {
 	}
 	m := f.message("interrupted", "work", "member")
 	d := core.Delivery{UUID: core.NewID(), RoomKey: r.Key, SessionID: s.ID, Message: m}
-	if err = f.g.queueInput(d, time.Now().UnixMilli()); err != nil {
+	if err = f.g.queueInput(context.Background(), d, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	if err = f.s.Mark(d.UUID, "sent"); err != nil {

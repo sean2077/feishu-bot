@@ -39,6 +39,7 @@ type fakeTransport struct {
 	cardHook     func(context.Context, core.Room, core.Args) (string, error)
 	updateHook   func(context.Context, string, core.Args) error
 	downloadHook func(context.Context, string, core.Resource, string, int64) error
+	fetchHook    func(context.Context, string, core.Room) (*core.Message, error)
 	fileHook     func(context.Context, string) (string, error)
 	receiptHook  func(context.Context, string, string, string) error
 }
@@ -80,13 +81,26 @@ func (t *fakeTransport) Download(ctx context.Context, id string, res core.Resour
 	if hook != nil {
 		return hook(ctx, id, res, path, limit)
 	}
-	return os.WriteFile(path, []byte("image bytes"), 0600)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err = file.WriteString("image bytes"); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	return file.Close()
 }
-func (t *fakeTransport) Fetch(_ context.Context, id string, _ core.Room) (*core.Message, error) {
+func (t *fakeTransport) Fetch(ctx context.Context, id string, room core.Room) (*core.Message, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.fetches++
 	m, ok := t.messages[id]
+	hook := t.fetchHook
+	t.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, id, room)
+	}
 	if !ok {
 		return nil, nil
 	}
@@ -210,8 +224,12 @@ type fixture struct {
 	readyMode string
 }
 
-func newFixture(t *testing.T, mutate func(*core.Config)) *fixture {
+func newFixture(t *testing.T, mutate func(*core.Config), loggers ...core.Logger) *fixture {
 	t.Helper()
+	var logger core.Logger
+	if len(loggers) > 0 {
+		logger = loggers[0]
+	}
 	c := core.Config{TenantID: "tenant", AppID: "app", DataDir: t.TempDir(), Runtime: core.RuntimeConfig{MaxWorkers: 2, IdleMS: 1000}, Model: core.ModelConfig{Model: "test-model"}, Projects: []core.Project{{ID: "project", Maintainers: []string{"owner"}, PermissionMode: "default"}}, Groups: []core.Group{{ChatID: "group", ProjectID: "project", Members: []string{"member", "second"}}, {ChatID: "other", ProjectID: "project", Members: []string{"member"}}}, DMs: []core.DM{{UserID: "member", ProjectID: "project"}, {UserID: "owner", ProjectID: "project"}}, Limits: core.Limits{BackgroundMessages: 0, BackgroundMS: 300000, TextChars: 10000, InboxPerRoom: 20, AttachmentBytes: 1024 * 1024, ApprovalMS: 10000, UpdateMS: 50, MessagesPerMinute: 100, ImageBatchMS: 0, ImageBatchMaxImages: 8, ImageBatchBytes: 1024 * 1024}}
 	if mutate != nil {
 		mutate(&c)
@@ -239,7 +257,7 @@ func newFixture(t *testing.T, mutate func(*core.Config)) *fixture {
 		emit(core.WorkerEvent{Type: "activity", State: "idle", Background: &zero})
 		f.started <- worker
 		return worker, nil
-	}, nil)
+	}, logger)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()

@@ -122,3 +122,24 @@ func (m linuxManager) Present(ctx context.Context, name string) (bool, error) {
 	}
 	return false, errors.New("cannot inspect systemd unit")
 }
+
+func (m linuxManager) Snapshot(ctx context.Context, name string) (serviceDefinition, error) {
+	data, err := os.ReadFile(m.unitPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return serviceDefinition{}, nil
+	}
+	return serviceDefinition{Present: err == nil, Data: data}, err
+}
+
+func (m linuxManager) Restore(ctx context.Context, name string, definition serviceDefinition) error {
+	if !definition.Present {
+		return m.Uninstall(ctx, name)
+	}
+	if err := writePrivate(m.unitPath(), definition.Data); err != nil {
+		return err
+	}
+	if err := os.Chmod(m.unitPath(), 0644); err != nil {
+		return err
+	}
+	return m.control(ctx, "daemon-reload")
+}

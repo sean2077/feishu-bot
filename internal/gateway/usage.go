@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -43,12 +44,18 @@ func reportedModels(models []string) []string {
 	return out
 }
 func (g *Gateway) recordUsage(tx *sql.Tx, s *slot, ev core.WorkerEvent) (string, error) {
+	return g.recordUsageAt(tx, s, ev, time.Now().UnixMilli())
+}
+func (g *Gateway) recordUsageAt(tx *sql.Tx, s *slot, ev core.WorkerEvent, at int64) (string, error) {
 	_, e := tx.Exec("INSERT OR IGNORE INTO usage_coverage(session,room,started,prior_unknown) VALUES(?,?,?,1)", s.session.ID, s.room.Key, time.Now().UnixMilli())
 	if e != nil {
 		return "", e
 	}
 	if !resultIDPattern.MatchString(ev.ResultID) {
 		_, e = tx.Exec("UPDATE usage_coverage SET unidentified=1 WHERE room=? AND session=?", s.room.Key, s.session.ID)
+		if e == nil {
+			_, e = tx.Exec("DELETE FROM usage_pending WHERE session=? AND result_id=''", s.session.ID)
+		}
 		return "unidentified", e
 	}
 	usage := tokens(ev.Usage)
@@ -56,26 +63,40 @@ func (g *Gateway) recordUsage(tx *sql.Tx, s *slot, ev core.WorkerEvent) (string,
 	if ev.Compact != "" {
 		kind = "compact"
 	}
-	res, e := tx.Exec("INSERT OR IGNORE INTO usage_results(session,result_id,room,at,kind,success,models,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens) VALUES(?,?,?,?,?,?,?,?,?,?,?)", s.session.ID, ev.ResultID, s.room.Key, time.Now().UnixMilli(), kind, ev.Success, jsonText(reportedModels(ev.Models)), usage[tokenFields[0]], usage[tokenFields[1]], usage[tokenFields[2]], usage[tokenFields[3]])
+	res, e := tx.Exec("INSERT OR IGNORE INTO usage_results(session,result_id,room,at,kind,success,models,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens) VALUES(?,?,?,?,?,?,?,?,?,?,?)", s.session.ID, ev.ResultID, s.room.Key, at, kind, ev.Success, jsonText(reportedModels(ev.Models)), usage[tokenFields[0]], usage[tokenFields[1]], usage[tokenFields[2]], usage[tokenFields[3]])
 	if e != nil {
 		return "", e
 	}
 	n, _ := res.RowsAffected()
+	if _, e = tx.Exec("DELETE FROM usage_pending WHERE session=? AND result_id=?", s.session.ID, ev.ResultID); e != nil {
+		return "", e
+	}
 	if n == 0 {
 		return "duplicate", nil
 	}
 	return "new", nil
 }
 func (g *Gateway) usageReport(r core.Room) (core.Args, error) {
+	// Coverage, pending observations and totals are one snapshot. A retry
+	// cannot remove a gap between the coverage read and the aggregate read.
+	tx, e := g.store.DB.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if e != nil {
+		return nil, e
+	}
+	defer tx.Rollback()
 	session := ""
-	e := g.store.DB.QueryRow("SELECT id FROM sessions WHERE room=? AND state='open'", r.Key).Scan(&session)
+	e = tx.QueryRow("SELECT id FROM sessions WHERE room=? AND state='open'", r.Key).Scan(&session)
 	if e != nil && e != sql.ErrNoRows {
 		return nil, e
 	}
 	var since, prior, unidentified sql.NullInt64
+	var pending int64
 	if session != "" {
-		e = g.store.DB.QueryRow("SELECT started,prior_unknown,unidentified FROM usage_coverage WHERE room=? AND session=?", r.Key, session).Scan(&since, &prior, &unidentified)
+		e = tx.QueryRow("SELECT started,prior_unknown,unidentified FROM usage_coverage WHERE room=? AND session=?", r.Key, session).Scan(&since, &prior, &unidentified)
 		if e != nil && e != sql.ErrNoRows {
+			return nil, e
+		}
+		if e = tx.QueryRow("SELECT count(*) FROM usage_pending WHERE room=? AND session=?", r.Key, session).Scan(&pending); e != nil {
 			return nil, e
 		}
 	}
@@ -96,14 +117,14 @@ func (g *Gateway) usageReport(r core.Room) (core.Args, error) {
 			fields = append(fields, "count("+field+")", "total("+field+")")
 			dest = append(dest, &reports[i], &sums[i])
 		}
-		if e = g.store.DB.QueryRow("SELECT "+strings.Join(fields, ",")+" FROM usage_results WHERE room=? AND session=?", r.Key, session).Scan(dest...); e != nil {
+		if e = tx.QueryRow("SELECT "+strings.Join(fields, ",")+" FROM usage_results WHERE room=? AND session=?", r.Key, session).Scan(dest...); e != nil {
 			return nil, e
 		}
 		var id, kind, rawModels string
 		var at int64
 		var success bool
 		var values [4]sql.NullInt64
-		e = g.store.DB.QueryRow("SELECT result_id,at,kind,success,models,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens FROM usage_results WHERE room=? AND session=? ORDER BY at DESC,rowid DESC LIMIT 1", r.Key, session).Scan(&id, &at, &kind, &success, &rawModels, &values[0], &values[1], &values[2], &values[3])
+		e = tx.QueryRow("SELECT result_id,at,kind,success,models,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens FROM usage_results WHERE room=? AND session=? ORDER BY at DESC,rowid DESC LIMIT 1", r.Key, session).Scan(&id, &at, &kind, &success, &rawModels, &values[0], &values[1], &values[2], &values[3])
 		if e != nil && e != sql.ErrNoRows {
 			return nil, e
 		}
@@ -125,7 +146,7 @@ func (g *Gateway) usageReport(r core.Room) (core.Args, error) {
 			}
 			latest = core.Args{"resultId": id, "at": at, "kind": kind, "success": success, "models": modelValue, "usage": one}
 		}
-		rows, e := g.store.DB.Query("SELECT DISTINCT j.value FROM usage_results u,json_each(u.models) j WHERE u.room=? AND u.session=? ORDER BY j.value LIMIT 65", r.Key, session)
+		rows, e := tx.Query("SELECT DISTINCT j.value FROM usage_results u,json_each(u.models) j WHERE u.room=? AND u.session=? ORDER BY j.value LIMIT 65", r.Key, session)
 		if e != nil {
 			return nil, e
 		}
@@ -154,7 +175,7 @@ func (g *Gateway) usageReport(r core.Room) (core.Args, error) {
 		if reports[i] > 0 {
 			subtotal[key] = sum
 		}
-		if results > 0 && reports[i] == results && unidentified.Int64 == 0 {
+		if results > 0 && reports[i] == results && unidentified.Int64 == 0 && pending == 0 {
 			usage[key] = sum
 		}
 	}
@@ -170,7 +191,7 @@ func (g *Gateway) usageReport(r core.Room) (core.Args, error) {
 	if since.Valid {
 		start = since.Int64
 	}
-	return core.Args{"session": nullString(session), "scope": "sdk_result_main_loop", "since": start, "historyIncomplete": session != "" && (!since.Valid || prior.Int64 != 0), "unidentifiedResults": unidentified.Int64 != 0, "latest": latest, "cumulative": core.Args{"results": results, "usage": usage, "reportedSubtotal": subtotal, "missing": missing, "models": modelValue, "modelsTruncated": truncated}, "cost": nil, "contextOccupancy": nil}, nil
+	return core.Args{"session": nullString(session), "scope": "sdk_result_main_loop", "since": start, "historyIncomplete": session != "" && (!since.Valid || prior.Int64 != 0 || pending > 0), "pendingResults": pending, "unidentifiedResults": unidentified.Int64 != 0, "latest": latest, "cumulative": core.Args{"results": results, "usage": usage, "reportedSubtotal": subtotal, "missing": missing, "models": modelValue, "modelsTruncated": truncated}, "cost": nil, "contextOccupancy": nil}, nil
 }
 func (g *Gateway) usageReply(r core.Room, arg string) (string, error) {
 	if arg != "" && arg != "--json" {
@@ -189,7 +210,10 @@ func (g *Gateway) usageReply(r core.Room, arg string) (string, error) {
 	}
 	lines := []string{"**本会话使用量**", "会话：`" + fmt.Sprint(report["session"]) + "`", "统计起点：" + timeLabel(report["since"]), "口径：SDK result.usage，主循环每轮的已报告用量，不含子代理；不是当前上下文占用或账单。"}
 	if boolArg(report, "historyIncomplete") {
-		lines = append(lines, "旧历史未完整采集，下面仅累计统计起点后的观测，不能当作完整历史总量。")
+		lines = append(lines, "历史或采集记录存在缺口，下面仅列已保存观测，不能当作完整历史总量。")
+	}
+	if pending, _ := numberArg(report, "pendingResults"); pending > 0 {
+		lines = append(lines, fmt.Sprintf("%d 个结果的用量仍待补存；答案交付不受影响，总量暂为未知。服务会重试保存，不会重做任务。", pending))
 	}
 	if boolArg(report, "unidentifiedResults") {
 		lines = append(lines, "存在未提供稳定结果 ID 的结果，未纳入累计；总量未知，已报告小计仅供核对。")
@@ -230,8 +254,11 @@ func (g *Gateway) usageReply(r core.Room, arg string) (string, error) {
 	for i, key := range tokenFields {
 		line := labels[i] + "：" + amount(u[key])
 		n, _ := numberArg(miss, key)
+		pending, _ := numberArg(report, "pendingResults")
 		if n > 0 {
 			line += fmt.Sprintf("；%d 轮未报告，已报告小计 %s", n, amount(sub[key]))
+		} else if pending > 0 {
+			line += "；已报告小计 " + amount(sub[key])
 		}
 		lines = append(lines, line)
 	}

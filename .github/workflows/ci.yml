@@ -62,6 +62,12 @@ jobs:
       - uses: ./.github/actions/verify
         with:
           native-platform: ${{ matrix.native-platform }}
+      - name: Verify Windows task discovery and recovery
+        if: matrix.os == 'windows-latest' && matrix.go == '1.27.x'
+        shell: bash
+        env:
+          FEISHU_BOT_TASK_TEST: '1'
+        run: go test -race -count=1 -timeout 90s -v ./internal/cli -run '^TestWindowsTaskRegistration$'
       - name: Build and run the production binary without CGO
         shell: bash
         env:

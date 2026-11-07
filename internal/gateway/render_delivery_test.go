@@ -298,7 +298,7 @@ func TestFailedFileNoticeKeepsWorkingOutputRetryControls(t *testing.T) {
 	value := testQuickValue(t, f.g, last.card, "retry")
 	p, ok := f.g.readQuick(stringArg(value, "quick_control"))
 	action := core.CardAction{ChatID: f.room().ChatID, MessageID: last.id, UserID: "owner", Value: value}
-	if !ok || p.Output != id || !f.g.quickBound(action, p) {
+	if !ok || p.Output != id || !f.g.quickBound(context.Background(), action, p) {
 		t.Fatal("visible retry control lost output binding")
 	}
 	f.tr.mu.Lock()

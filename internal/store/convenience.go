@@ -110,16 +110,20 @@ func (s *Store) RenameSession(room, session, name string) error {
 // ResolveSession never searches another room. Exact IDs and names precede an
 // unambiguous ID prefix; SQL wildcards are not treated as prefix characters.
 func (s *Store) ResolveSession(room, query string) (string, error) {
+	return s.ResolveSessionContext(context.Background(), room, query)
+}
+
+func (s *Store) ResolveSessionContext(ctx context.Context, room, query string) (string, error) {
 	query = strings.TrimSpace(query)
 	var id string
-	err := s.DB.QueryRow("SELECT id FROM sessions WHERE room=? AND id=?", room, query).Scan(&id)
+	err := s.DB.QueryRowContext(ctx, "SELECT id FROM sessions WHERE room=? AND id=?", room, query).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	err = s.DB.QueryRow(`SELECT s.id FROM sessions s JOIN session_preferences p ON p.session=s.id AND p.room=s.room WHERE s.room=? AND p.name_key=? AND p.name_key!=''`, room, strings.ToLower(query)).Scan(&id)
+	err = s.DB.QueryRowContext(ctx, `SELECT s.id FROM sessions s JOIN session_preferences p ON p.session=s.id AND p.room=s.room WHERE s.room=? AND p.name_key=? AND p.name_key!=''`, room, strings.ToLower(query)).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
@@ -129,7 +133,7 @@ func (s *Store) ResolveSession(room, query string) (string, error) {
 	if len(query) < 6 || len(query) > 36 || strings.IndexFunc(query, func(r rune) bool { return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r == '-') }) >= 0 {
 		return "", errors.New("本聊天中没有此名称或会话 ID")
 	}
-	rows, err := s.DB.Query("SELECT id FROM sessions WHERE room=? AND substr(id,1,?)=? ORDER BY id LIMIT 2", room, len(query), query)
+	rows, err := s.DB.QueryContext(ctx, "SELECT id FROM sessions WHERE room=? AND substr(id,1,?)=? ORDER BY id LIMIT 2", room, len(query), query)
 	if err != nil {
 		return "", err
 	}

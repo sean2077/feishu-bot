@@ -2,9 +2,49 @@ package gateway
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 )
+
+func TestRejectedProcessingKeepsTheNewerReceiptGoal(t *testing.T) {
+	for _, next := range []string{"done", "clear"} {
+		t.Run(next, func(t *testing.T) {
+			f := newFixture(t, nil)
+			r := f.room()
+			s, _ := f.s.Session(r.Key)
+			if _, err := f.s.DB.Exec("INSERT INTO receipts(id,room,session,desired,at,sender) VALUES('racing',?,?,'processing',?,'member')", r.Key, s.ID, time.Now().UnixMilli()); err != nil {
+				t.Fatal(err)
+			}
+			var steps []string
+			f.tr.receiptHook = func(_ context.Context, _, state, prior string) error {
+				steps = append(steps, state+"<"+prior)
+				if state == "processing" {
+					// The final delivery/cancellation wins while the OnIt request
+					// is still in flight, then OnIt is definitely rejected.
+					_, err := f.s.DB.Exec("UPDATE receipts SET desired=?,at=? WHERE id='racing'", next, time.Now().UnixMilli())
+					if err != nil {
+						t.Error(err)
+					}
+					return fixtureDeliveryFailure{}
+				}
+				return nil
+			}
+			f.g.flushReceipt("racing")
+			var desired, applied string
+			if err := f.s.DB.QueryRow("SELECT desired,applied FROM receipts WHERE id='racing'").Scan(&desired, &applied); err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"processing<"}
+			if next == "done" {
+				want = append(want, "done<clear")
+			}
+			if desired != next || applied != next || !reflect.DeepEqual(steps, want) {
+				t.Fatalf("lost newer goal: desired=%s applied=%s steps=%v", desired, applied, steps)
+			}
+		})
+	}
+}
 
 type fixtureDeliveryFailure struct{ retryable, uncertain bool }
 

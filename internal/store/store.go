@@ -107,6 +107,9 @@ func (s *Store) initialize() error {
 		if err := initializeConvenience(tx); err != nil {
 			return err
 		}
+		if err := initializeRuntimeState(tx); err != nil {
+			return err
+		}
 		for _, col := range []struct{ table, name, decl string }{
 			{"receipts", "sender", "TEXT"}, {"session_launch_identity", "config_override", "INTEGER NOT NULL DEFAULT 1"},
 			{"outbox", "card", "TEXT"}, {"outbox", "origins", "TEXT NOT NULL DEFAULT '[]'"}, {"outbox", "file_name", "TEXT"}, {"outbox", "file_path", "TEXT"},
@@ -154,6 +157,9 @@ CREATE INDEX IF NOT EXISTS outbox_delivery_key_state ON outbox(delivery_key,stat
 			return err
 		}
 		if err := initializeSessionCatalog(tx); err != nil {
+			return err
+		}
+		if err := initializeTopicContext(tx); err != nil {
 			return err
 		}
 		_, err := tx.Exec("INSERT OR IGNORE INTO usage_coverage(session,room,started,prior_unknown) SELECT id,room,?,1 FROM sessions", time.Now().UnixMilli())
@@ -255,18 +261,21 @@ func (s *Store) SetCC(id, cc string) error {
 	if cc == "" {
 		return errors.New("native session id cannot be cleared")
 	}
-	result, err := s.DB.Exec("UPDATE sessions SET cc=? WHERE id=? AND (cc IS NULL OR cc='' OR cc=?)", cc, id, cc)
-	if err != nil {
+	return s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		result, err := tx.Exec("UPDATE sessions SET cc=? WHERE id=? AND (cc IS NULL OR cc='' OR cc=?)", cc, id, cc)
+		if err != nil {
+			return err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed != 1 {
+			return ErrIdentityConflict
+		}
+		_, err = tx.Exec("DELETE FROM native_identity_pending WHERE session=?", id)
 		return err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if changed != 1 {
-		return ErrIdentityConflict
-	}
-	return nil
+	})
 }
 
 // ErrIdentityConflict reports that the session row already holds a different
@@ -345,12 +354,7 @@ func (s *Store) Insert(room string, m core.Message, status string) (bool, error)
 	return n > 0, e
 }
 func (s *Store) Seen(room, id string) (bool, error) {
-	var n int
-	e := s.DB.QueryRow("SELECT 1 FROM inbox WHERE room=? AND id=?", room, id).Scan(&n)
-	if e == sql.ErrNoRows {
-		return false, nil
-	}
-	return n == 1, e
+	return s.SeenContext(context.Background(), room, id)
 }
 func (s *Store) Background(room string, now, maxAge int64, count int) ([]core.Message, error) {
 	rows, e := s.DB.Query("SELECT message FROM inbox WHERE room=? AND status='background' AND at>=? ORDER BY at DESC,id DESC LIMIT ?", room, now-maxAge, count)
@@ -471,29 +475,9 @@ func (s *Store) CountPending(room string) (int, error) {
 // room derived from it. Topic keys extend the chat key's JSON array, so they
 // sort in the half-open range [chat key without "]" + ",", ... + "-").
 func (s *Store) CountPendingChat(chatKey string) (int, error) {
-	if !strings.HasSuffix(chatKey, "]") {
-		return s.CountPending(chatKey)
-	}
-	prefix := chatKey[:len(chatKey)-1] + ","
-	upper := chatKey[:len(chatKey)-1] + "-"
-	var n int
-	e := s.DB.QueryRow("SELECT count(*) FROM inbox WHERE (room=? OR (room>=? AND room<?)) AND status IN ('queued','sent','consumed')", chatKey, prefix, upper).Scan(&n)
-	return n, e
+	return s.CountPendingChatContext(context.Background(), chatKey)
 }
 
-// SessionReceivedInput reports whether this room's session has handed an
-// input to the native process (sent, consumed or done). Gateway context caches
-// are not evidence of native delivery. Uncertain inputs are excluded (their
-// outcome is unknown, e.g. a send error before the write or an interrupted
-// turn); callers that only avoid a repeated quote err toward supplying context.
-func (s *Store) SessionReceivedInput(room, session string) (bool, error) {
-	var n int
-	e := s.DB.QueryRow("SELECT 1 FROM inbox WHERE room=? AND session=? AND status IN ('sent','consumed','done') LIMIT 1", room, session).Scan(&n)
-	if e == sql.ErrNoRows {
-		return false, nil
-	}
-	return e == nil, e
-}
 func (s *Store) FinishConsumed(session string) error {
 	_, e := s.DB.Exec("UPDATE inbox SET status='done',payload=NULL WHERE session=? AND status='consumed'", session)
 	return e
@@ -555,8 +539,11 @@ func (s *Store) RememberContext(room string, messages []core.Message) error {
 	})
 }
 func (s *Store) ContextMessage(room, id string) (*core.Message, error) {
+	return s.ContextMessageContext(context.Background(), room, id)
+}
+func (s *Store) ContextMessageContext(ctx context.Context, room, id string) (*core.Message, error) {
 	var raw string
-	e := s.DB.QueryRow("SELECT message FROM context_refs WHERE room=? AND id=? UNION ALL SELECT message FROM inbox WHERE room=? AND id=? LIMIT 1", room, id, room, id).Scan(&raw)
+	e := s.DB.QueryRowContext(ctx, "SELECT message FROM context_refs WHERE room=? AND id=? UNION ALL SELECT message FROM inbox WHERE room=? AND id=? LIMIT 1", room, id, room, id).Scan(&raw)
 	if e == sql.ErrNoRows {
 		return nil, nil
 	}

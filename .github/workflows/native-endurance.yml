@@ -1,0 +1,92 @@
+name: Native endurance observations
+on:
+  workflow_dispatch:
+    inputs:
+      soak_seconds:
+        description: Sustained mock workload duration on each platform
+        type: choice
+        options: ['600', '1800', '3600']
+        default: '1800'
+  schedule:
+    # Sunday 10:00 Singapore time. The schedule takes effect only on main.
+    - cron: '0 2 * * 0'
+  pull_request:
+    paths:
+      - '.github/workflows/native-endurance.yml'
+      - 'cmd/benchmark-native/**'
+permissions:
+  contents: read
+concurrency:
+  group: endurance-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  observe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            native-platform: linux-x64
+          - os: windows-latest
+            native-platform: win32-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      SOAK_SECONDS: ${{ github.event_name == 'pull_request' && '30' || inputs.soak_seconds || '1800' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.x'
+          cache: true
+      - uses: ./.github/actions/verify
+        with:
+          native-platform: ${{ matrix.native-platform }}
+      - name: Observe sustained native work and reclaim/resume
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          seconds = int(os.environ['SOAK_SECONDS'])
+          if seconds not in (30, 600, 1800, 3600):
+              raise SystemExit('unexpected endurance duration')
+          binary = Path('bin') / ('native-endurance.exe' if os.name == 'nt' else 'native-endurance')
+          binary.parent.mkdir(exist_ok=True)
+          subprocess.run(['go', 'build', '-trimpath', '-o', str(binary), './cmd/benchmark-native'], check=True)
+          command = [sys.executable, '.github/scripts/artifact_processes.py', 'run',
+                     '--timeout', str(seconds + 120), '--cleanup-timeout', '35', '--',
+                     str(binary.resolve()), '--samples', '1', '--scenario', 'warm',
+                     '--sessions', '4', '--warm-turns', '1', '--concurrent',
+                     '--soak-seconds', str(seconds), '--turn-interval-ms', '1000',
+                     '--max-turns', '20000', '--sample-ms', '2000', '--idle-ms', '100',
+                     '--reclaim', '--attachments', '--text-bytes', '4096',
+                     '--update-ms', '250', '--transport-ms', '10']
+          with open('native-endurance.json', 'wb') as output:
+              subprocess.run(command, stdout=output, check=True)
+          report = json.loads(Path('native-endurance.json').read_text(encoding='utf-8'))
+          for sample in report['samples']:
+              work = sample['workload']
+              if (sample['status'] != 'passed' or not sample['cleanupConfirmed']
+                      or not sample['reclaimConfirmed'] or not sample['sessionStable']
+                      or work['stopReason'] != 'duration' or work['soakElapsedMs'] < seconds * 1000
+                      or work['peakInFlightTurns'] < 2 or work['completedTurns'] != work['attemptedTurns']):
+                  raise SystemExit('endurance contract failed; inspect retained observations')
+              print(json.dumps({'environment': report['environment'], 'native': report['native'],
+                                'workload': work, 'trendPoints': len(sample['trends']['points']),
+                                'cleanupConfirmed': sample['cleanupConfirmed'],
+                                'sessionStable': sample['sessionStable']}, ensure_ascii=False))
+      - name: Retain measurements without imposing uncalibrated memory thresholds
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-endurance-${{ runner.os }}-${{ runner.arch }}
+          path: native-endurance.json
+          if-no-files-found: warn
+          retention-days: 14

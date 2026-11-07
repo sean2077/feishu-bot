@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,8 +77,15 @@ func TestImageBatchOversizeRejectsAllBeforeNativeHandoff(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(files) != 0 {
-		t.Fatal("rejected batch left staged files", files)
+	for _, file := range files {
+		if strings.Contains(file.Name(), ".part-") {
+			t.Fatal("rejected batch left an unfinished download", files)
+		}
+		// Complete, individually bounded downloads remain reusable. Rejecting
+		// this batch must not delete a cache file another request may use.
+		if data, err := os.ReadFile(filepath.Join(inbound, file.Name())); err != nil || string(data) != "image bytes" {
+			t.Fatalf("rejected batch retained an incomplete attachment: %q %v", data, err)
+		}
 	}
 }
 func TestImageBatchNeverCombinesDifferentAuthors(t *testing.T) {

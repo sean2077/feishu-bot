@@ -47,8 +47,8 @@ func imageMembers(pending []core.Delivery, first core.Delivery) ([]core.Delivery
 	}
 	return out, nil
 }
-func queuedTx(tx *sql.Tx, room string) ([]core.Delivery, error) {
-	rows, e := tx.Query("SELECT payload FROM inbox WHERE room=? AND status='queued' AND payload IS NOT NULL ORDER BY rowid", room)
+func queuedTx(ctx context.Context, tx *sql.Tx, room string) ([]core.Delivery, error) {
+	rows, e := tx.QueryContext(ctx, "SELECT payload FROM inbox WHERE room=? AND status='queued' AND payload IS NOT NULL ORDER BY rowid", room)
 	if e != nil {
 		return nil, e
 	}
@@ -67,17 +67,17 @@ func queuedTx(tx *sql.Tx, room string) ([]core.Delivery, error) {
 	}
 	return ds, rows.Err()
 }
-func saveQueuedTx(tx *sql.Tx, d core.Delivery) error {
-	_, e := tx.Exec("UPDATE inbox SET status='queued',uuid=?,session=?,payload=? WHERE room=? AND id=?", d.UUID, d.SessionID, jsonText(d), d.RoomKey, d.Message.ID)
+func saveQueuedTx(ctx context.Context, tx *sql.Tx, d core.Delivery) error {
+	_, e := tx.ExecContext(ctx, "UPDATE inbox SET status='queued',uuid=?,session=?,payload=? WHERE room=? AND id=?", d.UUID, d.SessionID, jsonText(d), d.RoomKey, d.Message.ID)
 	return e
 }
-func sealImagesTx(tx *sql.Tx, ds []core.Delivery) error {
+func sealImagesTx(ctx context.Context, tx *sql.Tx, ds []core.Delivery) error {
 	for _, d := range ds {
 		if d.ImageBatch != nil && !d.ImageBatch.Closed {
 			b := *d.ImageBatch
 			b.Closed = true
 			d.ImageBatch = &b
-			if e := saveQueuedTx(tx, d); e != nil {
+			if e := saveQueuedTx(ctx, tx, d); e != nil {
 				return e
 			}
 		}
@@ -86,22 +86,42 @@ func sealImagesTx(tx *sql.Tx, ds []core.Delivery) error {
 }
 func (g *Gateway) sealImages(room string) error {
 	return g.store.Transaction(context.Background(), func(tx *sql.Tx) error {
-		ds, e := queuedTx(tx, room)
+		ds, e := queuedTx(context.Background(), tx, room)
 		if e != nil {
 			return e
 		}
-		return sealImagesTx(tx, ds)
+		return sealImagesTx(context.Background(), tx, ds)
 	})
 }
-func (g *Gateway) queueInput(d core.Delivery, now int64) error {
-	return g.store.Transaction(context.Background(), func(tx *sql.Tx) error {
-		pending, e := queuedTx(tx, d.RoomKey)
+
+var errInboxFull = errors.New("chat pending input limit reached")
+
+func (g *Gateway) queueInput(ctx context.Context, d core.Delivery, now int64) error {
+	r, ok := RoomFromKey(g.config, d.RoomKey)
+	if !ok {
+		return errors.New("input room is no longer authorized")
+	}
+	return g.store.Transaction(ctx, func(tx *sql.Tx) error {
+		// The count and insert share a transaction, not just a per-topic lock:
+		// message and card lanes may admit different topics concurrently.
+		pendingCount, e := store.CountPendingChatTx(ctx, tx, r.WorkspaceKey())
+		if e != nil {
+			return e
+		}
+		var alreadyPending int
+		if e = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM inbox WHERE room=? AND id=? AND status IN ('queued','sent','consumed'))", d.RoomKey, d.Message.ID).Scan(&alreadyPending); e != nil {
+			return e
+		}
+		if pendingCount-alreadyPending >= g.config.Limits.InboxPerRoom {
+			return errInboxFull
+		}
+		pending, e := queuedTx(ctx, tx, d.RoomKey)
 		if e != nil {
 			return e
 		}
 		l := g.config.Limits
 		if l.ImageBatchMS == 0 || d.Command != nil || d.SupplementTo != "" || !imageEligible(d.Message) {
-			if e = sealImagesTx(tx, pending); e != nil {
+			if e = sealImagesTx(ctx, tx, pending); e != nil {
 				return e
 			}
 		} else {
@@ -130,7 +150,7 @@ func (g *Gateway) queueInput(d core.Delivery, now int64) error {
 						for _, m := range members {
 							copy := b
 							m.ImageBatch = &copy
-							if e = saveQueuedTx(tx, m); e != nil {
+							if e = saveQueuedTx(ctx, tx, m); e != nil {
 								return e
 							}
 						}
@@ -139,13 +159,13 @@ func (g *Gateway) queueInput(d core.Delivery, now int64) error {
 				}
 			}
 			if !merged {
-				if e = sealImagesTx(tx, pending); e != nil {
+				if e = sealImagesTx(ctx, tx, pending); e != nil {
 					return e
 				}
 				d.ImageBatch = &core.ImageBatch{ID: core.NewID(), Deadline: now + l.ImageBatchMS, Closed: len(d.Message.Resources) >= l.ImageBatchMaxImages, MaxImages: l.ImageBatchMaxImages, MaxBytes: l.ImageBatchBytes}
 			}
 		}
-		inserted, e := tx.Exec("INSERT OR IGNORE INTO inbox(room,id,message,status,at) VALUES(?,?,?,'queued',?)", d.RoomKey, d.Message.ID, jsonText(d.Message), d.Message.Time)
+		inserted, e := tx.ExecContext(ctx, "INSERT OR IGNORE INTO inbox(room,id,message,status,at) VALUES(?,?,?,'queued',?)", d.RoomKey, d.Message.ID, jsonText(d.Message), d.Message.Time)
 		if e != nil {
 			return e
 		}
@@ -158,14 +178,14 @@ func (g *Gateway) queueInput(d core.Delivery, now int64) error {
 				return e
 			}
 		}
-		if e = saveQueuedTx(tx, d); e != nil {
+		if e = saveQueuedTx(ctx, tx, d); e != nil {
 			return e
 		}
 		for _, m := range d.Background {
-			if _, e = tx.Exec("UPDATE inbox SET status='context' WHERE room=? AND id=? AND status='background'", d.RoomKey, m.ID); e != nil {
+			if _, e = tx.ExecContext(ctx, "UPDATE inbox SET status='context' WHERE room=? AND id=? AND status='background'", d.RoomKey, m.ID); e != nil {
 				return e
 			}
 		}
-		return nil
+		return ctx.Err()
 	})
 }

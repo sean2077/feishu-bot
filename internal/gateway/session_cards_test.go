@@ -104,17 +104,17 @@ func TestQuickRetryRevisionChangesAfterFailedAttempt(t *testing.T) {
 	}
 	a := core.CardAction{ChatID: r.ChatID, UserID: "owner", MessageID: "output-card", Value: testQuickValue(t, f.g, first, "retry")}
 	p, _ := f.g.readQuick(stringArg(a.Value, "quick_control"))
-	if ok, err := f.g.claimQuick(a, p); err != nil || !ok {
+	if ok, err := f.g.claimQuick(context.Background(), a, p); err != nil || !ok {
 		t.Fatal("first explicit attempt not claimable", err)
 	}
-	if ok, err := f.g.claimQuick(a, p); err != nil || ok {
+	if ok, err := f.g.claimQuick(context.Background(), a, p); err != nil || ok {
 		t.Fatal("duplicate explicit attempt claim accepted", err)
 	}
 	second := replaceQuickControls(first, f.g.quickOutputControls(r, s.ID, "saved-output", 2))
 	if err := f.g.bindQuickControls("output-card", second); err != nil {
 		t.Fatal(err)
 	}
-	if f.g.quickBound(a, p) {
+	if f.g.quickBound(context.Background(), a, p) {
 		t.Fatal("prior retry attempt remained active")
 	}
 	b := a
@@ -123,7 +123,7 @@ func TestQuickRetryRevisionChangesAfterFailedAttempt(t *testing.T) {
 	if next.Output != p.Output || next.Revision == p.Revision {
 		t.Fatal("retry revision changed output identity instead of attempt")
 	}
-	if ok, err := f.g.claimQuick(b, next); err != nil || !ok {
+	if ok, err := f.g.claimQuick(context.Background(), b, next); err != nil || !ok {
 		t.Fatal("new visible retry attempt cannot be claimed", err)
 	}
 }

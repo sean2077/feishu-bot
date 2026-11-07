@@ -360,6 +360,9 @@ func (r *render) flush() {
 // persist commits the final reply and original inputs before waiting for an
 // outstanding preview. The caller invokes it synchronously in the event reader.
 func (r *render) persist(text string, success bool, who []core.Origin, title string, finished []string) (func(), error) {
+	return r.persistWith(text, success, who, title, finished, nil)
+}
+func (r *render) persistWith(text string, success bool, who []core.Origin, title string, finished []string, beforeCommit func(*sql.Tx) error) (func(), error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -401,6 +404,11 @@ func (r *render) persist(text string, success bool, who []core.Origin, title str
 	}
 	id := ""
 	err := r.g.store.Transaction(context.Background(), func(tx *sql.Tx) error {
+		if beforeCommit != nil {
+			if err := beforeCommit(tx); err != nil {
+				return err
+			}
+		}
 		var e error
 		id, e = r.g.saveOutputWith(tx, r.room, r.session, answer, success, r.messageID, r.replyTo, r.threadID, card, who, name, path, "reply", state, !r.detached)
 		if e != nil {
@@ -413,6 +421,9 @@ func (r *render) persist(text string, success bool, who []core.Origin, title str
 		}
 		for _, uuid := range finished {
 			if _, e = tx.Exec("UPDATE inbox SET status='done',payload=NULL WHERE uuid=? AND room=? AND session=? AND status IN ('sent','consumed')", uuid, r.room.Key, r.session); e != nil {
+				return e
+			}
+			if e = r.g.store.ConfirmTopicRoot(tx, r.room.Key, r.session, uuid); e != nil {
 				return e
 			}
 		}

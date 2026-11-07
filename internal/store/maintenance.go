@@ -45,6 +45,8 @@ CREATE INDEX IF NOT EXISTS inbox_background_age ON inbox(at) WHERE status IN ('b
 CREATE INDEX IF NOT EXISTS inbox_terminal_age ON inbox(at) WHERE status IN ('done','cancelled');
 CREATE INDEX IF NOT EXISTS inbox_terminal_body_age ON inbox(at) WHERE status IN ('done','cancelled') AND (message!='{}' OR payload IS NOT NULL);
 CREATE INDEX IF NOT EXISTS inbox_uuid ON inbox(uuid);
+CREATE INDEX IF NOT EXISTS inbox_queued_room ON inbox(room) WHERE status='queued';
+CREATE INDEX IF NOT EXISTS inbox_active_room ON inbox(room,status) WHERE status IN ('queued','sent','consumed');
 CREATE INDEX IF NOT EXISTS inbox_room_pending_age ON inbox(room,at) WHERE status IN ('queued','sent','consumed','uncertain');
 CREATE INDEX IF NOT EXISTS inbox_session_active ON inbox(session) WHERE status IN ('queued','sent','consumed','uncertain');
 CREATE INDEX IF NOT EXISTS outputs_age ON outputs(at);

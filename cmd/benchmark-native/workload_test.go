@@ -60,6 +60,13 @@ func TestSequentialDefaultsAndSoakLimits(t *testing.T) {
 	}
 }
 
+func TestPacedSoakReachesDurationWithoutExhaustingTurnBudget(t *testing.T) {
+	result := executeWorkload(settings{Sessions: 1, SoakSeconds: 1, TurnIntervalMS: 100, MaxTurns: 100}, func(int, string, bool) bool { return true })
+	if result.StopReason != "duration" || result.SoakElapsedMS < 1000 || result.Attempts > 12 || result.Completed != result.Attempts {
+		t.Fatal("paced workload failed its duration/volume contract", result)
+	}
+}
+
 func TestTrendObservationsAreWrittenBeforeSamplerStops(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "gateway.sqlite")
@@ -111,7 +118,7 @@ func TestTrendObservationsAreWrittenBeforeSamplerStops(t *testing.T) {
 		t.Fatal(series)
 	}
 	for _, p := range series.Points {
-		if p.DBBytes == nil || *p.DBBytes <= 0 || p.WALBytes == nil || p.Goroutines < 1 || p.ActiveWorkers != 1 {
+		if p.DBBytes == nil || *p.DBBytes <= 0 || p.WALBytes == nil || p.Goroutines < 1 || p.ActiveWorkers != 1 || p.HeapBytes == 0 || p.HeapInUse == 0 || p.DataBytes == nil || *p.DataBytes <= 0 || p.DataFiles == nil || *p.DataFiles < 1 {
 			t.Fatal("incomplete live resource observation", p)
 		}
 	}

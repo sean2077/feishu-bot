@@ -427,10 +427,10 @@ func TestCardQuickRateIsSharedAcrossTopics(t *testing.T) {
 		c.Groups[0].SessionScope = core.SessionScopeThread
 		c.Limits.MessagesPerMinute = 1
 	})
-	if !f.g.quickRate(f.topic("a"), "member") {
+	if !f.g.quickRate(context.Background(), f.topic("a"), "member") {
 		t.Fatal("first quick action refused")
 	}
-	if f.g.quickRate(f.topic("b"), "member") {
+	if f.g.quickRate(context.Background(), f.topic("b"), "member") {
 		t.Fatal("a new topic reset the author's quick-action budget")
 	}
 }
