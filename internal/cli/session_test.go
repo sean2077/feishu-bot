@@ -228,6 +228,9 @@ func TestLocalSessionStartFailureAfterCommitRestoresSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.DB.Exec("INSERT INTO usage_coverage(session,room,started,prior_unknown) VALUES(?,?,1,0) ON CONFLICT(session) DO UPDATE SET prior_unknown=0", s.ID, r.Key); err != nil {
+		t.Fatal(err)
+	}
 	st.Close()
 	startErr := errors.Join(process.ErrNotStarted, errors.New("exec format error"))
 	err = runSessionWith(context.Background(), c, Options{SessionID: s.ID}, &bytes.Buffer{}, func(_ context.Context, _ core.Config, _ core.Room, _ core.Session, _ core.Workspace, commit func() error) error {
@@ -251,5 +254,9 @@ func TestLocalSessionStartFailureAfterCommitRestoresSelection(t *testing.T) {
 	var state string
 	if err := st.DB.QueryRow("SELECT json_extract(detail,'$.state') FROM audit WHERE event='local_session_finished'").Scan(&state); err != nil || state != "not_started" {
 		t.Fatalf("audit state %q %v", state, err)
+	}
+	var unknown int
+	if err := st.DB.QueryRow("SELECT prior_unknown FROM usage_coverage WHERE session=?", s.ID).Scan(&unknown); err != nil || unknown != 0 {
+		t.Fatalf("a start that never ran left local usage marked unknown: %d %v", unknown, err)
 	}
 }

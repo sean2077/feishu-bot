@@ -54,7 +54,6 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 	g.clearImageTimer(r.Key)
 	s := g.getSlot(r.Key)
 	session := ""
-	unidentified := false
 	if s != nil {
 		s.mu.Lock()
 		if s.stopUnconfirmed && s.worker == nil {
@@ -64,7 +63,6 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 		s.live = false
 		s.cancel()
 		session = s.session.ID
-		unidentified = s.nativeReady && s.session.CCID == ""
 		s.mu.Unlock()
 		s.events.Lock()
 	} else {
@@ -85,11 +83,7 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 	// report the state error afterwards.
 	var stateErr error
 	stopState := func() error {
-		stop := g.store.StopSession
-		if unidentified {
-			stop = g.store.StopUnidentifiedSession
-		}
-		if e := stop(session); e != nil {
+		if e := g.store.StopSession(session); e != nil {
 			return e
 		}
 		return g.cancelPendingOutputs(r, session)

@@ -390,11 +390,6 @@ func TranslateOutput(w core.Workspace, path string) (string, string, error) {
 		if root == "" || !core.Inside(root, path) {
 			continue
 		}
-		if root == w.Inbound && core.Inside(filepath.Join(w.Inbound, "topics"), path) {
-			// A chat room's attachment directory contains the per-topic
-			// directories; those belong to their topics, not to the chat.
-			continue
-		}
 		if root == w.Inbound {
 			actual, err := filepath.EvalSymlinks(root)
 			rel, valid := core.AttachmentRel(w.Root, w.Inbound)

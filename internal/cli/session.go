@@ -168,6 +168,7 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 		return err
 	}
 	committed := false
+	undoStart := func() error { return nil }
 	commit := func() error {
 		// Select the session and mark local usage only after the launch checks
 		// pass, so a start that fails early never switches the chat's session.
@@ -177,14 +178,17 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 		if _, err := st.Resume(r.Key, s.ID); err != nil {
 			return err
 		}
-		// Any later failure prevents the start, so undo the selection here.
+		var priorUnknown sql.NullInt64
+		if err := st.DB.QueryRowContext(ctx, "SELECT prior_unknown FROM usage_coverage WHERE session=?", s.ID).Scan(&priorUnknown); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return rollbackSelection(st, r.Key, previous, s.ID, err)
+		}
+		// Any later failure prevents the start, so undo the selection and the
+		// usage marker here.
 		rollback := func(cause error) error {
-			if previous != "" && previous != s.ID {
-				if _, err := st.Resume(r.Key, previous); err != nil {
-					return errors.Join(cause, err)
-				}
-			}
-			return cause
+			return rollbackSelection(st, r.Key, previous, s.ID, errors.Join(cause, restorePriorUnknown(st, s.ID, priorUnknown)))
+		}
+		undoStart = func() error {
+			return restorePriorUnknown(st, s.ID, priorUnknown)
 		}
 		// Native local turns are not observed by the gateway's SDK result ledger.
 		if _, err := st.DB.ExecContext(ctx, "UPDATE usage_coverage SET prior_unknown=1 WHERE session=?", s.ID); err != nil {
@@ -216,6 +220,7 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 				result = errors.Join(result, err)
 			}
 		}
+		result = errors.Join(result, undoStart())
 		_, auditErr := st.DB.Exec("INSERT INTO audit(at,room,event,detail) VALUES(?,?,'local_session_finished',?)", time.Now().UnixMilli(), r.Key, sessionDetail(core.Args{"session": s.ID, "state": "not_started", "restored": restore}))
 		return errors.Join(result, auditErr)
 	}
@@ -235,3 +240,24 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 }
 
 func sessionDetail(v core.Args) string { data, _ := json.Marshal(v); return string(data) }
+
+// rollbackSelection reopens the chat's previous session after a local start
+// that will not run, and returns cause joined with any rollback failure.
+func rollbackSelection(st *store.Store, room, previous, selected string, cause error) error {
+	if previous != "" && previous != selected {
+		if _, err := st.Resume(room, previous); err != nil {
+			return errors.Join(cause, err)
+		}
+	}
+	return cause
+}
+
+// restorePriorUnknown reverts the local-usage marker set for a start that never
+// ran. A session without a coverage row is left without one.
+func restorePriorUnknown(st *store.Store, session string, previous sql.NullInt64) error {
+	if !previous.Valid {
+		return nil
+	}
+	_, err := st.DB.Exec("UPDATE usage_coverage SET prior_unknown=? WHERE session=?", previous.Int64, session)
+	return err
+}

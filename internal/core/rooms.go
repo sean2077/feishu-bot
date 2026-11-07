@@ -192,18 +192,23 @@ func (r Room) AttachmentDir(root string) string {
 	if r.Thread == "" {
 		return filepath.Join(root, "inbound")
 	}
-	return filepath.Join(root, "inbound", "topics", Hash(r.Key)[:32])
+	// A sibling tree, never nested under the chat's own inbound directory, so
+	// no allowed directory contains another room's attachments.
+	return filepath.Join(root, TopicInbound, Hash(r.Key)[:32])
 }
 
+// TopicInbound is the workspace-root directory holding per-topic attachments.
+const TopicInbound = "topic-inbound"
+
 // AttachmentRel returns the path of inbound relative to root when it is a
-// valid AttachmentDir layout: "inbound" or "inbound/topics/<id>".
+// valid AttachmentDir layout: "inbound" or "topic-inbound/<id>".
 func AttachmentRel(root, inbound string) (string, bool) {
 	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(inbound))
 	if err != nil {
 		return "", false
 	}
 	parts := strings.Split(rel, string(filepath.Separator))
-	if len(parts) == 1 && parts[0] == "inbound" || len(parts) == 3 && parts[0] == "inbound" && parts[1] == "topics" && parts[2] != "" && parts[2] != "." && parts[2] != ".." {
+	if len(parts) == 1 && parts[0] == "inbound" || len(parts) == 2 && parts[0] == TopicInbound && parts[1] != "" && parts[1] != "." && parts[1] != ".." {
 		return rel, true
 	}
 	return "", false

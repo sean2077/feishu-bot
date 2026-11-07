@@ -9,60 +9,6 @@ import (
 	"github.com/sean2077/feishu-bot/internal/core"
 )
 
-func TestUnsavedNativeIdentityStopsInsteadOfContinuing(t *testing.T) {
-	saved := identityPersistRetry
-	identityPersistRetry = []time.Duration{time.Millisecond}
-	t.Cleanup(func() { identityPersistRetry = saved })
-	f := newFixture(t, nil)
-	if _, e := f.s.DB.Exec(`CREATE TRIGGER fixture_cc_failure BEFORE UPDATE OF cc ON sessions BEGIN SELECT RAISE(ABORT,'fixture identity failure'); END`); e != nil {
-		t.Fatal(e)
-	}
-	f.send(f.message("first", "work", "member"))
-	w := f.worker()
-	eventually(t, func() bool { return w.stops.Load() > 0 || f.g.getSlot(f.room().Key) == nil })
-	eventually(t, func() bool {
-		f.tr.mu.Lock()
-		defer f.tr.mu.Unlock()
-		for _, n := range f.tr.notices {
-			if strings.Contains(n, "原生会话 ID 未能保存") {
-				return true
-			}
-		}
-		return false
-	})
-	if s := f.status("first"); s == "done" || s == "sent" {
-		t.Fatalf("input left as handled after identity failure: %s", s)
-	}
-}
-
-func TestSessionWithDeliveredInputButNoIdentityIsNotRelaunched(t *testing.T) {
-	f := newFixture(t, nil)
-	r := f.room()
-	s, e := f.s.Session(r.Key)
-	if e != nil {
-		t.Fatal(e)
-	}
-	m := f.message("earlier", "earlier work", "member")
-	if _, e = f.s.Insert(r.Key, m, "done"); e != nil {
-		t.Fatal(e)
-	}
-	if _, e = f.s.DB.Exec("UPDATE inbox SET session=? WHERE id='earlier'", s.ID); e != nil {
-		t.Fatal(e)
-	}
-	f.send(f.message("next", "continue", "member"))
-	eventually(t, func() bool { return f.status("next") == "cancelled" })
-	if f.starts.Load() != 0 {
-		t.Fatal("an unidentified session with delivered input was relaunched as a new native context")
-	}
-	f.send(f.message("new", "/new", "owner"))
-	eventually(t, func() bool { return f.openSession(r.Key).ID != s.ID })
-	f.send(f.message("after", "fresh", "member"))
-	w := f.worker()
-	if d := f.delivery(w); d.Message.ID != "after" {
-		t.Fatalf("explicit new session did not start: %+v", d)
-	}
-}
-
 func TestStopStateFailureStillReleasesTheSlot(t *testing.T) {
 	f := newFixture(t, nil)
 	f.send(f.message("first", "work", "member"))
@@ -108,61 +54,6 @@ func noticeContains(f *fixture, part string) bool {
 	return false
 }
 
-func TestIdentityFailureAfterFirstInputNeverRelaunchesFreshContext(t *testing.T) {
-	saved := identityPersistRetry
-	identityPersistRetry = []time.Duration{time.Millisecond}
-	t.Cleanup(func() { identityPersistRetry = saved })
-	f := newFixture(t, nil)
-	f.readyMode = "input"
-	if _, e := f.s.DB.Exec(`CREATE TRIGGER fixture_cc_failure BEFORE UPDATE OF cc ON sessions BEGIN SELECT RAISE(ABORT,'fixture identity failure'); END`); e != nil {
-		t.Fatal(e)
-	}
-	f.send(f.message("first", "work", "member"))
-	w := f.worker()
-	f.delivery(w)
-	eventually(t, func() bool { return f.status("first") == "uncertain" })
-	if _, e := f.s.DB.Exec("DROP TRIGGER fixture_cc_failure"); e != nil {
-		t.Fatal(e)
-	}
-	for _, id := range []string{"second", "third"} {
-		f.send(f.message(id, "continue", "member"))
-		eventually(t, func() bool { return f.status(id) == "cancelled" })
-	}
-	if f.starts.Load() != 1 {
-		t.Fatalf("a fresh native context was launched for an unidentified session: starts=%d", f.starts.Load())
-	}
-	if !noticeContains(f, "原生会话 ID 未保存") {
-		t.Fatal("refusal was not explained")
-	}
-}
-
-func TestExitBeforeReadyLeavesNoContextAndAllowsRelaunch(t *testing.T) {
-	f := newFixture(t, nil)
-	f.readyMode = "never"
-	f.send(f.message("first", "work", "member"))
-	w := f.worker()
-	f.delivery(w)
-	yes := true
-	w.emit(core.WorkerEvent{Type: "exit", CleanupConfirmed: &yes})
-	eventually(t, func() bool { return f.status("first") == "cancelled" })
-	eventually(t, func() bool {
-		f.tr.mu.Lock()
-		defer f.tr.mu.Unlock()
-		for _, c := range f.tr.cards {
-			if strings.Contains(jsonText(c.card), "开始对话前退出") {
-				return true
-			}
-		}
-		return false
-	})
-	f.readyMode = ""
-	f.send(f.message("second", "retry", "member"))
-	nw := f.worker()
-	if d := f.delivery(nw); d.Message.ID != "second" {
-		t.Fatalf("relaunch after a never-started process: %+v", d)
-	}
-}
-
 func TestFailedStopKeepsQueuedInputsFromBeingDelivered(t *testing.T) {
 	saved := stopStateRetry
 	stopStateRetry = []time.Duration{time.Millisecond}
@@ -175,7 +66,13 @@ func TestFailedStopKeepsQueuedInputsFromBeingDelivered(t *testing.T) {
 	if _, e := f.s.DB.Exec(`CREATE TRIGGER fixture_stop_failure BEFORE UPDATE OF status ON inbox WHEN NEW.status='cancelled' BEGIN SELECT RAISE(ABORT,'fixture stop failure'); END`); e != nil {
 		t.Fatal(e)
 	}
-	if e := f.g.stopRoom(context.Background(), f.room()); e == nil {
+	stopped := make(chan error, 1)
+	stopStateRetry = []time.Duration{150 * time.Millisecond}
+	go func() { stopped <- f.g.stopRoom(context.Background(), f.room()) }()
+	// A kick queued on the dispatch lock while the stop is still failing.
+	time.Sleep(50 * time.Millisecond)
+	f.g.kick(f.room())
+	if e := <-stopped; e == nil {
 		t.Fatal("state failure was not reported")
 	}
 	f.g.Sweep(context.Background(), time.Now().UnixMilli())
@@ -200,5 +97,84 @@ func TestFailedStopKeepsQueuedInputsFromBeingDelivered(t *testing.T) {
 	nw := f.worker()
 	if d := f.delivery(nw); d.Message.ID != "fresh" {
 		t.Fatalf("room stayed blocked after a successful stop: %+v", d)
+	}
+}
+
+func TestUnsavedIdentityIsKeptInWorkspaceAndAdoptedOnRelaunch(t *testing.T) {
+	saved := identityPersistRetry
+	identityPersistRetry = []time.Duration{time.Millisecond}
+	t.Cleanup(func() { identityPersistRetry = saved })
+	f := newFixture(t, nil)
+	f.readyMode = "input"
+	if _, e := f.s.DB.Exec(`CREATE TRIGGER fixture_cc_failure BEFORE UPDATE OF cc ON sessions BEGIN SELECT RAISE(ABORT,'fixture identity failure'); END`); e != nil {
+		t.Fatal(e)
+	}
+	f.send(f.message("first", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	s := f.g.getSlot(f.room().Key)
+	var native string
+	eventually(t, func() bool {
+		var ok bool
+		native, ok = readIdentityMarker(s.workspace.Root, d.SessionID)
+		return ok
+	})
+	f.finish(w, d, "answer")
+	eventually(t, func() bool { return f.status("first") == "done" })
+	if w.stops.Load() != 0 {
+		t.Fatal("a session whose ID was kept in the workspace marker was stopped")
+	}
+	if _, e := f.s.DB.Exec("DROP TRIGGER fixture_cc_failure"); e != nil {
+		t.Fatal(e)
+	}
+	if e := f.g.stopRoom(context.Background(), f.room()); e != nil {
+		t.Fatal(e)
+	}
+	f.send(f.message("second", "continue", "member"))
+	nw := f.worker()
+	if next := f.delivery(nw); next.Message.ID != "second" {
+		t.Fatalf("relaunch: %+v", next)
+	}
+	if got := f.openSession(f.room().Key); got.CCID != native {
+		t.Fatalf("relaunch did not adopt the kept native ID: got %q want %q", got.CCID, native)
+	}
+	if _, ok := readIdentityMarker(s.workspace.Root, d.SessionID); ok {
+		t.Fatal("marker was not removed after adoption")
+	}
+}
+
+func TestUnkeptIdentityStopsTheRoom(t *testing.T) {
+	saved := identityPersistRetry
+	identityPersistRetry = []time.Duration{time.Millisecond}
+	t.Cleanup(func() { identityPersistRetry = saved })
+	f := newFixture(t, nil)
+	r := f.room()
+	session, _ := f.s.Session(r.Key)
+	if _, e := f.s.DB.Exec(`CREATE TRIGGER fixture_cc_failure BEFORE UPDATE OF cc ON sessions BEGIN SELECT RAISE(ABORT,'fixture identity failure'); END`); e != nil {
+		t.Fatal(e)
+	}
+	s := &slot{room: r, session: session}
+	if f.g.keepNativeIdentity(s, core.NewID()) {
+		t.Fatal("an ID with neither a database row nor a workspace marker was reported as kept")
+	}
+	s.workspace.Root = t.TempDir()
+	if !f.g.keepNativeIdentity(s, core.NewID()) {
+		t.Fatal("workspace marker fallback was not used")
+	}
+}
+
+func TestReadyAfterStopStillKeepsTheNativeIdentity(t *testing.T) {
+	f := newFixture(t, nil)
+	f.readyMode = "never"
+	f.send(f.message("first", "work", "member"))
+	w := f.worker()
+	f.delivery(w)
+	if e := f.g.stopRoom(context.Background(), f.room()); e != nil {
+		t.Fatal(e)
+	}
+	native := core.NewID()
+	w.emit(core.WorkerEvent{Type: "ready", CCID: native})
+	if got := f.openSession(f.room().Key); got.CCID != native {
+		t.Fatalf("a native session reported after /stop was lost: %q", got.CCID)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -48,6 +50,12 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 	s.events.Lock()
 	defer s.events.Unlock()
 	if !g.active(s) {
+		if ev.Type == "ready" {
+			// A stop may land between the first input and the native init.
+			// The context still exists, so its ID must be kept even though
+			// this process no longer accepts work.
+			g.keepNativeIdentity(s, ev.CCID)
+		}
 		return
 	}
 	s.mu.Lock()
@@ -60,7 +68,6 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		}
 		s.mu.Lock()
 		old := s.session.CCID
-		s.nativeReady = true
 		s.mu.Unlock()
 		if old != "" && old != ev.CCID {
 			g.task(func() {
@@ -69,22 +76,19 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 			})
 			return
 		}
-		e := g.store.SetCC(s.session.ID, ev.CCID)
-		for attempt := 0; e != nil && old == "" && attempt < len(identityPersistRetry); attempt++ {
-			time.Sleep(identityPersistRetry[attempt])
-			e = g.store.SetCC(s.session.ID, ev.CCID)
-		}
-		if e != nil {
-			g.audit(s.room.Key, "session_identity_persistence_failed", core.Args{"error": e.Error()})
-			if old == "" {
-				// A native context whose ID is not durable cannot be resumed
-				// later; continuing would make the next launch silently start a
-				// different context. Stop instead of accepting more work.
+		if old == "" {
+			if !g.keepNativeIdentity(s, ev.CCID) {
+				// The ID is neither in the database nor in the workspace
+				// marker. Continuing would let the next launch silently start a
+				// different context, so stop instead of accepting more work.
 				g.task(func() {
 					_ = g.stopRoom(g.ctx, s.room)
-					g.notify(s.room, "原生会话 ID 未能保存，已停止本聊天运行以免下次启动静默换成新上下文。请检查服务诊断和磁盘状态；维护者确认后可用 /new 明确开启新会话。", nil)
+					g.notify(s.room, "原生会话 ID 未能保存，已停止本聊天运行以免下次启动静默换成新上下文。请检查服务诊断和磁盘状态。", nil)
 				})
+				return
 			}
+		} else if e := g.store.SetCC(s.session.ID, ev.CCID); e != nil {
+			g.audit(s.room.Key, "session_identity_persistence_failed", core.Args{"error": e.Error()})
 			return
 		}
 		s.mu.Lock()
@@ -415,9 +419,6 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 	s.live = false
 	s.stopUnconfirmed = cleanupFailed
 	s.cancel()
-	// A process that never reported its native session never began the
-	// conversation, so its inputs were not processed and leave no context.
-	neverStarted := !s.nativeReady && s.session.CCID == ""
 	renders := []*render{}
 	for _, r := range s.renders {
 		renders = append(renders, r)
@@ -428,20 +429,13 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 	g.cancelReceipts(s.session.ID)
 	notice := ""
 	err := g.store.Transaction(context.Background(), func(tx *sql.Tx) error {
-		status := "uncertain"
-		if neverStarted {
-			status = "cancelled"
-		}
-		res, e := tx.Exec("UPDATE inbox SET status=? WHERE room=? AND session=? AND status IN ('sent','consumed')", status, s.room.Key, s.session.ID)
+		res, e := tx.Exec("UPDATE inbox SET status='uncertain' WHERE room=? AND session=? AND status IN ('sent','consumed')", s.room.Key, s.session.ID)
 		if e != nil {
 			return e
 		}
 		n, _ := res.RowsAffected()
 		if cleanupFailed || interrupted || approvals > 0 || n > 0 {
 			text := "原生工作进程意外退出。当前审批／追问已取消；未确认的输入与外部操作不会自动重放。请先核实结果。会话记录仍保留，可以继续原会话。"
-			if neverStarted && n > 0 {
-				text = "原生工作进程在开始对话前退出，输入未提交给模型。请检查服务诊断（模型配置、Claude Code 可执行文件）后重新发送。"
-			}
 			if cleanupFailed {
 				text = "原生进程异常退出，但后代清理未确认。本聊天已暂停；不会启动替代进程或重放未确认操作。请维护者核实进程状态。"
 			}
@@ -530,4 +524,75 @@ func (g *Gateway) abandonResult(s *slot, key string, r *render, finished, native
 	g.settleReceipts(s.room.Key, s.session.ID, who, false)
 	g.task(func() { r.cancel("回复保存失败") })
 	g.kickWaiting()
+}
+
+// keepNativeIdentity durably records a newly reported native session ID: in
+// the database, or, if that keeps failing, in a marker file in the room's
+// workspace that the next launch adopts before starting. It reports whether
+// either record exists, i.e. whether the native context stays resumable.
+func (g *Gateway) keepNativeIdentity(s *slot, ccid string) bool {
+	if !nativeIDPattern.MatchString(ccid) {
+		return false
+	}
+	s.mu.Lock()
+	old, session, root := s.session.CCID, s.session.ID, s.workspace.Root
+	s.mu.Unlock()
+	if old != "" {
+		return old == ccid
+	}
+	e := g.store.SetCC(session, ccid)
+	for attempt := 0; e != nil && attempt < len(identityPersistRetry); attempt++ {
+		time.Sleep(identityPersistRetry[attempt])
+		e = g.store.SetCC(session, ccid)
+	}
+	if e == nil {
+		removeIdentityMarker(root, session)
+		return true
+	}
+	g.audit(s.room.Key, "session_identity_persistence_failed", core.Args{"session": session, "error": e.Error()})
+	if root != "" && writeIdentityMarker(root, session, ccid) == nil {
+		g.audit(s.room.Key, "session_identity_marked", core.Args{"session": session})
+		return true
+	}
+	return false
+}
+
+func identityMarkerPath(root, session string) string {
+	return filepath.Join(root, "native-session-"+core.Hash(session)[:24])
+}
+
+// writeIdentityMarker atomically records session→native ID beside the
+// workspace, outside the database whose write just failed.
+func writeIdentityMarker(root, session, ccid string) error {
+	path := identityMarkerPath(root, session)
+	tmp := path + ".tmp-" + core.NewID()[:8]
+	if err := os.WriteFile(tmp, []byte(session+"\n"+ccid+"\n"), 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func readIdentityMarker(root, session string) (string, bool) {
+	if root == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(identityMarkerPath(root, session))
+	if err != nil || len(data) > 512 {
+		return "", false
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 || strings.TrimSpace(lines[0]) != session || !nativeIDPattern.MatchString(strings.TrimSpace(lines[1])) {
+		return "", false
+	}
+	return strings.TrimSpace(lines[1]), true
+}
+
+func removeIdentityMarker(root, session string) {
+	if root != "" {
+		_ = os.Remove(identityMarkerPath(root, session))
+	}
 }

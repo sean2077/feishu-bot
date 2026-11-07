@@ -161,14 +161,14 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			if err != nil {
 				return denyHook("Unable to verify conversation file scope"), nil
 			}
-			attachment := w.workspace.Inbound != "" && core.Inside(scope.inbound, physical) && !core.Inside(filepath.Join(scope.inbound, "topics"), physical)
+			attachment := w.workspace.Inbound != "" && core.Inside(scope.inbound, physical)
 			rooms := scope.rooms
 			otherAttachment := false
 			if core.Inside(rooms, physical) {
 				relative, err := filepath.Rel(rooms, physical)
 				if err == nil {
 					parts := strings.Split(relative, string(filepath.Separator))
-					otherAttachment = len(parts) >= 2 && strings.EqualFold(parts[1], "inbound") && !attachment
+					otherAttachment = len(parts) >= 2 && (strings.EqualFold(parts[1], "inbound") || strings.EqualFold(parts[1], core.TopicInbound)) && !attachment
 				}
 			}
 			if otherAttachment || w.workspace.NativeConfig != "inherit" && !core.Inside(scope.work, physical) && !core.Inside(scope.home, physical) && !attachment || attachment && name != "Read" && name != "Grep" && name != "Glob" {

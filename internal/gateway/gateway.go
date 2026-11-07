@@ -33,24 +33,21 @@ type slot struct {
 	ctx                                 context.Context
 	cancel                              context.CancelFunc
 	live, busy, pinned, stopUnconfirmed bool
-	// nativeReady records that this process reported its native session,
-	// i.e. a native context exists even if its ID could not be saved.
-	nativeReady    bool
-	background     int
-	lastActivity   int64
-	workspace      core.Workspace
-	deliveries     map[string]core.Delivery
-	order          []string
-	inputGroups    map[string][]string
-	accepted       map[string]bool
-	anchor         string
-	renders        map[string]*render
-	replyAnchors   map[string]core.Delivery
-	replyOrder     []string
-	compacting     string
-	requests       map[string]bool
-	activeRequests int
-	titleSync      *sessionTitleSync
+	background                          int
+	lastActivity                        int64
+	workspace                           core.Workspace
+	deliveries                          map[string]core.Delivery
+	order                               []string
+	inputGroups                         map[string][]string
+	accepted                            map[string]bool
+	anchor                              string
+	renders                             map[string]*render
+	replyAnchors                        map[string]core.Delivery
+	replyOrder                          []string
+	compacting                          string
+	requests                            map[string]bool
+	activeRequests                      int
+	titleSync                           *sessionTitleSync
 }
 type actionExecution struct {
 	room        string
@@ -447,7 +444,7 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	}
 	g.acceptReceipt(room, session.ID, m)
 	if g.stopIsBlocked(room.Key) {
-		g.notify(room, "本聊天上次停止未能完成（状态保存失败），输入已保存但暂不交付。请维护者检查服务诊断后重新发送 /stop。", &m)
+		g.notify(room, "本聊天上次停止未能完成（状态保存失败），暂不交付新输入。维护者重新发送 /stop 成功后，暂存的输入会随停止一并取消，届时请重新发送。", &m)
 		return nil
 	}
 	g.kick(room)
@@ -455,25 +452,6 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		g.notify(room, "已接收 /compact，将在当前工作轮次结束后整理上下文；期间仍可处理审批。", &m)
 	}
 	return nil
-}
-
-// refuseUnidentifiedSession releases a reserved slot for a session whose
-// native ID was never saved, cancels its pending inputs and explains why.
-func (g *Gateway) refuseUnidentifiedSession(s *slot, r core.Room, m core.Message) {
-	s.mu.Lock()
-	s.live = false
-	s.mu.Unlock()
-	s.cancel()
-	g.removeSlot(s)
-	pending, _ := g.store.Pending(r.Key)
-	if e := g.store.StopUnidentifiedSession(s.session.ID); e != nil {
-		g.audit(r.Key, "input_state_unconfirmed", core.Args{"session": s.session.ID})
-	}
-	for _, d := range pending {
-		g.settleReceipts(r.Key, d.SessionID, origin(d.Message), false)
-	}
-	g.audit(r.Key, "session_identity_missing", core.Args{"session": s.session.ID})
-	g.notify(r, "当前会话已有交给原生的输入，但原生会话 ID 未保存，不能确定恢复哪段上下文，因此未启动、输入未提交。维护者可用 /new 明确开启新会话，或用 /resume 选择已有会话。", &m)
 }
 
 // pendingInChat counts pending inputs for the chat that owns r. Topic rooms
@@ -728,7 +706,9 @@ func (g *Gateway) reserve(r core.Room) (*slot, error) {
 	return s, nil
 }
 func (g *Gateway) dispatch(r core.Room) error {
-	if g.isClosing() {
+	if g.isClosing() || g.stopIsBlocked(r.Key) {
+		// A kick may have been waiting on the dispatch lock while a stop
+		// failed; the block must hold for it too.
 		return nil
 	}
 	_, profileErr := g.prepareProfile(r)
@@ -790,19 +770,6 @@ func (g *Gateway) dispatch(r core.Room) error {
 		return nil
 	}
 	if worker == nil {
-		if s.session.CCID == "" {
-			// Inputs already handed to a native process prove a native context
-			// exists. Without its durable ID, launching would silently start a
-			// different one; require an explicit new-session operation instead.
-			handed, err := g.store.SessionHandedInput(r.Key, s.session.ID)
-			if err != nil {
-				return err
-			}
-			if handed {
-				g.refuseUnidentifiedSession(s, r, pending[0].Message)
-				return nil
-			}
-		}
 		p, _ := g.config.Project(r.ProjectID)
 		w, err := workspace.PrepareContext(s.ctx, g.config, r, s.session, p)
 		if err == nil {
@@ -821,6 +788,26 @@ func (g *Gateway) dispatch(r core.Room) error {
 				g.removeSlot(s)
 			}
 			return err
+		}
+		if s.session.CCID == "" {
+			// An earlier process may have reported its native session while
+			// the database rejected the ID; adopt the workspace marker so this
+			// launch resumes that context instead of starting another.
+			if ccid, ok := readIdentityMarker(w.Root, s.session.ID); ok {
+				if err = g.store.SetCC(s.session.ID, ccid); err != nil {
+					s.mu.Lock()
+					s.live = false
+					s.mu.Unlock()
+					s.cancel()
+					g.removeSlot(s)
+					return err
+				}
+				s.mu.Lock()
+				s.session.CCID = ccid
+				s.mu.Unlock()
+				removeIdentityMarker(w.Root, s.session.ID)
+				g.audit(r.Key, "session_identity_recovered", core.Args{"session": s.session.ID})
+			}
 		}
 		s.mu.Lock()
 		s.workspace = w
