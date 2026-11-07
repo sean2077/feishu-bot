@@ -4,27 +4,46 @@
 
 ## 当前文档
 
+按读者路径分组；每个事实只有一个归属页，其他页面链接过去。
+
+### 使用与部署
+
 | 文档 | 内容 | 状态 |
 |---|---|---|
-| [README](../README.md) | 安装、配置、命令和使用边界 | 当前 |
-| [架构](architecture.md) | Go 服务与 Claude Code 的模块边界、会话和并发模型 | 当前契约 |
-| [对话行为](conversation-contract.md) | 授权、会话、输入、审批、compact 和交付行为 | 当前契约 |
-| [部署与配置](deployment.md) | 飞书应用、配置、daemon、升级和恢复 | 当前 |
-| [首次连接](first-connection.md) | 首次接入检查 | 当前 |
-| [使用场景](usage.md) | 使用场景、追问卡片、状态和用量 | 当前 |
-| [原始消息](raw-messages.md) | 入站消息格式支持边界 | 当前 |
-| [图片批次](image-batches.md) | 图片合批配置和恢复规则 | 当前 |
-| [补充语义](supplements.md) | `/btw`、`/ps` 的补充语义和竞态 | 当前 |
-| [固定操作](project-actions.md) | 固定操作和示例执行器 | 当前 |
-| [运行诊断](runtime-diagnostics.md) | 运行诊断 | 当前 |
-| [运行基线](runtime-baseline.md) | 性能与内存比较口径 | 当前 |
-| [验证与验收](validation.md) | 测试、平台 CI 和真实验收边界 | 当前 |
-| [版本发布](releasing.md) | tag 触发、版本与产物、发布验证和失败重跑 | 当前 |
-| [公开发布检查](publication.md) | 公开发布前检查 | 当前 |
-| [Go 迁移](go-migration.md) | TypeScript 到 Go 的迁移、部署调整和回滚 | 当前迁移说明 |
+| [README](../README.md) | 入口与快速开始：安装、首次运行、命令一览和文档路由 | 当前 |
+| [部署与配置](deployment.md) | 获取程序、配置与凭据、飞书应用、daemon、升级与回滚、容量参数、本地终端交接 | 当前 |
+| [首次连接](first-connection.md) | 首次接入的检查顺序与验收 | 当前 |
+| [使用场景](usage.md) | 按场景的配置与操作：状态、追问卡片、模型配置、文件取回和用量 | 当前 |
+| [固定操作](project-actions.md) | 固定操作与示例执行器 | 当前 |
+| [Go 迁移](go-migration.md) | `v0.2.0` 及更早的 TypeScript 部署升级到 Go 服务（一次性）：配置改写、部署调整和回滚 | 当前迁移说明 |
+
+### 行为契约
+
+| 文档 | 内容 | 状态 |
+|---|---|---|
+| [对话行为](conversation-contract.md) | 授权、会话与恢复、停止、输入、compact、回执、回复卡与交付、用量和升级兼容 | 当前契约 |
+| [架构](architecture.md) | 模块边界、原生进程生命周期、容量与回收、并发与关闭 | 当前契约 |
+| [运行中补充](supplements.md) | `/btw`、`/ps` 的补充语义和竞态 | 当前 |
+| [连续图片输入](image-batches.md) | 图片合批配置和恢复规则 | 当前 |
+| [原始消息格式](raw-messages.md) | 入站消息格式支持边界 | 当前 |
 | [术语](terminology.md) | 项目术语的唯一定义位置 | 当前 |
-| [权限与信任范围](../SECURITY.md) | 权限、信任范围和凭据 | 当前 |
-| [开发与贡献](../CONTRIBUTING.md) | 开发、回归、提交和发布 | 当前 |
+| [权限与信任范围](../SECURITY.md) | 权限、触发范围、信任边界和凭据 | 当前 |
+
+### 运维与诊断
+
+| 文档 | 内容 | 状态 |
+|---|---|---|
+| [运行诊断](runtime-diagnostics.md) | 日志与审计、doctor 报告、飞书连接、原生会话、容量等待与回收、交付和传输预算 | 当前 |
+| [运行基线](runtime-baseline.md) | 性能与内存的测量方法、比较口径和 endurance 观察 | 当前（含历史观察） |
+
+### 开发、验证与发布
+
+| 文档 | 内容 | 状态 |
+|---|---|---|
+| [开发与贡献](../CONTRIBUTING.md) | 开发入口、提交与交付 | 当前 |
+| [验证与验收](validation.md) | 证据类型、Go 检查、平台 CI、原生 fixture 和真实验收边界 | 当前 |
+| [版本发布](releasing.md) | tag 触发、版本与产物、发布验证和失败重跑 | 当前 |
+| [公开发布检查](publication.md) | 可公开内容的范围与发布前检查 | 当前 |
 | [版本记录](../CHANGELOG.md) | 版本记录；`Unreleased` 是尚未打标签的变更 | 权威记录 |
 
 ## 历史与证据
