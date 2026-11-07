@@ -232,3 +232,42 @@ func TestNormalStopSendsNoHeldInputNotice(t *testing.T) {
 		t.Fatal("held-input notice sent for an ordinary stop")
 	}
 }
+
+func TestInputHeldDuringBlockedReStopIsCancelledNotRun(t *testing.T) {
+	saved := stopStateRetry
+	stopStateRetry = []time.Duration{time.Millisecond}
+	t.Cleanup(func() { stopStateRetry = saved })
+	f := newFixture(t, nil)
+	f.send(f.message("busy", "work", "member"))
+	w := f.worker()
+	f.delivery(w)
+	if _, e := f.s.DB.Exec(`CREATE TRIGGER fixture_stop_failure BEFORE UPDATE OF status ON inbox WHEN NEW.status='cancelled' BEGIN SELECT RAISE(ABORT,'fixture'); END`); e != nil {
+		t.Fatal(e)
+	}
+	if e := f.g.stopRoom(context.Background(), f.room()); e == nil {
+		t.Fatal("expected a failed stop")
+	}
+	if _, e := f.s.DB.Exec("DROP TRIGGER fixture_stop_failure"); e != nil {
+		t.Fatal(e)
+	}
+	// Re-stop: the first cancel inside stopRoom succeeds, then an input
+	// arrives while the room is still blocked, before the stop finishes.
+	f.g.mu.Lock()
+	f.g.stopHeld[f.room().Key] = 0
+	f.g.mu.Unlock()
+	session := f.openSession(f.room().Key).ID
+	if e := f.s.StopSession(session); e != nil {
+		t.Fatal(e)
+	}
+	f.send(f.message("late", "arrives during re-stop", "member"))
+	if e := f.g.stopRoom(context.Background(), f.room()); e != nil {
+		t.Fatal(e)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if f.status("late") != "cancelled" {
+		t.Fatalf("held input was delivered after being told it was cancelled: %s", f.status("late"))
+	}
+	if !noticeContains(f, "停止期间暂存的输入已一并取消") {
+		t.Fatal("completion notice missing")
+	}
+}

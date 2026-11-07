@@ -173,16 +173,31 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 		g.blockAfterFailedStop(r.Key)
 		return errors.Join(errStopState, stateErr)
 	}
+	held := 0
 	if session != "" && g.stopIsBlocked(r.Key) {
-		// Inputs held while blocked were cancelled with the session's queue;
-		// clear their processing reactions and say the stop has completed.
+		// Inputs held while blocked may have been queued after the cancel at
+		// the start of this stop. Message counts and queues a held input
+		// under g.mu, so cancelling and unblocking under g.mu here makes
+		// every counted input cancelled and every later one ordinary.
+		g.mu.Lock()
+		e := g.store.StopSession(session)
+		if e == nil {
+			held = g.stopHeld[r.Key]
+			delete(g.stopBlocked, r.Key)
+			delete(g.stopHeld, r.Key)
+		}
+		g.mu.Unlock()
+		if e != nil {
+			g.audit(r.Key, "stop_state_failed", core.Args{"session": session, "error": core.Redact(e.Error(), g.secrets)})
+			return errors.Join(errStopState, e)
+		}
 		g.cancelReceipts(session)
+	} else {
+		g.mu.Lock()
+		delete(g.stopBlocked, r.Key)
+		delete(g.stopHeld, r.Key)
+		g.mu.Unlock()
 	}
-	g.mu.Lock()
-	held := g.stopHeld[r.Key]
-	delete(g.stopBlocked, r.Key)
-	delete(g.stopHeld, r.Key)
-	g.mu.Unlock()
 	if held > 0 {
 		g.notify(r, "本聊天的停止已完成；停止期间暂存的输入已一并取消，如仍需要请重新发送。", nil)
 	}

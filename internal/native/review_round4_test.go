@@ -55,6 +55,9 @@ func TestAmbiguousSearchPathsAreDenied(t *testing.T) {
 			{"Grep", args{"path": "~/"}, true},
 			{"Glob", args{"pattern": "~/**/*"}, true},
 			{"Glob", args{"pattern": "../../*/inbound/*"}, true},
+			{"Grep", args{"path": "\ufeff" + filepath.Join(base, "rooms")}, true},
+			{"Grep", args{"path": filepath.Join(base, "rooms") + "\u200b"}, true},
+			{"Glob", args{"pattern": "\u00a0" + filepath.Join(base, "rooms", "*")}, true},
 			{"Grep", args{"path": "src"}, false},
 			{"Grep", args{"path": "~backup"}, false},
 			{"Glob", args{"pattern": "~$report.docx"}, false},
@@ -88,6 +91,11 @@ func TestAmbiguousSearchPathsAreDenied(t *testing.T) {
 					input args
 					deny  bool
 				}{"Grep", args{"path": "/c"}, true},
+				struct {
+					tool  string
+					input args
+					deny  bool
+				}{"Glob", args{"pattern": "/d/*"}, true},
 				struct {
 					tool  string
 					input args

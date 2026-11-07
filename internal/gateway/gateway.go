@@ -440,12 +440,22 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		}
 	}
 	d := core.Delivery{UUID: core.NewID(), RoomKey: room.Key, SessionID: session.ID, Message: m, Background: bg, Command: command, SupplementTo: supplementTo}
+	// Decide "held" and queue while g.mu is held, so a stop finishing
+	// concurrently either sees this input in its final cancel (and counted)
+	// or unblocks first, making this an ordinary delivered input.
+	held := false
+	g.mu.Lock()
+	if g.stopBlocked[room.Key] {
+		g.stopHeld[room.Key]++
+		held = true
+	}
 	err = g.queueInput(d, now)
+	g.mu.Unlock()
 	if err != nil {
 		return err
 	}
 	g.acceptReceipt(room, session.ID, m)
-	if g.holdForBlockedStop(room.Key) {
+	if held {
 		g.notify(room, stopBlockedNotice, &m)
 		return nil
 	}
@@ -464,19 +474,6 @@ func (g *Gateway) pendingInChat(r core.Room) (int, error) {
 		return g.store.CountPending(r.Key)
 	}
 	return g.store.CountPendingChat(r.ChatKey)
-}
-
-// holdForBlockedStop reports whether room is blocked by a failed stop and, if
-// so, counts the input as held, in one step so a concurrent successful stop
-// cannot leave a stale count behind.
-func (g *Gateway) holdForBlockedStop(key string) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if !g.stopBlocked[key] {
-		return false
-	}
-	g.stopHeld[key]++
-	return true
 }
 
 // stopStateNotice explains a stop whose process part completed while its

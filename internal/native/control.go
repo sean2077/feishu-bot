@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -181,7 +183,13 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 				// An absolute pattern names its search root directly; a
 				// relative one may climb out of its base with "..".
 				if filepath.IsAbs(pattern) {
-					candidates = append(candidates, globRoot(pattern))
+					root := globRoot(pattern)
+					if runtime.GOOS == "windows" && len(root) == 3 && strings.HasSuffix(root, ":"+string(filepath.Separator)) && !strings.HasPrefix(toolInput["pattern"].(string), root[:2]) {
+						// A translated "/x/*" leaves Claude Code a bare "/x"
+						// base, which it resolves differently; refuse it.
+						return denyHook("Use an absolute or plain relative glob pattern"), nil
+					}
+					candidates = append(candidates, root)
 				} else if strings.Contains(pattern, "..") {
 					base := cwd
 					if raw, ok := toolInput["path"].(string); ok && raw != "" {
@@ -423,7 +431,7 @@ func foldCase(path string) string {
 // home expansion and, on Windows, no rooted path without a drive and no
 // drive-relative path.
 func plainSearchPath(path string) bool {
-	if strings.TrimSpace(path) != path || path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
+	if edgeInvisible(path) || path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
 		// Only these forms are home-expanded; names such as "~backup" or
 		// "~$report.docx" are ordinary relative names.
 		return false
@@ -448,4 +456,21 @@ func msysDrivePath(path string) string {
 		return path
 	}
 	return strings.ToUpper(string(letter)) + ":" + path[2:]
+}
+
+// edgeInvisible reports a leading or trailing rune that JavaScript trim() or a
+// Unicode-aware resolver could strip (white space, format characters such as
+// U+FEFF and zero-width spaces), so the path would differ from this check's.
+func edgeInvisible(path string) bool {
+	if path == "" {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(path)
+	last, _ := utf8.DecodeLastRuneInString(path)
+	for _, r := range []rune{first, last} {
+		if unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zs, r) || r == utf8.RuneError {
+			return true
+		}
+	}
+	return false
 }
