@@ -50,6 +50,13 @@ func residentRows(ctx context.Context) ([]residentProcess, int, error) {
 			continue
 		}
 		handle, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, uint32(row.pid))
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			// The descendant exited after the snapshot (busy tools spawn many
+			// short-lived processes); it no longer holds resident memory.
+			// Other failures, such as access denied, leave the sample incomplete.
+			row.bytes = 0
+			continue
+		}
 		if err != nil {
 			continue
 		}
