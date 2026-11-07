@@ -1,6 +1,10 @@
 package core
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"path/filepath"
+	"strings"
+)
 
 // AnyGroupChatID marks the single groups[] entry used as the fallback for group
 // chats without an explicit binding. It is not a real Feishu chat ID.
@@ -179,6 +183,30 @@ func (r Room) WorkspaceKey() string {
 		return r.ChatKey
 	}
 	return r.Key
+}
+
+// AttachmentDir returns the incoming-attachment directory of r below its
+// workspace root. Topic rooms share the chat workspace and native HOME but keep
+// their own attachments, so a topic never discovers another topic's uploads.
+func (r Room) AttachmentDir(root string) string {
+	if r.Thread == "" {
+		return filepath.Join(root, "inbound")
+	}
+	return filepath.Join(root, "inbound", "topics", Hash(r.Key)[:32])
+}
+
+// AttachmentRel returns the path of inbound relative to root when it is a
+// valid AttachmentDir layout: "inbound" or "inbound/topics/<id>".
+func AttachmentRel(root, inbound string) (string, bool) {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(inbound))
+	if err != nil {
+		return "", false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) == 1 && parts[0] == "inbound" || len(parts) == 3 && parts[0] == "inbound" && parts[1] == "topics" && parts[2] != "" && parts[2] != "." && parts[2] != ".." {
+		return rel, true
+	}
+	return "", false
 }
 
 func validThreadRoot(id string) bool {

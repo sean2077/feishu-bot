@@ -193,11 +193,17 @@ func inherited(w core.Workspace) (core.Workspace, error) {
 
 var prepareLocks sync.Map
 
-func lockPrepare(root string) func() {
-	value, _ := prepareLocks.LoadOrStore(root, &sync.Mutex{})
-	mu := value.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+// lockPrepare serializes preparation of one shared room directory. Waiting
+// honors ctx so a cancelled topic does not wait for another topic's seed copy.
+func lockPrepare(ctx context.Context, root string) (func(), error) {
+	value, _ := prepareLocks.LoadOrStore(root, make(chan struct{}, 1))
+	slot := value.(chan struct{})
+	select {
+	case slot <- struct{}{}:
+		return func() { <-slot }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 func Prepare(c core.Config, room core.Room, session core.Session, p core.Project) (core.Workspace, error) {
 	return PrepareContext(context.Background(), c, room, session, p)
@@ -221,7 +227,10 @@ func PrepareContext(ctx context.Context, c core.Config, room core.Room, _ core.S
 	root := filepath.Join(rooms, core.Hash(room.WorkspaceKey())[:32])
 	// Topics of one chat can start concurrently; serialize only preparation so
 	// seed copies and Git initialization run once per shared directory.
-	unlock := lockPrepare(root)
+	unlock, err := lockPrepare(ctx, root)
+	if err != nil {
+		return core.Workspace{}, err
+	}
 	defer unlock()
 	if err = os.MkdirAll(root, 0700); err != nil {
 		return core.Workspace{}, err
@@ -229,7 +238,7 @@ func PrepareContext(ctx context.Context, c core.Config, room core.Room, _ core.S
 	if err = ownDirectory(root, root); err != nil {
 		return core.Workspace{}, err
 	}
-	w := core.Workspace{Root: root, Work: filepath.Join(root, "workspace"), Home: filepath.Join(root, "home"), Inbound: filepath.Join(root, "inbound"), NativeConfig: "isolated", ConfigDirOverride: true}
+	w := core.Workspace{Root: root, Work: filepath.Join(root, "workspace"), Home: filepath.Join(root, "home"), Inbound: room.AttachmentDir(root), NativeConfig: "isolated", ConfigDirOverride: true}
 	if p.CWD != "" {
 		work, err := physicalDirectory(p.CWD)
 		if err != nil {
@@ -383,8 +392,9 @@ func TranslateOutput(w core.Workspace, path string) (string, string, error) {
 		}
 		if root == w.Inbound {
 			actual, err := filepath.EvalSymlinks(root)
-			expected := filepath.Join(w.Root, "inbound")
-			if err != nil || !core.Inside(expected, actual) || !core.Inside(actual, expected) {
+			rel, valid := core.AttachmentRel(w.Root, w.Inbound)
+			expected := filepath.Join(w.Root, rel)
+			if err != nil || !valid || !core.Inside(expected, actual) || !core.Inside(actual, expected) {
 				return "", "", errors.New("conversation attachment directory was redirected")
 			}
 		}

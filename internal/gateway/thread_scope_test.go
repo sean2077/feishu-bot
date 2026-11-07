@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -219,5 +221,150 @@ func TestChatHistoryThreadQueryOmitsTimeRange(t *testing.T) {
 	}
 	if len(f.tr.histories) != 2 || f.tr.histories[0].EndTime != 0 || f.tr.histories[1].EndTime == 0 {
 		t.Fatalf("history queries: %+v", f.tr.histories)
+	}
+}
+
+func TestCardSupplementReachesTopicTurn(t *testing.T) {
+	f := topicFixture(t)
+	f.send(f.message("t1", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	topic := f.topic("t1")
+	card := DisplayCard("fixture", "reply", f.g.quickControls(topic, d.SessionID, d.UUID, "")...)
+	if err := f.g.bindQuickControls("topic-card", card); err != nil {
+		t.Fatal(err)
+	}
+	a := core.CardAction{ChatID: topic.ChatID, UserID: "second", MessageID: "topic-card", Value: testQuickValue(t, f.g, card, "supplement"), FormValue: core.Args{"quick_supplement": "also check the logs"}}
+	reply, err := f.g.Action(context.Background(), a)
+	if err != nil || !strings.Contains(reply, "补充已保存") {
+		t.Fatalf("supplement reply %q %v", reply, err)
+	}
+	extra := f.delivery(w)
+	if extra.SupplementTo != d.UUID || extra.SessionID != d.SessionID || extra.RoomKey != topic.Key || extra.Message.Text != "also check the logs" {
+		t.Fatalf("topic card supplement lost its turn: %+v", extra)
+	}
+	if status := f.status(extra.Message.ID); status == "cancelled" {
+		t.Fatal("topic card supplement was cancelled after being accepted")
+	}
+	if reply, err = f.g.Action(context.Background(), a); err != nil || !strings.Contains(reply, "无需重复提交") {
+		t.Fatalf("duplicate supplement reply %q %v", reply, err)
+	}
+	if _, ok := routeQueued(f.c, topic.Key, extra.Message); !ok {
+		t.Fatal("card supplement was not admitted for its own topic")
+	}
+	f.c.Groups[0].Members = []string{"member"}
+	if _, ok := routeQueued(f.c, topic.Key, extra.Message); ok {
+		t.Fatal("card supplement stayed admitted after its author was removed")
+	}
+}
+
+func TestNewTopicsShareTheChatRateAndInboxBudget(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Groups[0].SessionScope = core.SessionScopeThread
+		c.Limits.MessagesPerMinute = 2
+	})
+	for _, id := range []string{"r1", "r2", "r3"} {
+		f.send(f.message(id, "new question", "member"))
+	}
+	if f.status("r1") == "cancelled" || f.status("r2") == "cancelled" || f.status("r3") != "cancelled" {
+		t.Fatalf("per-author chat rate bypassed by new topics: %s %s %s", f.status("r1"), f.status("r2"), f.status("r3"))
+	}
+	f.send(f.message("r4", "another author", "second"))
+	if f.status("r4") == "cancelled" {
+		t.Fatal("rate limit leaked across authors")
+	}
+
+	g := newFixture(t, func(c *core.Config) {
+		c.Groups[0].SessionScope = core.SessionScopeThread
+		c.Runtime.MaxWorkers = 1
+		c.Limits.InboxPerRoom = 2
+	})
+	g.send(g.message("b1", "first", "member"))
+	w := g.worker()
+	g.delivery(w)
+	g.send(g.message("b2", "second topic", "second"))
+	g.send(g.message("b3", "third topic", "owner"))
+	if g.status("b2") == "cancelled" || g.status("b3") != "cancelled" {
+		t.Fatalf("chat inbox budget bypassed by new topics: %s %s", g.status("b2"), g.status("b3"))
+	}
+	if n, e := g.s.CountPendingChat(g.room().Key); e != nil || n != 2 {
+		t.Fatalf("pending in chat: %d %v", n, e)
+	}
+	other, _ := RoomFor(g.c, "other", "")
+	if n, e := g.s.CountPendingChat(other.Key); e != nil || n != 0 {
+		t.Fatalf("another chat counted topic inputs: %d %v", n, e)
+	}
+}
+
+func TestTopicRootIsSuppliedUntilTheSessionReceivesInput(t *testing.T) {
+	f := topicFixture(t)
+	root := f.message("h1", "release plan discussion", "member")
+	root.Mentioned = false
+	f.tr.messages["h1"] = root
+	failed := make(chan struct{}, 1)
+	f.tr.downloadHook = func(context.Context, string, core.Resource, string, int64) error {
+		failed <- struct{}{}
+		return errors.New("fixture download failure")
+	}
+	first := inTopic(f.message("j1", "see attachment", "second"), "h1", "omt_h")
+	first.Resources = []core.Resource{{Key: "file_key", Kind: "file", Name: "a.txt"}}
+	f.send(first)
+	w := f.worker()
+	<-failed
+	eventually(t, func() bool { s := f.status("j1"); return s != "queued" && s != "" })
+	if s := f.status("j1"); s == "sent" || s == "consumed" || s == "done" {
+		t.Fatalf("failed preparation reached native input: %s", s)
+	}
+	if m, _ := f.s.ContextMessage(f.topic("h1").Key, "h1"); m == nil {
+		t.Fatal("fixture precondition: the root should be cached before the failure")
+	}
+	f.tr.mu.Lock()
+	f.tr.downloadHook = nil
+	f.tr.mu.Unlock()
+	f.send(inTopic(f.message("j2", "retry without attachment", "second"), "h1", "omt_h"))
+	d := f.delivery(w)
+	if d.Message.ID != "j2" || d.Quote == nil || d.Quote.ID != "h1" {
+		t.Fatalf("root was skipped although the session never received it: %+v", d)
+	}
+	f.finish(w, d, "ok")
+	f.send(inTopic(f.message("n1", "/new", "owner"), "h1", "omt_h"))
+	old := d.SessionID
+	eventually(t, func() bool { return f.openSession(f.topic("h1").Key).ID != old })
+	f.send(inTopic(f.message("j3", "fresh start", "second"), "h1", "omt_h"))
+	var next core.Delivery
+	select {
+	case next = <-w.sent:
+	case nw := <-f.started:
+		next = f.delivery(nw)
+	case <-time.After(3 * time.Second):
+		t.Fatal("input after /new not delivered")
+	}
+	if next.Message.ID != "j3" || next.Quote == nil || next.Quote.ID != "h1" || next.SessionID == old {
+		t.Fatalf("new session in the topic did not receive the root: %+v", next)
+	}
+}
+
+func TestSweepRetriesOutputsOfRoomsNotHeldInMemory(t *testing.T) {
+	f := topicFixture(t)
+	topic := f.topic("never-seen")
+	s, e := f.s.Session(topic.Key)
+	if e != nil {
+		t.Fatal(e)
+	}
+	id, e := f.g.saveOutput(f.s.DB, topic, s.ID, "pending answer", false, "", "", "", DisplayCard("t", "pending answer"), nil, "", "", "recovery", "pending")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if keys, e := f.s.PendingOutputRooms(context.Background()); e != nil || len(keys) != 1 || keys[0] != topic.Key {
+		t.Fatalf("pending output rooms: %v %v", keys, e)
+	}
+	f.g.Sweep(context.Background(), time.Now().UnixMilli())
+	eventually(t, func() bool {
+		var state string
+		_ = f.s.DB.QueryRow("SELECT state FROM outbox WHERE id=?", id).Scan(&state)
+		return state == "done"
+	})
+	if f.tr.cardCount() == 0 || f.tr.cardLast().room.Key != topic.Key {
+		t.Fatal("pending topic output was not delivered to its topic")
 	}
 }

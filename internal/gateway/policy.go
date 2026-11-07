@@ -32,6 +32,30 @@ func Route(c core.Config, m core.Message) (core.Room, bool) {
 	r, ok := c.MessageRoom(m)
 	return r, ok && AuthorizedAuthor(r, m.SenderID)
 }
+
+// routeQueued re-authorizes an accepted input for roomKey under the current
+// configuration. Feishu messages re-derive their room from the message itself.
+// Card-composed supplements carry no Feishu topic fields; they stay bound to the
+// room they were validated for, which must still resolve and still admit the
+// author. Session and turn binding are checked separately by the callers.
+func routeQueued(c core.Config, roomKey string, m core.Message) (core.Room, bool) {
+	if m.InteractionMessageID == "" {
+		r, ok := Route(c, m)
+		return r, ok && r.Key == roomKey
+	}
+	if m.SenderIsBot || m.SenderID == "" || m.ID == "" {
+		return core.Room{}, false
+	}
+	r, ok := c.RoomForKey(roomKey)
+	kind := "group"
+	if r.DMUser != "" {
+		kind = "p2p"
+	}
+	if !ok || r.ChatID != m.ChatID || m.ChatType != kind {
+		return core.Room{}, false
+	}
+	return r, AuthorizedAuthor(r, m.SenderID)
+}
 func Triggers(r core.Room, m core.Message) bool {
 	return m.ChatType == "p2p" || m.Mentioned || r.MentionOptional
 }

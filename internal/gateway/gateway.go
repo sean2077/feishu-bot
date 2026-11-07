@@ -76,7 +76,6 @@ type Gateway struct {
 	closing                                                      bool
 	wg                                                           sync.WaitGroup
 	slots                                                        map[string]*slot
-	rooms                                                        map[string]core.Room
 	rates                                                        map[string][]int64
 	waiting                                                      map[string]bool
 	profileWait                                                  map[string]string
@@ -102,7 +101,7 @@ type Gateway struct {
 func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerFactory, log core.Logger) *Gateway {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{config: c, store: st, transport: tr, factory: factory, logger: log, ctx: ctx, cancel: cancel,
-		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rooms: map[string]core.Room{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
+		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
 	if _, err := rand.Read(g.historyKey[:]); err != nil {
 		panic("cannot initialize history cursor authentication")
 	}
@@ -167,7 +166,6 @@ func (g *Gateway) allSlots() []*slot {
 	}
 	return v
 }
-func (g *Gateway) rememberRoom(r core.Room) { g.mu.Lock(); g.rooms[r.Key] = r; g.mu.Unlock() }
 func (g *Gateway) active(s *slot) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -206,9 +204,6 @@ func (g *Gateway) Recover(ctx context.Context) error {
 				return e
 			}
 		}
-		if ok {
-			g.rememberRoom(r)
-		}
 	}
 	if _, err = g.store.DB.Exec("UPDATE receipts SET desired='clear' WHERE desired='processing'"); err != nil {
 		return err
@@ -229,7 +224,6 @@ func (g *Gateway) Recover(ctx context.Context) error {
 	rows.Close()
 	for _, key := range outputRooms {
 		if r, ok := RoomFromKey(g.config, key); ok {
-			g.rememberRoom(r)
 			for _, id := range g.retryable(key) {
 				id := id
 				g.task(func() { _, _ = g.deliverOutput(g.ctx, id, r, false) })
@@ -240,8 +234,8 @@ func (g *Gateway) Recover(ctx context.Context) error {
 	return ctx.Err()
 }
 func (g *Gateway) sanitize(r core.Room, d *core.Delivery) bool {
-	current, ok := Route(g.config, d.Message)
-	if !ok || current.Key != r.Key || !Triggers(current, d.Message) || d.Message.InputIssue != "" {
+	current, ok := routeQueued(g.config, r.Key, d.Message)
+	if !ok || !Triggers(current, d.Message) || d.Message.InputIssue != "" {
 		return false
 	}
 	if d.SupplementTo != "" && d.Command != nil {
@@ -299,7 +293,6 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	if len(m.Resources) > 12 {
 		m.Resources = m.Resources[:12]
 	}
-	g.rememberRoom(room)
 	if !Triggers(room, m) {
 		if g.config.Limits.BackgroundMessages > 0 && m.InputIssue == "" {
 			if _, err = g.store.Insert(room.Key, m, "background"); err != nil {
@@ -318,7 +311,9 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	now := time.Now().UnixMilli()
 	if cmd != "/stop" || !canManage(room, m.SenderID) {
 		g.mu.Lock()
-		key := room.Key + ":" + m.SenderID
+		// Topics split sessions, not the author's message budget: rate per
+		// chat and author, whatever topic each message opens or joins.
+		key := room.WorkspaceKey() + ":" + m.SenderID
 		recent := g.rates[key][:0]
 		for _, at := range g.rates[key] {
 			if at > now-60000 {
@@ -393,7 +388,11 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	if err != nil {
 		return err
 	}
-	if count >= g.config.Limits.InboxPerRoom {
+	total, err := g.pendingInChat(room)
+	if err != nil {
+		return err
+	}
+	if total >= g.config.Limits.InboxPerRoom {
 		_, err = g.store.Insert(room.Key, m, "cancelled")
 		g.notify(room, "本群待交付输入已达上限，请查看 /status 或联系维护者。", &m)
 		return err
@@ -446,6 +445,16 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	return nil
 }
 
+// pendingInChat counts pending inputs for the chat that owns r. Topic rooms
+// of one chat share the chat's inboxPerRoom budget, as a chat room did before
+// topics existed.
+func (g *Gateway) pendingInChat(r core.Room) (int, error) {
+	if r.Thread == "" {
+		return g.store.CountPending(r.Key)
+	}
+	return g.store.CountPendingChat(r.ChatKey)
+}
+
 // topicCommands act on one session. In a thread-scoped group they are
 // accepted only inside the topic that owns that session.
 var topicCommands = []string{"/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/model", "/profile", "/rename", "/artifacts", "/inputs", "/cancel-input", "/discard-output", "/compact", "/btw", "/ps"}
@@ -493,8 +502,8 @@ func (g *Gateway) cancelSupplement(r core.Room, d core.Delivery, reason string, 
 			return nil
 		}
 		changed = true
-		current, ok := Route(g.config, d.Message)
-		if ok && current.Key == r.Key && Triggers(current, d.Message) {
+		current, ok := routeQueued(g.config, r.Key, d.Message)
+		if ok && Triggers(current, d.Message) {
 			id, e = g.saveOutput(tx, r, d.SessionID, text, false, "", messageReply(d.Message), d.Message.ThreadID, DisplayCard("补充已取消", text), origin(d.Message), "", "", "recovery", "")
 		} else {
 			_, e = tx.Exec("UPDATE inbox SET message='{}' WHERE uuid=?", d.UUID)
@@ -590,7 +599,6 @@ func (g *Gateway) kickWaiting() {
 	for _, key := range keys {
 		r, ok := RoomFromKey(g.config, key)
 		if ok {
-			g.rememberRoom(r)
 			g.kick(r)
 		}
 	}
@@ -994,8 +1002,8 @@ func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery, p
 			return context.Canceled
 		}
 		for _, d := range members {
-			current, ok := Route(g.config, d.Message)
-			if !ok || current.Key != r.Key || !Triggers(current, d.Message) || !g.stillQueued(d) || !g.supplementAlive(r, d) {
+			current, ok := routeQueued(g.config, r.Key, d.Message)
+			if !ok || !Triggers(current, d.Message) || !g.stillQueued(d) || !g.supplementAlive(r, d) {
 				return errors.New("input preparation cancelled")
 			}
 		}
@@ -1009,13 +1017,14 @@ func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery, p
 		quote := d.Message.ReplyTo
 		if quote != "" && d.Command == nil && r.Thread != "" && d.Message.ThreadID != "" && quote == r.Thread {
 			// Inside a topic Feishu sets parent_id to the topic root on every
-			// reply. Supply the root once, for example when a session joins a
-			// topic started without the bot; later replies already share it.
-			known, e := g.store.ContextMessage(r.Key, r.Thread)
+			// reply. Supply the root until this session has actually received an
+			// input, e.g. when a session joins a topic started without the bot or
+			// after /new; a cached root alone does not mean the model saw it.
+			received, e := g.store.SessionReceivedInput(r.Key, d.SessionID)
 			if e != nil {
 				return e
 			}
-			if known != nil {
+			if received {
 				quote = ""
 			}
 		}

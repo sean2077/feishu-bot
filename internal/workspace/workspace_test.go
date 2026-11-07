@@ -233,3 +233,60 @@ func TestSeededWorkspaceInitializesGitOnceAndKeepsEdits(t *testing.T) {
 		t.Fatal("new session reseeded a durable workspace", string(data), err)
 	}
 }
+
+func TestTopicsShareWorkspaceButNotAttachments(t *testing.T) {
+	base := t.TempDir()
+	c := core.Config{DataDir: filepath.Join(base, "state")}
+	chat := core.Room{Key: `["tenant","app","project","group","chat",null]`}
+	chat.ChatKey = chat.Key
+	a, b := chat, chat
+	a.Key, a.Thread = `["tenant","app","project","group","chat",null,"om_a"]`, "om_a"
+	b.Key, b.Thread = `["tenant","app","project","group","chat",null,"om_b"]`, "om_b"
+	wc, e := Prepare(c, chat, core.Session{}, core.Project{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	wa, e := Prepare(c, a, core.Session{}, core.Project{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	wb, e := Prepare(c, b, core.Session{}, core.Project{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if wa.Root != wc.Root || wb.Root != wc.Root || wa.Work != wc.Work || wa.Home != wc.Home {
+		t.Fatal("topics of one chat must share its workspace and native HOME")
+	}
+	if wc.Inbound != filepath.Join(wc.Root, "inbound") || wa.Inbound == wb.Inbound || wa.Inbound == wc.Inbound {
+		t.Fatalf("attachment directories: chat=%s a=%s b=%s", wc.Inbound, wa.Inbound, wb.Inbound)
+	}
+	upload := filepath.Join(wa.Inbound, "upload.txt")
+	if err := os.WriteFile(upload, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := TranslateOutput(wa, upload); err != nil {
+		t.Fatalf("own topic attachment rejected: %v", err)
+	}
+	if _, _, err := TranslateOutput(wb, upload); err == nil {
+		t.Fatal("another topic's attachment was accepted for output")
+	}
+}
+
+func TestSharedPreparationWaitHonorsCancellation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "shared")
+	unlock, err := lockPrepare(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err = lockPrepare(ctx, root); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancelled waiter: %v", err)
+	}
+	unlock()
+	again, err := lockPrepare(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again()
+}
