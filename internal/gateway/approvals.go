@@ -123,7 +123,7 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 	g.approvals[id] = p
 	p.timer = time.AfterFunc(time.Duration(g.config.Limits.ApprovalMS)*time.Millisecond, func() { g.settleApproval(id, core.Args{"approved": false, "reason": "expired"}, "system") })
 	p.detach = context.AfterFunc(ctx, func() { g.settleApproval(id, core.Args{"approved": false, "reason": "cancelled"}, "system") })
-	card := g.redactArgs(approvalCard(id, p, ""))
+	card := g.redactArgs(approvalCard(id, p))
 	g.approvalMu.Unlock()
 	targets := []core.Room{r}
 	if p.forwarded {
@@ -204,8 +204,8 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 		return core.Args{"approved": false, "reason": "cancelled"}, nil
 	}
 }
-func approvalCard(id string, p *approval, actor string) core.Args {
-	card := approvalCardText(id, p, actor, -1)
+func approvalCard(id string, p *approval) core.Args {
+	card := approvalCardText(id, p, -1)
 	if interactionCardFits(card) {
 		return card
 	}
@@ -215,13 +215,13 @@ func approvalCard(id string, p *approval, actor string) core.Args {
 	lo, hi := 0, core.CardPayloadLimit
 	for lo < hi {
 		mid := lo + (hi-lo+1)/2
-		if interactionCardFits(approvalCardText(id, p, actor, mid)) {
+		if interactionCardFits(approvalCardText(id, p, mid)) {
 			lo = mid
 		} else {
 			hi = mid - 1
 		}
 	}
-	return approvalCardText(id, p, actor, lo)
+	return approvalCardText(id, p, lo)
 }
 
 func interactionCardFits(card core.Args) bool {
@@ -241,7 +241,7 @@ func capInteractionText(text string, limit int) string {
 
 const questionAnswerLimit = 1000
 
-func approvalCardText(id string, p *approval, _ string, limit int) core.Args {
+func approvalCardText(id string, p *approval, limit int) core.Args {
 	if p.kind == "permission" {
 		return DisplayCard("需要维护者批准", capInteractionText(p.summary, limit)+"\n\n仅批准这一次操作，超时或停止后失效。\n请求：`"+id+"`", button("批准一次", core.Args{"request": id, "decision": "allow"}, "primary"), button("拒绝", core.Args{"request": id, "decision": "deny"}, "danger"))
 	}
@@ -607,7 +607,7 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 	}
 	if p.kind == "question" && (p.revision == "" || stringArg(a.Value, "revision") != p.revision || stringArg(a.Value, "session") != p.session) {
 		g.approvalMu.Unlock()
-		return actionToast("卡片已失效，请使用最新追问卡片。"), nil
+		return actionToast("卡片已失效，请使用最新追问卡片或 /answer 回答。"), nil
 	}
 	decision := stringArg(a.Value, "decision")
 	if decision == "deny" {

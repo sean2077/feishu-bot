@@ -25,7 +25,7 @@ func TestQuestionCardHasOneFormWithOptionalCustomAnswerPerQuestion(t *testing.T)
 		{Question: "Choose targets", MultiSelect: true, Options: []questionOption{{Label: "Linux"}, {Label: "macOS"}}},
 		{Question: "Anything else?"},
 	}}
-	card := approvalCard("request", p, "")
+	card := approvalCard("request", p)
 	form := questionForm(card)
 	if form == nil {
 		t.Fatal("question card has no form for inline custom answers")

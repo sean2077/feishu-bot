@@ -26,7 +26,7 @@ func walkCardButtons(elements []any, visit func(core.Args)) {
 
 func TestCardButtonsDeclareCallbackBehaviors(t *testing.T) {
 	cards := []core.Args{
-		approvalCard("request-id", &approval{kind: "permission", summary: "操作摘要"}, ""),
+		approvalCard("request-id", &approval{kind: "permission", summary: "操作摘要"}),
 		approvalCard("request-id", &approval{
 			kind:     "question",
 			revision: "revision-id",
@@ -34,7 +34,7 @@ func TestCardButtonsDeclareCallbackBehaviors(t *testing.T) {
 				Question: "请选择",
 				Options:  []questionOption{{Label: "A"}, {Label: "B"}},
 			}},
-		}, ""),
+		}),
 	}
 	for _, card := range cards {
 		body := argsOf(card["body"])
@@ -66,7 +66,7 @@ func TestQuestionActionsShareOneRow(t *testing.T) {
 		kind:      "question",
 		revision:  "revision-id",
 		questions: []question{{Question: "请选择", Options: []questionOption{{Label: "A"}}}},
-	}, "")
+	})
 	elements, _ := questionForm(card)["elements"].([]any)
 	rows := 0
 	for _, raw := range elements {
@@ -107,7 +107,7 @@ func TestQuestionSelectorsKeepChoicesLocalUntilSubmission(t *testing.T) {
 	card := approvalCard("request-id", &approval{
 		kind: "question", session: "session-id", revision: "revision-id",
 		questions: []question{{Question: "请选择", Options: []questionOption{{Label: "A", Description: "选项说明"}, {Label: "B"}}}},
-	}, "ou_user")
+	})
 	elements, _ := questionForm(card)["elements"].([]any)
 	var selector core.Args
 	for _, raw := range elements {

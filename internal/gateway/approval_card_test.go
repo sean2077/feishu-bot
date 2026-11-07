@@ -22,7 +22,7 @@ func TestOversizedQuestionCardFitsWithoutDroppingOptions(t *testing.T) {
 			},
 		}},
 	}
-	card := approvalCard("request", p, "")
+	card := approvalCard("request", p)
 	size, err := core.CardPayloadBytes(card)
 	if err != nil || size > core.CardPayloadLimit {
 		t.Fatalf("oversized question card: size=%d err=%v", size, err)
@@ -41,7 +41,7 @@ func TestOversizedQuestionCardFitsWithoutDroppingOptions(t *testing.T) {
 
 func TestOversizedPermissionCardFitsAndKeepsButtons(t *testing.T) {
 	p := &approval{kind: "permission", summary: strings.Repeat("命令参数", 10000)}
-	card := approvalCard("request", p, "")
+	card := approvalCard("request", p)
 	size, err := core.CardPayloadBytes(card)
 	if err != nil || size > core.CardPayloadLimit {
 		t.Fatalf("oversized permission card: size=%d err=%v", size, err)
