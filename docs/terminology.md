@@ -16,24 +16,35 @@ _避免_: worker（旧 TypeScript 版本的每会话 Node worker）
 
 **会话**
 
-一个聊天与一条原生 Claude session 的当前映射。群聊一群一条，每个私聊独立；线程只影响引用和回复位置，不拆分会话。
+一个房间与一条原生 Claude session 的当前映射。默认（整群范围）群聊一群一条，线程只影响引用和回复位置，不拆分会话；话题范围的群每个话题一条；每个私聊独立。
 _英文_: conversation
 _避免_: thread、进程（会话不是进程本身）
 
+**会话范围**
+
+`groups[].sessionScope` 决定群聊按什么划分房间：`chat`（默认）全群共用一条当前会话；`thread` 每个飞书话题一个房间和一条会话。私聊不受影响。修改后需重启，原范围的会话保留。
+_英文_: session scope
+
+**话题会话**
+
+话题范围群里的会话。群主时间线上的一条新触发消息开启新话题并成为其根消息；话题内的触发消息续接同一会话。只有带 `thread_id` 的消息属于已有话题，普通引用回复不会并入被引用的话题。同一群的话题共享工作区和原生 HOME。
+_英文_: topic session
+_避免_: 把“线程”泛指为会话
+
 **原生会话 ID**
 
-Claude Code 持久化的 session 标识，用于停止、空闲回收、服务重启和 compact 后的 resume。只有 `/new` 主动轮换；恢复失败不会静默替换。
+Claude Code 持久化的 session 标识，用于停止、空闲回收、服务重启和 compact 后的 resume。只有 `/new` 主动轮换；话题范围群中，新的顶层触发开启另一个话题的新会话，不轮换已有话题。恢复失败不会静默替换。
 _英文_: native session ID
 _避免_: conversation ID、room key
 
 **房间键**
 
-由 tenant、app、project、聊天类型、chat ID 和私聊用户 ID 组成的路由键。不包含线程，也不包含原生 session ID。
+由 tenant、app、project、聊天类型、chat ID 和私聊用户 ID 组成的路由键。不包含原生 session ID；整群范围不包含线程。话题范围的群在同样字段后追加话题根消息 ID，整群房间键保持不变。
 _英文_: room key
 
 **工作区**
 
-为一个房间准备的目录、原生 HOME、附件目录和配置身份。可由 `seedDir`、`trustedConfigDir` 或显式 `cwd` 提供。
+为一个房间准备的目录、原生 HOME、附件目录和配置身份；话题范围群的所有话题共用该群的工作区。可由 `seedDir`、`trustedConfigDir` 或显式 `cwd` 提供。
 _英文_: workspace
 
 **热进程**

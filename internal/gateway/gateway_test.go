@@ -35,6 +35,7 @@ type fakeTransport struct {
 	fetches      int
 	messages     map[string]core.Message
 	historyPage  core.HistoryPage
+	histories    []core.HistoryQuery
 	cardHook     func(context.Context, core.Room, core.Args) (string, error)
 	updateHook   func(context.Context, string, core.Args) error
 	downloadHook func(context.Context, string, core.Resource, string, int64) error
@@ -91,9 +92,10 @@ func (t *fakeTransport) Fetch(_ context.Context, id string, _ core.Room) (*core.
 	}
 	return &m, nil
 }
-func (t *fakeTransport) History(_ context.Context, _ core.Room, _ core.HistoryQuery) (core.HistoryPage, error) {
+func (t *fakeTransport) History(_ context.Context, _ core.Room, q core.HistoryQuery) (core.HistoryPage, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.histories = append(t.histories, q)
 	return t.historyPage, nil
 }
 func (t *fakeTransport) Receipt(ctx context.Context, id, desired, applied string) error {

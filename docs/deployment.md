@@ -10,10 +10,13 @@ Linux、macOS 和 Windows 运行同一个 Go 服务。源码构建需要 Go 1.25
 
 `groups[]` 可设置 `mentionOptional: true`，使该群所有获准作者的普通消息和命令无需 @；默认 `false`，只免除 @，不改变群与作者授权，修改后需重启。该能力还要求飞书应用能收到未 @ 机器人的群消息：应用需具备接收群内全部消息的权限（通常为 `im:message.group_msg`，以控制台实际发布范围为准），否则事件不会到达网关。仅建议用于成员很少且互信的小群。
 
+`groups[]` 可设置 `sessionScope: "thread"`，让该群每个飞书话题使用独立会话：群主时间线上的新 @ 开启话题，话题内 @ 续接同一会话。默认 `"chat"` 保持全群一条当前会话；可写在 `chatId: "*"` 兜底条目上，显式绑定优先；修改后需重启，原范围的会话保留。该模式不需要额外的消息权限，话题内追问同样需要 @（`mentionOptional` 群除外）；飞书拒绝话题回复的群（错误码 230071）应保持 `"chat"`。同一群的话题共用工作区、原生 HOME 和自动记忆，并发话题可能同时修改文件，每个活跃话题占一个 `runtime.maxWorkers` 名额，话题较多的群应相应调大。行为细节见[话题会话](conversation-contract.md#话题会话)。
+
 ```json
 {
   "groups": [
     { "chatId": "oc_example_group", "projectId": "assistant", "members": ["ou_example_member"] },
+    { "chatId": "oc_example_team_group", "projectId": "assistant", "allowAllMembers": true, "sessionScope": "thread" },
     { "chatId": "oc_example_open_group", "projectId": "assistant", "allowAllMembers": true },
     { "chatId": "*", "projectId": "assistant" }
   ]

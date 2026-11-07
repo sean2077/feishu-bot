@@ -184,11 +184,10 @@ func (c *Client) Update(ctx context.Context, id string, card core.Args) (resultE
 	}
 	// Saved native cards retain their original room even if a callback supplies a
 	// different target. Revoked configuration may no longer mutate that room.
-	var parts []any
-	if json.Unmarshal([]byte(roomKey), &parts) != nil || len(parts) != 6 {
+	chat, _, _, ok := core.ParseRoomKey(roomKey)
+	if !ok {
 		return errors.New("feishu: invalid card room")
 	}
-	chat, _ := parts[4].(string)
 	if _, err = c.validatedRoom(core.Room{Key: roomKey, ChatID: chat}); err != nil {
 		return err
 	}

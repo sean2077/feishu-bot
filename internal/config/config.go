@@ -447,6 +447,9 @@ func validate(c *core.Config, base string) error {
 			return errors.New("invalid group binding")
 		}
 		seen[g.ChatID] = true
+		if !core.ValidSessionScope(g.SessionScope) {
+			return errors.New("invalid group sessionScope")
+		}
 		for _, m := range g.Members {
 			if !idPattern.MatchString(m) {
 				return errors.New("invalid group member")

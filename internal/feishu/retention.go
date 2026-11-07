@@ -425,11 +425,10 @@ func (c *Client) RecoverCards(ctx context.Context) (int64, error) {
 			if protected {
 				continue
 			}
-			var roomParts []any
-			if json.Unmarshal([]byte(card.room), &roomParts) != nil || len(roomParts) != 6 {
+			chat, _, _, ok := core.ParseRoomKey(card.room)
+			if !ok {
 				continue
 			}
-			chat, _ := roomParts[4].(string)
 			if _, e = c.validatedRoom(core.Room{Key: card.room, ChatID: chat}); e != nil {
 				continue
 			}

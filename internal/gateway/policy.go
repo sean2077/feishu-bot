@@ -12,27 +12,7 @@ func RoomFor(c core.Config, chat, dm string) (core.Room, bool) {
 	return c.RoomFor(chat, dm)
 }
 func RoomFromKey(c core.Config, key string) (core.Room, bool) {
-	var a []any
-	if json.Unmarshal([]byte(key), &a) != nil || len(a) != 6 {
-		return core.Room{}, false
-	}
-	chat, ok := a[4].(string)
-	if !ok {
-		return core.Room{}, false
-	}
-	kind, _ := a[3].(string)
-	if kind != "group" && kind != "p2p" {
-		return core.Room{}, false
-	}
-	dm := ""
-	if kind == "p2p" {
-		dm, ok = a[5].(string)
-		if !ok || dm == "" {
-			return core.Room{}, false
-		}
-	}
-	r, ok := RoomFor(c, chat, dm)
-	return r, ok && r.Key == key
+	return c.RoomForKey(key)
 }
 func contains(values []string, v string) bool {
 	for _, s := range values {
@@ -49,11 +29,7 @@ func Route(c core.Config, m core.Message) (core.Room, bool) {
 	if m.SenderIsBot || m.SenderID == "" || m.ChatID == "" || m.ID == "" || (m.ChatType != "group" && m.ChatType != "p2p") {
 		return core.Room{}, false
 	}
-	dm := ""
-	if m.ChatType == "p2p" {
-		dm = m.SenderID
-	}
-	r, ok := RoomFor(c, m.ChatID, dm)
+	r, ok := c.MessageRoom(m)
 	return r, ok && AuthorizedAuthor(r, m.SenderID)
 }
 func Triggers(r core.Room, m core.Message) bool {

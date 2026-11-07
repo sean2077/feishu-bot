@@ -50,11 +50,10 @@ func (c *Client) restoreCardMappings(ctx context.Context) error {
 			if !validID(r.card) || !validID(r.message) {
 				continue
 			}
-			var parts []any
-			if json.Unmarshal([]byte(r.room), &parts) != nil || len(parts) != 6 {
+			chat, _, _, ok := core.ParseRoomKey(r.room)
+			if !ok {
 				continue
 			}
-			chat, _ := parts[4].(string)
 			if _, err = c.validatedRoom(core.Room{Key: r.room, ChatID: chat}); err != nil {
 				continue
 			}

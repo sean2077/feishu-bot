@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -31,6 +32,11 @@ func (c *Client) sendContent(ctx context.Context, room core.Room, kind string, c
 	body := core.Args{"msg_type": kind, "content": string(encoded)}
 	path := "/im/v1/messages"
 	query := url.Values{"receive_id_type": {"chat_id"}}
+	if room.Thread != "" && replyTo == "" {
+		// A topic room never posts to the chat timeline: untargeted notices,
+		// status cards and files reply to the topic root inside the topic.
+		replyTo = room.Thread
+	}
 	if replyTo != "" {
 		id, e := escapeID(replyTo)
 		if e != nil {
@@ -43,7 +49,9 @@ func (c *Client) sendContent(ctx context.Context, room core.Room, kind string, c
 		}
 		path += "/" + id + "/reply"
 		query = nil
-		body["reply_in_thread"] = threadID != ""
+		// A top-level trigger of a topic room has no thread yet; replying with
+		// reply_in_thread creates the Feishu topic rooted at that message.
+		body["reply_in_thread"] = threadID != "" || room.Thread != ""
 	} else {
 		if threadID != "" {
 			return "", errors.New("feishu: thread reply requires an origin message")
@@ -54,8 +62,28 @@ func (c *Client) sendContent(ctx context.Context, room core.Room, kind string, c
 	id, err := c.sendJournaledJSON(ctx, room.Key, "message", http.MethodPost, path, query, body, "message_id", true)
 	if err == nil {
 		err = c.linkDeliveryMessage(ctx, id)
+	} else if room.Thread != "" && threadReplyUnsupported(err) {
+		// Never fall back to a chat-timeline reply: the topic room's follow-ups
+		// would then route to new topics. Report the configuration mismatch.
+		c.emit("feishu_thread_reply_unsupported", core.Args{"code": apiCode(err)})
+		err = fmt.Errorf("feishu: this chat does not support topic replies; use groups[].sessionScope \"chat\" for it: %w", err)
 	}
 	return id, err
+}
+
+// threadReplyUnsupported reports Feishu's definite refusals of a topic reply:
+// 230071 (the chat does not support topic replies) and 230072 (aggregated
+// messages cannot start a topic).
+func threadReplyUnsupported(err error) bool {
+	code := apiCode(err)
+	return code == 230071 || code == 230072
+}
+func apiCode(err error) int {
+	var failure *APIError
+	if errors.As(err, &failure) && !failure.Uncertain {
+		return failure.Code
+	}
+	return 0
 }
 func (c *Client) Send(ctx context.Context, room core.Room, text, replyTo, threadID string) (messageID string, resultErr error) {
 	defer func() { resultErr = localRejection("message request validation", resultErr) }()
@@ -420,6 +448,13 @@ func (c *Client) rememberOrigin(id string, room core.Room) {
 	}
 	c.origins[id] = room
 }
+func (c *Client) originStoredIn(ctx context.Context, id, roomKey string) bool {
+	if c.db == nil {
+		return false
+	}
+	var found int
+	return c.db.QueryRowContext(ctx, "SELECT 1 FROM inbox WHERE id=? AND room=? UNION ALL SELECT 1 FROM context_refs WHERE id=? AND room=? UNION ALL SELECT 1 FROM outputs WHERE id=? AND room=? LIMIT 1", id, roomKey, id, roomKey, id, roomKey).Scan(&found) == nil
+}
 func (c *Client) attachmentRoom(ctx context.Context, id string) (core.Room, error) {
 	c.originMu.Lock()
 	room, ok := c.origins[id]
@@ -433,9 +468,7 @@ func (c *Client) attachmentRoom(ctx context.Context, id string) (core.Room, erro
 		var key string
 		err := c.db.QueryRowContext(ctx, "SELECT room FROM context_refs WHERE id=? UNION ALL SELECT room FROM inbox WHERE id=? LIMIT 1", id, id).Scan(&key)
 		if err == nil {
-			var parts []any
-			if json.Unmarshal([]byte(key), &parts) == nil && len(parts) == 6 {
-				chat, _ := parts[4].(string)
+			if chat, _, _, ok := core.ParseRoomKey(key); ok {
 				return c.validatedRoom(core.Room{Key: key, ChatID: chat})
 			}
 		}
@@ -444,13 +477,29 @@ func (c *Client) attachmentRoom(ctx context.Context, id string) (core.Room, erro
 }
 
 func (c *Client) checkReplyOrigin(ctx context.Context, id string, room core.Room) error {
+	room, err := c.validatedRoom(room)
+	if err != nil {
+		return err
+	}
+	if room.Thread != "" && id == room.Thread {
+		// The topic root defines a topic room's key; replies stay in that topic.
+		return nil
+	}
 	// A just-received origin is already scoped. Do not require a separate history
 	// permission merely to reply to an event the bot was authorized to receive.
 	if known, err := c.attachmentRoom(ctx, id); err == nil {
-		if known.Key != room.Key {
-			return errors.New("feishu: reply origin is outside the room scope")
+		// The chat room of a thread-scoped group may answer a top-level message
+		// that routed to one of its topics, for example a management hint.
+		if known.Key == room.Key || room.Thread == "" && known.ChatKey == room.Key {
+			return nil
 		}
-		return nil
+		// The in-memory origin cache keeps one room per message. A message
+		// quoted from another topic may have replaced the entry, so accept the
+		// durable scoped record of this exact room before refusing.
+		if c.originStoredIn(ctx, id, room.Key) {
+			return nil
+		}
+		return errors.New("feishu: reply origin is outside the room scope")
 	}
 	if c.db != nil {
 		var savedRoom string
