@@ -89,6 +89,7 @@ type Gateway struct {
 	outActive                                                    map[string]bool
 	outCursor                                                    map[string]outputCursor
 	stopBlocked                                                  map[string]bool
+	identityLost                                                 map[string]bool
 	receiptMu                                                    sync.Mutex
 	receiptActive                                                map[string]*dispatchWake
 	receiptCursor                                                outputCursor
@@ -102,7 +103,7 @@ type Gateway struct {
 func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerFactory, log core.Logger) *Gateway {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{config: c, store: st, transport: tr, factory: factory, logger: log, ctx: ctx, cancel: cancel,
-		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
+		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
 	if _, err := rand.Read(g.historyKey[:]); err != nil {
 		panic("cannot initialize history cursor authentication")
 	}
@@ -444,7 +445,7 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	}
 	g.acceptReceipt(room, session.ID, m)
 	if g.stopIsBlocked(room.Key) {
-		g.notify(room, "本聊天上次停止未能完成（状态保存失败），暂不交付新输入。维护者重新发送 /stop 成功后，暂存的输入会随停止一并取消，届时请重新发送。", &m)
+		g.notify(room, stopBlockedNotice, &m)
 		return nil
 	}
 	g.kick(room)
@@ -463,6 +464,13 @@ func (g *Gateway) pendingInChat(r core.Room) (int, error) {
 	}
 	return g.store.CountPendingChat(r.ChatKey)
 }
+
+// stopStateNotice explains a stop whose process part completed while its
+// state update failed; stopBlockedNotice answers inputs that arrive meanwhile.
+const (
+	stopStateNotice   = "原生进程已停止，但取消待交付内容的状态未能保存，因此本聊天暂停交付、未切换会话。请检查服务诊断后重新发送 /stop；暂停只在本次服务运行内有效。"
+	stopBlockedNotice = "本聊天上次停止未能完成（状态保存失败），暂不交付新输入。维护者重新发送 /stop 成功后，暂存的输入会随停止一并取消，届时请重新发送；若期间服务重启，暂存输入会被正常交付。"
+)
 
 // refusalRoom picks where to explain a refused input. A refused top-level
 // message in a thread-scoped group never became a topic, so the notice replies
@@ -788,6 +796,23 @@ func (g *Gateway) dispatch(r core.Room) error {
 				g.removeSlot(s)
 			}
 			return err
+		}
+		if s.session.CCID == "" && g.sessionIdentityLost(s.session.ID) {
+			s.mu.Lock()
+			s.live = false
+			s.mu.Unlock()
+			s.cancel()
+			g.removeSlot(s)
+			// These inputs never reached a process; cancel them so later
+			// sweeps do not repeat the refusal.
+			if err := g.store.StopSession(s.session.ID); err != nil {
+				return err
+			}
+			for _, d := range pending {
+				g.settleReceipts(r.Key, d.SessionID, origin(d.Message), false)
+			}
+			g.notify(r, identityFailureNotice, &pending[0].Message)
+			return nil
 		}
 		if s.session.CCID == "" {
 			// An earlier process may have reported its native session while

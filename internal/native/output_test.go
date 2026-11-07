@@ -229,6 +229,15 @@ func TestOffsetZoneNamesLocalOffsetInsteadOfUTC(t *testing.T) {
 	}
 }
 
+func TestPackageEmbedsTheTimeZoneDatabase(t *testing.T) {
+	// Release builds use -trimpath and have no GOROOT zoneinfo on Windows, so
+	// a configured TZ only loads from the embedded database.
+	data, err := os.ReadFile("tzdata.go")
+	if err != nil || !strings.Contains(string(data), `import _ "time/tzdata"`) {
+		t.Fatalf("time/tzdata is not embedded: %v", err)
+	}
+}
+
 func TestConfiguredZoneLoadsFromEmbeddedDatabase(t *testing.T) {
 	t.Setenv("ZONEINFO", "")
 	t.Setenv("TZ", "America/New_York")
@@ -268,6 +277,44 @@ func TestChatRoomDoesNotClaimTopicAttachments(t *testing.T) {
 			if denied := object(result["hookSpecificOutput"])["permissionDecision"] == "deny"; denied != tc.deny {
 				t.Fatalf("%s %s %s denied=%v want %v", mode, tc.tool, tc.path, denied, tc.deny)
 			}
+		}
+	}
+}
+
+func TestSearchesAboveAttachmentDirectoriesAreDenied(t *testing.T) {
+	base := t.TempDir()
+	rooms := filepath.Join(base, "rooms")
+	room := filepath.Join(rooms, "room")
+	work := filepath.Join(room, "workspace")
+	home := filepath.Join(room, "home")
+	mine := filepath.Join(room, "topic-inbound", "topic-a")
+	for _, p := range []string{work, home, mine, filepath.Join(room, "topic-inbound", "topic-b")} {
+		if err := os.MkdirAll(p, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: mine, NativeConfig: "inherit"}, events: make(chan core.WorkerEvent, 16), eventsDone: make(chan struct{})}
+	for _, tc := range []struct {
+		tool  string
+		input args
+		deny  bool
+	}{
+		{"Grep", args{"path": room}, true},
+		{"Grep", args{"path": rooms}, true},
+		{"Grep", args{"path": base}, true},
+		{"Glob", args{"pattern": filepath.Join(room, "**", "*.txt")}, true},
+		{"Glob", args{"pattern": filepath.Join(base, "*", "*", "topic-inbound", "*")}, true},
+		{"Grep", args{"path": work}, false},
+		{"Glob", args{"pattern": filepath.Join(work, "**", "*.go")}, false},
+		{"Grep", args{"path": mine}, false},
+		{"Read", args{"file_path": filepath.Join(work, "notes.txt")}, false},
+	} {
+		result, err := w.hook(context.Background(), "tool", args{"hook_event_name": "PreToolUse", "tool_name": tc.tool, "tool_input": tc.input})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if denied := object(result["hookSpecificOutput"])["permissionDecision"] == "deny"; denied != tc.deny {
+			t.Fatalf("%s %v denied=%v want %v", tc.tool, tc.input, denied, tc.deny)
 		}
 	}
 }

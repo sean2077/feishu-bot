@@ -95,7 +95,7 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 			g.audit(r.Key, "stop_state_failed", core.Args{"session": session, "error": core.Redact(stateErr.Error(), g.secrets)})
 			if s == nil {
 				g.blockAfterFailedStop(r.Key)
-				return stateErr
+				return errors.Join(errStopState, stateErr)
 			}
 		}
 	}
@@ -166,7 +166,7 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 		// room until a later stop succeeds, so the stop's intent holds even
 		// though sweeps and other rooms wake dispatch globally.
 		g.blockAfterFailedStop(r.Key)
-		return stateErr
+		return errors.Join(errStopState, stateErr)
 	}
 	g.mu.Lock()
 	delete(g.stopBlocked, r.Key)
@@ -174,6 +174,10 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 	g.kickWaiting()
 	return nil
 }
+
+// errStopState marks a stop whose process part completed but whose state
+// update (cancelling pending inputs or outputs) could not be saved.
+var errStopState = errors.New("stop state could not be saved")
 
 // stopStateRetry bounds retries of cancelling a stopped session's inputs.
 var stopStateRetry = []time.Duration{50 * time.Millisecond, 300 * time.Millisecond, time.Second}

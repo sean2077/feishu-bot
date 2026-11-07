@@ -3,8 +3,10 @@ package gateway
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/store"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -54,7 +56,9 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 			// A stop may land between the first input and the native init.
 			// The context still exists, so its ID must be kept even though
 			// this process no longer accepts work.
-			g.keepNativeIdentity(s, ev.CCID)
+			if nativeIDPattern.MatchString(ev.CCID) && !g.keepNativeIdentity(s, ev.CCID) {
+				g.notify(s.room, identityFailureNotice, nil)
+			}
 		}
 		return
 	}
@@ -83,7 +87,7 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 				// different context, so stop instead of accepting more work.
 				g.task(func() {
 					_ = g.stopRoom(g.ctx, s.room)
-					g.notify(s.room, "原生会话 ID 未能保存，已停止本聊天运行以免下次启动静默换成新上下文。请检查服务诊断和磁盘状态。", nil)
+					g.notify(s.room, identityFailureNotice, nil)
 				})
 				return
 			}
@@ -486,6 +490,9 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 
 var _ = fmt.Sprint
 
+// identityFailureNotice explains a native session whose ID could not be kept.
+const identityFailureNotice = "原生会话 ID 未能保存或与已记录的会话冲突，已停止本聊天运行，未启动替代上下文。请检查服务诊断；维护者可用 /resume 选择已记录的会话或用 /new 明确开启新会话。"
+
 // identityPersistRetry bounds retries of saving a new native session ID.
 var identityPersistRetry = []time.Duration{20 * time.Millisecond, 200 * time.Millisecond, time.Second}
 
@@ -541,7 +548,7 @@ func (g *Gateway) keepNativeIdentity(s *slot, ccid string) bool {
 		return old == ccid
 	}
 	e := g.store.SetCC(session, ccid)
-	for attempt := 0; e != nil && attempt < len(identityPersistRetry); attempt++ {
+	for attempt := 0; e != nil && !errors.Is(e, store.ErrIdentityConflict) && attempt < len(identityPersistRetry); attempt++ {
 		time.Sleep(identityPersistRetry[attempt])
 		e = g.store.SetCC(session, ccid)
 	}
@@ -550,11 +557,28 @@ func (g *Gateway) keepNativeIdentity(s *slot, ccid string) bool {
 		return true
 	}
 	g.audit(s.room.Key, "session_identity_persistence_failed", core.Args{"session": session, "error": e.Error()})
+	if errors.Is(e, store.ErrIdentityConflict) {
+		// The row already names another native context (for example a ready
+		// event from a stopped process raced a fresh launch). A marker would
+		// hide the conflict; report it instead.
+		return false
+	}
 	if root != "" && writeIdentityMarker(root, session, ccid) == nil {
 		g.audit(s.room.Key, "session_identity_marked", core.Args{"session": session})
 		return true
 	}
+	// Neither record exists: never launch this session again without an
+	// explicit /new or /resume, which select a different session.
+	g.mu.Lock()
+	g.identityLost[session] = true
+	g.mu.Unlock()
 	return false
+}
+
+func (g *Gateway) sessionIdentityLost(session string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.identityLost[session]
 }
 
 func identityMarkerPath(root, session string) string {

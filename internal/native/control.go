@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/sean2077/feishu-bot/internal/core"
@@ -148,11 +149,20 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 		if name == "Grep" || name == "Glob" {
 			keys = append(keys, "path")
 		}
+		candidates := []string{}
 		for _, key := range keys {
-			raw, ok := toolInput[key].(string)
-			if !ok {
-				continue
+			if raw, ok := toolInput[key].(string); ok {
+				candidates = append(candidates, raw)
 			}
+		}
+		if name == "Glob" {
+			// An absolute pattern names its search root directly.
+			if pattern, ok := toolInput["pattern"].(string); ok && filepath.IsAbs(pattern) {
+				candidates = append(candidates, globRoot(pattern))
+			}
+		}
+		search := name == "Grep" || name == "Glob"
+		for _, raw := range candidates {
 			path := raw
 			if !filepath.IsAbs(path) {
 				path = filepath.Join(w.workspace.Work, path)
@@ -164,12 +174,24 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			attachment := w.workspace.Inbound != "" && core.Inside(scope.inbound, physical)
 			rooms := scope.rooms
 			otherAttachment := false
-			if core.Inside(rooms, physical) {
-				relative, err := filepath.Rel(rooms, physical)
+			// macOS volumes are usually case-insensitive while path
+			// comparison is not; fold case for the room-boundary checks.
+			foldedRooms, foldedPath := foldCase(rooms), foldCase(physical)
+			if core.Inside(foldedRooms, foldedPath) {
+				relative, err := filepath.Rel(foldedRooms, foldedPath)
 				if err == nil {
 					parts := strings.Split(relative, string(filepath.Separator))
 					otherAttachment = len(parts) >= 2 && (strings.EqualFold(parts[1], "inbound") || strings.EqualFold(parts[1], core.TopicInbound)) && !attachment
+					// A search rooted at a room directory itself would recurse
+					// into every attachment directory of that chat.
+					if search && (relative == "." || len(parts) == 1) {
+						otherAttachment = true
+					}
 				}
+			} else if search && core.Inside(foldedPath, foldedRooms) {
+				// Searching an ancestor of the room tree (for example the user
+				// HOME in inherit mode) would reach every room's attachments.
+				otherAttachment = true
 			}
 			if otherAttachment || w.workspace.NativeConfig != "inherit" && !core.Inside(scope.work, physical) && !core.Inside(scope.home, physical) && !attachment || attachment && name != "Read" && name != "Grep" && name != "Glob" {
 				return denyHook("Outside conversation file scope or attempting to edit an incoming attachment"), nil
@@ -344,4 +366,22 @@ func validateHistory(input args) error {
 		}
 	}
 	return nil
+}
+
+// globRoot returns the directory prefix of an absolute glob pattern before its
+// first wildcard element.
+func globRoot(pattern string) string {
+	clean := filepath.Clean(pattern)
+	i := strings.IndexAny(clean, "*?[{")
+	if i < 0 {
+		return clean
+	}
+	return filepath.Dir(clean[:i+1])
+}
+
+func foldCase(path string) string {
+	if runtime.GOOS == "darwin" {
+		return strings.ToLower(path)
+	}
+	return path
 }

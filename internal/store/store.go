@@ -264,10 +264,15 @@ func (s *Store) SetCC(id, cc string) error {
 		return err
 	}
 	if changed != 1 {
-		return errors.New("native session identity changed or session no longer exists")
+		return ErrIdentityConflict
 	}
 	return nil
 }
+
+// ErrIdentityConflict reports that the session row already holds a different
+// native ID (or no longer exists). Retrying cannot resolve it.
+var ErrIdentityConflict = errors.New("native session identity changed or session no longer exists")
+
 func (s *Store) SetCc(id, cc string) error { return s.SetCC(id, cc) }
 func samePath(a, b string) bool {
 	a, _ = filepath.Abs(a)

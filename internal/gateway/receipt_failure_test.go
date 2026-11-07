@@ -78,3 +78,26 @@ func TestDefiniteCreateFailureRetriesAsCreate(t *testing.T) {
 		t.Fatalf("retry after definite failure reconciled instead of creating: applied=%q calls=%v", got, previous)
 	}
 }
+
+func TestRejectedClearStepStillAddsTheDoneReaction(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	s, _ := f.s.Session(r.Key)
+	if _, e := f.s.DB.Exec("INSERT INTO receipts(id,room,session,desired,applied,at,sender) VALUES('om_receipt',?,?,'done','processing',?,'member')", r.Key, s.ID, time.Now().UnixMilli()); e != nil {
+		t.Fatal(e)
+	}
+	var steps []string
+	f.tr.receiptHook = func(_ context.Context, _, state, prior string) error {
+		steps = append(steps, state+"<"+prior)
+		if state == "clear" {
+			return fixtureDeliveryFailure{}
+		}
+		return nil
+	}
+	f.g.flushReceipt("om_receipt")
+	var got string
+	_ = f.s.DB.QueryRow("SELECT applied FROM receipts WHERE id='om_receipt'").Scan(&got)
+	if got != "done" || len(steps) != 2 || steps[1] != "done<clear" {
+		t.Fatalf("applied=%q steps=%v", got, steps)
+	}
+}

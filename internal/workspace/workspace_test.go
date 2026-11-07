@@ -293,3 +293,34 @@ func TestSharedPreparationWaitHonorsCancellation(t *testing.T) {
 	}
 	again()
 }
+
+func TestLegacyTopicAttachmentsMoveOutOfTheChatInbound(t *testing.T) {
+	base := t.TempDir()
+	c := core.Config{DataDir: filepath.Join(base, "state")}
+	chat := core.Room{Key: `["tenant","app","project","group","chat",null]`}
+	chat.ChatKey = chat.Key
+	topic := chat
+	topic.Key, topic.Thread = `["tenant","app","project","group","chat",null,"om_a"]`, "om_a"
+	wc, e := Prepare(c, chat, core.Session{}, core.Project{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	id := filepath.Base(topic.AttachmentDir(wc.Root))
+	legacy := filepath.Join(wc.Root, "inbound", "topics", id)
+	if e = os.MkdirAll(legacy, 0700); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(filepath.Join(legacy, "upload.txt"), []byte("x"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	wt, e := Prepare(c, topic, core.Session{}, core.Project{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if data, e := os.ReadFile(filepath.Join(wt.Inbound, "upload.txt")); e != nil || string(data) != "x" {
+		t.Fatalf("legacy topic upload not moved: %q %v", data, e)
+	}
+	if _, e := os.Stat(filepath.Join(wc.Root, "inbound", "topics")); !os.IsNotExist(e) {
+		t.Fatal("legacy topics directory left inside the chat inbound")
+	}
+}

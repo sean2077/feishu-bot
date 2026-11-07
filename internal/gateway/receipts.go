@@ -158,9 +158,17 @@ func (g *Gateway) flushReceipt(id string) {
 			case definite && !failure.DeliveryRetryable():
 				// A definite, non-retryable rejection (for example a missing
 				// reaction permission) will not succeed on the next sweep.
-				// Settle it so the receipt neither polls forever nor blocks
-				// retention; the reaction is cosmetic.
+				// Settle this step so the receipt neither polls forever nor
+				// blocks retention; the reaction is cosmetic. An intermediate
+				// step (clearing "processing" on the way to "done") only
+				// settles itself, so the next step is still attempted.
 				g.audit(room, "receipt_rejected", core.Args{"messageId": id, "state": next})
+				if next != desired {
+					if _, e = g.store.DB.Exec("UPDATE receipts SET applied=? WHERE id=? AND desired=?", next, id, desired); e == nil {
+						continue
+					}
+					return
+				}
 				_, _ = g.store.DB.Exec("UPDATE receipts SET applied=desired WHERE id=? AND desired=?", id, desired)
 			case definite && (next == "processing" || next == "done") && !strings.HasPrefix(applied.String, "attempt:"):
 				// This create was definitely not written: restore the prior

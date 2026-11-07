@@ -392,7 +392,11 @@ func (g *Gateway) quickStop(r core.Room, a core.CardAction, p quickControl) {
 	err := g.stopRoom(ctx, r)
 	cancel()
 	if err != nil {
-		g.notify(r, "停止尚未确认，请检查 /status 和服务诊断。", nil)
+		text := "停止尚未确认，请检查 /status 和服务诊断。"
+		if errors.Is(err, errStopState) {
+			text = stopStateNotice
+		}
+		g.notify(r, text, nil)
 		return
 	}
 	g.notify(r, "已停止本聊天运行，保留原生上下文和会话 ID。", nil)
