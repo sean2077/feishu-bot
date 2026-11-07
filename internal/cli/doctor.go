@@ -246,6 +246,17 @@ func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) Doct
 			})
 		}
 	}
+	for _, group := range c.Groups {
+		for root, path := range group.ThreadWorkspaces {
+			add(group.ChatID+" thread workspace "+root, func() (string, error) {
+				st, err := os.Stat(path)
+				if err != nil || !st.IsDir() {
+					return "", errors.New("configured topic workspace directory does not exist")
+				}
+				return "Existing topic directory; no files copied or worktree created.", nil
+			})
+		}
+	}
 	localOK := true
 	for _, c := range r.Checks {
 		localOK = localOK && c.OK

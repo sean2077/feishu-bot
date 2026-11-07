@@ -267,19 +267,35 @@ func boundedReplyCard(title, answer string, thinking []string, total int, final 
 		return card
 	}
 	preview := bytePrefix(answer, core.CardPayloadLimit)
-	card := makeCard(preview)
+	shown, needsFile := prepareReplyMarkdown(preview)
+	card := makeCard(shown)
 	n, err := core.CardPayloadBytes(card)
-	if len(preview) == len(answer) && err == nil && n <= core.CardPayloadLimit {
+	if len(preview) == len(answer) && !needsFile && err == nil && n <= core.CardPayloadLimit {
 		return card, false
 	}
 	suffix := "\n\n（预览已截断，完成后附完整答案文件。）"
 	if final {
 		suffix = "\n\n（完整答案另附文件。）"
 	}
+	if len(preview) == len(answer) && needsFile {
+		notice := suffix
+		if !final {
+			notice = "\n\n（后续内容按原文显示，完成后附完整答案文件。）"
+		}
+		card = makeCard(shown + notice)
+		if size, e := core.CardPayloadBytes(card); e == nil && size <= core.CardPayloadLimit {
+			return card, true
+		}
+	}
+	makePreview := func(n int) core.Args {
+		body, _ := prepareReplyMarkdown(bytePrefix(preview, n))
+		// Append the notice after closing a partial code fence, never inside it.
+		return makeCard(body + suffix)
+	}
 	low, high := 0, len(preview)
 	for low < high {
 		mid := low + (high-low+1)/2
-		candidate := makeCard(bytePrefix(preview, mid) + suffix)
+		candidate := makePreview(mid)
 		size, e := core.CardPayloadBytes(candidate)
 		if e == nil && size <= core.CardPayloadLimit {
 			low = mid
@@ -287,5 +303,5 @@ func boundedReplyCard(title, answer string, thinking []string, total int, final 
 			high = mid - 1
 		}
 	}
-	return makeCard(bytePrefix(preview, low) + suffix), true
+	return makePreview(low), true
 }

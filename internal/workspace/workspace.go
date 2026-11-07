@@ -360,7 +360,8 @@ func PrepareContext(ctx context.Context, c core.Config, room core.Room, _ core.S
 	if err != nil {
 		return core.Workspace{}, err
 	}
-	// Every topic of a thread-scoped chat shares the chat room's directories.
+	// Topic bindings change only Work; managed state and native HOME retain
+	// the chat layout so existing session and attachment identities stay valid.
 	root := filepath.Join(rooms, core.Hash(room.WorkspaceKey())[:32])
 	// Topics of one chat can start concurrently; serialize only preparation so
 	// seed copies and Git initialization run once per shared directory.
@@ -379,8 +380,9 @@ func PrepareContext(ctx context.Context, c core.Config, room core.Room, _ core.S
 		return core.Workspace{}, err
 	}
 	w := core.Workspace{Root: root, Work: filepath.Join(root, "workspace"), Home: filepath.Join(root, "home"), Inbound: room.AttachmentDir(root), NativeConfig: "isolated", ConfigDirOverride: true}
-	if p.CWD != "" {
-		work, err := physicalDirectory(p.CWD)
+	cwd := room.WorkingDirectory(p)
+	if cwd != "" {
+		work, err := physicalDirectory(cwd)
 		if err != nil {
 			return w, err
 		}
@@ -388,7 +390,7 @@ func PrepareContext(ctx context.Context, c core.Config, room core.Room, _ core.S
 		if err != nil || !st.IsDir() {
 			return w, errors.New("project cwd must be an existing directory")
 		}
-		if core.Inside(root, work) || core.Inside(work, root) {
+		if core.Inside(rooms, work) || core.Inside(work, rooms) {
 			return w, errors.New("project cwd and conversation state must not overlap")
 		}
 		w.Work = work
@@ -400,14 +402,14 @@ func PrepareContext(ctx context.Context, c core.Config, room core.Room, _ core.S
 		if err = os.MkdirAll(dir, 0700); err != nil {
 			return w, err
 		}
-		if dir != w.Work || p.CWD == "" {
+		if dir != w.Work || cwd == "" {
 			if err = ownDirectory(dir, dir); err != nil {
 				return w, err
 			}
 		}
 	}
 	w.ConfigDir = filepath.Join(w.Home, ".claude")
-	if p.CWD == "" {
+	if cwd == "" {
 		marker := filepath.Join(root, "seeded")
 		markerInfo, markerErr := os.Lstat(marker)
 		if markerErr == nil && !markerInfo.Mode().IsRegular() {

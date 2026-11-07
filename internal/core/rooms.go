@@ -91,13 +91,29 @@ func (c Config) RoomFor(chat, dm string) (Room, bool) {
 // so chat-scoped keys and their sessions keep their existing namespace.
 func (c Config) ThreadRoomFor(chat, root string) (Room, bool) {
 	r, ok := c.RoomFor(chat, "")
-	if !ok || r.SessionScope != SessionScopeThread || !validThreadRoot(root) {
+	if !ok || r.SessionScope != SessionScopeThread || !ValidThreadRoot(root) {
 		return Room{}, false
 	}
 	key, _ := json.Marshal([]any{c.TenantID, c.AppID, r.ProjectID, "group", chat, nil, root})
 	r.Key = string(key)
 	r.Thread = root
+	for _, g := range c.Groups {
+		if g.ChatID == chat {
+			r.WorkspaceCWD = g.ThreadWorkspaces[root]
+			break
+		}
+	}
 	return r, true
+}
+
+// WorkingDirectory returns the explicit directory for this room, or an empty
+// string for the managed, seeded workspace. Only an explicit topic binding
+// overrides the project directory; neither value is taken from chat input.
+func (r Room) WorkingDirectory(p Project) string {
+	if r.Thread != "" && r.WorkspaceCWD != "" {
+		return r.WorkspaceCWD
+	}
+	return p.CWD
 }
 
 // MessageRoom resolves the room that owns a received message. Thread-scoped
@@ -151,7 +167,7 @@ func ParseRoomKey(key string) (chat, dm, thread string, ok bool) {
 		}
 	case kind == "group" && len(parts) == 7:
 		thread, ok = parts[6].(string)
-		if parts[5] != nil || !ok || !validThreadRoot(thread) {
+		if parts[5] != nil || !ok || !ValidThreadRoot(thread) {
 			return "", "", "", false
 		}
 	default:
@@ -177,8 +193,8 @@ func (c Config) RoomForKey(key string) (Room, bool) {
 	return r, ok && r.Key == key
 }
 
-// WorkspaceKey is the key that places the room's workspace and native HOME.
-// Every topic of a thread-scoped chat shares the chat room's directories.
+// WorkspaceKey places managed state and native HOME. Topics share this layout
+// even when an explicit binding selects a different native working directory.
 func (r Room) WorkspaceKey() string {
 	if r.ChatKey != "" {
 		return r.ChatKey
@@ -225,7 +241,8 @@ func AttachmentRel(root, inbound string) (string, bool) {
 	return "", false
 }
 
-func validThreadRoot(id string) bool {
+// ValidThreadRoot accepts the platform message IDs used as topic roots.
+func ValidThreadRoot(id string) bool {
 	if id == "" || len(id) > 128 {
 		return false
 	}

@@ -30,7 +30,14 @@ func (s *websocketStats) disconnect() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.connected = false
-	// Do not keep old queued message bodies alive after connection shutdown.
+	// Admitted events remain queued while the next socket is connecting.
+}
+
+func (s *websocketStats) stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.connected = false
+	// Release queued bodies only after the service's event workers have stopped.
 	s.queues = [5]<-chan connectionJob{}
 }
 

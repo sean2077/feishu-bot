@@ -44,6 +44,9 @@ type Room struct {
 	SessionScope string `json:"sessionScope,omitempty"`
 	Thread       string `json:"thread,omitempty"`
 	ChatKey      string `json:"chatKey,omitempty"`
+	// WorkspaceCWD is an administrator-configured topic directory. It changes
+	// the native working directory, never the room key or native HOME placement.
+	WorkspaceCWD string `json:"workspaceCwd,omitempty"`
 }
 type Session struct {
 	ID        string `json:"id"`
@@ -137,12 +140,13 @@ type ModelProfile struct {
 	Effort     string `json:"effort,omitempty"`
 }
 type Group struct {
-	ChatID          string   `json:"chatId"`
-	ProjectID       string   `json:"projectId"`
-	Members         []string `json:"members,omitempty"`
-	MentionOptional bool     `json:"mentionOptional"`
-	AllowAllMembers bool     `json:"allowAllMembers,omitempty"`
-	SessionScope    string   `json:"sessionScope,omitempty"`
+	ChatID           string            `json:"chatId"`
+	ProjectID        string            `json:"projectId"`
+	Members          []string          `json:"members,omitempty"`
+	MentionOptional  bool              `json:"mentionOptional"`
+	AllowAllMembers  bool              `json:"allowAllMembers,omitempty"`
+	SessionScope     string            `json:"sessionScope,omitempty"`
+	ThreadWorkspaces map[string]string `json:"threadWorkspaces,omitempty"`
 }
 type DM struct {
 	UserID    string `json:"userId"`

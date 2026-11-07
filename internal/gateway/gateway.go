@@ -650,7 +650,11 @@ func (g *Gateway) kick(r core.Room) {
 					}
 					return
 				}
-				g.notify(r, "输入已保存，但运行启动或交付失败；请查看服务诊断。", nil)
+				if errors.Is(err, store.ErrLaunchIdentityChanged) {
+					g.notify(r, "输入已保存。"+store.ErrLaunchIdentityChanged.Error(), nil)
+				} else {
+					g.notify(r, "输入已保存，但运行启动或交付失败；请查看服务诊断。", nil)
+				}
 			}
 			g.mu.Lock()
 			if !w.dirty || g.closing {
@@ -836,7 +840,7 @@ func (g *Gateway) dispatch(r core.Room) error {
 		p, _ := g.config.Project(r.ProjectID)
 		w, err := workspace.PrepareContext(s.ctx, g.config, r, s.session, p)
 		if err == nil {
-			err = g.store.BindLaunchIdentity(s.session, w, p.CWD != "")
+			err = g.store.BindLaunchIdentity(s.session, w, r.WorkingDirectory(p) != "")
 		}
 		if err != nil {
 			s.mu.Lock()

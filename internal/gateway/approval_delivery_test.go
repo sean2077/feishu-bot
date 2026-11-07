@@ -205,7 +205,7 @@ func pendingApprovalFixture(t *testing.T, f *fixture, questions []question) (str
 	if questions != nil {
 		kind = "question"
 	}
-	p := &approval{room: r, session: session.ID, kind: kind, expires: time.Now().Add(time.Minute).UnixMilli(), cards: map[string]string{}, selected: map[string]map[int]map[int]bool{}, questions: questions, outcome: make(chan core.Args, 1), ctx: ctx, cancel: cancel}
+	p := &approval{room: r, session: session.ID, kind: kind, revision: core.NewID(), expires: time.Now().Add(time.Minute).UnixMilli(), cards: map[string]string{}, questions: questions, outcome: make(chan core.Args, 1), ctx: ctx, cancel: cancel}
 	if _, err := f.s.DB.Exec("INSERT INTO requests(id,room,session,kind,digest,state,expires) VALUES(?,?,?,?,?,'pending',?)", id, r.Key, session.ID, kind, "fixture", p.expires); err != nil {
 		cancel()
 		t.Fatal(err)
@@ -229,7 +229,6 @@ func TestCancelledApprovalCannotBindOrAcceptCallbacksBeforeSettlement(t *testing
 				questions = []question{{Question: "Pick", Options: []questionOption{{Label: "A"}}}}
 			}
 			id, p := pendingApprovalFixture(t, f, questions)
-			p.selected["owner"] = map[int]map[int]bool{0: {0: true}}
 			if !f.g.bindApprovalCard(id, p, "current-card", p.room) {
 				t.Fatal("live card was not bound")
 			}

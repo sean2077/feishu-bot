@@ -14,6 +14,8 @@ func walkCardButtons(elements []any, visit func(core.Args)) {
 		if stringArg(element, "tag") == "button" {
 			visit(element)
 		}
+		children, _ := element["elements"].([]any)
+		walkCardButtons(children, visit)
 		columns, _ := element["columns"].([]any)
 		for _, rawColumn := range columns {
 			children, _ := argsOf(rawColumn)["elements"].([]any)
@@ -65,8 +67,7 @@ func TestQuestionActionsShareOneRow(t *testing.T) {
 		revision:  "revision-id",
 		questions: []question{{Question: "请选择", Options: []questionOption{{Label: "A"}}}},
 	}, "")
-	body := argsOf(card["body"])
-	elements, _ := body["elements"].([]any)
+	elements, _ := questionForm(card)["elements"].([]any)
 	rows := 0
 	for _, raw := range elements {
 		element := argsOf(raw)
@@ -88,9 +89,12 @@ func TestQuestionActionsShareOneRow(t *testing.T) {
 			if stringArg(button, "tag") != "button" || stringArg(button, "width") != "fill" {
 				t.Fatalf("column does not contain a filled button: %#v", button)
 			}
+			if stringArg(button, "form_action_type") != "submit" || stringArg(button, "name") == "" {
+				t.Fatalf("form button does not submit the local fields: %#v", button)
+			}
 			labels = append(labels, stringArg(argsOf(button["text"]), "content"))
 		}
-		if strings.Join(labels, ",") != "提交选择,取消" {
+		if strings.Join(labels, ",") != "提交回答,取消" {
 			t.Fatalf("action row labels = %v", labels)
 		}
 	}
@@ -99,80 +103,29 @@ func TestQuestionActionsShareOneRow(t *testing.T) {
 	}
 }
 
-func TestQuestionOptionsUseCompactRows(t *testing.T) {
-	selected := map[string]map[int]map[int]bool{"ou_user": {0: {0: true}}}
-	questions := []question{{Question: "请选择", Options: []questionOption{{Label: "A", Description: "选项说明"}, {Label: "B"}}}}
-	private := approvalCard("request-id", &approval{
-		kind: "question", revision: "revision-id", room: core.Room{DMUser: "ou_user"},
-		questions: questions, selected: selected,
+func TestQuestionSelectorsKeepChoicesLocalUntilSubmission(t *testing.T) {
+	card := approvalCard("request-id", &approval{
+		kind: "question", session: "session-id", revision: "revision-id",
+		questions: []question{{Question: "请选择", Options: []questionOption{{Label: "A", Description: "选项说明"}, {Label: "B"}}}},
 	}, "ou_user")
-	group := approvalCard("request-id", &approval{
-		kind: "question", revision: "revision-id", questions: questions,
-	}, "ou_user")
-	find := func(card core.Args) (core.Args, core.Args) {
-		elements, _ := argsOf(card["body"])["elements"].([]any)
-		for _, raw := range elements {
-			element := argsOf(raw)
-			if stringArg(element, "tag") != "column_set" {
-				continue
-			}
-			columns, _ := element["columns"].([]any)
-			if len(columns) != 2 {
-				continue
-			}
-			left, _ := argsOf(columns[0])["elements"].([]any)
-			right, _ := argsOf(columns[1])["elements"].([]any)
-			if len(right) != 1 || stringArg(argsOf(right[0]), "tag") != "button" || stringArg(argsOf(argsOf(right[0])["text"]), "content") != "选择" {
-				continue
-			}
-			if len(left) == 0 {
-				t.Fatal("option row has no label")
-			}
-			return argsOf(left[0]), argsOf(right[0])
+	elements, _ := questionForm(card)["elements"].([]any)
+	var selector core.Args
+	for _, raw := range elements {
+		element := argsOf(raw)
+		if stringArg(element, "tag") == "select_static" {
+			selector = element
 		}
-		return nil, nil
 	}
-	label, action := find(private)
-	if label == nil || action == nil {
-		t.Fatal("private option row is missing")
+	if selector == nil || selector["behaviors"] != nil || selector["initial_option"] != nil || selector["selected_values"] != nil {
+		t.Fatalf("selector must collect a fresh local draft without intermediate callbacks: %#v", selector)
 	}
-	if !strings.Contains(stringArg(label, "content"), "✓ A") || stringArg(action, "type") != "primary" {
-		t.Fatalf("private selection is not highlighted: label=%v action=%v", label, action)
+	options, _ := selector["options"].([]any)
+	if len(options) != 2 || stringArg(argsOf(options[0]), "value") != "0" || stringArg(argsOf(options[1]), "value") != "1" {
+		t.Fatalf("selector lost stable option identities: %#v", options)
 	}
-	label, action = find(group)
-	if label == nil || action == nil {
-		t.Fatal("group option row is missing")
-	}
-	if strings.Contains(stringArg(label, "content"), "✓") || stringArg(action, "type") != "default" {
-		t.Fatalf("group card disclosed a selection: label=%v action=%v", label, action)
-	}
-}
-
-func TestQuestionSelectionSummaryOnlyForPrivateCards(t *testing.T) {
-	questions := []question{
-		{Question: "第一题", Options: []questionOption{{Label: "A"}, {Label: "B"}, {Label: "C"}}},
-		{Question: "第二题", MultiSelect: true, Options: []questionOption{{Label: "X"}, {Label: "Y"}}},
-	}
-	selected := map[string]map[int]map[int]bool{
-		"ou_user": {0: {0: true, 2: true}, 1: {1: true}},
-	}
-	private := approvalCard("request-id", &approval{
-		kind: "question", revision: "revision-id", room: core.Room{DMUser: "ou_user"},
-		questions: questions, selected: selected,
-	}, "ou_user")
-	group := approvalCard("request-id", &approval{
-		kind: "question", revision: "revision-id",
-		questions: questions, selected: selected,
-	}, "ou_user")
-	intro := func(card core.Args) string {
-		elements, _ := argsOf(card["body"])["elements"].([]any)
-		return stringArg(argsOf(elements[0]), "content")
-	}
-	if text := intro(private); !strings.Contains(text, "当前选择") || !strings.Contains(text, "1. A, C") || !strings.Contains(text, "2. Y") {
-		t.Fatalf("private card is missing the current selection: %q", text)
-	}
-	if text := intro(group); strings.Contains(text, "当前选择") {
-		t.Fatalf("group card disclosed a member's selection: %q", text)
+	value := cardValue(card, "提交回答")
+	if value["session"] != "session-id" || value["revision"] != "revision-id" || value["request"] != "request-id" {
+		t.Fatalf("form submission lost its request binding: %#v", value)
 	}
 }
 

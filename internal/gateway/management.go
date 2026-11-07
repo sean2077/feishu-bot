@@ -124,6 +124,10 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 		phase = "queued"
 	}
 	view := core.Args{"project": r.ProjectID, "state": state, "phase": phase, "background": background, "monitorPinned": pinned, "pendingOrUnconfirmed": total, "inputs": inputs, "approvals": approvals, "pendingOutputs": outputs}
+	if r.Thread != "" {
+		view["threadRoot"] = r.Thread
+		view["workspaceBinding"] = r.WorkspaceCWD
+	}
 	view["outboxStates"] = outboxStates
 	view["cardSnapshots"] = core.Args{"count": snapshotCount, "bytes": snapshotBytes}
 	if saved != nil {
@@ -222,6 +226,13 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 			pin = "是"
 		}
 		text := fmt.Sprintf("**本聊天状态**\n状态：%s\n项目：%s\n当前会话：`%s`\n原生会话：`%s`\n\n输入 · 排队：%v · 已交给原生：%v · 已消费待结果：%v · 结果未知：%v\n等待审批或回答：%v · 待交付输出：%v\n后台活动：%s · 监控保留：%s", phases[phase], r.ProjectID, session, native, inputs["queued"], inputs["sent"], inputs["consumed"], inputs["uncertain"], v["approvals"], v["pendingOutputs"], background, pin)
+		if r.Thread != "" {
+			binding := "使用群默认目录"
+			if r.WorkspaceCWD != "" {
+				binding = r.WorkspaceCWD
+			}
+			text += fmt.Sprintf("\n话题根消息：`%s`\n话题工作区绑定：%s", r.Thread, binding)
+		}
 		if name := stringArg(v, "sessionName"); name != "" {
 			text += "\n会话名称：" + name
 		}
