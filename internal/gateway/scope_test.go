@@ -88,6 +88,7 @@ func TestPermissionApprovalsBindExactCardRoomAndMaintainer(t *testing.T) {
 	eventually(t, func() bool { return f.tr.cardCount() > 0 })
 	card := f.tr.cardLast()
 	value := cardValue(card.card, "批准一次")
+	waitApprovalBinding(t, f, card, stringArg(value, "request"))
 	if value == nil {
 		t.Fatal("permission card missing button")
 	}
@@ -130,6 +131,7 @@ func TestForwardedApprovalCannotBeClaimedByOriginalDMUser(t *testing.T) {
 		t.Fatalf("not forwarded to maintainer: %#v", card.room)
 	}
 	value := cardValue(card.card, "批准一次")
+	waitApprovalBinding(t, f, card, stringArg(value, "request"))
 	if value == nil {
 		t.Fatal("permission card missing button")
 	}
@@ -266,6 +268,7 @@ func TestStoppedApprovalAndOldCardCannotRunCommand(t *testing.T) {
 	eventually(t, func() bool { return f.tr.cardCount() > 0 })
 	card := f.tr.cardLast()
 	value := cardValue(card.card, "批准一次")
+	waitApprovalBinding(t, f, card, stringArg(value, "request"))
 	f.send(f.message("stop", "/stop", "owner"))
 	text, e := f.g.Action(context.Background(), core.CardAction{UserID: "owner", ChatID: "group", MessageID: card.id, Value: value})
 	if e != nil || text != "请求已结束或过期" {
