@@ -256,10 +256,20 @@ func (s *slot) advanceAnchorLocked() {
 }
 func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	disposition := ""
-	err := g.store.Transaction(context.Background(), func(tx *sql.Tx) error { var e error; disposition, e = g.recordUsage(tx, s, ev); return e })
+	record := func() error {
+		return g.store.Transaction(context.Background(), func(tx *sql.Tx) error { var e error; disposition, e = g.recordUsage(tx, s, ev); return e })
+	}
+	err := record()
+	for attempt := 0; err != nil && attempt < len(finalPersistRetry) && !g.isClosing(); attempt++ {
+		time.Sleep(finalPersistRetry[attempt])
+		err = record()
+	}
 	if err != nil {
+		// Usage is bookkeeping. The native process will not repeat this
+		// result, so dropping it here would leave the turn busy forever; keep
+		// handling the reply and let the usage report show the gap.
 		g.audit(s.room.Key, "usage_persistence_failed", core.Args{"session": s.session.ID, "error": err.Error()})
-		return
+		disposition = "unrecorded"
 	}
 	if disposition == "duplicate" {
 		return

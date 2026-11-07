@@ -324,3 +324,27 @@ func TestLegacyTopicAttachmentsMoveOutOfTheChatInbound(t *testing.T) {
 		t.Fatal("legacy topics directory left inside the chat inbound")
 	}
 }
+
+func TestPartialLegacyMigrationIsMerged(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, "inbound", "topics", "topic-a")
+	target := filepath.Join(root, "topic-inbound", "topic-a")
+	for _, p := range []string{legacy, target} {
+		if err := os.MkdirAll(p, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "old.txt"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "new.txt"), []byte("y"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	migrateTopicAttachments(root)
+	if data, err := os.ReadFile(filepath.Join(target, "old.txt")); err != nil || string(data) != "x" {
+		t.Fatalf("legacy upload not merged: %q %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "inbound", "topics")); !os.IsNotExist(err) {
+		t.Fatal("legacy topics directory left inside the chat inbound")
+	}
+}

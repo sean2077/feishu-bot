@@ -149,19 +149,42 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 		if name == "Grep" || name == "Glob" {
 			keys = append(keys, "path")
 		}
+		search := name == "Grep" || name == "Glob"
 		candidates := []string{}
 		for _, key := range keys {
-			if raw, ok := toolInput[key].(string); ok {
-				candidates = append(candidates, raw)
+			raw, ok := toolInput[key].(string)
+			if !ok {
+				continue
 			}
+			if search && key == "path" && !plainSearchPath(raw) {
+				// Claude Code resolves search paths itself (trimming, "~",
+				// rooted Windows forms); refuse forms this check could resolve
+				// differently from the search.
+				return denyHook("Use an absolute or plain relative search path"), nil
+			}
+			candidates = append(candidates, raw)
 		}
 		if name == "Glob" {
-			// An absolute pattern names its search root directly.
-			if pattern, ok := toolInput["pattern"].(string); ok && filepath.IsAbs(pattern) {
-				candidates = append(candidates, globRoot(pattern))
+			if pattern, ok := toolInput["pattern"].(string); ok {
+				if !plainSearchPath(pattern) {
+					return denyHook("Use an absolute or plain relative glob pattern"), nil
+				}
+				// An absolute pattern names its search root directly; a
+				// relative one may climb out of its base with "..".
+				if filepath.IsAbs(pattern) {
+					candidates = append(candidates, globRoot(pattern))
+				} else if strings.Contains(pattern, "..") {
+					base := w.workspace.Work
+					if raw, ok := toolInput["path"].(string); ok && raw != "" {
+						base = raw
+						if !filepath.IsAbs(base) {
+							base = filepath.Join(w.workspace.Work, base)
+						}
+					}
+					candidates = append(candidates, globRoot(filepath.Join(base, pattern)))
+				}
 			}
 		}
-		search := name == "Grep" || name == "Glob"
 		for _, raw := range candidates {
 			path := raw
 			if !filepath.IsAbs(path) {
@@ -384,4 +407,17 @@ func foldCase(path string) string {
 		return strings.ToLower(path)
 	}
 	return path
+}
+
+// plainSearchPath reports whether a Grep/Glob path or pattern means the same
+// location to this hook and to Claude Code: no surrounding whitespace, no "~"
+// home expansion and, on Windows, no rooted path without a drive or UNC root.
+func plainSearchPath(path string) bool {
+	if strings.TrimSpace(path) != path || strings.HasPrefix(path, "~") {
+		return false
+	}
+	if runtime.GOOS == "windows" && !filepath.IsAbs(path) && (strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\")) {
+		return false
+	}
+	return true
 }

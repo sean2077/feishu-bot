@@ -1022,11 +1022,20 @@ func (g *Gateway) dispatch(r core.Room) error {
 				// Preparation failed before the queued→sent commit, so the
 				// model definitely never received these inputs. Report that
 				// plainly instead of as an unconfirmed delivery.
+				stateErr := error(nil)
 				for _, m := range members {
 					if _, e := g.store.DB.Exec("UPDATE inbox SET status='cancelled',payload=NULL WHERE uuid=? AND room=? AND status='queued'", m.UUID, r.Key); e != nil {
-						_ = g.store.Mark(m.UUID, "uncertain")
+						if e = g.store.Mark(m.UUID, "uncertain"); e != nil {
+							stateErr = e
+						}
 					}
 					g.settleReceipts(r.Key, m.SessionID, origin(m.Message), false)
+				}
+				if stateErr != nil {
+					// The input is still queued; picking it up again at once
+					// would loop. Leave it for a later dispatch.
+					g.audit(r.Key, "input_state_unconfirmed", core.Args{"session": s.session.ID})
+					return stateErr
 				}
 				g.notify(r, "本条输入未提交给模型："+core.Redact(err.Error(), g.secrets)+"。请处理后重新发送。", &d.Message)
 				continue

@@ -231,10 +231,27 @@ func migrateTopicAttachments(root string) {
 			continue
 		}
 		destination := filepath.Join(target, entry.Name())
-		if _, e := os.Lstat(destination); !errors.Is(e, os.ErrNotExist) {
+		st, e := os.Lstat(destination)
+		if errors.Is(e, os.ErrNotExist) {
+			_ = os.Rename(source, destination)
 			continue
 		}
-		_ = os.Rename(source, destination)
+		if e != nil || !st.IsDir() {
+			continue
+		}
+		// An earlier partial migration already created the target: merge
+		// file by file so nothing is left under the chat's own inbound.
+		files, e := os.ReadDir(source)
+		if e != nil {
+			continue
+		}
+		for _, file := range files {
+			from, to := filepath.Join(source, file.Name()), filepath.Join(destination, file.Name())
+			if _, e := os.Lstat(to); errors.Is(e, os.ErrNotExist) {
+				_ = os.Rename(from, to)
+			}
+		}
+		_ = os.Remove(source)
 	}
 	_ = os.Remove(legacy)
 }

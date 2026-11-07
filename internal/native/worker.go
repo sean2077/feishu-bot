@@ -547,6 +547,14 @@ func (w *worker) handleFrame(event args) {
 		return
 	}
 	if w.ctx.Err() != nil {
+		// After a stop, results and activity no longer matter, but the native
+		// session report still does: the context exists and its ID must reach
+		// the gateway so the next launch resumes instead of starting afresh.
+		if event["type"] == "system" && event["subtype"] == "init" {
+			if id := text(event["session_id"]); id != "" && (w.session.CCID == "" || id == w.session.CCID) {
+				w.emit(core.WorkerEvent{Type: "ready", CCID: id})
+			}
+		}
 		return
 	}
 	w.mu.Lock()

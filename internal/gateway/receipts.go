@@ -169,6 +169,13 @@ func (g *Gateway) flushReceipt(id string) {
 					}
 					return
 				}
+				if next == "processing" {
+					// No processing reaction exists, so record it as cleared:
+					// a later "done" then creates Done directly instead of
+					// trying to remove a reaction that was never added.
+					_, _ = g.store.DB.Exec("UPDATE receipts SET applied='clear',desired='clear' WHERE id=? AND desired='processing'", id)
+					return
+				}
 				_, _ = g.store.DB.Exec("UPDATE receipts SET applied=desired WHERE id=? AND desired=?", id, desired)
 			case definite && (next == "processing" || next == "done") && !strings.HasPrefix(applied.String, "attempt:"):
 				// This create was definitely not written: restore the prior
