@@ -90,3 +90,32 @@ func TestUnusableSessionDirectoryDeniesRelativeSearches(t *testing.T) {
 		t.Fatal("ordinary relative search denied")
 	}
 }
+
+func TestGlobRootMatchesClaudeCodeSplit(t *testing.T) {
+	for _, mode := range []string{"isolated", "inherit"} {
+		w, work, other := windowsScopeFixture(t, mode)
+		otherRoom := filepath.Dir(other)
+		mine := filepath.Base(filepath.Dir(work))
+		up := filepath.Join("a", "..", "..", "..", mine, "workspace", "x")
+		for _, pattern := range []string{
+			filepath.Join(other, "{"+up+",**}", "*"),
+			filepath.Join(otherRoom, "!zzz"),
+			filepath.Join(other, "report.pdf"),
+		} {
+			if !hookDenied(t, w, "Glob", args{"pattern": pattern}, "") {
+				t.Fatalf("%s: glob escaped its checked root: %s", mode, pattern)
+			}
+		}
+		for _, pattern := range []string{filepath.Join(work, "**", "*.go"), filepath.Join(work, "src", "{a,b}", "*.ts")} {
+			if hookDenied(t, w, "Glob", args{"pattern": pattern}, "") {
+				t.Fatalf("%s: ordinary absolute glob denied: %s", mode, pattern)
+			}
+		}
+		if hookDenied(t, w, "Glob", args{"pattern": "**/*.go"}, work) || hookDenied(t, w, "Grep", args{"pattern": "TODO"}, work) {
+			t.Fatalf("%s: path-less search in the workspace denied", mode)
+		}
+		if !hookDenied(t, w, "Glob", args{"pattern": "**/*"}, other) || !hookDenied(t, w, "Grep", args{"pattern": "x"}, other) {
+			t.Fatalf("%s: path-less search from another room's directory allowed", mode)
+		}
+	}
+}

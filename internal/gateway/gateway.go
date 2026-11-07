@@ -454,11 +454,13 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	if err != nil {
 		return err
 	}
-	g.acceptReceipt(room, session.ID, m)
 	if held {
+		// A held input is cancelled by the next successful stop; it gets no
+		// processing reaction that a concurrent stop could leave behind.
 		g.notify(room, stopBlockedNotice, &m)
 		return nil
 	}
+	g.acceptReceipt(room, session.ID, m)
 	g.kick(room)
 	if command != nil && count > 0 {
 		g.notify(room, "已接收 /compact，将在当前工作轮次结束后整理上下文；期间仍可处理审批。", &m)

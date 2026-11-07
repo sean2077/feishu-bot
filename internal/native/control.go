@@ -181,6 +181,16 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			}
 			candidates = append(candidates, raw)
 		}
+		if search {
+			// Without a path the search runs in the session directory, which
+			// "cd" in Bash can move anywhere.
+			if raw, ok := toolInput["path"].(string); !ok || raw == "" {
+				if !cwdKnown {
+					return denyHook("Use an absolute search path"), nil
+				}
+				candidates = append(candidates, cwd)
+			}
+		}
 		if name == "Glob" {
 			if pattern, ok := toolInput["pattern"].(string); ok {
 				if pattern = msysDrivePath(pattern); !plainSearchPath(pattern) || !cwdKnown && !filepath.IsAbs(pattern) {
@@ -421,12 +431,27 @@ func validateHistory(input args) error {
 // globRoot returns the directory prefix of an absolute glob pattern before its
 // first wildcard element.
 func globRoot(pattern string) string {
-	clean := filepath.Clean(pattern)
-	i := strings.IndexAny(clean, "*?[{")
+	// Match Claude Code: split the raw pattern at the last separator before
+	// its first wildcard and clean only that literal base. Cleaning the whole
+	// pattern would let ".." inside a brace group cancel base elements. With
+	// no wildcard Claude Code searches the parent directory.
+	i := strings.IndexAny(pattern, "*?[{")
 	if i < 0 {
-		return clean
+		return filepath.Dir(filepath.Clean(pattern))
 	}
-	return filepath.Dir(clean[:i+1])
+	separators := "/"
+	if runtime.GOOS == "windows" {
+		separators = "/\\"
+	}
+	j := strings.LastIndexAny(pattern[:i], separators)
+	if j < 0 {
+		return "."
+	}
+	base := pattern[:j]
+	if base == "" || strings.HasSuffix(base, ":") {
+		base += string(filepath.Separator)
+	}
+	return filepath.Clean(base)
 }
 
 func foldCase(path string) string {
