@@ -28,14 +28,65 @@ func (f *fixture) image(id, sender string) core.Message {
 
 func TestImageBatchKeepsEveryOriginalAndCompletesTogether(t *testing.T) {
 	f := newFixture(t, func(c *core.Config) {
-		// Keep the deadline beyond the fixture's 3s wait: the second image must close the batch.
 		c.Limits.ImageBatchMS = 5000
 		c.Limits.ImageBatchMaxImages = 2
 	})
+	defer func() {
+		if t.Failed() {
+			imageBatchDiagnostics(t, f)
+		}
+	}()
 	f.send(f.image("first", "member"))
+	// Observe dispatch waiting for the open batch, then remove only its timer
+	// fallback. The second message must wake this cold room on its own; a slow
+	// attachment transfer must not let the 5s timer mask a missing full-batch kick.
+	stopped := false
+	eventually(t, func() bool {
+		f.g.mu.Lock()
+		defer f.g.mu.Unlock()
+		wait, ok := f.g.imageTimers[f.room().Key]
+		if !ok {
+			return false
+		}
+		stopped = wait.timer.Stop()
+		delete(f.g.imageTimers, f.room().Key)
+		return true
+	})
+	if !stopped || f.starts.Load() != 0 {
+		t.Fatal("collection deadline elapsed before the full-batch wakeup check")
+	}
 	f.send(f.image("second", "member"))
+	// Closure is an admission fact, not a delivery latency assertion. Both rows
+	// must already agree when Message returns, even if dispatch has marked sent.
+	batchID := ""
+	for _, id := range []string{"first", "second"} {
+		var raw string
+		if err := f.s.DB.QueryRow("SELECT payload FROM inbox WHERE room=? AND id=?", f.room().Key, id).Scan(&raw); err != nil {
+			t.Fatal("cannot inspect admitted image", id, err)
+		}
+		var input core.Delivery
+		if err := jsonUnmarshal(raw, &input); err != nil {
+			t.Fatal(err)
+		}
+		if input.ImageBatch == nil || !input.ImageBatch.Closed || input.ImageBatch.ID == "" {
+			t.Fatalf("second image did not persist a closed batch for %s: %+v", id, input.ImageBatch)
+		}
+		if batchID != "" && input.ImageBatch.ID != batchID {
+			t.Fatal("original images were not admitted to the same batch")
+		}
+		batchID = input.ImageBatch.ID
+	}
+	// Keep the original 3s cold-start check. Only the later filesystem/provider
+	// phase gets a separate watchdog; it performs two durable file publications.
 	w := f.worker()
-	d := f.delivery(w)
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	var d core.Delivery
+	select {
+	case d = <-w.sent:
+	case <-timer.C:
+		t.Fatal("image batch delivery did not finish after the worker started")
+	}
 	if len(d.BatchInputs) != 2 || len(d.BatchInputs[0].Attachments) != 1 || len(d.BatchInputs[1].Attachments) != 1 {
 		t.Fatalf("batch originals/attachments missing: %+v", d)
 	}
@@ -51,6 +102,42 @@ func TestImageBatchKeepsEveryOriginalAndCompletesTogether(t *testing.T) {
 	case extra := <-w.sent:
 		t.Fatalf("batch also sent separately: %+v", extra)
 	default:
+	}
+}
+
+func imageBatchDiagnostics(t *testing.T, f *fixture) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	rows, err := f.s.DB.QueryContext(ctx, "SELECT id,status,coalesce(payload,'') FROM inbox WHERE room=? ORDER BY rowid", f.room().Key)
+	if err != nil {
+		t.Log("image batch storage diagnostics:", err)
+	} else {
+		defer rows.Close()
+		for rows.Next() {
+			var id, status, payload string
+			if err := rows.Scan(&id, &status, &payload); err != nil {
+				t.Log("image batch row:", err)
+				break
+			}
+			t.Logf("image batch input %s: status=%s payload=%s", id, status, payload)
+		}
+		if err := rows.Err(); err != nil {
+			t.Log("image batch rows:", err)
+		}
+	}
+	if f.g.mu.TryLock() {
+		wake, timer := f.g.wakes[f.room().Key], f.g.imageTimers[f.room().Key]
+		t.Logf("image batch dispatch: wake=%+v timerDeadline=%d workerStarts=%d", wake, timer.deadline, f.starts.Load())
+		f.g.mu.Unlock()
+	} else {
+		t.Log("image batch dispatch lock is held")
+	}
+	if f.tr.mu.TryLock() {
+		t.Logf("image batch transport: downloads=%d notices=%q cards=%+v", f.tr.downloads, f.tr.notices, f.tr.cards)
+		f.tr.mu.Unlock()
+	} else {
+		t.Log("image batch transport lock is held")
 	}
 }
 func TestImageBatchOversizeRejectsAllBeforeNativeHandoff(t *testing.T) {

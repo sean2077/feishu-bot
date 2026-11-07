@@ -212,7 +212,8 @@ func lockPrepare(ctx context.Context, root string) (func(), error) {
 // directory, to the sibling topic-inbound/<id> layout. Only real directories
 // move, never over a different target. A failed migration stops preparation:
 // leftover topic uploads must not become the chat room's own attachments.
-// The caller holds the room's preparation lock.
+// The caller holds the room's preparation lock and supplies its canonical root
+// from PrepareContext; directory aliases are resolved before this boundary.
 func migrateTopicAttachments(ctx context.Context, root string) error {
 	if err := ctx.Err(); err != nil {
 		return err
