@@ -428,7 +428,7 @@ func (g *Gateway) quickSupplement(ctx context.Context, r core.Room, a core.CardA
 	if seen {
 		return "这段补充已接收，无需重复提交。", nil
 	}
-	n, err := g.store.CountPending(r.Key)
+	n, err := g.pendingInChat(r)
 	if err != nil {
 		return "", err
 	}

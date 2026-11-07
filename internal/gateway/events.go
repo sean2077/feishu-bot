@@ -84,8 +84,8 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		}
 		s.mu.Unlock()
 		if ok && d.SupplementTo != "" && !accepted {
-			r, allowed := Route(g.config, d.Message)
-			if allowed && r.Key == s.room.Key {
+			r, allowed := routeQueued(g.config, s.room.Key, d.Message)
+			if allowed {
 				if receipt := supplementReceipt(d.Message); receipt != "" {
 					g.notify(r, receipt, &d.Message)
 				}
@@ -431,7 +431,14 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 		g.task(func() { _, _ = g.deliverOutput(g.ctx, notice, s.room, false) })
 	}
 	if !cleanupFailed {
-		for _, candidate := range g.allRooms() {
+		// Durable queued inputs, not an in-memory room history, decide which
+		// rooms may now use the released capacity.
+		keys, _ := g.store.PendingRooms()
+		for _, key := range keys {
+			candidate, ok := RoomFromKey(g.config, key)
+			if !ok {
+				continue
+			}
 			if candidate.Key != s.room.Key {
 				g.kick(candidate)
 			} else {
@@ -445,15 +452,6 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 			}
 		}
 	}
-}
-func (g *Gateway) allRooms() []core.Room {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	out := make([]core.Room, 0, len(g.rooms))
-	for _, r := range g.rooms {
-		out = append(out, r)
-	}
-	return out
 }
 
 var _ = fmt.Sprint

@@ -170,3 +170,38 @@ func TestFileScopePinsCanonicalRootsAndRejectsInboundRedirection(t *testing.T) {
 		t.Fatal("preexisting inbound redirection was admitted")
 	}
 }
+
+func TestTopicAttachmentsStayWithTheirTopic(t *testing.T) {
+	root := t.TempDir()
+	room := filepath.Join(root, "room")
+	work := filepath.Join(room, "work")
+	home := filepath.Join(room, "home")
+	mine := filepath.Join(room, "inbound", "topics", "topic-a")
+	theirs := filepath.Join(room, "inbound", "topics", "topic-b")
+	for _, p := range []string{work, home, mine, theirs} {
+		if err := os.MkdirAll(p, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, mode := range []string{"isolated", "inherit"} {
+		w := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: mine, NativeConfig: mode}, events: make(chan core.WorkerEvent, 16), eventsDone: make(chan struct{})}
+		check := func(tool, path string, wantDeny bool) {
+			t.Helper()
+			result, err := w.hook(context.Background(), "tool", args{"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": args{"file_path": path}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if denied := object(result["hookSpecificOutput"])["permissionDecision"] == "deny"; denied != wantDeny {
+				t.Fatalf("%s %s %s denied=%v want=%v", mode, tool, path, denied, wantDeny)
+			}
+		}
+		check("Read", filepath.Join(mine, "upload.txt"), false)
+		check("Read", filepath.Join(theirs, "upload.txt"), true)
+		check("Read", filepath.Join(room, "inbound", "chat-era.txt"), true)
+		check("Write", filepath.Join(work, "shared.txt"), false)
+	}
+	invalid := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: filepath.Join(room, "inbound", "elsewhere")}}
+	if _, err := invalid.fileScope(); err == nil {
+		t.Fatal("an attachment directory outside the topic layout was admitted")
+	}
+}

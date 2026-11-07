@@ -90,8 +90,9 @@ func (w *worker) fileScope() (nativeFileScope, error) {
 			if w.scopeErr != nil {
 				return
 			}
-			expected := filepath.Join(root, "inbound")
-			if !core.Inside(expected, w.scope.inbound) || !core.Inside(w.scope.inbound, expected) {
+			rel, valid := core.AttachmentRel(w.workspace.Root, w.workspace.Inbound)
+			expected := filepath.Join(root, rel)
+			if !valid || !core.Inside(expected, w.scope.inbound) || !core.Inside(w.scope.inbound, expected) {
 				w.scopeErr = fmt.Errorf("conversation attachment directory was redirected")
 			}
 		}

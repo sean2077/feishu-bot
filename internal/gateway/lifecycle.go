@@ -235,12 +235,18 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 			g.rates[key] = alive
 		}
 	}
-	rooms := make([]core.Room, 0, len(g.rooms))
-	for _, r := range g.rooms {
-		rooms = append(rooms, r)
-	}
 	g.mu.Unlock()
-	for _, r := range rooms {
+	// Scan rooms that actually own pending outputs. Topic rooms accumulate over
+	// time, so retry work must not follow every room ever seen.
+	keys, e := g.store.PendingOutputRooms(ctx)
+	if e != nil {
+		return
+	}
+	for _, key := range keys {
+		r, ok := RoomFromKey(g.config, key)
+		if !ok {
+			continue
+		}
 		for _, id := range g.retryable(r.Key) {
 			if ctx.Err() != nil {
 				return

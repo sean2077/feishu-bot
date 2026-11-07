@@ -103,7 +103,13 @@ func privateSettings(w core.Workspace, modelEnv map[string]string) (string, erro
 	if w.Inbound == "" {
 		return "", fmt.Errorf("inherited configuration requires private conversation state")
 	}
-	path := filepath.Join(filepath.Dir(w.Inbound), "native-settings-"+core.NewID()+".json")
+	// Private room state lives in the workspace root, next to the shared
+	// inbound tree; topic attachment directories are nested deeper.
+	dir := w.Root
+	if dir == "" {
+		dir = filepath.Dir(w.Inbound)
+	}
+	path := filepath.Join(dir, "native-settings-"+core.NewID()+".json")
 	data, err := json.Marshal(args{"env": modelEnv})
 	if err != nil {
 		return "", err

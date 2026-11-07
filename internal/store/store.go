@@ -426,6 +426,24 @@ func stringsQuery(q interface {
 	}
 	return result, rows.Err()
 }
+
+// PendingOutputRooms lists rooms with outputs awaiting delivery.
+func (s *Store) PendingOutputRooms(ctx context.Context) ([]string, error) {
+	rows, e := s.DB.QueryContext(ctx, "SELECT DISTINCT room FROM outbox WHERE state NOT IN ('done','cancelled') AND state='pending'")
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	keys := []string{}
+	for rows.Next() {
+		var key string
+		if e = rows.Scan(&key); e != nil {
+			return nil, e
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
 func (s *Store) PendingRooms() ([]string, error) {
 	return stringsQuery(s.DB, "SELECT DISTINCT room FROM inbox WHERE status='queued'")
 }
@@ -442,6 +460,34 @@ func (s *Store) CountPending(room string) (int, error) {
 	var n int
 	e := s.DB.QueryRow("SELECT count(*) FROM inbox WHERE room=? AND status IN ('queued','sent','consumed')", room).Scan(&n)
 	return n, e
+}
+
+// CountPendingChat counts pending inputs of a chat room and of every topic
+// room derived from it. Topic keys extend the chat key's JSON array, so they
+// sort in the half-open range [chat key without "]" + ",", ... + "-").
+func (s *Store) CountPendingChat(chatKey string) (int, error) {
+	if !strings.HasSuffix(chatKey, "]") {
+		return s.CountPending(chatKey)
+	}
+	prefix := chatKey[:len(chatKey)-1] + ","
+	upper := chatKey[:len(chatKey)-1] + "-"
+	var n int
+	e := s.DB.QueryRow("SELECT count(*) FROM inbox WHERE (room=? OR (room>=? AND room<?)) AND status IN ('queued','sent','consumed')", chatKey, prefix, upper).Scan(&n)
+	return n, e
+}
+
+// SessionReceivedInput reports whether this room's session has handed an
+// input to the native process (sent, consumed or done). Gateway context caches
+// are not evidence of native delivery. Uncertain inputs are excluded because
+// failed preparation is also recorded as uncertain; callers that only avoid a
+// repeated quote therefore err toward supplying context again.
+func (s *Store) SessionReceivedInput(room, session string) (bool, error) {
+	var n int
+	e := s.DB.QueryRow("SELECT 1 FROM inbox WHERE room=? AND session=? AND status IN ('sent','consumed','done') LIMIT 1", room, session).Scan(&n)
+	if e == sql.ErrNoRows {
+		return false, nil
+	}
+	return e == nil, e
 }
 func (s *Store) FinishConsumed(session string) error {
 	_, e := s.DB.Exec("UPDATE inbox SET status='done',payload=NULL WHERE session=? AND status='consumed'", session)
