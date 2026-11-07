@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 type ioResult[T any] struct {
@@ -82,4 +83,22 @@ func (k *keyedLocks) lockContext(ctx context.Context, id string) (func(), error)
 func (k *keyedLocks) lock(id string) func() {
 	release, _ := k.lockContext(context.Background(), id)
 	return release
+}
+
+// lockWithin acquires mu unless ctx ends first.
+func lockWithin(ctx context.Context, mu *sync.Mutex) bool {
+	for {
+		if mu.TryLock() {
+			if ctx.Err() != nil {
+				mu.Unlock()
+				return false
+			}
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 }

@@ -163,6 +163,10 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 		return err
 	}
 	s.State = "open"
+	previous := ""
+	if err = st.DB.QueryRowContext(ctx, "SELECT id FROM sessions WHERE room=? AND state='open'", r.Key).Scan(&previous); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	committed := false
 	commit := func() error {
 		// Select the session and mark local usage only after the launch checks
@@ -188,6 +192,21 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 	confirmed = !errors.Is(result, process.ErrUnconfirmed)
 	if !committed {
 		return result
+	}
+	if errors.Is(result, process.ErrNotStarted) && confirmed {
+		// The terminal never ran, so restore the chat's previous selection
+		// instead of leaving a switch that nothing used.
+		restore := previous
+		if restore == "" {
+			restore = s.ID
+		}
+		if restore != s.ID {
+			if _, err := st.Resume(r.Key, restore); err != nil {
+				result = errors.Join(result, err)
+			}
+		}
+		_, auditErr := st.DB.Exec("INSERT INTO audit(at,room,event,detail) VALUES(?,?,'local_session_finished',?)", time.Now().UnixMilli(), r.Key, sessionDetail(core.Args{"session": s.ID, "state": "not_started", "restored": restore}))
+		return errors.Join(result, auditErr)
 	}
 	state := "exited"
 	if result != nil {

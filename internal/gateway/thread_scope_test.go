@@ -368,3 +368,30 @@ func TestSweepRetriesOutputsOfRoomsNotHeldInMemory(t *testing.T) {
 		t.Fatal("pending topic output was not delivered to its topic")
 	}
 }
+
+func TestExpiredSupplementCallbackDoesNotCommit(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("work", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	r := f.room()
+	card := DisplayCard("fixture", "reply", f.g.quickControls(r, d.SessionID, d.UUID, "")...)
+	if err := f.g.bindQuickControls("late-card", card); err != nil {
+		t.Fatal(err)
+	}
+	a := core.CardAction{ChatID: r.ChatID, UserID: "second", MessageID: "late-card", Value: testQuickValue(t, f.g, card, "supplement"), FormValue: core.Args{"quick_supplement": "late"}}
+	s := f.g.getSlot(r.Key)
+	s.events.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	_, err := f.g.Action(ctx, a)
+	cancel()
+	s.events.Unlock()
+	if err == nil {
+		t.Fatal("supplement waited past its callback deadline")
+	}
+	var n int
+	_ = f.s.DB.QueryRow("SELECT count(*) FROM inbox WHERE room=? AND id LIKE 'card:%'", r.Key).Scan(&n)
+	if n != 0 {
+		t.Fatal("a timed-out callback committed a supplement")
+	}
+}

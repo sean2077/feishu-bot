@@ -361,12 +361,15 @@ func (c *Client) File(ctx context.Context, room core.Room, path, name string) (m
 	return c.sendContent(ctx, room, "file", core.Args{"file_key": key}, "", "")
 }
 
+// uploadTimeout bounds one streamed file upload, including the request body.
+const uploadTimeout = 60 * time.Second
+
 func (c *Client) uploadFile(ctx context.Context, file io.Reader, name, boundary string, limit int64) (string, error) {
 	token, err := c.accessToken(ctx)
 	if err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, uploadTimeout)
 	defer cancel()
 	// io.Pipe keeps uploads bounded as well as downloads. No whole-file buffer or
 	// transparent replay is possible for this stream.
@@ -411,7 +414,11 @@ func (c *Client) uploadFile(ctx context.Context, file io.Reader, name, boundary 
 	var data struct {
 		Key string `json:"file_key"`
 	}
-	err = c.doAPI(req, &data, true)
+	// The shared client's 20s total timeout would cut a streamed upload short
+	// of the 60s request deadline above, so use a copy bounded by that deadline.
+	client := *c.http
+	client.Timeout = uploadTimeout
+	err = c.doAPIWith(&client, req, &data, true)
 	_ = reader.Close()
 	uploadErr := <-done
 	if err != nil {

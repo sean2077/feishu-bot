@@ -127,7 +127,12 @@ func cardActionValueType(raw json.RawMessage) string {
 		return "other"
 	}
 }
-func (c *Client) runEvent(ctx context.Context, event pendingEvent) (reply any, err error) {
+
+// cardCallbackBudget is measured from frame receipt, not from dequeue, so time
+// spent waiting behind other callbacks counts against Feishu's deadline.
+const cardCallbackBudget = 2500 * time.Millisecond
+
+func (c *Client) runEvent(ctx context.Context, event pendingEvent, received time.Time) (reply any, err error) {
 	defer func() {
 		if recover() != nil {
 			reply = nil
@@ -142,8 +147,14 @@ func (c *Client) runEvent(ctx context.Context, event pendingEvent) (reply any, e
 		return nil, err
 	}
 	if event.action != nil && c.onAction != nil {
-		callbackCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+		callbackCtx, cancel := context.WithDeadline(ctx, received.Add(cardCallbackBudget))
 		defer cancel()
+		if callbackCtx.Err() != nil {
+			// The client has already given up; acting now would commit an
+			// input or decision the user was told did not happen.
+			c.emit("feishu_card_action_dropped", core.Args{"reason": "deadline"})
+			return nil, callbackCtx.Err()
+		}
 		reply, e := c.onAction(callbackCtx, *event.action)
 		if e != nil {
 			c.emit("feishu_card_handler_error", formatSafeError(e))
@@ -165,5 +176,5 @@ func (c *Client) HandleEvent(ctx context.Context, payload []byte) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.runEvent(ctx, event)
+	return c.runEvent(ctx, event, time.Now())
 }

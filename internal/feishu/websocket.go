@@ -234,7 +234,7 @@ func (c *Client) connection(parent context.Context, endpoint *larkws.Endpoint) e
 			case job := <-queue:
 				c.wsStats.queued(job.received)
 				started := time.Now()
-				reply, err := c.runEvent(ctx, job.event)
+				reply, err := c.runEvent(ctx, job.event, job.received)
 				job.frame.Headers = append(job.frame.Headers, larkws.Header{Key: larkws.HeaderBizRt, Value: strconv.FormatInt(time.Since(started).Milliseconds(), 10)})
 				ack(job.frame, reply, err, job.received)
 			}

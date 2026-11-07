@@ -376,7 +376,27 @@ func timezone() string {
 			return zone
 		}
 	}
-	return "UTC"
+	// Windows (and Linux hosts with a copied /etc/localtime) expose no IANA
+	// name. The local offset is still known; reporting UTC would be wrong.
+	return offsetZone(time.Now())
+}
+
+// offsetZone names the current local offset. Whole-hour offsets use the IANA
+// Etc/GMT form (whose sign is inverted by definition); others use UTC±hh:mm.
+func offsetZone(now time.Time) string {
+	_, offset := now.Zone()
+	if offset == 0 {
+		return "UTC"
+	}
+	if offset%3600 == 0 {
+		return fmt.Sprintf("Etc/GMT%+d", -offset/3600)
+	}
+	sign := '+'
+	if offset < 0 {
+		sign = '-'
+		offset = -offset
+	}
+	return fmt.Sprintf("UTC%c%02d:%02d", sign, offset/3600, offset%3600/60)
 }
 func (w *worker) pumpInputs() {
 	select {

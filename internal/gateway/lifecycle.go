@@ -77,20 +77,24 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 			}
 		}
 	}
+	// A database failure must not abandon the half-stopped slot: it is already
+	// cancelled and inactive, so returning early would leave a dead slot that
+	// blocks this room and holds a worker slot. Finish the process stop and
+	// report the state error afterwards.
+	var stateErr error
 	if session != "" {
 		g.cancelApprovals(session)
 		g.cancelReceipts(session)
 		if e := g.store.StopSession(session); e != nil {
-			if s != nil {
-				s.events.Unlock()
-			}
-			return e
+			stateErr = e
+		} else if e = g.cancelPendingOutputs(r, session); e != nil {
+			stateErr = e
 		}
-		if e := g.cancelPendingOutputs(r, session); e != nil {
-			if s != nil {
-				s.events.Unlock()
+		if stateErr != nil {
+			g.audit(r.Key, "stop_state_failed", core.Args{"session": session, "error": core.Redact(stateErr.Error(), g.secrets)})
+			if s == nil {
+				return stateErr
 			}
-			return e
 		}
 	}
 	if s != nil {
@@ -147,6 +151,11 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 	}
 	if err := g.waitRoomActions(ctx, r.Key); err != nil {
 		return err
+	}
+	if stateErr != nil {
+		// Inputs may still be queued; do not wake dispatch to deliver what the
+		// stop request meant to cancel.
+		return stateErr
 	}
 	g.kickWaiting()
 	return nil

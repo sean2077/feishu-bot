@@ -155,7 +155,7 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 		return errors.New("cannot create work directory")
 	}
 	envPath := filepath.Join(workDir, "service.env")
-	values, err := prepareEnvFile(c, o.EnvFile, envPath)
+	values, commitEnv, err := prepareEnvFile(c, o.EnvFile, envPath)
 	if err != nil {
 		return err
 	}
@@ -196,6 +196,11 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 
 	// Check ownership before stopping or replacing anything.
 	if err := mgr.Check(ctx, spec, o.Replace); err != nil {
+		return err
+	}
+	// Only now replace service.env: a failed precheck or ownership check must
+	// leave the installed service's environment untouched.
+	if err := commitEnv(); err != nil {
 		return err
 	}
 
@@ -267,14 +272,17 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 	return nil
 }
 
-func prepareEnvFile(c core.Config, source, target string) (map[string]string, error) {
+// prepareEnvFile reads and validates the service environment. It returns a
+// commit function that writes the target; callers run it only after every
+// installation check has passed.
+func prepareEnvFile(c core.Config, source, target string) (map[string]string, func() error, error) {
 	var data []byte
 	var err error
 	writeTarget := false
 	if source != "" {
 		data, err = os.ReadFile(source)
 		if err != nil {
-			return nil, fmt.Errorf("cannot read environment file %s", source)
+			return nil, nil, fmt.Errorf("cannot read environment file %s", source)
 		}
 		writeTarget = !samePath(source, target)
 	} else if existing, readErr := os.ReadFile(target); readErr == nil {
@@ -283,29 +291,32 @@ func prepareEnvFile(c core.Config, source, target string) (map[string]string, er
 		var missing []string
 		data, missing, err = buildEnvFile(c)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if len(missing) > 0 {
-			return nil, fmt.Errorf("missing credentials: %s; provide --env-file with KEY=VALUE lines", strings.Join(missing, ", "))
+			return nil, nil, fmt.Errorf("missing credentials: %s; provide --env-file with KEY=VALUE lines", strings.Join(missing, ", "))
 		}
 		writeTarget = true
 	} else {
-		return nil, errors.New("cannot read environment file")
+		return nil, nil, errors.New("cannot read environment file")
 	}
 	values, err := parseEnvFile(data)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if missing := missingCredentials(c, values); len(missing) > 0 {
-		return nil, fmt.Errorf("environment file is missing: %s", strings.Join(missing, ", "))
+		return nil, nil, fmt.Errorf("environment file is missing: %s", strings.Join(missing, ", "))
 	}
-	if writeTarget {
-		if err := writePrivate(target, data); err != nil {
-			return nil, err
+	commit := func() error {
+		if writeTarget {
+			if err := writePrivate(target, data); err != nil {
+				return err
+			}
 		}
+		_ = os.Chmod(target, 0600)
+		return nil
 	}
-	_ = os.Chmod(target, 0600)
-	return values, nil
+	return values, commit, nil
 }
 
 func writePrivate(path string, data []byte) error {

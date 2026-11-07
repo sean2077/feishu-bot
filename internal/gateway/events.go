@@ -68,8 +68,22 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 			})
 			return
 		}
-		if e := g.store.SetCC(s.session.ID, ev.CCID); e != nil {
+		e := g.store.SetCC(s.session.ID, ev.CCID)
+		for attempt := 0; e != nil && old == "" && attempt < len(identityPersistRetry); attempt++ {
+			time.Sleep(identityPersistRetry[attempt])
+			e = g.store.SetCC(s.session.ID, ev.CCID)
+		}
+		if e != nil {
 			g.audit(s.room.Key, "session_identity_persistence_failed", core.Args{"error": e.Error()})
+			if old == "" {
+				// A native context whose ID is not durable cannot be resumed
+				// later; continuing would make the next launch silently start a
+				// different context. Stop instead of accepting more work.
+				g.task(func() {
+					_ = g.stopRoom(g.ctx, s.room)
+					g.notify(s.room, "原生会话 ID 未能保存，已停止本聊天运行以免下次启动静默换成新上下文。请检查服务诊断和磁盘状态；维护者确认后可用 /new 明确开启新会话。", nil)
+				})
+			}
 			return
 		}
 		s.mu.Lock()
@@ -338,8 +352,15 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	r.detached = len(finished) == 0 && ev.Source == "background"
 	r.mu.Unlock()
 	drain, err := r.persist(answer, ev.Success, who, title, finished)
+	for attempt := 0; err != nil && attempt < len(finalPersistRetry) && !g.isClosing(); attempt++ {
+		// Usage is already recorded, so a duplicate result cannot retry this.
+		// A transient database failure gets bounded retries here instead.
+		time.Sleep(finalPersistRetry[attempt])
+		drain, err = r.persist(answer, ev.Success, who, title, finished)
+	}
 	if err != nil {
 		g.audit(s.room.Key, "final_reply_persistence_failed", core.Args{"session": s.session.ID, "error": err.Error()})
+		g.abandonResult(s, key, r, finished, nativeIDs, who)
 		g.notify(s.room, "回复保存失败，本轮不标记完成；未确认输入不会自动重放。请检查服务诊断和磁盘状态。", nil)
 		return
 	}
@@ -455,3 +476,43 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 }
 
 var _ = fmt.Sprint
+
+// identityPersistRetry bounds retries of saving a new native session ID.
+var identityPersistRetry = []time.Duration{20 * time.Millisecond, 200 * time.Millisecond, time.Second}
+
+// finalPersistRetry bounds synchronous retries of a final reply whose database
+// transaction failed. The event reader is blocked meanwhile, so keep it short.
+var finalPersistRetry = []time.Duration{100 * time.Millisecond, 400 * time.Millisecond, time.Second}
+
+// abandonResult releases a turn whose final reply could not be saved. The
+// render and deliveries must not stay attached to the slot: a closed render
+// would otherwise swallow every later reply in this room, and the deliveries
+// would keep the process busy forever. The model did process the inputs, so
+// they become uncertain rather than cancelled, and are never replayed.
+func (g *Gateway) abandonResult(s *slot, key string, r *render, finished, nativeIDs []string, who []core.Origin) {
+	s.mu.Lock()
+	if s.renders[key] == r {
+		delete(s.renders, key)
+	}
+	for _, id := range finished {
+		delete(s.deliveries, id)
+		delete(s.accepted, id)
+	}
+	for _, id := range nativeIDs {
+		delete(s.inputGroups, id)
+	}
+	if contains(finished, s.compacting) {
+		s.compacting = ""
+	}
+	s.busy = len(s.deliveries) > 0
+	s.advanceAnchorLocked()
+	s.mu.Unlock()
+	for _, id := range finished {
+		if e := g.store.Mark(id, "uncertain"); e != nil {
+			g.audit(s.room.Key, "input_state_unconfirmed", core.Args{"session": s.session.ID})
+		}
+	}
+	g.settleReceipts(s.room.Key, s.session.ID, who, false)
+	g.task(func() { r.cancel("回复保存失败") })
+	g.kickWaiting()
+}

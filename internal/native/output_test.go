@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -203,5 +205,33 @@ func TestTopicAttachmentsStayWithTheirTopic(t *testing.T) {
 	invalid := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: filepath.Join(room, "inbound", "elsewhere")}}
 	if _, err := invalid.fileScope(); err == nil {
 		t.Fatal("an attachment directory outside the topic layout was admitted")
+	}
+}
+
+func TestOffsetZoneNamesLocalOffsetInsteadOfUTC(t *testing.T) {
+	for _, tc := range []struct {
+		offset int
+		want   string
+	}{
+		{0, "UTC"},
+		{8 * 3600, "Etc/GMT-8"},
+		{-5 * 3600, "Etc/GMT+5"},
+		{5*3600 + 1800, "UTC+05:30"},
+		{-(3*3600 + 1800), "UTC-03:30"},
+	} {
+		now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("Local", tc.offset))
+		got := offsetZone(now)
+		if got != tc.want {
+			t.Fatalf("offset %d: %q want %q", tc.offset, got, tc.want)
+		}
+		if strings.HasPrefix(got, "Etc/") || got == "UTC" {
+			loc, err := time.LoadLocation(got)
+			if err != nil {
+				t.Skip("zoneinfo unavailable:", err)
+			}
+			if _, off := now.In(loc).Zone(); off != tc.offset {
+				t.Fatalf("%s resolves to offset %d, want %d", got, off, tc.offset)
+			}
+		}
 	}
 }

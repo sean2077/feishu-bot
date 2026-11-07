@@ -445,6 +445,25 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	return nil
 }
 
+// refuseUnidentifiedSession releases a reserved slot for a session whose
+// native ID was never saved, cancels its pending inputs and explains why.
+func (g *Gateway) refuseUnidentifiedSession(s *slot, r core.Room, m core.Message) {
+	s.mu.Lock()
+	s.live = false
+	s.mu.Unlock()
+	s.cancel()
+	g.removeSlot(s)
+	pending, _ := g.store.Pending(r.Key)
+	if e := g.store.StopSession(s.session.ID); e != nil {
+		g.audit(r.Key, "input_state_unconfirmed", core.Args{"session": s.session.ID})
+	}
+	for _, d := range pending {
+		g.settleReceipts(r.Key, d.SessionID, origin(d.Message), false)
+	}
+	g.audit(r.Key, "session_identity_missing", core.Args{"session": s.session.ID})
+	g.notify(r, "当前会话已有交给原生的输入，但原生会话 ID 未保存，不能确定恢复哪段上下文，因此未启动、输入未提交。维护者可用 /new 明确开启新会话，或用 /resume 选择已有会话。", &m)
+}
+
 // pendingInChat counts pending inputs for the chat that owns r. Topic rooms
 // of one chat share the chat's inboxPerRoom budget, as a chat room did before
 // topics existed.
@@ -745,6 +764,19 @@ func (g *Gateway) dispatch(r core.Room) error {
 		return nil
 	}
 	if worker == nil {
+		if s.session.CCID == "" {
+			// Inputs already handed to a native process prove a native context
+			// exists. Without its durable ID, launching would silently start a
+			// different one; require an explicit new-session operation instead.
+			received, err := g.store.SessionReceivedInput(r.Key, s.session.ID)
+			if err != nil {
+				return err
+			}
+			if received {
+				g.refuseUnidentifiedSession(s, r, pending[0].Message)
+				return nil
+			}
+		}
 		p, _ := g.config.Project(r.ProjectID)
 		w, err := workspace.PrepareContext(s.ctx, g.config, r, s.session, p)
 		if err == nil {
@@ -946,6 +978,19 @@ func (g *Gateway) dispatch(r core.Room) error {
 			}
 			if !handedOff && d.ImageBatch != nil {
 				g.rejectBatch(r, members, true)
+				continue
+			}
+			if !handedOff {
+				// Preparation failed before the queued→sent commit, so the
+				// model definitely never received these inputs. Report that
+				// plainly instead of as an unconfirmed delivery.
+				for _, m := range members {
+					if _, e := g.store.DB.Exec("UPDATE inbox SET status='cancelled',payload=NULL WHERE uuid=? AND room=? AND status='queued'", m.UUID, r.Key); e != nil {
+						_ = g.store.Mark(m.UUID, "uncertain")
+					}
+					g.settleReceipts(r.Key, m.SessionID, origin(m.Message), false)
+				}
+				g.notify(r, "本条输入未提交给模型："+core.Redact(err.Error(), g.secrets)+"。请处理后重新发送。", &d.Message)
 				continue
 			}
 			for _, m := range members {

@@ -414,7 +414,11 @@ func (g *Gateway) quickSupplement(ctx context.Context, r core.Room, a core.CardA
 	if s == nil {
 		return "本轮已经结束，补充未提交。", nil
 	}
-	s.events.Lock()
+	// The event lock is held while a result is persisted; wait for it only
+	// within the callback deadline.
+	if !lockWithin(ctx, &s.events) {
+		return "请稍后重新提交。", ctx.Err()
+	}
 	defer s.events.Unlock()
 	target := g.foregroundTarget(r)
 	if p.Turn == "" || target == nil || target.UUID != p.Turn || target.SessionID != p.Session {
@@ -441,6 +445,10 @@ func (g *Gateway) quickSupplement(ctx context.Context, r core.Room, a core.CardA
 		m.ChatType = "p2p"
 	}
 	d := core.Delivery{UUID: core.NewID(), RoomKey: r.Key, SessionID: p.Session, Message: m, SupplementTo: p.Turn}
+	if err := ctx.Err(); err != nil {
+		// Feishu has already reported a timeout to the user; do not commit.
+		return "请稍后重新提交。", err
+	}
 	if err := g.queueInput(d, now); err != nil {
 		return "", err
 	}

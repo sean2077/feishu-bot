@@ -419,6 +419,9 @@ func (r *render) persist(text string, success bool, who []core.Origin, title str
 		return nil
 	})
 	if err != nil {
+		// Nothing was committed: leave the render open so the caller can retry
+		// the same final reply instead of treating later turns as finished.
+		r.closed = false
 		return nil, err
 	}
 	r.finalID = id
