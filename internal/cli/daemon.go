@@ -258,13 +258,21 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 	if hadMeta && oldMeta.DataDir != "" {
 		dataDir = oldMeta.DataDir
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if _, statErr := os.Stat(filepath.Join(dataDir, "gateway.lock")); statErr == nil {
-		if _, err := stopRunning(ctx, dataDir); err != nil {
+		alreadyStopped, err := stopRunning(ctx, dataDir)
+		if err != nil {
 			return err
 		}
-		backup.wasRunning = true
+		backup.wasRunning = !alreadyStopped
+		backup.changed = backup.wasRunning
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return errors.New("cannot inspect gateway.lock")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	backup.changed = true
@@ -896,7 +904,8 @@ func toolDetail(err error) string {
 }
 
 type boundedOutput struct {
-	buf bytes.Buffer
+	buf       bytes.Buffer
+	truncated bool
 }
 
 func (b *boundedOutput) Write(p []byte) (int, error) {
@@ -905,9 +914,12 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 	if b.buf.Len() < limit {
 		remaining := limit - b.buf.Len()
 		if len(p) > remaining {
+			b.truncated = true
 			p = p[:remaining]
 		}
 		_, _ = b.buf.Write(p)
+	} else if len(p) > 0 {
+		b.truncated = true
 	}
 	return n, nil
 }
@@ -928,6 +940,9 @@ func runTool(ctx context.Context, name string, args ...string) (string, error) {
 			code = cmd.ProcessState.ExitCode()
 		}
 		return out.String(), &toolError{Name: name, Code: code, Output: out.String()}
+	}
+	if out.truncated {
+		return out.String(), fmt.Errorf("%s output exceeded the 64 KiB inspection limit", name)
 	}
 	return out.String(), nil
 }

@@ -424,11 +424,11 @@ func (g *Gateway) quickStop(r core.Room, a core.CardAction, p quickControl) {
 	pauseErr := g.persistStopPause(ctx, r.Key, p.Session)
 	if pauseErr != nil {
 		g.audit(r.Key, "stop_pause_persistence_failed", core.Args{"session": p.Session, "error": pauseErr.Error()})
-	}
-	if ctx.Err() != nil {
-		s.events.Unlock()
-		g.notify(r, "停止尚未确认，请检查 /status 和服务诊断。", nil)
-		return
+		if ctx.Err() != nil {
+			s.events.Unlock()
+			g.notify(r, "停止尚未确认，请检查 /status 和服务诊断。", nil)
+			return
+		}
 	}
 	g.blockAfterFailedStop(r.Key)
 	s.mu.Lock()

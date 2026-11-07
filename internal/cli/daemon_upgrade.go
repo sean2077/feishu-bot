@@ -14,8 +14,10 @@ import (
 // commits. It contains the exact prior definition, including foreign definitions
 // that the administrator explicitly chose to replace.
 type serviceDefinition struct {
-	Present bool   `json:"present"`
-	Data    []byte `json:"data,omitempty"`
+	Present    bool        `json:"present"`
+	Data       []byte      `json:"data,omitempty"`
+	Mode       os.FileMode `json:"mode,omitempty"`
+	Enablement string      `json:"enablement,omitempty"`
 }
 
 type installFileBackup struct {
@@ -85,6 +87,9 @@ func prepareInstallBackup(ctx context.Context, dir string, mgr serviceManager, p
 	definition, err := mgr.Snapshot(ctx, serviceName)
 	if err != nil {
 		return nil, fmt.Errorf("cannot save existing service definition: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	backupDir, err := os.MkdirTemp(dir, ".feishu-bot-upgrade-*")
 	if err != nil {

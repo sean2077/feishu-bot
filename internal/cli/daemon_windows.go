@@ -99,15 +99,7 @@ func (m windowsManager) Uninstall(ctx context.Context, name string) error {
 }
 
 func (m windowsManager) Present(ctx context.Context, name string) (bool, error) {
-	_, err := runTool(ctx, "schtasks", "/Query", "/TN", name)
-	if err == nil {
-		return true, nil
-	}
-	var tool *toolError
-	if errors.As(err, &tool) {
-		return false, nil
-	}
-	return false, err
+	return scheduledTaskPresent(ctx, name)
 }
 
 func (m windowsManager) Snapshot(ctx context.Context, name string) (serviceDefinition, error) {

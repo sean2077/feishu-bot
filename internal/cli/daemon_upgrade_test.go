@@ -168,3 +168,37 @@ func TestInstallRollbackRestoresEmptyFiles(t *testing.T) {
 		t.Fatal(string(b), err)
 	}
 }
+
+type cancelledSnapshotManager struct {
+	*fakeServiceManager
+	cancel context.CancelFunc
+}
+
+func (m cancelledSnapshotManager) Snapshot(context.Context, string) (serviceDefinition, error) {
+	m.cancel()
+	return serviceDefinition{}, nil
+}
+
+func TestUpgradeRejectsSnapshotCompletedAfterCancellation(t *testing.T) {
+	o, _, _ := upgradeFixture(t)
+	oldBinary := filepath.Join(o.WorkDir, "bin", executableName())
+	if err := os.MkdirAll(filepath.Dir(oldBinary), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldBinary, []byte("original executable"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager := cancelledSnapshotManager{fakeServiceManager: &fakeServiceManager{present: true, owned: true}, cancel: cancel}
+	err := installWithManager(ctx, o, manager, &bytes.Buffer{}, &bytes.Buffer{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatal("accepted a late snapshot result", err)
+	}
+	if manager.installed || manager.restored || manager.started {
+		t.Fatal("modified registration after the snapshot deadline")
+	}
+	if content, err := os.ReadFile(oldBinary); err != nil || string(content) != "original executable" {
+		t.Fatal("published files after the snapshot deadline", err)
+	}
+}

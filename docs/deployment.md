@@ -155,6 +155,7 @@ Windows 将 `./bin/feishu-bot` 换成 `.\bin\feishu-bot.exe`。
 - Windows 注销/关机可能直接终止任务进程并留下 `gateway.lock`；下次登录任务会失败，使用上面的显式恢复命令。
 - `daemon install` 默认启动；`--no-start` 只安装。重复执行是幂等的：停止旧实例、替换二进制、重写服务定义并重新启动。同名任务/unit 若不属于本项目，需要显式 `--replace`。
 - 升级会先读取并暂存完整新二进制、环境文件，保存旧二进制／环境／元数据及服务定义的私有恢复副本，再停止旧服务。文件发布、服务注册或元数据保存失败会尝试恢复旧安装；恢复失败时保留副本并在错误中给出路径。新安装全部提交后才调用启动；启动结果未确认时保留一致的新安装，不改写可能已经运行的进程，使用 `daemon status`、`daemon logs` 核实后再 `daemon start`。恢复副本含凭据，应按原安装数据的权限保管；处理完失败安装后由维护者删除错误中列出的副本目录。进程锁出现只说明进程启动，飞书连接与模型能力仍按首次连接流程验收。
+- Linux 自动回滚保存旧 unit 的正文、文件权限及 `enabled`／`disabled` 状态。旧 unit 若为符号链接、位于受管路径以外，或处于 `masked`、`enabled-runtime`、`static` 等其他状态，安装会在停止旧服务和发布文件前拒绝；`--replace` 也不跳过此检查，需要维护者先明确处理这些服务定义。Windows 通过 Task Scheduler 的结构化错误码确认任务是否不存在；查询取消、权限不足或调度器异常会阻止安装，不作为缺失任务继续覆盖或回滚删除。
 - `config path` 打印解析后的配置路径；`config example` 打印模板；`config format` 只格式化合法 JSON。
 - `config explain --chat oc_example_group --user ou_example_member --mentioned --json` 复用真实房间、作者和触发规则，解释显式／兜底／私聊绑定、是否允许触发、会话管理与工具审批权限。私聊加 `--chat-type p2p`，模拟机器人消息加 `--bot`。该命令不联网、不打开状态库、不创建工作区、不读取 secret；配置策略结论不代表真实成员或飞书权限已经验证。
 
