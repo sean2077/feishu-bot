@@ -237,7 +237,7 @@ func TestIdentityConflictStopsWithoutMarker(t *testing.T) {
 	if _, ok, _ := readIdentityMarker(s.workspace.Root, d.SessionID); ok {
 		t.Fatal("a conflicting native ID was hidden in a marker")
 	}
-	if !noticeContains(f, "冲突") {
-		t.Fatal("conflict was not explained")
-	}
+	// The notice follows the asynchronous stop; wait for it rather than
+	// checking the moment the worker was asked to stop.
+	eventually(t, func() bool { return noticeContains(f, "冲突") })
 }
