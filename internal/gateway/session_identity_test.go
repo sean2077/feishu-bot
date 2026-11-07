@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"github.com/sean2077/feishu-bot/internal/workspace"
 	"os"
 	"strings"
 	"testing"
@@ -118,7 +117,7 @@ func TestUnsavedIdentityIsKeptInWorkspaceAndAdoptedOnRelaunch(t *testing.T) {
 	var native string
 	eventually(t, func() bool {
 		var ok bool
-		native, ok = readIdentityMarker(s.workspace.Root, d.SessionID)
+		native, ok, _ = readIdentityMarker(s.workspace.Root, d.SessionID)
 		return ok
 	})
 	f.finish(w, d, "answer")
@@ -140,7 +139,7 @@ func TestUnsavedIdentityIsKeptInWorkspaceAndAdoptedOnRelaunch(t *testing.T) {
 	if got := f.openSession(f.room().Key); got.CCID != native {
 		t.Fatalf("relaunch did not adopt the kept native ID: got %q want %q", got.CCID, native)
 	}
-	if _, ok := readIdentityMarker(s.workspace.Root, d.SessionID); ok {
+	if _, ok, _ := readIdentityMarker(s.workspace.Root, d.SessionID); ok {
 		t.Fatal("marker was not removed after adoption")
 	}
 }
@@ -186,26 +185,23 @@ func TestLostIdentityBlocksTheSessionUntilNew(t *testing.T) {
 	identityPersistRetry = []time.Duration{time.Millisecond}
 	t.Cleanup(func() { identityPersistRetry = saved })
 	f := newFixture(t, nil)
-	f.readyMode = "input"
+	f.readyMode = "never"
 	r := f.room()
-	session, _ := f.s.Session(r.Key)
-	p, _ := f.c.Project(r.ProjectID)
-	w0, e := workspace.Prepare(f.c, r, session, p)
-	if e != nil {
-		t.Fatal(e)
-	}
-	// A directory at the marker path makes the workspace fallback fail too.
-	if e = os.MkdirAll(identityMarkerPath(w0.Root, session.ID), 0700); e != nil {
-		t.Fatal(e)
-	}
-	if _, e = f.s.DB.Exec(`CREATE TRIGGER fixture_cc_failure BEFORE UPDATE OF cc ON sessions BEGIN SELECT RAISE(ABORT,'fixture identity failure'); END`); e != nil {
-		t.Fatal(e)
-	}
 	f.send(f.message("first", "work", "member"))
 	w := f.worker()
-	f.delivery(w)
+	d := f.delivery(w)
+	s := f.g.getSlot(r.Key)
+	// The database rejects the ID and a directory at the marker path makes
+	// the workspace fallback fail too.
+	if e := os.MkdirAll(identityMarkerPath(s.workspace.Root, d.SessionID), 0700); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := f.s.DB.Exec(`CREATE TRIGGER fixture_cc_failure BEFORE UPDATE OF cc ON sessions BEGIN SELECT RAISE(ABORT,'fixture identity failure'); END`); e != nil {
+		t.Fatal(e)
+	}
+	w.emit(core.WorkerEvent{Type: "ready", CCID: core.NewID()})
 	eventually(t, func() bool { return w.stops.Load() > 0 })
-	if _, e = f.s.DB.Exec("DROP TRIGGER fixture_cc_failure"); e != nil {
+	if _, e := f.s.DB.Exec("DROP TRIGGER fixture_cc_failure"); e != nil {
 		t.Fatal(e)
 	}
 	f.send(f.message("second", "continue", "member"))
@@ -215,14 +211,13 @@ func TestLostIdentityBlocksTheSessionUntilNew(t *testing.T) {
 	}
 	f.readyMode = ""
 	f.send(f.message("new", "/new", "owner"))
-	eventually(t, func() bool { return f.openSession(r.Key).ID != session.ID })
+	eventually(t, func() bool { return f.openSession(r.Key).ID != d.SessionID })
 	f.send(f.message("third", "fresh", "member"))
 	nw := f.worker()
-	if d := f.delivery(nw); d.Message.ID != "third" {
-		t.Fatalf("explicit /new did not start: %+v", d)
+	if next := f.delivery(nw); next.Message.ID != "third" {
+		t.Fatalf("explicit /new did not start: %+v", next)
 	}
 }
-
 func TestIdentityConflictStopsWithoutMarker(t *testing.T) {
 	f := newFixture(t, nil)
 	f.readyMode = "never"
@@ -239,7 +234,7 @@ func TestIdentityConflictStopsWithoutMarker(t *testing.T) {
 	if got := f.openSession(f.room().Key).CCID; got != recorded {
 		t.Fatalf("recorded native ID changed: %q", got)
 	}
-	if _, ok := readIdentityMarker(s.workspace.Root, d.SessionID); ok {
+	if _, ok, _ := readIdentityMarker(s.workspace.Root, d.SessionID); ok {
 		t.Fatal("a conflicting native ID was hidden in a marker")
 	}
 	if !noticeContains(f, "冲突") {

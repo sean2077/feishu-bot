@@ -797,6 +797,33 @@ func (g *Gateway) dispatch(r core.Room) error {
 			}
 			return err
 		}
+		if s.session.CCID == "" && !g.sessionIdentityLost(s.session.ID) {
+			// An earlier process may have reported its native session while
+			// the database rejected the ID; adopt the workspace marker so this
+			// launch resumes that context instead of starting another.
+			ccid, ok, markerErr := readIdentityMarker(w.Root, s.session.ID)
+			if markerErr != nil {
+				// An unreadable marker is not an absent one: refuse below.
+				g.audit(r.Key, "session_identity_marker_unreadable", core.Args{"session": s.session.ID, "error": markerErr.Error()})
+				g.mu.Lock()
+				g.identityLost[s.session.ID] = true
+				g.mu.Unlock()
+			} else if ok {
+				if err = g.store.SetCC(s.session.ID, ccid); err != nil {
+					s.mu.Lock()
+					s.live = false
+					s.mu.Unlock()
+					s.cancel()
+					g.removeSlot(s)
+					return err
+				}
+				s.mu.Lock()
+				s.session.CCID = ccid
+				s.mu.Unlock()
+				removeIdentityMarker(w.Root, s.session.ID)
+				g.audit(r.Key, "session_identity_recovered", core.Args{"session": s.session.ID})
+			}
+		}
 		if s.session.CCID == "" && g.sessionIdentityLost(s.session.ID) {
 			s.mu.Lock()
 			s.live = false
@@ -813,26 +840,6 @@ func (g *Gateway) dispatch(r core.Room) error {
 			}
 			g.notify(r, identityFailureNotice, &pending[0].Message)
 			return nil
-		}
-		if s.session.CCID == "" {
-			// An earlier process may have reported its native session while
-			// the database rejected the ID; adopt the workspace marker so this
-			// launch resumes that context instead of starting another.
-			if ccid, ok := readIdentityMarker(w.Root, s.session.ID); ok {
-				if err = g.store.SetCC(s.session.ID, ccid); err != nil {
-					s.mu.Lock()
-					s.live = false
-					s.mu.Unlock()
-					s.cancel()
-					g.removeSlot(s)
-					return err
-				}
-				s.mu.Lock()
-				s.session.CCID = ccid
-				s.mu.Unlock()
-				removeIdentityMarker(w.Root, s.session.ID)
-				g.audit(r.Key, "session_identity_recovered", core.Args{"session": s.session.ID})
-			}
 		}
 		s.mu.Lock()
 		s.workspace = w
@@ -937,6 +944,10 @@ func (g *Gateway) dispatch(r core.Room) error {
 					return e
 				}
 			}
+		}
+		if g.stopIsBlocked(r.Key) {
+			// A failed stop may have landed after this pass began.
+			return nil
 		}
 		handedOff := false
 		paths := []string{}

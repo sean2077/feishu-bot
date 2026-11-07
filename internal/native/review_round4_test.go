@@ -75,6 +75,21 @@ func TestAmbiguousSearchPathsAreDenied(t *testing.T) {
 					input args
 					deny  bool
 				}{"Glob", args{"pattern": "/Users/example/rooms/*/inbound/*"}, true},
+				struct {
+					tool  string
+					input args
+					deny  bool
+				}{"Grep", args{"path": `C:..\..\bbbb\inbound`}, true},
+				struct {
+					tool  string
+					input args
+					deny  bool
+				}{"Glob", args{"path": "C:.."}, true},
+				struct {
+					tool  string
+					input args
+					deny  bool
+				}{"Grep", args{"path": filepath.ToSlash(work)}, false},
 			)
 		}
 		for _, tc := range cases {

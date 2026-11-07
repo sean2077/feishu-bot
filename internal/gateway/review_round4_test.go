@@ -3,6 +3,8 @@ package gateway
 import (
 	"context"
 	"errors"
+	"github.com/sean2077/feishu-bot/internal/workspace"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -89,5 +91,55 @@ func TestRejectedProcessingReactionSettlesAndDoneStillApplies(t *testing.T) {
 	})
 	if steps[len(steps)-1] != "done<clear" {
 		t.Fatalf("steps=%v", steps)
+	}
+}
+
+func TestStaleUnconfirmedProcessingSettlesAndDoneIsCreated(t *testing.T) {
+	saved := receiptUnconfirmedTTL
+	receiptUnconfirmedTTL = time.Millisecond
+	t.Cleanup(func() { receiptUnconfirmedTTL = saved })
+	for _, tc := range []struct{ desired, wantDesired, wantApplied, lastStep string }{
+		{"done", "done", "done", "done<clear"},
+		{"processing", "clear", "clear", "processing<attempt:processing"},
+	} {
+		f := newFixture(t, nil)
+		r := f.room()
+		s, _ := f.s.Session(r.Key)
+		if _, e := f.s.DB.Exec("INSERT INTO receipts(id,room,session,desired,applied,at,sender) VALUES('om_receipt',?,?,?,'attempt:processing',?,'member')", r.Key, s.ID, tc.desired, time.Now().Add(-time.Hour).UnixMilli()); e != nil {
+			t.Fatal(e)
+		}
+		var steps []string
+		f.tr.receiptHook = func(_ context.Context, _, state, prior string) error {
+			steps = append(steps, state+"<"+prior)
+			if strings.HasPrefix(prior, "attempt:") {
+				return errors.New("feishu: reaction creation remains unconfirmed")
+			}
+			return nil
+		}
+		f.g.flushReceipt("om_receipt")
+		var desired, applied string
+		_ = f.s.DB.QueryRow("SELECT desired,applied FROM receipts WHERE id='om_receipt'").Scan(&desired, &applied)
+		if desired != tc.wantDesired || applied != tc.wantApplied || steps[len(steps)-1] != tc.lastStep {
+			t.Fatalf("%s: desired=%q applied=%q steps=%v", tc.desired, desired, applied, steps)
+		}
+	}
+}
+
+func TestUnreadableIdentityMarkerRefusesFreshLaunch(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	session, _ := f.s.Session(r.Key)
+	p, _ := f.c.Project(r.ProjectID)
+	w0, e := workspace.Prepare(f.c, r, session, p)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.MkdirAll(identityMarkerPath(w0.Root, session.ID), 0700); e != nil {
+		t.Fatal(e)
+	}
+	f.send(f.message("first", "work", "member"))
+	eventually(t, func() bool { return noticeContains(f, "原生会话 ID") })
+	if f.starts.Load() != 0 {
+		t.Fatal("an unreadable marker was treated as absent and a fresh context started")
 	}
 }

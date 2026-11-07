@@ -249,6 +249,11 @@ func migrateTopicAttachments(root string) {
 			from, to := filepath.Join(source, file.Name()), filepath.Join(destination, file.Name())
 			if _, e := os.Lstat(to); errors.Is(e, os.ErrNotExist) {
 				_ = os.Rename(from, to)
+			} else if e == nil {
+				// Attachment names are derived from the message and resource,
+				// so an existing target is the same upload re-fetched; drop the
+				// legacy copy rather than leave it in the chat's inbound.
+				_ = os.Remove(from)
 			}
 		}
 		_ = os.Remove(source)

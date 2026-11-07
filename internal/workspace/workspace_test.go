@@ -340,6 +340,11 @@ func TestPartialLegacyMigrationIsMerged(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "new.txt"), []byte("y"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	for _, dir := range []string{legacy, target} {
+		if err := os.WriteFile(filepath.Join(dir, "same.txt"), []byte("z"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	migrateTopicAttachments(root)
 	if data, err := os.ReadFile(filepath.Join(target, "old.txt")); err != nil || string(data) != "x" {
 		t.Fatalf("legacy upload not merged: %q %v", data, err)

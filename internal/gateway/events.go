@@ -267,7 +267,8 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	if err != nil {
 		// Usage is bookkeeping. The native process will not repeat this
 		// result, so dropping it here would leave the turn busy forever; keep
-		// handling the reply and let the usage report show the gap.
+		// handling the reply. This turn's usage is missing from /usage; the
+		// audit entry records the failure.
 		g.audit(s.room.Key, "usage_persistence_failed", core.Args{"session": s.session.ID, "error": err.Error()})
 		disposition = "unrecorded"
 	}
@@ -566,7 +567,9 @@ func (g *Gateway) keepNativeIdentity(s *slot, ccid string) bool {
 		removeIdentityMarker(root, session)
 		return true
 	}
-	g.audit(s.room.Key, "session_identity_persistence_failed", core.Args{"session": session, "error": e.Error()})
+	// The native ID is recorded so a maintainer can recover the context by
+	// hand if neither the database nor the marker keeps it.
+	g.audit(s.room.Key, "session_identity_persistence_failed", core.Args{"session": session, "nativeSessionId": ccid, "error": e.Error()})
 	if errors.Is(e, store.ErrIdentityConflict) {
 		// The row already names another native context (for example a ready
 		// event from a stopped process raced a fresh launch). A marker would
@@ -610,19 +613,25 @@ func writeIdentityMarker(root, session, ccid string) error {
 	return nil
 }
 
-func readIdentityMarker(root, session string) (string, bool) {
+// readIdentityMarker returns the kept native ID of session. A missing marker
+// is ("", false, nil); any other unreadable or malformed marker is an error,
+// because treating it as absent would launch a fresh native context.
+func readIdentityMarker(root, session string) (string, bool, error) {
 	if root == "" {
-		return "", false
+		return "", false, nil
 	}
 	data, err := os.ReadFile(identityMarkerPath(root, session))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
 	if err != nil || len(data) > 512 {
-		return "", false
+		return "", false, errors.New("native session marker is unreadable")
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if len(lines) != 2 || strings.TrimSpace(lines[0]) != session || !nativeIDPattern.MatchString(strings.TrimSpace(lines[1])) {
-		return "", false
+		return "", false, errors.New("native session marker is malformed")
 	}
-	return strings.TrimSpace(lines[1]), true
+	return strings.TrimSpace(lines[1]), true, nil
 }
 
 func removeIdentityMarker(root, session string) {

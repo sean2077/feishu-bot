@@ -411,12 +411,15 @@ func foldCase(path string) string {
 
 // plainSearchPath reports whether a Grep/Glob path or pattern means the same
 // location to this hook and to Claude Code: no surrounding whitespace, no "~"
-// home expansion and, on Windows, no rooted path without a drive or UNC root.
+// home expansion and, on Windows, no rooted path without a drive and no
+// drive-relative path.
 func plainSearchPath(path string) bool {
 	if strings.TrimSpace(path) != path || strings.HasPrefix(path, "~") {
 		return false
 	}
-	if runtime.GOOS == "windows" && !filepath.IsAbs(path) && (strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\")) {
+	if runtime.GOOS == "windows" && !filepath.IsAbs(path) && (strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") || filepath.VolumeName(path) != "") {
+		// Drive-relative forms such as C:..\x resolve against a per-drive
+		// working directory, unlike a join onto the workspace.
 		return false
 	}
 	return true

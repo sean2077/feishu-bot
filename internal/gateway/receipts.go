@@ -185,9 +185,21 @@ func (g *Gateway) flushReceipt(id string) {
 				g.audit(room, "receipt_retry_pending", core.Args{"messageId": id})
 			case strings.HasPrefix(applied.String, "attempt:") && g.receiptStale(id):
 				// An uncertain create is reconciled, never recreated. After a
-				// bounded period stop polling a reaction that never appeared.
+				// bounded period stop polling a reaction that never appeared,
+				// settling only this step: an absent processing reaction is
+				// recorded as cleared, and an intermediate step lets the next
+				// step (creating Done) still run.
 				g.audit(room, "receipt_unconfirmed_settled", core.Args{"messageId": id, "state": next})
-				_, _ = g.store.DB.Exec("UPDATE receipts SET applied=desired WHERE id=? AND desired=?", id, desired)
+				switch {
+				case next != desired:
+					if _, e = g.store.DB.Exec("UPDATE receipts SET applied=? WHERE id=? AND desired=?", next, id, desired); e == nil {
+						continue
+					}
+				case next == "processing":
+					_, _ = g.store.DB.Exec("UPDATE receipts SET applied='clear',desired='clear' WHERE id=? AND desired='processing'", id)
+				default:
+					_, _ = g.store.DB.Exec("UPDATE receipts SET applied=desired WHERE id=? AND desired=?", id, desired)
+				}
 			default:
 				g.audit(room, "receipt_retry_pending", core.Args{"messageId": id})
 			}
