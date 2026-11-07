@@ -177,16 +177,27 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 		if _, err := st.Resume(r.Key, s.ID); err != nil {
 			return err
 		}
-		committed = true
+		// Any later failure prevents the start, so undo the selection here.
+		rollback := func(cause error) error {
+			if previous != "" && previous != s.ID {
+				if _, err := st.Resume(r.Key, previous); err != nil {
+					return errors.Join(cause, err)
+				}
+			}
+			return cause
+		}
 		// Native local turns are not observed by the gateway's SDK result ledger.
 		if _, err := st.DB.ExecContext(ctx, "UPDATE usage_coverage SET prior_unknown=1 WHERE session=?", s.ID); err != nil {
-			return err
+			return rollback(err)
 		}
 		if _, err := st.DB.ExecContext(ctx, "INSERT INTO audit(at,room,event,detail) VALUES(?,?,'local_session_started',?)", time.Now().UnixMilli(), r.Key, sessionDetail(core.Args{"session": s.ID, "nativeSessionId": s.CCID})); err != nil {
-			return err
+			return rollback(err)
 		}
-		_, err := fmt.Fprintf(out, "Local session %s; gateway remains locked until native exit is confirmed.\n", s.ID)
-		return err
+		if _, err := fmt.Fprintf(out, "Local session %s; gateway remains locked until native exit is confirmed.\n", s.ID); err != nil {
+			return rollback(err)
+		}
+		committed = true
+		return nil
 	}
 	result = run(ctx, c, r, s, w, commit)
 	confirmed = !errors.Is(result, process.ErrUnconfirmed)

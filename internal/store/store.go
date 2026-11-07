@@ -324,6 +324,31 @@ func (s *Store) StopSession(id string) error {
 	_, e := s.DB.Exec("UPDATE inbox SET status='cancelled',payload=NULL WHERE session=? AND status IN ('queued','sent','consumed')", id)
 	return e
 }
+
+// StopUnidentifiedSession stops a session whose native context exists but
+// whose native ID was never saved. Inputs already handed to that context are
+// kept as uncertain evidence (never erased as cancelled) so a later launch can
+// tell that a fresh native context would silently replace it.
+func (s *Store) StopUnidentifiedSession(id string) error {
+	return s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		if _, e := tx.Exec("UPDATE inbox SET status='uncertain',payload=NULL WHERE session=? AND status IN ('sent','consumed')", id); e != nil {
+			return e
+		}
+		_, e := tx.Exec("UPDATE inbox SET status='cancelled',payload=NULL WHERE session=? AND status='queued'", id)
+		return e
+	})
+}
+
+// SessionHandedInput reports whether any input of this session ever reached a
+// native process, including uncertain inputs kept as evidence.
+func (s *Store) SessionHandedInput(room, session string) (bool, error) {
+	var n int
+	e := s.DB.QueryRow("SELECT 1 FROM inbox WHERE room=? AND session=? AND status IN ('sent','consumed','done','uncertain') LIMIT 1", room, session).Scan(&n)
+	if e == sql.ErrNoRows {
+		return false, nil
+	}
+	return e == nil, e
+}
 func (s *Store) Insert(room string, m core.Message, status string) (bool, error) {
 	if status == "" {
 		status = "background"

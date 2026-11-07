@@ -137,11 +137,11 @@ class ProcessTests(unittest.TestCase):
                 handle = api.OpenProcess(0x00100000 | 0x0001, False, pid)
                 if not handle:
                     error = ctypes.get_last_error()
-                    # ERROR_INVALID_PARAMETER: no such process. As with Linux
-                    # ProcessLookupError, a fixture that already exited (the
-                    # command itself, or descendants the supervisor reclaimed
-                    # right after it) has nothing left to wait for.
-                    if error == 87 or (outcome == "exit" and record is records[0]):
+                    # ERROR_INVALID_PARAMETER: no such process. When the command
+                    # exits normally the supervisor may reclaim its descendants
+                    # before these handles are opened; they have nothing left
+                    # to wait for. Other outcomes keep requiring live fixtures.
+                    if outcome == "exit" and (error == 87 or record is records[0]):
                         continue
                     self.fail(f"could not acquire fixture process handle for PID {pid} (error {error})")
             else:

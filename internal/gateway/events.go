@@ -60,6 +60,7 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		}
 		s.mu.Lock()
 		old := s.session.CCID
+		s.nativeReady = true
 		s.mu.Unlock()
 		if old != "" && old != ev.CCID {
 			g.task(func() {
@@ -361,6 +362,10 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	if err != nil {
 		g.audit(s.room.Key, "final_reply_persistence_failed", core.Args{"session": s.session.ID, "error": err.Error()})
 		g.abandonResult(s, key, r, finished, nativeIDs, who)
+		if excerpt != nil {
+			// Already detached from s.renders; nothing else would close it.
+			g.task(func() { excerpt.cancel("后台续轮已结束") })
+		}
 		g.notify(s.room, "回复保存失败，本轮不标记完成；未确认输入不会自动重放。请检查服务诊断和磁盘状态。", nil)
 		return
 	}
@@ -410,6 +415,9 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 	s.live = false
 	s.stopUnconfirmed = cleanupFailed
 	s.cancel()
+	// A process that never reported its native session never began the
+	// conversation, so its inputs were not processed and leave no context.
+	neverStarted := !s.nativeReady && s.session.CCID == ""
 	renders := []*render{}
 	for _, r := range s.renders {
 		renders = append(renders, r)
@@ -420,13 +428,20 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 	g.cancelReceipts(s.session.ID)
 	notice := ""
 	err := g.store.Transaction(context.Background(), func(tx *sql.Tx) error {
-		res, e := tx.Exec("UPDATE inbox SET status='uncertain' WHERE room=? AND session=? AND status IN ('sent','consumed')", s.room.Key, s.session.ID)
+		status := "uncertain"
+		if neverStarted {
+			status = "cancelled"
+		}
+		res, e := tx.Exec("UPDATE inbox SET status=? WHERE room=? AND session=? AND status IN ('sent','consumed')", status, s.room.Key, s.session.ID)
 		if e != nil {
 			return e
 		}
 		n, _ := res.RowsAffected()
 		if cleanupFailed || interrupted || approvals > 0 || n > 0 {
 			text := "原生工作进程意外退出。当前审批／追问已取消；未确认的输入与外部操作不会自动重放。请先核实结果。会话记录仍保留，可以继续原会话。"
+			if neverStarted && n > 0 {
+				text = "原生工作进程在开始对话前退出，输入未提交给模型。请检查服务诊断（模型配置、Claude Code 可执行文件）后重新发送。"
+			}
 			if cleanupFailed {
 				text = "原生进程异常退出，但后代清理未确认。本聊天已暂停；不会启动替代进程或重放未确认操作。请维护者核实进程状态。"
 			}

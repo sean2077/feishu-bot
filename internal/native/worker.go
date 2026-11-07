@@ -381,15 +381,12 @@ func timezone() string {
 	return offsetZone(time.Now())
 }
 
-// offsetZone names the current local offset. Whole-hour offsets use the IANA
-// Etc/GMT form (whose sign is inverted by definition); others use UTC±hh:mm.
+// offsetZone names the current local offset as UTC±hh:mm. The value is only
+// shown to the model, so it avoids the inverted-sign Etc/GMT form.
 func offsetZone(now time.Time) string {
 	_, offset := now.Zone()
 	if offset == 0 {
 		return "UTC"
-	}
-	if offset%3600 == 0 {
-		return fmt.Sprintf("Etc/GMT%+d", -offset/3600)
 	}
 	sign := '+'
 	if offset < 0 {

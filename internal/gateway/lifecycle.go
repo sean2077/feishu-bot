@@ -54,6 +54,7 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 	g.clearImageTimer(r.Key)
 	s := g.getSlot(r.Key)
 	session := ""
+	unidentified := false
 	if s != nil {
 		s.mu.Lock()
 		if s.stopUnconfirmed && s.worker == nil {
@@ -63,6 +64,7 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 		s.live = false
 		s.cancel()
 		session = s.session.ID
+		unidentified = s.nativeReady && s.session.CCID == ""
 		s.mu.Unlock()
 		s.events.Lock()
 	} else {
@@ -82,17 +84,23 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 	// blocks this room and holds a worker slot. Finish the process stop and
 	// report the state error afterwards.
 	var stateErr error
+	stopState := func() error {
+		stop := g.store.StopSession
+		if unidentified {
+			stop = g.store.StopUnidentifiedSession
+		}
+		if e := stop(session); e != nil {
+			return e
+		}
+		return g.cancelPendingOutputs(r, session)
+	}
 	if session != "" {
 		g.cancelApprovals(session)
 		g.cancelReceipts(session)
-		if e := g.store.StopSession(session); e != nil {
-			stateErr = e
-		} else if e = g.cancelPendingOutputs(r, session); e != nil {
-			stateErr = e
-		}
-		if stateErr != nil {
+		if stateErr = stopState(); stateErr != nil {
 			g.audit(r.Key, "stop_state_failed", core.Args{"session": session, "error": core.Redact(stateErr.Error(), g.secrets)})
 			if s == nil {
+				g.blockAfterFailedStop(r.Key)
 				return stateErr
 			}
 		}
@@ -153,12 +161,38 @@ func (g *Gateway) stopRoom(ctx context.Context, r core.Room) error {
 		return err
 	}
 	if stateErr != nil {
-		// Inputs may still be queued; do not wake dispatch to deliver what the
-		// stop request meant to cancel.
+		// The process is stopped now; storage may have recovered meanwhile.
+		for attempt := 0; stateErr != nil && attempt < len(stopStateRetry) && !g.isClosing(); attempt++ {
+			time.Sleep(stopStateRetry[attempt])
+			stateErr = stopState()
+		}
+	}
+	if stateErr != nil {
+		// Queued inputs could not be cancelled. Keep dispatch away from this
+		// room until a later stop succeeds, so the stop's intent holds even
+		// though sweeps and other rooms wake dispatch globally.
+		g.blockAfterFailedStop(r.Key)
 		return stateErr
 	}
+	g.mu.Lock()
+	delete(g.stopBlocked, r.Key)
+	g.mu.Unlock()
 	g.kickWaiting()
 	return nil
+}
+
+// stopStateRetry bounds retries of cancelling a stopped session's inputs.
+var stopStateRetry = []time.Duration{50 * time.Millisecond, 300 * time.Millisecond, time.Second}
+
+func (g *Gateway) blockAfterFailedStop(key string) {
+	g.mu.Lock()
+	g.stopBlocked[key] = true
+	g.mu.Unlock()
+}
+func (g *Gateway) stopIsBlocked(key string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.stopBlocked[key]
 }
 func (g *Gateway) reclaimable(s *slot) bool {
 	s.mu.Lock()

@@ -161,7 +161,7 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			if err != nil {
 				return denyHook("Unable to verify conversation file scope"), nil
 			}
-			attachment := w.workspace.Inbound != "" && core.Inside(scope.inbound, physical)
+			attachment := w.workspace.Inbound != "" && core.Inside(scope.inbound, physical) && !core.Inside(filepath.Join(scope.inbound, "topics"), physical)
 			rooms := scope.rooms
 			otherAttachment := false
 			if core.Inside(rooms, physical) {

@@ -229,7 +229,8 @@ func (g *Gateway) quickRate(r core.Room, actor string) bool {
 	now := time.Now().UnixMilli()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	key := r.Key + ":" + actor
+	// Same budget as messages: per chat and author across all topics.
+	key := r.WorkspaceKey() + ":" + actor
 	recent := g.rates[key][:0]
 	for _, at := range g.rates[key] {
 		if at > now-60000 {

@@ -395,3 +395,42 @@ func TestExpiredSupplementCallbackDoesNotCommit(t *testing.T) {
 		t.Fatal("a timed-out callback committed a supplement")
 	}
 }
+
+func TestRefusedTopLevelMessageIsAnsweredOnTheChatTimeline(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Groups[0].SessionScope = core.SessionScopeThread
+		c.Groups[0].MentionOptional = true
+	})
+	m := f.message("forward", "", "member")
+	m.Mentioned = false
+	m.InputIssue = "合并转发不会自动展开。"
+	f.send(m)
+	eventually(t, func() bool {
+		f.tr.mu.Lock()
+		defer f.tr.mu.Unlock()
+		return len(f.tr.notices) == 1
+	})
+	if sessions, _ := f.s.ListSessions(f.topic("forward").Key); len(sessions) != 0 {
+		t.Fatal("a refused message opened a topic session")
+	}
+	if got := f.g.refusalRoom(f.topic("forward"), m); got.Thread != "" || got.Key != f.room().Key {
+		t.Fatalf("refusal room: %+v", got)
+	}
+	inside := inTopic(m, "t1", "omt_1")
+	if got := f.g.refusalRoom(f.topic("t1"), inside); got.Thread != "t1" {
+		t.Fatalf("a refusal inside a topic left the topic: %+v", got)
+	}
+}
+
+func TestCardQuickRateIsSharedAcrossTopics(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Groups[0].SessionScope = core.SessionScopeThread
+		c.Limits.MessagesPerMinute = 1
+	})
+	if !f.g.quickRate(f.topic("a"), "member") {
+		t.Fatal("first quick action refused")
+	}
+	if f.g.quickRate(f.topic("b"), "member") {
+		t.Fatal("a new topic reset the author's quick-action budget")
+	}
+}

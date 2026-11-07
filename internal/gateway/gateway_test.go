@@ -144,16 +144,27 @@ func argsOfCopy(a core.Args) core.Args {
 func jsonUnmarshal(s string, v any) error { return json.Unmarshal([]byte(s), v) }
 
 type fakeWorker struct {
-	emit      func(core.WorkerEvent)
-	sent      chan core.Delivery
-	responses chan core.Args
-	renames   chan string
-	stops     atomic.Int64
-	failStop  atomic.Bool
-	stopHook  func(context.Context) error
+	// pendingReady defers the native ready event to the first input, as the
+	// real CLI reports its session only once a query starts.
+	pendingReady string
+	readyMu      sync.Mutex
+	emit         func(core.WorkerEvent)
+	sent         chan core.Delivery
+	responses    chan core.Args
+	renames      chan string
+	stops        atomic.Int64
+	failStop     atomic.Bool
+	stopHook     func(context.Context) error
 }
 
 func (w *fakeWorker) Send(ctx context.Context, d core.Delivery) error {
+	w.readyMu.Lock()
+	ready := w.pendingReady
+	w.pendingReady = ""
+	w.readyMu.Unlock()
+	if ready != "" {
+		go w.emit(core.WorkerEvent{Type: "ready", CCID: ready})
+	}
 	select {
 	case w.sent <- d:
 		return nil
@@ -194,6 +205,9 @@ type fixture struct {
 	tr      *fakeTransport
 	started chan *fakeWorker
 	starts  atomic.Int64
+	// readyMode: "" emits ready at start, "input" on the first input for a
+	// new session, "never" never reports a native session.
+	readyMode string
 }
 
 func newFixture(t *testing.T, mutate func(*core.Config)) *fixture {
@@ -214,7 +228,13 @@ func newFixture(t *testing.T, mutate func(*core.Config)) *fixture {
 		if cc == "" {
 			cc = core.NewID()
 		}
-		emit(core.WorkerEvent{Type: "ready", CCID: cc})
+		switch {
+		case f.readyMode == "never" && s.CCID == "":
+		case f.readyMode == "input" && s.CCID == "":
+			worker.pendingReady = cc
+		default:
+			emit(core.WorkerEvent{Type: "ready", CCID: cc})
+		}
 		zero := 0
 		emit(core.WorkerEvent{Type: "activity", State: "idle", Background: &zero})
 		f.started <- worker

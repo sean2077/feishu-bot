@@ -33,21 +33,24 @@ type slot struct {
 	ctx                                 context.Context
 	cancel                              context.CancelFunc
 	live, busy, pinned, stopUnconfirmed bool
-	background                          int
-	lastActivity                        int64
-	workspace                           core.Workspace
-	deliveries                          map[string]core.Delivery
-	order                               []string
-	inputGroups                         map[string][]string
-	accepted                            map[string]bool
-	anchor                              string
-	renders                             map[string]*render
-	replyAnchors                        map[string]core.Delivery
-	replyOrder                          []string
-	compacting                          string
-	requests                            map[string]bool
-	activeRequests                      int
-	titleSync                           *sessionTitleSync
+	// nativeReady records that this process reported its native session,
+	// i.e. a native context exists even if its ID could not be saved.
+	nativeReady    bool
+	background     int
+	lastActivity   int64
+	workspace      core.Workspace
+	deliveries     map[string]core.Delivery
+	order          []string
+	inputGroups    map[string][]string
+	accepted       map[string]bool
+	anchor         string
+	renders        map[string]*render
+	replyAnchors   map[string]core.Delivery
+	replyOrder     []string
+	compacting     string
+	requests       map[string]bool
+	activeRequests int
+	titleSync      *sessionTitleSync
 }
 type actionExecution struct {
 	room        string
@@ -88,6 +91,7 @@ type Gateway struct {
 	outMu                                                        sync.Mutex
 	outActive                                                    map[string]bool
 	outCursor                                                    map[string]outputCursor
+	stopBlocked                                                  map[string]bool
 	receiptMu                                                    sync.Mutex
 	receiptActive                                                map[string]*dispatchWake
 	receiptCursor                                                outputCursor
@@ -101,7 +105,7 @@ type Gateway struct {
 func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerFactory, log core.Logger) *Gateway {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{config: c, store: st, transport: tr, factory: factory, logger: log, ctx: ctx, cancel: cancel,
-		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
+		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
 	if _, err := rand.Read(g.historyKey[:]); err != nil {
 		panic("cannot initialize history cursor authentication")
 	}
@@ -328,7 +332,7 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		g.mu.Unlock()
 		if limited {
 			_, err = g.store.Insert(room.Key, m, "cancelled")
-			g.notify(room, "消息过于频繁，请稍后再试。", &m)
+			g.notify(g.refusalRoom(room, m), "消息过于频繁，请稍后再试。", &m)
 			return err
 		}
 	}
@@ -340,7 +344,7 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		if reason == "" {
 			reason = "正文或附件数量超过本次输入上限，请分开发送。"
 		}
-		g.notify(room, "消息未提交："+reason, &m)
+		g.notify(g.refusalRoom(room, m), "消息未提交："+reason, &m)
 		return err
 	}
 	if room.Thread != "" && m.ThreadID == "" && contains(topicCommands, cmd) {
@@ -394,7 +398,11 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	}
 	if total >= g.config.Limits.InboxPerRoom {
 		_, err = g.store.Insert(room.Key, m, "cancelled")
-		g.notify(room, "本群待交付输入已达上限，请查看 /status 或联系维护者。", &m)
+		text := "本群待交付输入已达上限，请查看 /status 或联系维护者。"
+		if room.Thread != "" {
+			text = "本群所有话题的待交付输入合计已达上限，请在各话题内用 /status 查看，或等待已有任务完成后再发送。"
+		}
+		g.notify(g.refusalRoom(room, m), text, &m)
 		return err
 	}
 	var command *core.Command
@@ -438,6 +446,10 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		return err
 	}
 	g.acceptReceipt(room, session.ID, m)
+	if g.stopIsBlocked(room.Key) {
+		g.notify(room, "本聊天上次停止未能完成（状态保存失败），输入已保存但暂不交付。请维护者检查服务诊断后重新发送 /stop。", &m)
+		return nil
+	}
 	g.kick(room)
 	if command != nil && count > 0 {
 		g.notify(room, "已接收 /compact，将在当前工作轮次结束后整理上下文；期间仍可处理审批。", &m)
@@ -454,7 +466,7 @@ func (g *Gateway) refuseUnidentifiedSession(s *slot, r core.Room, m core.Message
 	s.cancel()
 	g.removeSlot(s)
 	pending, _ := g.store.Pending(r.Key)
-	if e := g.store.StopSession(s.session.ID); e != nil {
+	if e := g.store.StopUnidentifiedSession(s.session.ID); e != nil {
 		g.audit(r.Key, "input_state_unconfirmed", core.Args{"session": s.session.ID})
 	}
 	for _, d := range pending {
@@ -472,6 +484,20 @@ func (g *Gateway) pendingInChat(r core.Room) (int, error) {
 		return g.store.CountPending(r.Key)
 	}
 	return g.store.CountPendingChat(r.ChatKey)
+}
+
+// refusalRoom picks where to explain a refused input. A refused top-level
+// message in a thread-scoped group never became a topic, so the notice replies
+// on the chat timeline instead of opening a topic (which Feishu also refuses
+// for aggregated messages such as merge forwards).
+func (g *Gateway) refusalRoom(room core.Room, m core.Message) core.Room {
+	if room.Thread == "" || m.ThreadID != "" {
+		return room
+	}
+	if chat, ok := RoomFor(g.config, room.ChatID, ""); ok {
+		return chat
+	}
+	return room
 }
 
 // topicCommands act on one session. In a thread-scoped group they are
@@ -551,7 +577,7 @@ func (g *Gateway) cancelLostSupplements(r core.Room) {
 }
 func (g *Gateway) kick(r core.Room) {
 	g.mu.Lock()
-	if g.closing || g.profileWait[r.Key] != "" {
+	if g.closing || g.profileWait[r.Key] != "" || g.stopBlocked[r.Key] {
 		g.mu.Unlock()
 		return
 	}
@@ -768,11 +794,11 @@ func (g *Gateway) dispatch(r core.Room) error {
 			// Inputs already handed to a native process prove a native context
 			// exists. Without its durable ID, launching would silently start a
 			// different one; require an explicit new-session operation instead.
-			received, err := g.store.SessionReceivedInput(r.Key, s.session.ID)
+			handed, err := g.store.SessionHandedInput(r.Key, s.session.ID)
 			if err != nil {
 				return err
 			}
-			if received {
+			if handed {
 				g.refuseUnidentifiedSession(s, r, pending[0].Message)
 				return nil
 			}

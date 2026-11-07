@@ -214,24 +214,49 @@ func TestOffsetZoneNamesLocalOffsetInsteadOfUTC(t *testing.T) {
 		want   string
 	}{
 		{0, "UTC"},
-		{8 * 3600, "Etc/GMT-8"},
-		{-5 * 3600, "Etc/GMT+5"},
+		{8 * 3600, "UTC+08:00"},
+		{-5 * 3600, "UTC-05:00"},
 		{5*3600 + 1800, "UTC+05:30"},
 		{-(3*3600 + 1800), "UTC-03:30"},
 	} {
 		now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("Local", tc.offset))
-		got := offsetZone(now)
-		if got != tc.want {
+		if got := offsetZone(now); got != tc.want {
 			t.Fatalf("offset %d: %q want %q", tc.offset, got, tc.want)
 		}
-		if strings.HasPrefix(got, "Etc/") || got == "UTC" {
-			loc, err := time.LoadLocation(got)
-			if err != nil {
-				t.Skip("zoneinfo unavailable:", err)
-			}
-			if _, off := now.In(loc).Zone(); off != tc.offset {
-				t.Fatalf("%s resolves to offset %d, want %d", got, off, tc.offset)
-			}
+	}
+	if !strings.HasPrefix(offsetZone(time.Now()), "UTC") {
+		t.Fatal("local offset must be reported in UTC±hh:mm form")
+	}
+}
+
+func TestConfiguredZoneLoadsFromEmbeddedDatabase(t *testing.T) {
+	t.Setenv("ZONEINFO", "")
+	t.Setenv("TZ", "America/New_York")
+	if got := timezone(); got != "America/New_York" {
+		t.Fatalf("configured TZ ignored: %q", got)
+	}
+}
+
+func TestChatRoomDoesNotClaimTopicAttachments(t *testing.T) {
+	root := t.TempDir()
+	room := filepath.Join(root, "room")
+	work := filepath.Join(room, "work")
+	home := filepath.Join(room, "home")
+	inbound := filepath.Join(room, "inbound")
+	topic := filepath.Join(inbound, "topics", "topic-a")
+	for _, p := range []string{work, home, topic} {
+		if err := os.MkdirAll(p, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := &worker{workspace: core.Workspace{Root: room, Work: work, Home: home, Inbound: inbound}, events: make(chan core.WorkerEvent, 16), eventsDone: make(chan struct{})}
+	for path, wantDeny := range map[string]bool{filepath.Join(inbound, "chat.txt"): false, filepath.Join(topic, "upload.txt"): true} {
+		result, err := w.hook(context.Background(), "tool", args{"hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": args{"file_path": path}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if denied := object(result["hookSpecificOutput"])["permissionDecision"] == "deny"; denied != wantDeny {
+			t.Fatalf("%s denied=%v want %v", path, denied, wantDeny)
 		}
 	}
 }

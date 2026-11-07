@@ -270,6 +270,9 @@ func TestTopicsShareWorkspaceButNotAttachments(t *testing.T) {
 	if _, _, err := TranslateOutput(wb, upload); err == nil {
 		t.Fatal("another topic's attachment was accepted for output")
 	}
+	if _, _, err := TranslateOutput(wc, upload); err == nil {
+		t.Fatal("the chat room accepted a topic attachment for output")
+	}
 }
 
 func TestSharedPreparationWaitHonorsCancellation(t *testing.T) {

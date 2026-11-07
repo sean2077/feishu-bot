@@ -39,7 +39,9 @@ func (g *Gateway) request(s *slot, ev core.WorkerEvent) (core.Args, error) {
 		if resource == nil {
 			return nil, errors.New("unknown attachment")
 		}
-		name := core.Hash(id + key)[:24] + "-" + safeAttachmentName(resource.Name)
+		// The "f-" prefix marks the atomic publish scheme below; files that an
+		// older version wrote in place (possibly truncated) are never reused.
+		name := "f-" + core.Hash(id + key)[:24] + "-" + safeAttachmentName(resource.Name)
 		path := filepath.Join(s.workspace.Inbound, name)
 		if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
 			// The final name only appears after a complete download (below),

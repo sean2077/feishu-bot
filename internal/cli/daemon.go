@@ -198,11 +198,6 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 	if err := mgr.Check(ctx, spec, o.Replace); err != nil {
 		return err
 	}
-	// Only now replace service.env: a failed precheck or ownership check must
-	// leave the installed service's environment untouched.
-	if err := commitEnv(); err != nil {
-		return err
-	}
 
 	oldMeta, oldErr := loadDaemonMeta()
 	hadMeta := oldErr == nil
@@ -232,6 +227,11 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 	}
 	logFile.Close()
 
+	// Replace service.env only once every check has passed, immediately before
+	// the service definition that will read it.
+	if err := commitEnv(); err != nil {
+		return err
+	}
 	if err := mgr.Install(ctx, spec, o.Replace); err != nil {
 		return err
 	}
