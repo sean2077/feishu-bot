@@ -22,9 +22,6 @@ import (
 	"github.com/sean2077/feishu-bot/internal/workspace"
 )
 
-// Version can be set with -ldflags '-X github.com/sean2077/feishu-bot/internal/cli.Version=...'.
-var Version = "0.3.0-dev"
-
 const help = `feishu-bot init [--config path]
 feishu-bot doctor [--config path] [--env-file path] [--probe] [--probe-feishu]
                   [--verify-chat configured-chat-id|dm:configured-user-id]
@@ -77,7 +74,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			_, err = io.WriteString(stdout, text)
 			return err
 		case "version":
-			_, err = fmt.Fprintf(stdout, "feishu-bot %s\n", Version)
+			_, err = fmt.Fprintf(stdout, "feishu-bot %s\n", buildVersion())
 			return err
 		case "init":
 			return initialize(o.ConfigPath, stdout)

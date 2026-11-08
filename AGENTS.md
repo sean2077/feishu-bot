@@ -19,7 +19,7 @@
 
 以下命令默认在仓库根目录执行。仓库没有 Makefile、Justfile 或 Taskfile；构建和检查直接使用 Go 命令。
 
-- 构建：`go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot`；Windows 输出 `./bin/feishu-bot.exe`。生产构建使用 `CGO_ENABLED=0`。
+- 构建：`go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot`；Windows 输出 `./bin/feishu-bot.exe`。生产构建使用 `CGO_ENABLED=0`；注入 `git describe` 版本的本地构建见[从源码构建](docs/deployment.md#从源码构建)。
 - 检查：`go test -race ./...`、`go vet ./...`。竞态检测需要平台的 C 工具链；CI 保留 Ubuntu／Windows 的 Go 1.25／1.27，并覆盖 Linux arm64 与 macOS 两种架构。
 - 原生协议回归：设置 `CLAUDE_NATIVE_PATH` 指向 Claude Code 2.1.316 后运行 `go test -race -count=1 -timeout 180s ./internal/native ./internal/integration ./cmd/benchmark-native`；未设置时相关用例明确跳过。
 - 使用与部署命令：`./bin/feishu-bot init|doctor|run|daemon ...`；完整路径、配置和限制见[部署与配置](docs/deployment.md)。

@@ -295,7 +295,7 @@ func installWithManager(ctx context.Context, o Options, mgr serviceManager, stdo
 	}
 	meta := daemonMeta{
 		Schema:        daemonMetaSchema,
-		Version:       Version,
+		Version:       buildVersion(),
 		Name:          serviceName,
 		Platform:      mgr.Platform(),
 		WorkDir:       workDir,
