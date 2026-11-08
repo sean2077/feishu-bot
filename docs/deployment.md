@@ -72,6 +72,15 @@ go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 
 Windows 输出 `./bin/feishu-bot.exe`。生产构建使用 `CGO_ENABLED=0`；运行二进制不需要 Go 编译器、Node.js、npm 或 CGO 动态库。源码更新后重新构建，再按[升级与回滚](#升级与回滚)替换运行中的二进制。开发检查见[开发与贡献](../CONTRIBUTING.md)。
 
+上述构建未注入版本，`--version` 显示 `dev`，并附 Go 工具链记录的提交，例如 `dev-g1a2b3c4`（工作区有未提交改动时为 `dev-g1a2b3c4-dirty`）。用于常驻服务的本地构建建议注入 `git describe` 版本，便于 `--version`、`daemon status` 区分构建来源；需要 Git Bash 或其他 POSIX shell，且仓库已获取 tag：
+
+```sh
+version="$(git describe --tags --long --dirty --match 'v[0-9]*')"
+CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/internal/cli.Version=${version#v}" -o ./bin/feishu-bot ./cmd/feishu-bot
+```
+
+结果形如 `0.5.0-3-g1a2b3c4`：最近的版本 tag、其后的提交数和提交短 SHA，未提交改动追加 `-dirty`。`--long` 使 tag 所在提交的本地构建显示为 `0.5.0-0-g…`，与发布产物的 `0.5.0` 区分；发布版本的注入见[版本发布](releasing.md)。版本字符串只用于显示和 `daemon.json` 记录，不参与兼容判断。
+
 ## 配置文件与凭据
 
 ```sh
