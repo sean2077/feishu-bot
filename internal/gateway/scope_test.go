@@ -25,6 +25,10 @@ func cardValue(card core.Args, label string) core.Args {
 					}
 				}
 			}
+			children, _ := element["elements"].([]any)
+			if value := find(children); value != nil {
+				return value
+			}
 			columns, _ := element["columns"].([]any)
 			for _, rawColumn := range columns {
 				children, _ := argsOf(rawColumn)["elements"].([]any)
@@ -159,7 +163,7 @@ func TestForwardedApprovalCannotBeClaimedByOriginalDMUser(t *testing.T) {
 		t.Fatalf("forwarded approval response was not approved: %#v", answer)
 	}
 }
-func TestQuestionSelectionsRemainPerActor(t *testing.T) {
+func TestQuestionFormDoesNotMergeDifferentActorsDrafts(t *testing.T) {
 	f := newFixture(t, nil)
 	f.send(f.message("one", "task", "member"))
 	w := f.worker()
@@ -168,94 +172,62 @@ func TestQuestionSelectionsRemainPerActor(t *testing.T) {
 	w.emit(core.WorkerEvent{Type: "request", ID: "q", Kind: "question", Name: "AskUserQuestion", Input: core.Args{"questions": questions}})
 	eventually(t, func() bool { return f.tr.cardCount() == 1 })
 	card := f.tr.cardLast()
-	request := stringArg(cardValue(card.card, "A"), "request")
-	waitApprovalBinding(t, f, card, request)
-	click := func(actor, label string) string {
+	value := cardValue(card.card, "提交回答")
+	waitApprovalBinding(t, f, card, stringArg(value, "request"))
+	submit := func(actor string, form core.Args) string {
 		t.Helper()
-		value := cardValue(f.tr.latestCard(card.id), label)
-		text, e := f.g.Action(context.Background(), core.CardAction{UserID: actor, ChatID: "group", MessageID: card.id, Value: value})
-		if e != nil {
-			t.Fatal(e)
+		reply, err := f.g.ActionResponse(context.Background(), core.CardAction{UserID: actor, ChatID: "group", MessageID: card.id, Value: value, FormValue: form})
+		if err != nil || reply["card"] != nil {
+			t.Fatalf("submission should return only a toast, preserving client drafts: %#v %v", reply, err)
 		}
-		return text
+		return stringArg(argsOf(reply["toast"]), "content")
 	}
-	if !strings.Contains(click("member", "A"), "已记录") {
-		t.Fatal("choice not recorded")
+	if text := submit("member", core.Args{"question_0": "0"}); text != "请先回答第 2 题，再提交。" {
+		t.Fatalf("incomplete member form was accepted: %q", text)
 	}
-	// Re-clicking the selected single-choice option keeps it selected. A group
-	// card is not refreshed, so the next click uses the same card values.
-	if !strings.Contains(click("member", "A"), "第 1 题已记录：A") {
-		t.Fatal("single choice was toggled off")
+	if text := submit("second", core.Args{"question_1": []any{"1"}}); text != "请先回答第 1 题，再提交。" {
+		t.Fatalf("another actor inherited the first actor's answer: %q", text)
 	}
-	_ = click("second", "Y")
-	if text := click("member", "提交选择"); text != "请先回答第 2 题，再提交。" {
-		t.Fatalf("another actor completed member's answer: %q", text)
-	}
-	_ = click("member", "X")
-	// Multi-select toggles independently.
-	_ = click("member", "X")
-	if text := click("member", "提交选择"); text != "请先回答第 2 题，再提交。" {
-		t.Fatalf("multi-select toggle was not applied: %q", text)
-	}
-	_ = click("member", "X")
-	if click("member", "提交选择") != "已提交" {
-		t.Fatal("complete answers failed")
+	if text := submit("member", core.Args{"question_0": "0", "question_1": []any{"0"}}); text != "已提交" {
+		t.Fatalf("complete form was not submitted: %q", text)
 	}
 	answer := response(t, w)
 	values := argsOf(answer["answers"])
 	if values["First?"] != "A" || values["Second?"] != "X" {
 		t.Fatalf("mixed actor choices: %#v", values)
 	}
+	if text := submit("second", core.Args{"custom_0": "replacement", "custom_1": "replacement"}); text != "请求已结束或过期" {
+		t.Fatalf("second submission replaced the first: %q", text)
+	}
+	select {
+	case repeated := <-w.responses:
+		t.Fatalf("replayed form reached native: %#v", repeated)
+	default:
+	}
 }
-func TestPrivateQuestionSelectionReturnsUpdatedCard(t *testing.T) {
+
+func TestPrivateQuestionFormRejectsAnotherActor(t *testing.T) {
 	f := newFixture(t, nil)
 	m := f.message("dm", "task", "member")
-	m.ChatType = "p2p"
-	m.ChatID = "dm-member"
-	m.Mentioned = false
+	m.ChatType, m.ChatID, m.Mentioned = "p2p", "dm-member", false
 	f.send(m)
 	w := f.worker()
 	_ = f.delivery(w)
 	w.emit(core.WorkerEvent{Type: "request", ID: "q", Kind: "question", Name: "AskUserQuestion", Input: core.Args{"questions": []any{core.Args{"question": "Pick", "options": []any{core.Args{"label": "A"}, core.Args{"label": "B"}}}}}})
 	eventually(t, func() bool { return f.tr.cardCount() == 1 })
 	card := f.tr.cardLast()
-	value := cardValue(card.card, "A")
+	value := cardValue(card.card, "提交回答")
 	waitApprovalBinding(t, f, card, stringArg(value, "request"))
-	response, e := f.g.ActionResponse(context.Background(), core.CardAction{UserID: "member", ChatID: "dm-member", MessageID: card.id, Value: value})
-	if e != nil {
-		t.Fatal(e)
+	a := core.CardAction{UserID: "owner", ChatID: "dm-member", MessageID: card.id, Value: value, FormValue: core.Args{"custom_0": "Private answer"}}
+	if text, err := f.g.Action(context.Background(), a); err != nil || text != "" {
+		t.Fatalf("another authorized user's private form was accepted: %q %v", text, err)
 	}
-	if stringArg(argsOf(response["toast"]), "content") == "" {
-		t.Fatal("private selection returned no toast")
+	a.UserID = "member"
+	if text, err := f.g.Action(context.Background(), a); err != nil || text != "已提交" {
+		t.Fatalf("private form owner was rejected: %q %v", text, err)
 	}
-	raw, ok := response["card"].(core.Args)
-	if !ok || stringArg(raw, "type") != "raw" {
-		t.Fatalf("private selection returned no raw card: %#v", response)
-	}
-	body := argsOf(argsOf(raw["data"])["body"])
-	elements, _ := body["elements"].([]any)
-	intro := stringArg(argsOf(elements[0]), "content")
-	if !strings.Contains(intro, "当前选择") || !strings.Contains(intro, "1. A") {
-		t.Fatalf("private card did not show the selection: %q", intro)
-	}
-}
-
-func TestGroupQuestionSelectionReturnsNoCard(t *testing.T) {
-	f := newFixture(t, nil)
-	f.send(f.message("group", "task", "member"))
-	w := f.worker()
-	_ = f.delivery(w)
-	w.emit(core.WorkerEvent{Type: "request", ID: "q", Kind: "question", Name: "AskUserQuestion", Input: core.Args{"questions": []any{core.Args{"question": "Pick", "options": []any{core.Args{"label": "A"}, core.Args{"label": "B"}}}}}})
-	eventually(t, func() bool { return f.tr.cardCount() == 1 })
-	card := f.tr.cardLast()
-	value := cardValue(card.card, "A")
-	waitApprovalBinding(t, f, card, stringArg(value, "request"))
-	response, e := f.g.ActionResponse(context.Background(), core.CardAction{UserID: "member", ChatID: "group", MessageID: card.id, Value: value})
-	if e != nil {
-		t.Fatal(e)
-	}
-	if _, exists := response["card"]; exists {
-		t.Fatalf("group selection returned a card update: %#v", response)
+	if answers := argsOf(response(t, w)["answers"]); answers["Pick"] != "Private answer" {
+		t.Fatalf("private custom answer was lost: %#v", answers)
 	}
 }
 

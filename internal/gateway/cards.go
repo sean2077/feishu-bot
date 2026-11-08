@@ -33,23 +33,6 @@ func actionRow(buttons ...core.Args) core.Args {
 	return core.Args{"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "medium", "columns": columns}
 }
 
-// optionRow keeps a long label and its description in the text column and a
-// compact action on the right, instead of stacking a full-width button under a
-// duplicate label line.
-func optionRow(label, description string, value core.Args, style string) core.Args {
-	text := []any{core.Args{"tag": "markdown", "content": "**" + label + "**"}}
-	if description != "" {
-		text = append(text, core.Args{"tag": "markdown", "text_size": "notation", "content": description})
-	}
-	return core.Args{
-		"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "medium",
-		"columns": []any{
-			core.Args{"tag": "column", "width": "weighted", "weight": 1, "vertical_spacing": "2px", "elements": text},
-			core.Args{"tag": "column", "width": "auto", "horizontal_align": "right", "elements": []any{button("选择", value, style)}},
-		},
-	}
-}
-
 type replyDetails struct {
 	Model, ProjectPath string
 	Context, Usage     core.Args
@@ -267,19 +250,35 @@ func boundedReplyCard(title, answer string, thinking []string, total int, final 
 		return card
 	}
 	preview := bytePrefix(answer, core.CardPayloadLimit)
-	card := makeCard(preview)
+	shown, needsFile := prepareReplyMarkdown(preview)
+	card := makeCard(shown)
 	n, err := core.CardPayloadBytes(card)
-	if len(preview) == len(answer) && err == nil && n <= core.CardPayloadLimit {
+	if len(preview) == len(answer) && !needsFile && err == nil && n <= core.CardPayloadLimit {
 		return card, false
 	}
 	suffix := "\n\n（预览已截断，完成后附完整答案文件。）"
 	if final {
 		suffix = "\n\n（完整答案另附文件。）"
 	}
+	if len(preview) == len(answer) && needsFile {
+		notice := suffix
+		if !final {
+			notice = "\n\n（后续内容按原文显示，完成后附完整答案文件。）"
+		}
+		card = makeCard(shown + notice)
+		if size, e := core.CardPayloadBytes(card); e == nil && size <= core.CardPayloadLimit {
+			return card, true
+		}
+	}
+	makePreview := func(n int) core.Args {
+		body, _ := prepareReplyMarkdown(bytePrefix(preview, n))
+		// Append the notice after closing a partial code fence, never inside it.
+		return makeCard(body + suffix)
+	}
 	low, high := 0, len(preview)
 	for low < high {
 		mid := low + (high-low+1)/2
-		candidate := makeCard(bytePrefix(preview, mid) + suffix)
+		candidate := makePreview(mid)
 		size, e := core.CardPayloadBytes(candidate)
 		if e == nil && size <= core.CardPayloadLimit {
 			low = mid
@@ -287,5 +286,5 @@ func boundedReplyCard(title, answer string, thinking []string, total int, final 
 			high = mid - 1
 		}
 	}
-	return makeCard(bytePrefix(preview, low) + suffix), true
+	return makePreview(low), true
 }

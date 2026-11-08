@@ -103,9 +103,13 @@ func fitCardBudget(card core.Args, budget int, suffix string) core.Args {
 		return card
 	}
 	lo, hi := 0, min(len(original), core.CardPayloadLimit)
+	preview := func(n int) string {
+		body, _ := prepareReplyMarkdown(bytePrefix(original, n))
+		return body + suffix
+	}
 	for lo < hi {
 		mid := lo + (hi-lo+1)/2
-		answer["content"] = bytePrefix(original, mid) + suffix
+		answer["content"] = preview(mid)
 		size, err = core.CardPayloadBytes(card)
 		if err == nil && size <= budget {
 			lo = mid
@@ -113,7 +117,7 @@ func fitCardBudget(card core.Args, budget int, suffix string) core.Args {
 			hi = mid - 1
 		}
 	}
-	answer["content"] = bytePrefix(original, lo) + suffix
+	answer["content"] = preview(lo)
 	return card
 }
 

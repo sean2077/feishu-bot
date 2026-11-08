@@ -217,6 +217,7 @@ func TestRealNativeGatewayApprovalDeliveryAndRestart(t *testing.T) {
 	}
 	target := filepath.Join(work, "approved-file.txt")
 	completeAnswer := strings.Repeat("COMPLETE_LOCAL_REPLY ", 1400) + "END_OF_COMPLETE_REPLY"
+	customAnswer := "CUSTOM_INLINE_DELIVERY_7F4C"
 	t.Setenv("FEISHU_INTEGRATION_MODEL_TOKEN", "integration-fixture-token")
 	var modelCalls atomic.Int32
 	var resumedWithHistory atomic.Int32
@@ -243,10 +244,13 @@ func TestRealNativeGatewayApprovalDeliveryAndRestart(t *testing.T) {
 		case 1:
 			content = []core.Args{{"type": "tool_use", "id": "write_approved_file", "name": "Write", "input": core.Args{"file_path": target, "content": "gateway-native-approved"}}}
 		case 2:
-			content = []core.Args{{"type": "tool_use", "id": "ask_real_question", "name": "AskUserQuestion", "input": core.Args{"questions": []core.Args{{"question": "Which delivery option?", "header": "Delivery", "options": []core.Args{{"label": "First", "description": "Use the first fixture option"}, {"label": "Second", "description": "Use the second fixture option"}}, "multiSelect": false}}}}}
+			content = []core.Args{{"type": "tool_use", "id": "ask_real_question", "name": "AskUserQuestion", "input": core.Args{"questions": []core.Args{
+				{"question": "Which delivery option?", "header": "Delivery", "options": []core.Args{{"label": "First", "description": "Use the first fixture option"}, {"label": "Second", "description": "Use the second fixture option"}}, "multiSelect": false},
+				{"question": "Which verification targets?", "header": "Targets", "options": []core.Args{{"label": "Gateway", "description": "Check the gateway"}, {"label": "Native", "description": "Check the native child"}}, "multiSelect": true},
+			}}}}
 		case 3:
-			if !strings.Contains(string(data), "First") || !strings.Contains(string(data), "Which delivery option?") {
-				t.Error("gateway answer did not reach the native tool result")
+			if !strings.Contains(string(data), customAnswer) || !strings.Contains(string(data), "Gateway, Native") || !strings.Contains(string(data), "Which delivery option?") {
+				t.Error("custom form answer and multi-select did not reach the native tool result")
 			}
 			content = []core.Args{{"type": "text", "text": completeAnswer}}
 		default:
@@ -362,9 +366,10 @@ func TestRealNativeGatewayApprovalDeliveryAndRestart(t *testing.T) {
 		t.Fatalf("gateway maintainer approval failed: %q %v", text, err)
 	}
 	var question core.Args
+	var questionCard observedCard
 	await(t, ctx, "gateway AskUserQuestion card", func() bool {
-		_, value, found := tr.withButton("提交选择")
-		question = value
+		card, value, found := tr.withButton("提交回答")
+		question, questionCard = value, card
 		return found
 	})
 	written, err := os.ReadFile(target)
@@ -375,9 +380,20 @@ func TestRealNativeGatewayApprovalDeliveryAndRestart(t *testing.T) {
 	if questionID == "" {
 		t.Fatal("question card lost its request binding")
 	}
-	if err = g.Message(ctx, message("answer-input", "/answer "+questionID+" First", "member")); err != nil {
-		t.Fatal(err)
-	}
+	// The native question is answered only through the same form callback the
+	// Feishu adapter dispatches. The custom answer is absent from model inputs
+	// until this response, so the following request proves it reached the CLI.
+	await(t, ctx, "question form registration and submission", func() bool {
+		reply, err := g.ActionResponse(ctx, core.CardAction{UserID: "member", ChatID: first.ChatID, MessageID: questionCard.id, Value: question, FormValue: core.Args{
+			"question_0": "0", "custom_0": customAnswer,
+			"question_1": []any{"1", "0"}, "custom_1": "  ",
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		toast, _ := reply["toast"].(core.Args)
+		return toast["content"] == "已提交"
+	})
 	var export deliveredFile
 	select {
 	case export = <-tr.fileReady:
@@ -517,7 +533,7 @@ func TestRealNativeGatewayApprovalDeliveryAndRestart(t *testing.T) {
 	if modelCalls.Load() != 5 {
 		t.Fatalf("unexpected model retries or replayed tools: %d calls", modelCalls.Load())
 	}
-	t.Log("real CLI + Gateway + SQLite: maintainer-approved Write, /answer, full-file-before-Done, one reply card, idle reclamation, /stop and durable same-ID restart passed against local fixtures")
+	t.Log("real CLI + Gateway + SQLite: maintainer-approved Write, custom/multi-select question form, full-file-before-Done, one reply card, idle reclamation, /stop and durable same-ID restart passed against local fixtures")
 }
 
 func writeModel(w http.ResponseWriter, request core.Args, id string, content []core.Args) {

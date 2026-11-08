@@ -353,19 +353,25 @@ func (f *artifactPlatform) wait(t *testing.T, ctx context.Context, what string, 
 		}
 	}
 }
-func (f *artifactPlatform) button(t *testing.T, ctx context.Context, label string) (artifactCard, core.Args) {
+
+// button waits for the first card exposing any of labels. Upgrade journeys
+// render the question card from the previous artifact, so a renamed control
+// lists the current label first and keeps the released label as a fallback.
+func (f *artifactPlatform) button(t *testing.T, ctx context.Context, labels ...string) (artifactCard, core.Args) {
 	t.Helper()
 	var found artifactCard
 	var value core.Args
-	f.wait(t, ctx, "card button "+label, func() bool {
+	f.wait(t, ctx, "card button "+strings.Join(labels, " | "), func() bool {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		for _, card := range f.cards {
-			if v := artifactButton(card.Body, label); v != nil {
-				found = card
-				data, _ := json.Marshal(v)
-				_ = json.Unmarshal(data, &value)
-				return true
+			for _, label := range labels {
+				if v := artifactButton(card.Body, label); v != nil {
+					found = card
+					data, _ := json.Marshal(v)
+					_ = json.Unmarshal(data, &value)
+					return true
+				}
 			}
 		}
 		return false

@@ -243,7 +243,7 @@ func runArtifactNativeJourney(t *testing.T, initial, current artifactIdentity) {
 	if answer := platform.action(t, ctx, wire, permission.ID, "ou_owner", value); answer != "已批准一次" {
 		t.Fatal("maintainer approval failed", answer)
 	}
-	_, question := platform.button(t, ctx, "提交选择")
+	_, question := platform.button(t, ctx, "提交回答", "提交选择")
 	written, err := os.ReadFile(target)
 	if err != nil || string(written) != "artifact-approved-native" {
 		t.Fatal("approved native Write did not execute", err)
