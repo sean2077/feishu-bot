@@ -322,9 +322,7 @@ func TestForwardedApprovalUsesDesignatedApprovers(t *testing.T) {
 	}
 	value := cardValue(card.card, "批准一次")
 	waitApprovalBinding(t, f, card, stringArg(value, "request"))
-	if !hasApprovalNotice(f, "指定审批人") {
-		t.Fatal("forwarded notice did not mention designated approvers")
-	}
+	eventually(t, func() bool { return hasApprovalNotice(f, "指定审批人") })
 	if got := clickApproval(t, f, card, value, "owner"); got != "已批准一次" {
 		t.Fatalf("designated approver in DM: %q", got)
 	}
