@@ -136,7 +136,13 @@ func (o *nativeOutput) handle(e args) []core.WorkerEvent {
 	}
 	stamp := o.stamp(e)
 	typ := text(e["type"])
-	if typ == "assistant" || typ == "stream_event" || typ == "result" || typ == "user" && (e["origin"] != nil || stamp != "") {
+	// Native Claude Code folds a task notification that completes during a
+	// running foreground turn into that turn and replays it as a user message;
+	// the rest of the turn and its result still answer the human input. When
+	// that same input started the task, the output stays on its reply card.
+	// A task from an earlier input keeps its own attribution.
+	absorbed := typ == "user" && o.source == "foreground" && o.anchor != "" && stamp == o.anchor && o.eventSource(e) == "background"
+	if !absorbed && (typ == "assistant" || typ == "stream_event" || typ == "result" || typ == "user" && (e["origin"] != nil || stamp != "")) {
 		o.source = o.eventSource(e)
 		if o.source == "background" {
 			o.backgroundID = o.background(e)

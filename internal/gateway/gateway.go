@@ -55,6 +55,10 @@ type slot struct {
 	// successfully but is absent or not readable in this room. It avoids a
 	// Feishu lookup on every reply; fetch errors are still retried.
 	topicRootUnavailable string
+	// turnRenders names the renders that received output since the last
+	// native result. One result ends one native turn, so any of them that
+	// result does not finalize can never receive its own.
+	turnRenders map[string]bool
 }
 type actionExecution struct {
 	room        string
