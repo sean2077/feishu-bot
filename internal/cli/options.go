@@ -15,6 +15,8 @@ type Options struct {
 	Probe, ProbeFeishu                 bool
 	VerifyChat                         string
 	ActionArgs                         []string
+	FeedbackValue, FeedbackSince       string
+	FeedbackProject                    string
 	ExplainChat, ExplainUser, ChatType string
 	Mentioned, SenderBot               bool
 	SessionID                          string
@@ -59,6 +61,18 @@ func Parse(args []string) (Options, error) {
 			return o, errors.New("unexpected context argument")
 		}
 		return o, nil
+	}
+	if o.Command == "feedback" {
+		if len(args) < 2 || args[1] == "--help" || args[1] == "-h" {
+			o.Command = "help"
+			o.Subcommand = "feedback"
+			return o, nil
+		}
+		o.Subcommand = args[1]
+		if o.Subcommand != "export" {
+			return o, errors.New("unknown feedback command; use feishu-bot feedback --help")
+		}
+		return parseFeedback(args[2:], o)
 	}
 	if o.Command == "session" {
 		if len(args) < 2 || args[1] == "--help" || args[1] == "-h" {

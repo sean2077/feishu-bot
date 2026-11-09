@@ -110,6 +110,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `projects[].owners` | 空 | maintainers 子集；仅用于 `forbidSelfApproval` 时的 owner 例外，不增加其他权限 |
 | `projects[].approvals.forbidSelfApproval` | `false` | 开启后发起人不能批准自己的请求，owner 例外；见[审批资格与自批](#审批资格与自批) |
 | `actions[].approvers` | 空 | 该操作的指定审批人；配置后替代 maintainers，不隐式加入 maintainers 或 owners |
+| `projects[].feedback.enabled` | `false` | 在最终 Done 回复卡上显示「有用／无用」反馈，见[回复反馈](#回复反馈) |
 | `groups[]`、`dms[]` | 空 | 群与私聊授权，见[飞书应用与授权](#飞书应用与授权) |
 | `runtime.maxWorkers`、`runtime.idleMs` | 8、900000 | 活跃原生进程上限（1–128）与空闲回收时间，见[容量与恢复](#容量与恢复) |
 | `limits.backgroundMessages`／`backgroundMs` | 0／900000 | 非 @ 群消息缓存条数（0–200）与保留时间；默认不缓存 |
@@ -319,6 +320,23 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 ```
 
 以上是合并到完整配置的项目片段。approvers 仍需是群内授权作者才能点击群里的审批卡；私聊转发只发送操作摘要和参数。
+
+## 回复反馈
+
+`projects[].feedback.enabled` 按项目开启回复卡反馈，默认 `false`；关闭时回复卡与之前完全一致。
+
+开启后，只在最终成功交付并标记 Done 的回复卡底部出现「有用」「无用」按钮；未完整送达、已放弃、已取消、文件待送达和中间流式卡片不加。一轮回复拆成多张卡时只在最后一张添加。按钮复用快捷操作的 24 小时卡片绑定与会话检查；会话切换、卡片过期或非授权作者点击会按快捷操作提示失效。任何获准作者（私聊为私聊用户）每人每张回复保留一票，最后一次为准，可以改票；点击只返回「已记录：有用／无用」提示，不重写卡片。频率限制与普通消息共用。
+
+点击时在 `feedback` 表保存快照：问题取自 outbox origins 对应的 inbox 消息，找不到或已被清理时留空；回复正文取自 outbox。两者分别截断为 4000／2000 字符，并使用现有 secrets 脱敏；同时记录 room、project、gateway session、原生 session（有则记录）、outbox ID、卡片消息 ID、open_id、value 和时间。`feedback` 保留 90 天，维护者应定期导出。
+
+导出命令只读打开状态库；WAL 模式下可与运行中的服务并发读取，不加锁、不修改数据：
+
+```sh
+./bin/feishu-bot feedback export --config ~/.feishu-bot/config.json \
+  --value useless --since 30 --project team-tools > feedback.jsonl
+```
+
+`--value` 为 `useless`（默认）、`useful` 或 `all`；`--since` 接受 RFC3339 时间或天数；`--project` 过滤项目。每行一条 JSON，字段为 `at`（UTC RFC3339Nano）、`project`、`room`、`session`、`nativeSessionId`、`value`、`user`、`question`、`answerSummary`、`messageId`；问题缺失时附 `questionMissing: true`。导出包含用户问答原文和 open_id，按敏感数据处理，不要提交或公开。
 
 ## 首次启动检查
 

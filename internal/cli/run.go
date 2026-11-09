@@ -32,7 +32,12 @@ feishu-bot config path|example|format|explain
 feishu-bot session run --session FULL_SESSION_ID [--config path] [--env-file path]
 feishu-bot action <operation> '<parameters-json>'
 feishu-bot context
+feishu-bot feedback export [--config path] [--value useless|useful|all]
+                           [--since RFC3339|days] [--project id]
 feishu-bot version
+
+Feedback export contains user questions, answer summaries and open_ids;
+treat the output as sensitive.
 
 Doctor is offline by default. --probe-feishu reads application identity;
 --probe sends a potentially billable model request. Neither verifies live collaboration.
@@ -73,6 +78,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			if o.Subcommand == "session" {
 				text = sessionHelp
 			}
+			if o.Subcommand == "feedback" {
+				text = feedbackHelp
+			}
 			_, err = io.WriteString(stdout, text)
 			return err
 		case "version":
@@ -86,6 +94,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		case "context":
 			secrets = []string{os.Getenv("FEISHU_ACTION_TOKEN")}
 			return native.RunContextClient(ctx, stdout)
+		case "feedback":
+			return runFeedbackCommand(ctx, o, stdout)
 		case "daemon":
 			return runDaemon(ctx, o, stdout, stderr)
 		case "config":

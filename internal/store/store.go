@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, r
 CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, kind TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, expires INTEGER NOT NULL, actor TEXT);
 CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, text TEXT NOT NULL, target TEXT, reply_to TEXT, thread_id TEXT, success INTEGER NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS action_runs(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, action TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS feedback(id TEXT PRIMARY KEY, room TEXT NOT NULL, project TEXT NOT NULL, session TEXT NOT NULL, native_session TEXT, output TEXT NOT NULL, message TEXT NOT NULL, user TEXT NOT NULL, value TEXT NOT NULL, question TEXT NOT NULL, answer_summary TEXT NOT NULL, at INTEGER NOT NULL, UNIQUE(output,user));
 CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, desired TEXT NOT NULL, applied TEXT, at INTEGER NOT NULL, sender TEXT);
 CREATE TABLE IF NOT EXISTS context_refs(room TEXT NOT NULL, id TEXT NOT NULL, message TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(room,id));
 CREATE TABLE IF NOT EXISTS usage_coverage(session TEXT PRIMARY KEY, room TEXT NOT NULL, started INTEGER NOT NULL, prior_unknown INTEGER NOT NULL, unidentified INTEGER NOT NULL DEFAULT 0);
@@ -85,7 +86,31 @@ func sqliteFileURI(path string) string {
 }
 
 func New(path string) (*Store, error) { return Open(path) }
-func (s *Store) IsOpen() bool         { return !s.closed.Load() }
+
+// OpenReadOnly opens an existing state database without running migrations or
+// taking the service lock. WAL readers can run while the gateway is writing.
+func OpenReadOnly(path string) (*Store, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(abs)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("existing gateway state is required for feedback export")
+	}
+	dsn := sqliteFileURI(filepath.ToSlash(abs)) + "?mode=ro&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Store{DB: db}, nil
+}
+func (s *Store) IsOpen() bool { return !s.closed.Load() }
 func (s *Store) Close() error {
 	if s.closed.Swap(true) {
 		return nil

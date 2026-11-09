@@ -712,7 +712,11 @@ func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 // dropped because there is no longer an incomplete delivery to retry.
 func (g *Gateway) deliveredOutputCard(o outgoing, r core.Room) core.Args {
 	card := g.outputCard(o, r, false)
-	card = replaceQuickControls(card, g.quickControls(r, o.Session, "", ""))
+	controls := g.quickControls(r, o.Session, "", "")
+	if o.Kind == "reply" && o.Success && g.feedbackEnabled(r) && replyCardDone(card) {
+		controls = append(controls, g.feedbackControls(r, o.Session, o.ID, g.quickRevision(r, o.Session, "", "", ""))...)
+	}
+	card = replaceQuickControls(card, controls)
 	return fitNoticeCard(card)
 }
 

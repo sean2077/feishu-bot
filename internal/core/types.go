@@ -135,11 +135,17 @@ type ProjectApprovals struct {
 	ForbidSelfApproval bool `json:"forbidSelfApproval,omitempty"`
 }
 
+// FeedbackConfig enables reply-card feedback for a project.
+type FeedbackConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+}
+
 type Project struct {
 	ID               string           `json:"id"`
 	Maintainers      []string         `json:"maintainers"`
 	Owners           []string         `json:"owners,omitempty"`
 	Approvals        ProjectApprovals `json:"approvals,omitempty"`
+	Feedback         FeedbackConfig   `json:"feedback,omitempty"`
 	SeedDir          string           `json:"seedDir,omitempty"`
 	TrustedConfigDir string           `json:"trustedConfigDir,omitempty"`
 	CWD              string           `json:"cwd,omitempty"`
