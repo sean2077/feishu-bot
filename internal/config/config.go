@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -21,6 +22,123 @@ import (
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$`)
 var headerPattern = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 var parameterPattern = regexp.MustCompile(`\{\{([^}]+)\}\}`)
+var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ProjectEnvError reports an invalid projects[].env or envPassthrough entry.
+// It never carries a value, so it is safe to print before secret redaction.
+type ProjectEnvError struct {
+	Project  string
+	Variable string
+	Reason   string
+}
+
+func (e *ProjectEnvError) Error() string {
+	// Parentheses keep the variable name from looking like a "SECRET: value"
+	// pair to generic log redaction, which would mangle the reason.
+	return fmt.Sprintf("project %s: environment variable %s (%s)", e.Project, e.Variable, e.Reason)
+}
+
+// Reserved names keep the deployment boundary (native HOME/config, model
+// credentials, bridge channels and action relay) out of project control.
+var reservedProjectEnvNames = map[string]bool{
+	"home": true, "userprofile": true, "homedrive": true, "homepath": true,
+	"claude_config_dir": true, "claudecode": true, "node_options": true, "debug": true,
+}
+var reservedProjectEnvPrefixes = []string{"anthropic_", "claude_code_", "claude_agent_sdk", "feishu_action_"}
+
+func derivedProjectEnv(c *core.Config) map[string]string {
+	derived := map[string]string{}
+	add := func(name, reason string) {
+		name = strings.ToLower(name)
+		if name == "" {
+			return
+		}
+		if _, exists := derived[name]; !exists {
+			derived[name] = reason
+		}
+	}
+	add(c.AppSecretEnv, "name is reserved by appSecretEnv")
+	add(c.Model.TokenEnv, "name is reserved by model.tokenEnv")
+	for _, source := range c.Model.ExtraHeaders {
+		if strings.HasPrefix(source, "env:") {
+			add(strings.TrimPrefix(source, "env:"), "name is reserved by model.extraHeaders")
+		}
+	}
+	// Action credentials reach only the fixed-operation subprocess, never the
+	// native agent. A project passthrough with the same source name would
+	// bypass that boundary, so every referenced source is reserved for every
+	// project.
+	for _, p := range c.Projects {
+		for _, a := range p.Actions {
+			for _, source := range a.Env {
+				add(source, "name is reserved because it is used by fixed action "+p.ID+"/"+a.ID)
+			}
+		}
+	}
+	return derived
+}
+
+func reservedProjectEnv(name string, derived map[string]string) (string, bool) {
+	lower := strings.ToLower(name)
+	if reservedProjectEnvNames[lower] {
+		return "name is reserved by the deployment", true
+	}
+	for _, prefix := range reservedProjectEnvPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return "name is reserved by the deployment", true
+		}
+	}
+	reason, ok := derived[lower]
+	return reason, ok
+}
+
+// validateProjectEnvironment rejects unsafe or ambiguous definitions at load
+// time. Errors include the project and variable name only, never the value.
+func validateProjectEnvironment(p *core.Project, derived map[string]string) error {
+	fail := func(name, reason string) error {
+		return &ProjectEnvError{Project: p.ID, Variable: name, Reason: reason}
+	}
+	envNames := make([]string, 0, len(p.Env))
+	for name := range p.Env {
+		envNames = append(envNames, name)
+	}
+	sort.Strings(envNames)
+	seenEnv := map[string]string{}
+	for _, name := range envNames {
+		if !envNamePattern.MatchString(name) {
+			return fail(name, "name must match ^[A-Za-z_][A-Za-z0-9_]*$")
+		}
+		if reason, ok := reservedProjectEnv(name, derived); ok {
+			return fail(name, reason)
+		}
+		if !nonempty(p.Env[name]) {
+			return fail(name, "value must be nonempty and must not contain NUL")
+		}
+		lower := strings.ToLower(name)
+		if previous, ok := seenEnv[lower]; ok {
+			return fail(name, "name duplicates "+previous+" ignoring case")
+		}
+		seenEnv[lower] = name
+	}
+	seenPassthrough := map[string]string{}
+	for _, name := range p.EnvPassthrough {
+		if !envNamePattern.MatchString(name) {
+			return fail(name, "name must match ^[A-Za-z_][A-Za-z0-9_]*$")
+		}
+		if reason, ok := reservedProjectEnv(name, derived); ok {
+			return fail(name, reason)
+		}
+		lower := strings.ToLower(name)
+		if previous, ok := seenPassthrough[lower]; ok {
+			return fail(name, "passthrough name duplicates "+previous+" ignoring case")
+		}
+		if previous, ok := seenEnv[lower]; ok {
+			return fail(name, "name is also configured literally as "+previous)
+		}
+		seenPassthrough[lower] = name
+	}
+	return nil
+}
 
 func Defaults() core.Config {
 	return core.Config{AppSecretEnv: "FEISHU_APP_SECRET", DataDir: "state",
@@ -350,6 +468,7 @@ func validate(c *core.Config, base string) error {
 		}
 	}
 	projects := map[string]bool{}
+	derivedEnv := derivedProjectEnv(c)
 	for i := range c.Projects {
 		p := &c.Projects[i]
 		if !idPattern.MatchString(p.ID) || projects[p.ID] {
@@ -369,6 +488,9 @@ func validate(c *core.Config, base string) error {
 		}
 		if p.PermissionMode != "default" && p.PermissionMode != "acceptEdits" && p.PermissionMode != "bypassPermissions" {
 			return errors.New("invalid permissionMode")
+		}
+		if err := validateProjectEnvironment(p, derivedEnv); err != nil {
+			return err
 		}
 		if p.CWD != "" && (p.SeedDir != "" || p.TrustedConfigDir != "") {
 			return errors.New("project.cwd cannot be combined with seedDir or trustedConfigDir")
@@ -509,6 +631,14 @@ func ModelHeaders(c core.Config) (map[string]string, error) {
 func Secrets(c core.Config) []string {
 	result := []string{os.Getenv(c.AppSecretEnv), os.Getenv(c.Model.TokenEnv)}
 	for _, p := range c.Projects {
+		for _, name := range p.EnvPassthrough {
+			// Passthrough values are credentials. Very short values are not
+			// useful redaction markers: replacing a common short word
+			// throughout diagnostics hides the events they describe.
+			if value := os.Getenv(name); len(value) >= 8 {
+				result = append(result, value)
+			}
+		}
 		for _, a := range p.Actions {
 			for _, name := range a.Env {
 				result = append(result, os.Getenv(name))

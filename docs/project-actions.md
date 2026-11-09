@@ -15,7 +15,7 @@
 | feishu-doc-read / feishu-doc-append | 固定文档读取或追加 | 读取自动，追加逐次 |
 | feishu-table-list / feishu-table-update | 固定表和允许字段 | 读取自动，更新逐次 |
 
-`vars` 是固定非敏感设置，`env` 引用服务进程环境变量，`parameters` 约束 agent 提供的字符串。`readOnly: true` 的操作自动执行，其余逐次由维护者审批；`readOnly` 是管理员对可信执行器的声明，不是自动安全证明，不能把写操作标为只读以绕过审批。
+`vars` 是固定非敏感设置，`env` 引用服务进程环境变量，`parameters` 约束 agent 提供的字符串。`readOnly: true` 的操作自动执行，其余逐次由维护者审批；`readOnly` 是管理员对可信执行器的声明，不是自动安全证明，不能把写操作标为只读以绕过审批。`actions[].env` 引用的源变量名同时是项目环境变量的保留名，不能通过 `projects[].env` 或 `envPassthrough` 注入原生进程；固定操作的凭据只在操作子进程中提供。
 
 `workspaceFile` 在审批前保存文件快照和 SHA256，批准后读取快照。GitLab 示例在独立的干净 checkout 中应用补丁，禁用 hooks 和全局 Git 配置，不在可修改项目中运行携带业务凭据的脚本。
 

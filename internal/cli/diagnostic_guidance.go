@@ -10,6 +10,10 @@ func diagnosticRemedy(name string) string {
 		return "Configure an authorized group and its member allowlist, or an authorized DM user; keep unrelated chats unbound."
 	case strings.HasPrefix(name, "credential "):
 		return "Set the named variable in the service environment or an explicit --env-file; do not put its value in chat or command arguments."
+	case strings.HasPrefix(name, "project ") && strings.Contains(name, " credential "):
+		return "Provide the declared projects[].envPassthrough variable in the service environment or an explicit --env-file. An existing service.env is not updated from the current environment; pass --env-file to add new variables, then reinstall."
+	case strings.HasPrefix(name, "project ") && strings.Contains(name, " env "):
+		return "Move the credential to projects[].envPassthrough and keep only non-secret literals in projects[].env; diagnostics never print values."
 	case name == "Git":
 		return "Install Git and make it visible to the service account. On Windows, use Git for Windows."
 	case name == "Claude Code":

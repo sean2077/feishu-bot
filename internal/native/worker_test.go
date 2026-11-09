@@ -32,6 +32,17 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 func fakeClaude() {
+	if dump := os.Getenv("FEISHU_NATIVE_TEST_ENV_DUMP"); dump != "" {
+		var lines []string
+		for _, key := range strings.Split(os.Getenv("FEISHU_NATIVE_TEST_ENV_KEYS"), ",") {
+			if key != "" {
+				lines = append(lines, key+"="+os.Getenv(key))
+			}
+		}
+		if os.WriteFile(dump, []byte(strings.Join(lines, "\n")), 0600) != nil {
+			os.Exit(34)
+		}
+	}
 	encoder := json.NewEncoder(os.Stdout)
 	send := func(v args) { _ = encoder.Encode(v) }
 	emitResult := func(uuid string, ids []string, value string) {
@@ -466,7 +477,7 @@ func TestPrivateSettingsAndEnvironmentDoNotExposeBridgeCredentials(t *testing.T)
 	t.Setenv("NODE_OPTIONS", "parent-node-control")
 	f.workspace.NativeConfig = "inherit"
 	f.config.AppSecretEnv = "FEISHU_APP_SECRET"
-	env := Environment(f.workspace, f.config.AppSecretEnv)
+	env := Environment(f.workspace, f.config.Projects[0], f.config.AppSecretEnv)
 	for _, key := range []string{"FEISHU_APP_SECRET", "CLAUDE_CODE_SESSION_FOO", "FEISHU_ACTION_TOKEN", "NODE_OPTIONS"} {
 		if _, ok := env[key]; ok {
 			t.Fatal("leaked environment", key)
@@ -495,6 +506,45 @@ func TestPrivateSettingsAndEnvironmentDoNotExposeBridgeCredentials(t *testing.T)
 		t.Fatal("settings secret retained after termination")
 	}
 }
+func TestProjectEnvironmentReachesNativeChild(t *testing.T) {
+	f := newFixture(t)
+	dump := filepath.Join(t.TempDir(), "native.env")
+	f.config.Projects[0].Env = map[string]string{
+		"PROFILE":                     "team",
+		"FEISHU_NATIVE_TEST_ENV_DUMP": dump,
+		"FEISHU_NATIVE_TEST_ENV_KEYS": "PROFILE",
+	}
+	f.start()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		data, err := os.ReadFile(dump)
+		if err == nil {
+			if string(data) != "PROFILE=team" {
+				t.Fatalf("child environment = %q", data)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("native child did not record its environment: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestWorkerSecretsIncludeProjectPassthrough(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("TEAM_API_TOKEN", "long-secret-value")
+	f.config.Projects[0].EnvPassthrough = []string{"TEAM_API_TOKEN"}
+	f.start()
+	w := f.worker.(*worker)
+	for _, secret := range w.secrets {
+		if secret == "long-secret-value" {
+			return
+		}
+	}
+	t.Fatal("worker log redaction did not include the project passthrough value")
+}
+
 func TestQueueLimitAndDuplicateInputRejected(t *testing.T) {
 	w := &worker{ctx: context.Background(), known: map[string]bool{}, pending: make(chan args, 1), events: make(chan core.WorkerEvent, 4), eventsDone: make(chan struct{})}
 	d := core.Delivery{UUID: "one", Message: core.Message{Text: "hello"}}

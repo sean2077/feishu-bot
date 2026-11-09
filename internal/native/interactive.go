@@ -58,7 +58,7 @@ func interactiveCommand(c core.Config, r core.Room, s core.Session, w core.Works
 			_ = os.Remove(settings)
 		}
 	}
-	env := Environment(w, c.AppSecretEnv)
+	env := Environment(w, p, c.AppSecretEnv)
 	// Terminal capabilities are needed by the local TUI, not by SDK workers.
 	for _, key := range []string{"TERM", "COLORTERM", "NO_COLOR"} {
 		if value, ok := os.LookupEnv(key); ok {

@@ -105,6 +105,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `dataDir` | `state` | 状态库、工作区与隔离模式原生历史；须持久保存 |
 | `model.baseUrl`、`model.model` | 无 | 见[模型、网络和时区](#模型网络和时区)；`smallModel` 省略时等于 `model` |
 | `projects[]` | 至少一项 | 资源／权限单元；`maintainers` 必填，`permissionMode` 默认 `acceptEdits`，`nativeConfig` 默认 `isolated` |
+| `projects[].env`、`projects[].envPassthrough` | 空 | 项目级原生进程环境变量；`env` 为非敏感字面值，`envPassthrough` 从服务环境复制凭据，见[项目环境变量](#项目环境变量) |
 | `groups[]`、`dms[]` | 空 | 群与私聊授权，见[飞书应用与授权](#飞书应用与授权) |
 | `runtime.maxWorkers`、`runtime.idleMs` | 8、900000 | 活跃原生进程上限（1–128）与空闲回收时间，见[容量与恢复](#容量与恢复) |
 | `limits.backgroundMessages`／`backgroundMs` | 0／900000 | 非 @ 群消息缓存条数（0–200）与保留时间；默认不缓存 |
@@ -209,6 +210,44 @@ Go 飞书 HTTP／WebSocket 客户端使用系统证书及 Go 的代理环境规�
 隔离模式的原生历史随 `dataDir` 保存；继承模式的原生历史位于共享 Claude 配置目录的 `projects` 树中，按原生 cwd 归档。因此继承部署须同时备份网关状态与实际 Claude 历史目录。共享历史位置不代表其他聊天可以通过 `/sessions` 或 `/resume` 访问这些会话，也不会自动导入其他桥接服务的历史映射。
 
 会话首次创建后固定其工作目录与原生配置身份。修改 `cwd` 或 `nativeConfig` 后，应明确新建会话；已有会话不能通过重启或回收悄悄转到另一个目录或配置身份，恢复失败保留原映射并报错。
+
+## 项目环境变量
+
+`projects[].env` 与 `projects[].envPassthrough` 把变量注入该项目的原生 Claude 进程及其 Bash／工具子进程，用于区分同一部署中的多个项目，或为隔离模式补充工具配置和凭据。两者按项目生效，不改变其他项目、工作区、原生 HOME 或会话身份。
+
+- `env` 是变量名到非敏感字面值的映射；值必须非空且不含 NUL。URL、profile 名、目录等非敏感值放这里；不要把密钥写在这里：变量名疑似凭据（`TOKEN`、`SECRET`、`PASSWORD`、`PASSWD`、`API_KEY`、`AUTHORIZATION`、`CREDENTIAL`、`PRIVATE_KEY` 等按段匹配）时，`doctor` 报告失败并提示改用 `envPassthrough`。
+- `envPassthrough` 是变量名列表，只放密钥；运行时从网关服务进程环境（包括 `service.env`）按名复制。缺失或空值时该变量不注入，`run` 仍会启动；但声明的名字视为部署要求：`doctor` 失败，`daemon install` 和升级会在改动现有安装前拒绝。下游工具应把缺失报告为未配置，而不是假设变量一定存在。
+- 加载配置时按大小写不敏感拒绝重复名、`env` 与 `envPassthrough` 的交叠，以及保留名。保留名包括 `HOME`、`USERPROFILE`、`HOMEDRIVE`、`HOMEPATH`、`CLAUDE_CONFIG_DIR`、`CLAUDECODE`、`NODE_OPTIONS`、`DEBUG`，前缀 `ANTHROPIC_`、`CLAUDE_CODE_`、`CLAUDE_AGENT_SDK`、`FEISHU_ACTION_`，以及 `appSecretEnv`、`model.tokenEnv`、`model.extraHeaders` 中 `env:NAME` 引用的变量和各项目 `actions[].env` 引用的源变量。固定操作的凭据只应进入操作子进程，不能通过项目 passthrough 交给原生 Agent；违规时加载失败，错误只包含项目 ID、变量名和原因，不包含值。
+- 项目变量在隔离／继承边界和代理、CA 变量之后叠加，因此可以覆盖同名继承值或代理设置；Windows 上写入前会删除仅大小写不同的同名键。
+- 环境只在下一次原生进程启动时生效，不进入房间键、会话身份或 resume 判断。修改配置后，等待空闲回收或显式 `/new`，新进程才使用新值。
+- 项目环境不进入固定操作子进程；固定操作仍只使用 `actions[].env`。
+- 这些变量对该项目所有获准聊天的原生工具和 Bash 可见，不是权限或信任隔离边界；权限仍由 `permissionMode`、`allowedTools` 和原生规则决定。见[权限与信任范围](../SECURITY.md)。
+
+原生 settings 的 `env` 块会覆盖进程环境中的同名变量；隔离模式会加载工作目录的 project settings，继承模式还会加载 user／local settings。因此不要在原生 settings 的 `env` 中定义同名变量来“覆盖项目值”：项目值只在 settings 未定义该变量时生效。该优先级已用 Claude Code 2.1.319 的显式 `--settings` 和用户 settings 验证；固定回归版本 2.1.316 未单独复验。
+
+替换 `HOME`／`USERPROFILE` 后，部分工具不再读取默认配置目录。优先用工具自身的配置目录变量指向真实目录，例如 `GLAB_CONFIG_DIR`、`LARKSUITE_CLI_CONFIG_DIR`，不要为了工具配置放宽原生 HOME 边界。不同工具、版本和登录态存储方式的兼容性不同，需按实际版本验证；SSH 客户端是否读取替换后的 HOME 也随平台和调用方式而异，需要时使用显式 `-F`。
+
+`doctor` 对每个 passthrough 变量做存在性检查（只报存在，不显示值，占位值算失败）；`doctor` 可以配合 `--env-file` 检查部署环境。`config explain` 在项目视图中列出 `env` 名和 passthrough 名，只给名字不给值；它不加载 `--env-file`，因此不判断变量是否存在。`daemon install` 在没有 `--env-file` 且没有已有 `service.env` 时，会把当前环境中已存在的 passthrough 值写入生成的 `service.env`；已有 `service.env` 不会被当前环境的新值覆盖，新增 passthrough 后须用 `--env-file` 提供完整变量。
+
+passthrough 值中长度不少于 8 个字符的值会加入日志、回复卡和通知中的脱敏；更短的值不加入。这个阈值不区分内容，因此较长的普通 URL 等非密钥值也可能在回复卡或日志中被替换，而短凭据不会被脱敏。非敏感值应放在 `env`，只把密钥放进 `envPassthrough`；脱敏是尽力而为，不能替代外部凭据的权限和轮换管理。
+
+```json
+{
+  "projects": [{
+    "id": "team-tools",
+    "maintainers": ["ou_example_maintainer"],
+    "nativeConfig": "isolated",
+    "env": {
+      "PROFILE": "team",
+      "GLAB_CONFIG_DIR": "/srv/example/tool-config/glab"
+    },
+    "envPassthrough": ["TEAM_GITLAB_TOKEN"],
+    "actions": []
+  }]
+}
+```
+
+以上是合并到完整配置的项目片段。同一部署中的其他项目可以各自设置不同的 `env` 值；共用的 `cwd`、原生 HOME 和权限规则不受影响。
 
 ## 首次启动检查
 
