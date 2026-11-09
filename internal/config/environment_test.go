@@ -108,7 +108,7 @@ func TestProjectEnvironmentRejectsUnsafeDefinitions(t *testing.T) {
 }
 
 func TestProjectEnvironmentRejectsReservedNames(t *testing.T) {
-	reserved := []string{"HOME", "home", "UserProfile", "HOMEDRIVE", "homedrive", "HOMEPATH", "CLAUDE_CONFIG_DIR", "claude_config_dir", "CLAUDECODE", "claudecode", "NODE_OPTIONS", "node_options", "DEBUG", "debug", "ANTHROPIC_BASE_URL", "anthropic_api_key", "CLAUDE_CODE_ENTRYPOINT", "claude_code_x", "CLAUDE_AGENT_SDK", "claude_agent_sdk_v2", "FEISHU_ACTION_TOKEN", "feishu_action_client"}
+	reserved := []string{"HOME", "home", "UserProfile", "HOMEDRIVE", "homedrive", "HOMEPATH", "CLAUDE_CONFIG_DIR", "claude_config_dir", "CLAUDECODE", "claudecode", "NODE_OPTIONS", "node_options", "DEBUG", "debug", "ANTHROPIC_BASE_URL", "anthropic_api_key", "CLAUDE_CODE_ENTRYPOINT", "claude_code_x", "CLAUDE_AGENT_SDK", "claude_agent_sdk_v2", "FEISHU_ACTION_TOKEN", "feishu_action_client", "FEISHU_REQUEST_CHAT_ID", "feishu_request_sender_open_id"}
 	for _, name := range reserved {
 		t.Run(name, func(t *testing.T) {
 			for _, field := range []string{"env", "envPassthrough"} {
@@ -177,6 +177,26 @@ func TestProjectEnvironmentRejectsFixedActionCredentialSources(t *testing.T) {
 	var envErr *ProjectEnvError
 	if !errors.As(err, &envErr) || envErr.Project != "assistant" || !strings.Contains(envErr.Reason, "fixed action other/publish") {
 		t.Fatalf("cross-project action source was not reserved: %v", err)
+	}
+}
+
+func TestActionEnvironmentRejectsRequestContextKeys(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"FEISHU_REQUEST_CHAT_ID", "feishu_request_sender_name"} {
+		for _, field := range []string{"env", "vars"} {
+			v := fixture(t)
+			p := projectConfig(v)
+			p["actions"] = []any{map[string]any{"id": "publish", "description": "Publish", "executable": exe, "parameters": map[string]any{}}}
+			p["actions"].([]any)[0].(map[string]any)[field] = map[string]any{key: "value"}
+			data, _ := json.Marshal(v)
+			_, err := Parse(data, t.TempDir())
+			if err == nil || !strings.Contains(err.Error(), "FEISHU_REQUEST_") {
+				t.Fatalf("%s accepted %q: %v", field, key, err)
+			}
+		}
 	}
 }
 

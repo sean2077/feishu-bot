@@ -238,7 +238,7 @@ func initialization(p core.Project, approvalMS int64) args {
 		preTool = append(preTool, args{"matcher": "AskUserQuestion", "timeout": (approvalMS+999)/1000 + 30, "hookCallbackIds": []string{"question"}})
 	}
 	preTool = append(preTool, args{"hookCallbackIds": []string{"tool"}})
-	prompt := bridgePrompt
+	prompt := bridgePrompt + " The current request context is available as JSON from \"$FEISHU_ACTION_CLIENT\" context; it is inactive when no human input is in progress."
 	if len(p.Actions) > 0 {
 		prompt += " Use project_action for the configured external operations. Native Bash/Monitor can call the SAME checked operations with: \"$FEISHU_ACTION_CLIENT\" action operation '{\"parameter\":\"value\"}'. This is transport, not a scheduler. Publish changes through configured operations rather than seeking service credentials."
 	}

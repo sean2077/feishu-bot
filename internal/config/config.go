@@ -44,7 +44,7 @@ var reservedProjectEnvNames = map[string]bool{
 	"home": true, "userprofile": true, "homedrive": true, "homepath": true,
 	"claude_config_dir": true, "claudecode": true, "node_options": true, "debug": true,
 }
-var reservedProjectEnvPrefixes = []string{"anthropic_", "claude_code_", "claude_agent_sdk", "feishu_action_"}
+var reservedProjectEnvPrefixes = []string{"anthropic_", "claude_code_", "claude_agent_sdk", "feishu_action_", "feishu_request_"}
 
 func derivedProjectEnv(c *core.Config) map[string]string {
 	derived := map[string]string{}
@@ -530,6 +530,9 @@ func validate(c *core.Config, base string) error {
 				for k, v := range m {
 					if !nonempty(k) || !nonempty(v) || strings.Contains(k, "=") {
 						return errors.New("invalid action environment")
+					}
+					if strings.HasPrefix(strings.ToUpper(k), "FEISHU_REQUEST_") {
+						return errors.New("action environment cannot set FEISHU_REQUEST_*")
 					}
 				}
 			}

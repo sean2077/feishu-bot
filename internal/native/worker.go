@@ -41,6 +41,8 @@ type worker struct {
 	scopeErr               error
 	log                    core.Logger
 	secrets                []string
+	contextMu              sync.RWMutex
+	contextFn              func() *core.RequestContext
 	ctx                    context.Context
 	cancel                 context.CancelFunc
 	cmd                    *exec.Cmd
@@ -153,22 +155,20 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 		delete(env, "ANTHROPIC_API_KEY")
 		// The native CLI selects its programmatic entrypoint from this marker.
 		env["CLAUDE_CODE_ENTRYPOINT"] = "sdk-go"
-		if len(project.Actions) > 0 {
-			w.relay, err = startActionRelay(workerCtx, project.Actions, func(ctx context.Context, name string, input args) args { return w.ask(ctx, "action", name, input) })
-			if err != nil {
-				rollback()
-				return nil, err
-			}
-			client, err := os.Executable()
-			if err != nil {
-				rollback()
-				return nil, err
-			}
-			env["FEISHU_ACTION_URL"] = w.relay.url
-			env["FEISHU_ACTION_TOKEN"] = w.relay.token
-			env["FEISHU_ACTION_CLIENT"] = client
-			w.secrets = append(w.secrets, w.relay.token)
+		w.relay, err = startActionRelay(workerCtx, project.Actions, func(ctx context.Context, name string, input args) args { return w.ask(ctx, "action", name, input) }, w.requestContext)
+		if err != nil {
+			rollback()
+			return nil, err
 		}
+		client, err := os.Executable()
+		if err != nil {
+			rollback()
+			return nil, err
+		}
+		env["FEISHU_ACTION_URL"] = w.relay.url
+		env["FEISHU_ACTION_TOKEN"] = w.relay.token
+		env["FEISHU_ACTION_CLIENT"] = client
+		w.secrets = append(w.secrets, w.relay.token)
 		executable := c.Runtime.ClaudeExecutable
 		if executable == "" {
 			executable = "claude"
@@ -273,6 +273,24 @@ func (w *worker) emit(event core.WorkerEvent) {
 	case w.events <- event:
 	case <-w.eventsDone:
 	}
+}
+
+// SetRequestContext binds the gateway's live slot context to this worker's
+// read-only loopback endpoint. The gateway sets it immediately after creation.
+func (w *worker) SetRequestContext(fn func() *core.RequestContext) {
+	w.contextMu.Lock()
+	w.contextFn = fn
+	w.contextMu.Unlock()
+}
+
+func (w *worker) requestContext() *core.RequestContext {
+	w.contextMu.RLock()
+	fn := w.contextFn
+	w.contextMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
 }
 func (w *worker) write(value args) error {
 	_, err := w.writeContext(w.ctx, value)

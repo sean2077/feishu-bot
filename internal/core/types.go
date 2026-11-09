@@ -84,6 +84,30 @@ type Delivery struct {
 	BatchInputs  []Delivery   `json:"batchInputs,omitempty"`
 	Attachments  []Attachment `json:"attachments"`
 }
+
+// RequestContext describes the human inputs active in a room when a request
+// arrives. It comes from the gateway's current deliveries and anchor, never
+// from model-reported values. Senders and message IDs follow delivery order.
+type RequestContext struct {
+	ChatID       string   `json:"chatId"`
+	ChatType     string   `json:"chatType"`
+	ThreadID     string   `json:"threadId"`
+	MessageID    string   `json:"messageId"`
+	SenderOpenID string   `json:"senderOpenId"`
+	SenderName   string   `json:"senderName"`
+	Senders      []string `json:"senders"`
+	MessageIDs   []string `json:"messageIds"`
+}
+
+// RequesterLabel prefers the event-provided display name and falls back to the
+// open ID. It never calls the contact API.
+func (c RequestContext) RequesterLabel() string {
+	if c.SenderName != "" {
+		return c.SenderName
+	}
+	return c.SenderOpenID
+}
+
 type Parameter struct {
 	Description   string   `json:"description,omitempty"`
 	Pattern       string   `json:"pattern,omitempty"`
@@ -263,6 +287,12 @@ type Worker interface {
 	Respond(context.Context, string, Args) error
 	Rename(context.Context, string) error
 	Stop(context.Context) error
+}
+
+// RequestContextProvider is implemented by a native worker that exposes the
+// gateway's live request context to its loopback context endpoint.
+type RequestContextProvider interface {
+	SetRequestContext(func() *RequestContext)
 }
 
 // WorkerEvents separates process termination from completion of its final

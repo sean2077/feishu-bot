@@ -27,7 +27,7 @@ type actionRelay struct {
 	cancel     context.CancelFunc
 }
 
-func startActionRelay(ctx context.Context, actions []core.ActionSpec, invoke func(context.Context, string, args) args) (*actionRelay, error) {
+func startActionRelay(ctx context.Context, actions []core.ActionSpec, invoke func(context.Context, string, args) args, requestContext func() *core.RequestContext) (*actionRelay, error) {
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -48,6 +48,29 @@ func startActionRelay(ctx context.Context, actions []core.ActionSpec, invoke fun
 		supplied := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if subtle.ConstantTimeCompare([]byte(supplied), []byte(relay.token)) != 1 {
 			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path == "/context" {
+			if r.Method != "GET" {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var current *core.RequestContext
+			if requestContext != nil {
+				current = requestContext()
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			if current == nil {
+				_ = json.NewEncoder(w).Encode(struct {
+					Active bool `json:"active"`
+				}{false})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(struct {
+				Active bool `json:"active"`
+				core.RequestContext
+			}{true, *current})
 			return
 		}
 		if r.Method != "POST" || r.URL.RequestURI() != "/" {
@@ -102,10 +125,9 @@ func RunActionClient(ctx context.Context, argv []string, out io.Writer) error {
 	if len(argv) < 1 || len(argv) > 2 || argv[0] == "" {
 		return fmt.Errorf("usage: feishu-bot action <operation> '<parameters-json>'")
 	}
-	endpoint, token := os.Getenv("FEISHU_ACTION_URL"), os.Getenv("FEISHU_ACTION_TOKEN")
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.User != nil || u.Path != "/" || u.RawQuery != "" || u.Fragment != "" || token == "" {
-		return fmt.Errorf("this command must run inside a feishu-bot conversation")
+	endpoint, token, err := actionRelayEndpoint()
+	if err != nil {
+		return err
 	}
 	raw := "{}"
 	if len(argv) == 2 {
@@ -121,7 +143,7 @@ func RunActionClient(ctx context.Context, argv []string, out io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint.String(), bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -152,4 +174,52 @@ func RunActionClient(ctx context.Context, argv []string, out io.Writer) error {
 		return fmt.Errorf("configured operation did not succeed")
 	}
 	return nil
+}
+
+// actionRelayEndpoint validates the loopback relay environment shared by the
+// action and context clients.
+func actionRelayEndpoint() (*url.URL, string, error) {
+	endpoint, token := os.Getenv("FEISHU_ACTION_URL"), os.Getenv("FEISHU_ACTION_TOKEN")
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.User != nil || u.Path != "/" || u.RawQuery != "" || u.Fragment != "" || token == "" {
+		return nil, "", fmt.Errorf("this command must run inside a feishu-bot conversation")
+	}
+	return u, token, nil
+}
+
+// RunContextClient prints the request context visible in the current native
+// session. It is read-only and only reaches this conversation's loopback relay.
+func RunContextClient(ctx context.Context, out io.Writer) error {
+	base, token, err := actionRelayEndpoint()
+	if err != nil {
+		return err
+	}
+	endpoint := *base
+	endpoint.Path = "/context"
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint.String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return fmt.Errorf("action bridge redirect rejected") }}
+	defer client.CloseIdleConnections()
+	response, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request context unavailable")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		return fmt.Errorf("request context unavailable (HTTP %d)", response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))
+	if err != nil || len(data) > 1024*1024 {
+		return fmt.Errorf("invalid context response")
+	}
+	var value map[string]any
+	if json.Unmarshal(data, &value) != nil || value == nil {
+		return fmt.Errorf("invalid context response")
+	}
+	return json.NewEncoder(out).Encode(value)
 }

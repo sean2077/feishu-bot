@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/sean2077/feishu-bot/internal/core"
@@ -92,6 +93,28 @@ func envList(env map[string]string) []string {
 		out = append(out, k+"="+env[k])
 	}
 	return out
+}
+
+// addRequestContextEnvironment exposes the request's human origin to the
+// fixed-operation subprocess. Empty values are omitted.
+func addRequestContextEnvironment(env map[string]string, requestContext *core.RequestContext) {
+	if requestContext == nil {
+		return
+	}
+	set := func(key, value string) {
+		if value != "" {
+			env[key] = value
+		}
+	}
+	set("FEISHU_REQUEST_CHAT_ID", requestContext.ChatID)
+	set("FEISHU_REQUEST_CHAT_TYPE", requestContext.ChatType)
+	set("FEISHU_REQUEST_THREAD_ID", requestContext.ThreadID)
+	set("FEISHU_REQUEST_MESSAGE_ID", requestContext.MessageID)
+	set("FEISHU_REQUEST_SENDER_OPEN_ID", requestContext.SenderOpenID)
+	set("FEISHU_REQUEST_SENDER_NAME", requestContext.SenderName)
+	if len(requestContext.Senders) > 0 {
+		env["FEISHU_REQUEST_SENDERS"] = strings.Join(requestContext.Senders, ",")
+	}
 }
 
 type boundedOutput struct {
@@ -194,7 +217,7 @@ func runActionCommand(ctx context.Context, executable string, args []string, cwd
 		return 0, output.String(), fmt.Errorf("%s; process termination unconfirmed", reason)
 	}
 }
-func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string, p core.Project, id string, input core.Args, w core.Workspace) (core.Args, error) {
+func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string, p core.Project, id string, input core.Args, w core.Workspace, requestContext *core.RequestContext) (core.Args, error) {
 	var spec *core.ActionSpec
 	for _, a := range p.Actions {
 		if a.ID == id {
@@ -248,7 +271,13 @@ func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string
 	}
 	digest := core.Hash(jsonText(core.Args{"id": id, "input": input, "fileDigests": digests}))
 	if !spec.ReadOnly {
-		summary := "项目：" + p.ID + "\n操作：" + spec.Description + "\n参数：`" + cut(jsonText(g.redactArgs(input)), 4000) + "`\n文件快照 SHA256：`" + jsonText(digests) + "`\n摘要：`" + digest[:16] + "`"
+		summary := "项目：" + p.ID + "\n"
+		if requestContext != nil {
+			if requester := formattedRequester(requestContext); requester != "" {
+				summary += "发起人：" + requester + "\n"
+			}
+		}
+		summary += "操作：" + spec.Description + "\n参数：`" + cut(jsonText(g.redactArgs(input)), 4000) + "`\n文件快照 SHA256：`" + jsonText(digests) + "`\n摘要：`" + digest[:16] + "`"
 		decision, e := g.ask(ctx, r, session, id, input, summary, nil)
 		if e != nil {
 			return nil, e
@@ -272,16 +301,35 @@ func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string
 			secrets = append(secrets, value)
 		}
 	}
+	addRequestContextEnvironment(env, requestContext)
 	execution, e := g.beginAction(ctx, r.Key, run)
 	if e != nil {
 		return nil, e
 	}
 	unconfirmed := false
 	defer func() { g.endAction(run, execution, unconfirmed) }()
-	if _, e = g.store.DB.Exec("INSERT INTO action_runs(id,room,session,action,digest,state,at) VALUES(?,?,?,?,?,'running',?)", run, r.Key, session, id, digest, time.Now().UnixMilli()); e != nil {
+	var requester, contextJSON any
+	if requestContext != nil {
+		if requestContext.SenderOpenID != "" {
+			requester = requestContext.SenderOpenID
+		}
+		if data, marshalErr := json.Marshal(requestContext); marshalErr == nil {
+			contextJSON = string(data)
+		}
+	}
+	if _, e = g.store.DB.Exec("INSERT INTO action_runs(id,room,session,action,digest,state,at,requester,request_context) VALUES(?,?,?,?,?,'running',?,?,?)", run, r.Key, session, id, digest, time.Now().UnixMilli(), requester, contextJSON); e != nil {
 		return nil, e
 	}
-	g.audit(r.Key, "action_started", core.Args{"run": run, "action": id, "digest": digest, "readOnly": spec.ReadOnly})
+	detail := core.Args{"run": run, "action": id, "digest": digest, "readOnly": spec.ReadOnly}
+	if requestContext != nil {
+		if requestContext.SenderOpenID != "" {
+			detail["requester"] = requestContext.SenderOpenID
+		}
+		if requestContext.MessageID != "" {
+			detail["messageId"] = requestContext.MessageID
+		}
+	}
+	g.audit(r.Key, "action_started", detail)
 	code, output, e := g.actionRunner(ctx, spec.Executable, args, spec.CWD, env, spec.TimeoutMS)
 	if e != nil {
 		_, _ = g.store.DB.Exec("UPDATE action_runs SET state='uncertain' WHERE id=?", run)

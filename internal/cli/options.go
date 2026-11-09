@@ -54,6 +54,12 @@ func Parse(args []string) (Options, error) {
 		o.ActionArgs = args[1:]
 		return o, nil
 	}
+	if o.Command == "context" {
+		if len(args) > 1 {
+			return o, errors.New("unexpected context argument")
+		}
+		return o, nil
+	}
 	if o.Command == "session" {
 		if len(args) < 2 || args[1] == "--help" || args[1] == "-h" {
 			o.Command = "help"

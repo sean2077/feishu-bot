@@ -10,6 +10,7 @@
 - 修复前台轮次中启动的后台命令在轮次结束前完成时，同一条 @ 收到多张回复卡且多出的卡片一直停在“思考中”的问题：原生把任务通知并入当前轮次时，后续输出留在原回复卡片；原生结果到达时一并收尾本轮其余回复卡片，从未发出的片段只关闭、不再新发卡片。
 - 新增项目级环境变量 `projects[].env` 与 `projects[].envPassthrough`：`env` 保存非敏感字面值，`envPassthrough` 从服务环境复制凭据；加载时按大小写不敏感拒绝保留名、重复名和两者交叠。变量在下次原生进程启动时生效，不改变会话身份、工作区或权限规则；`doctor` 检查缺失的 passthrough 和疑似密钥字面量，`config explain` 只显示变量名，`daemon install` 生成的 `service.env` 会捕获当前已存在的 passthrough 值。
 - 新增 `projects[].settingsFile`：挂载管理员维护的原生 settings 快照，只允许 `env` 和 `permissions.allow/ask/deny`；每次启动原生进程时读取并校验，与模型环境合并为 0600 临时 `--settings` 文件，进程结束删除。文件缺失或不合规时拒绝启动该进程，输入保留并提示启动失败；同一条待交付输入因启动失败只提示一次，新输入会再提示一次。`doctor` 检查结构，`config explain` 只显示路径。isolated 下文件 env／permissions 原样传入且模型凭据不落盘，inherit 下合并模型环境。
+- 新增请求上下文：固定操作子进程获得 `FEISHU_REQUEST_*` 发起人／消息变量，`action_runs` 增加 `requester` 和 `request_context`，非只读审批卡显示发起人；上下文在请求到达时捕获，审批等待期间变化不影响记录。原生进程始终启动只读 loopback `context` 端点，Bash 子进程可用 `"$FEISHU_ACTION_CLIENT" context` 读取当前输入上下文，无输入时返回 inactive；没有配置 `actions` 的项目不接受 action 调用。
 
 ## 0.5.0 — 2026-11-07
 
