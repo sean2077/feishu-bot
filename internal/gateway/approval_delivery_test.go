@@ -54,7 +54,7 @@ func TestForwardedApprovalReportsDeliveryOnlyAfterCardAck(t *testing.T) {
 	defer cancel()
 	done := make(chan core.Args, 1)
 	go func() {
-		value, _ := f.g.ask(ctx, r, session, "Bash", core.Args{}, "Operation summary", nil)
+		value, _ := f.g.ask(ctx, r, session, "Bash", core.Args{}, "Operation summary", nil, approvalPolicy{})
 		done <- value
 	}()
 	select {
@@ -96,7 +96,7 @@ func TestForwardedApprovalAllDeliveryFailuresEndRequest(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	value, err := f.g.ask(ctx, r, session, "Bash", core.Args{}, "Operation summary", nil)
+	value, err := f.g.ask(ctx, r, session, "Bash", core.Args{}, "Operation summary", nil, approvalPolicy{})
 	if err != nil || boolArg(value, "approved") || stringArg(value, "reason") != "card delivery failed" {
 		t.Fatal(value, err)
 	}
@@ -145,7 +145,7 @@ func TestForwardedApprovalLateCardDoesNotReportLiveDelivery(t *testing.T) {
 	defer cancel()
 	done := make(chan core.Args, 1)
 	go func() {
-		value, _ := f.g.ask(ctx, r, session, "Bash", core.Args{}, "Operation summary", nil)
+		value, _ := f.g.ask(ctx, r, session, "Bash", core.Args{}, "Operation summary", nil, approvalPolicy{})
 		done <- value
 	}()
 	select {
@@ -343,7 +343,7 @@ func TestForwardedApprovalCancelledDuringDeliveryDoesNotReportFailure(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan core.Args, 1)
 	go func() {
-		value, _ := f.g.ask(ctx, r, session, "Bash", core.Args{}, "Operation summary", nil)
+		value, _ := f.g.ask(ctx, r, session, "Bash", core.Args{}, "Operation summary", nil, approvalPolicy{})
 		result <- value
 	}()
 	select {

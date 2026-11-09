@@ -478,10 +478,22 @@ func validate(c *core.Config, base string) error {
 		if len(p.Maintainers) == 0 {
 			return errors.New("explicit maintainers required")
 		}
+		maintainers := map[string]bool{}
 		for _, m := range p.Maintainers {
 			if !nonempty(m) || m == "*" {
 				return errors.New("invalid maintainer id")
 			}
+			maintainers[m] = true
+		}
+		owners := map[string]bool{}
+		for _, owner := range p.Owners {
+			if !nonempty(owner) || owner == "*" || owners[owner] {
+				return errors.New("invalid project owner")
+			}
+			if !maintainers[owner] {
+				return errors.New("project owners must be maintainers")
+			}
+			owners[owner] = true
 		}
 		if p.NativeConfig != "isolated" && p.NativeConfig != "inherit" {
 			return errors.New("nativeConfig must be isolated or inherit")
@@ -517,6 +529,13 @@ func validate(c *core.Config, base string) error {
 			actions[a.ID] = true
 			if !nonempty(a.Description) || !filepath.IsAbs(a.Executable) || !nonempty(a.Executable) {
 				return errors.New("action needs a description and absolute trusted executable")
+			}
+			approvers := map[string]bool{}
+			for _, approver := range a.Approvers {
+				if !nonempty(approver) || approver == "*" || approvers[approver] {
+					return errors.New("invalid action approver")
+				}
+				approvers[approver] = true
 			}
 			if a.TimeoutMS < 100 || a.TimeoutMS > 600000 {
 				return errors.New("invalid action timeoutMs")

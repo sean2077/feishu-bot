@@ -45,6 +45,8 @@ CC 直连配置的模型服务，模型凭据进入该进程环境。飞书和�
 
 固定操作和只读 context 端点会携带请求上下文：发送者 open_id、事件中的显示名、chat／thread／消息 ID 和当前 senders／messageIds。这些信息会进入固定操作子进程环境和 `action_runs`（`requester`、`request_context`），保留期沿用 `action_runs` 的 90 天；`action_started` 审计只含 open_id 和消息 ID，不含显示名。每个原生进程的 loopback 中继使用独立 token，始终启动（即使没有配置 `actions`），只返回该 worker 所在 slot 的上下文，action 调用仍按原策略审批或拒绝；同账户代码仍可读取环境变量并调用该端点，不是额外隔离边界。
 
+自批判断只使用请求上下文中的 open_id 与配置的 owners：同一个人使用两个账号或另一种身份无法被识别，不能把该规则当作强身份隔离。`forbidSelfApproval` 开启且请求上下文为空时，只允许 owner 批准；拒绝不受自批限制，但点击者仍必须是审批人。`actions[].approvers` 和 `projects[].owners` 是静态配置，网关不实时验证群成员关系；approvers 不是该群授权作者时不能点击群内审批卡。`requests` 表随审批记录保存 `requester` 和请求上下文 JSON，应按部署的数据保留策略保护。
+
 内置 daemon 使用 `<work-dir>/service.env` 保存必需凭据和白名单运行变量，写入时尽量使用 0600；Windows 上实际保护取决于用户 profile 的 ACL。`~/.feishu-bot/daemon.json` 只保存绝对路径、平台和安装信息；任务／unit 参数只引用 env 文件路径，不写密钥。升级失败时保留的私有恢复副本同样含凭据，应按原安装数据的权限保管并在处理后删除。不要把 `service.env` 提交到仓库或附在问题报告中。`daemon install` 复制的二进制、配置和 env 文件位于同一账户可读范围，不是额外的安全边界。
 
 默认隔离配置不主动继承个人全局登录态。显式 `nativeConfig: inherit` 使用服务账户的原生配置及登录态，原生历史也可能出现在共享配置目录中；其备份、权限和保留周期需单独管理。资料或源码复制跳过常见凭据文件及符号链接，但不是完整的数据防泄漏检查；直接使用 `cwd` 不经过复制过滤。提供资料的人应先确认其可被对应会话使用。

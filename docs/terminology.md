@@ -186,6 +186,22 @@ _避免_: 免授权群
 配置中获准管理共享会话、执行管理命令和批准审批的用户。与普通获准成员不同。
 _英文_: maintainer
 
+**项目 owner**
+
+`projects[].owners` 中的 maintainer 子集。唯一额外含义是：开启 `forbidSelfApproval` 后仍可批准自己发起的请求；不获得其他管理或审批权限。
+_英文_: project owner
+
+**指定审批人**
+
+`actions[].approvers` 中为该固定操作指定的审批人集合。配置后替代项目 maintainers，不隐式加入 maintainers 或 owners；群内点击者还必须是该群授权作者。
+_英文_: designated approver
+_避免_: 把指定审批人等同于 maintainer
+
+**自批**
+
+请求发起人批准自己的请求。`forbidSelfApproval` 默认关闭；开启后非 owner 的发起人不能被批准自己的请求，但可以拒绝；请求上下文为空时只有 owner 可以批准。判断依据是请求上下文中的 open_id，不是显示名。
+_英文_: self-approval
+
 **模型配置**
 
 管理员定义的一组原生模型、轻量模型和 effort 选项。会话保存当前与待应用选择，在安全轮次边界续接同一原生 ID；不包含端点、凭据、目录或权限覆盖。

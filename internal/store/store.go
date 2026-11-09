@@ -117,6 +117,7 @@ func (s *Store) initialize() error {
 			{"outbox", "file_target", "TEXT"}, {"outbox", "file_state", "TEXT NOT NULL DEFAULT 'none'"}, {"outbox", "delivery_error", "TEXT"}, {"outbox", "kind", "TEXT NOT NULL DEFAULT 'reply'"},
 			{"session_preferences", "native_title", "TEXT NOT NULL DEFAULT ''"},
 			{"action_runs", "requester", "TEXT"}, {"action_runs", "request_context", "TEXT"},
+			{"requests", "requester", "TEXT"}, {"requests", "request_context", "TEXT"},
 		} {
 			rows, err := tx.Query("PRAGMA table_info(" + col.table + ")")
 			if err != nil {

@@ -104,6 +104,9 @@ func (g *Gateway) request(s *slot, ev core.WorkerEvent) (core.Args, error) {
 				return core.Args{"approved": false, "reason": "unsupported question shape"}, nil
 			}
 		}
-		return g.ask(s.ctx, current, s.session.ID, ev.Name, ev.Input, "工具："+ev.Name+"\n参数：`"+cut(jsonText(g.redactArgs(ev.Input)), 5000)+"`", questions)
+		requestContext := g.requestContext(s)
+		policy := approvalPolicyForTool(project, requestContext)
+		summary := "工具：" + ev.Name + "\n" + requesterLine(requestContext) + "\n参数：`" + cut(jsonText(g.redactArgs(ev.Input)), 5000) + "`"
+		return g.ask(s.ctx, current, s.session.ID, ev.Name, ev.Input, summary, questions, policy)
 	}
 }
