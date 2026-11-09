@@ -74,6 +74,11 @@ func deploymentChecks(c core.Config) []Diagnostic {
 		for j, id := range p.Maintainers {
 			check(fmt.Sprintf("projects[%d].maintainers[%d]", i, j), id)
 		}
+		for _, action := range p.Actions {
+			for j, id := range action.Approvers {
+				check(fmt.Sprintf("projects[%d].actions[%s].approvers[%d]", i, action.ID, j), id)
+			}
+		}
 	}
 	for i, g := range c.Groups {
 		check(fmt.Sprintf("groups[%d].chatId", i), g.ChatID)
@@ -167,6 +172,16 @@ func projectSettingsChecks(c core.Config) []Diagnostic {
 	return checks
 }
 
+func approvalPolicyChecks(c core.Config) []Diagnostic {
+	var checks []Diagnostic
+	for _, p := range c.Projects {
+		if p.Approvals.ForbidSelfApproval && len(p.Owners) == 0 {
+			checks = append(checks, Diagnostic{Name: "project " + p.ID + " approval policy", OK: true, Detail: "Warning: forbidSelfApproval is enabled without owners; a maintainer cannot approve their own requests, and a sole maintainer has no other approver."})
+		}
+	}
+	return checks
+}
+
 type cappedWriter struct {
 	bytes.Buffer
 	limit int
@@ -201,6 +216,7 @@ func versionCommand(ctx context.Context, program string, args ...string) (string
 func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) DoctorReport {
 	checks := append(deploymentChecks(c), projectEnvChecks(c)...)
 	checks = append(checks, projectSettingsChecks(c)...)
+	checks = append(checks, approvalPolicyChecks(c)...)
 	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: checks, Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made.", Native: native.Compatibility("")}
 	add := func(name string, fn func() (string, error)) {
 		if ctx.Err() != nil {

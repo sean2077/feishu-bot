@@ -270,15 +270,14 @@ func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string
 		return nil, e
 	}
 	digest := core.Hash(jsonText(core.Args{"id": id, "input": input, "fileDigests": digests}))
+	policy := approvalPolicyForAction(p, *spec, requestContext)
 	if !spec.ReadOnly {
-		summary := "项目：" + p.ID + "\n"
-		if requestContext != nil {
-			if requester := formattedRequester(requestContext); requester != "" {
-				summary += "发起人：" + requester + "\n"
-			}
+		summary := "项目：" + p.ID + "\n" + requesterLine(requestContext) + "\n"
+		if len(spec.Approvers) > 0 {
+			summary += "审批人：指定审批人\n"
 		}
 		summary += "操作：" + spec.Description + "\n参数：`" + cut(jsonText(g.redactArgs(input)), 4000) + "`\n文件快照 SHA256：`" + jsonText(digests) + "`\n摘要：`" + digest[:16] + "`"
-		decision, e := g.ask(ctx, r, session, id, input, summary, nil)
+		decision, e := g.ask(ctx, r, session, id, input, summary, nil, policy)
 		if e != nil {
 			return nil, e
 		}

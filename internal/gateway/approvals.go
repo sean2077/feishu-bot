@@ -31,6 +31,11 @@ type approval struct {
 	cards                                  map[string]string
 	forwarded                              bool
 	questions                              []question
+	approvers                              []string
+	owners                                 []string
+	forbidSelfApproval                     bool
+	designated                             bool
+	requester                              *core.RequestContext
 	outcome                                chan core.Args
 	ctx                                    context.Context
 	cancel                                 context.CancelFunc
@@ -94,7 +99,7 @@ func (g *Gateway) approvalCount(session string) int {
 	}
 	return n
 }
-func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, input core.Args, summary string, questions []question) (core.Args, error) {
+func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, input core.Args, summary string, questions []question, policy approvalPolicy) (core.Args, error) {
 	if ctx.Err() != nil {
 		return core.Args{"approved": false, "reason": "cancelled"}, nil
 	}
@@ -102,19 +107,33 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 	if questions != nil {
 		kind = "question"
 	}
+	approvers := policy.approvers
+	if kind == "permission" && len(approvers) == 0 {
+		approvers = r.Maintainers
+	}
+	forwarded := kind == "permission" && r.DMUser != "" && !contains(approvers, r.DMUser)
 	resumeReplies := g.pauseReplies(r.Key, session, kind)
 	defer resumeReplies()
 	id := core.NewID()
 	expires := time.Now().UnixMilli() + g.config.Limits.ApprovalMS
 	waitCtx, cancel := context.WithCancel(ctx)
-	p := &approval{room: r, session: session, kind: kind, name: name, summary: summary, revision: core.NewID(), expires: expires, cards: map[string]string{}, forwarded: kind == "permission" && r.DMUser != "" && !contains(r.Maintainers, r.DMUser), questions: questions, outcome: make(chan core.Args, 1), ctx: waitCtx, cancel: cancel}
+	p := &approval{room: r, session: session, kind: kind, name: name, summary: summary, revision: core.NewID(), expires: expires, cards: map[string]string{}, forwarded: forwarded, questions: questions, approvers: approvers, owners: policy.owners, forbidSelfApproval: policy.forbidSelfApproval, designated: policy.designated, requester: policy.requestContext, outcome: make(chan core.Args, 1), ctx: waitCtx, cancel: cancel}
 	g.approvalMu.Lock()
 	if len(g.approvals) >= 256 {
 		g.approvalMu.Unlock()
 		cancel()
 		return core.Args{"approved": false, "reason": "too many pending requests"}, nil
 	}
-	_, e := g.store.DB.Exec("INSERT INTO requests(id,room,session,kind,digest,state,expires) VALUES(?,?,?,?,?,'pending',?)", id, r.Key, session, kind, core.Hash(jsonText(core.Args{"name": name, "input": input})), expires)
+	var requester, contextJSON any
+	if policy.requestContext != nil {
+		if policy.requestContext.SenderOpenID != "" {
+			requester = policy.requestContext.SenderOpenID
+		}
+		if data, marshalErr := json.Marshal(policy.requestContext); marshalErr == nil {
+			contextJSON = string(data)
+		}
+	}
+	_, e := g.store.DB.Exec("INSERT INTO requests(id,room,session,kind,digest,state,expires,requester,request_context) VALUES(?,?,?,?,?,'pending',?,?,?)", id, r.Key, session, kind, core.Hash(jsonText(core.Args{"name": name, "input": input})), expires, requester, contextJSON)
 	if e != nil {
 		g.approvalMu.Unlock()
 		cancel()
@@ -128,13 +147,13 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 	targets := []core.Room{r}
 	if p.forwarded {
 		targets = nil
-		for _, id := range r.Maintainers {
+		for _, id := range approvers {
 			target := r
 			target.ChatID = id
 			target.DMUser = id
 			targets = append(targets, target)
 		}
-		g.notify(r, "这项操作需要项目维护者批准。审批卡正在发送，尚未确认送达；只发送操作摘要与参数，不会转发聊天历史。", nil)
+		g.notify(r, "这项操作需要"+p.approverLabel()+"批准。审批卡正在发送，尚未确认送达；只发送操作摘要与参数，不会转发聊天历史。", nil)
 	}
 	g.task(func() {
 		success := false
@@ -169,7 +188,7 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 			if alive {
 				if !success && p.forwarded {
 					g.task(func() {
-						_ = g.notice(waitCtx, r, "审批卡已确认送达至少一位项目维护者的私聊；本次操作仍需维护者批准。", nil)
+						_ = g.notice(waitCtx, r, "审批卡已确认送达至少一位"+p.approverLabel()+"的私聊；本次操作仍需"+p.approverLabel()+"批准。", nil)
 					})
 				}
 				success = true
@@ -188,7 +207,7 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 			}
 			g.settleApproval(id, core.Args{"approved": false, "reason": reason}, "system")
 			if p.forwarded && !ended {
-				g.notify(r, "未能确认审批卡送达项目维护者。本次请求已结束，操作未获批准。", nil)
+				g.notify(r, "未能确认审批卡送达"+p.approverLabel()+"。本次请求已结束，操作未获批准。", nil)
 			}
 		}
 	})
@@ -243,7 +262,11 @@ const questionAnswerLimit = 1000
 
 func approvalCardText(id string, p *approval, limit int) core.Args {
 	if p.kind == "permission" {
-		return DisplayCard("需要维护者批准", capInteractionText(p.summary, limit)+"\n\n仅批准这一次操作，超时或停止后失效。\n请求：`"+id+"`", button("批准一次", core.Args{"request": id, "decision": "allow"}, "primary"), button("拒绝", core.Args{"request": id, "decision": "deny"}, "danger"))
+		title := "需要维护者批准"
+		if p.designated {
+			title = "需要指定审批人批准"
+		}
+		return DisplayCard(title, capInteractionText(p.summary, limit)+"\n\n仅批准这一次操作，超时或停止后失效。\n请求：`"+id+"`", button("批准一次", core.Args{"request": id, "decision": "allow"}, "primary"), button("拒绝", core.Args{"request": id, "decision": "deny"}, "danger"))
 	}
 	intro := "每题可选择选项或填写自定义回答；非空自定义回答优先，留空则使用选项。群内每位成员独立填写，第一位完整提交者生效。"
 	if p.room.DMUser != "" {
@@ -586,7 +609,7 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 	}
 	p.room = current
 	if p.forwarded {
-		if a.MessageID == "" || p.cards[a.MessageID] != a.UserID || !contains(current.Maintainers, a.UserID) {
+		if a.MessageID == "" || p.cards[a.MessageID] != a.UserID {
 			g.approvalMu.Unlock()
 			return core.Args{}, nil
 		}
@@ -601,15 +624,21 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 		g.approvalMu.Unlock()
 		return actionToast("请求已结束或过期"), nil
 	}
-	if p.kind == "permission" && !contains(current.Maintainers, a.UserID) {
-		g.approvalMu.Unlock()
-		return actionToast("仅维护者可以审批"), nil
-	}
 	if p.kind == "question" && (p.revision == "" || stringArg(a.Value, "revision") != p.revision || stringArg(a.Value, "session") != p.session) {
 		g.approvalMu.Unlock()
 		return actionToast("卡片已失效，请使用最新追问卡片或 /answer 回答。"), nil
 	}
 	decision := stringArg(a.Value, "decision")
+	if p.kind == "permission" {
+		allowed, toast, reason := p.decisionAllowed(a.UserID, decision == "deny")
+		if !allowed {
+			g.approvalMu.Unlock()
+			if reason != "" {
+				g.audit(p.room.Key, "approval_self_rejected", core.Args{"request": id, "user": a.UserID, "reason": reason})
+			}
+			return actionToast(toast), nil
+		}
+	}
 	if decision == "deny" {
 		g.approvalMu.Unlock()
 		accepted, err := g.settleApprovalContext(ctx, id, core.Args{"approved": false, "reason": "denied"}, a.UserID)

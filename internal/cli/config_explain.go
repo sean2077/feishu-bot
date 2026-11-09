@@ -95,6 +95,13 @@ func explainRoute(c core.Config, o Options) core.Args {
 		if p, ok := c.Project(r.ProjectID); ok {
 			view["permissionMode"] = p.PermissionMode
 			view["nativeConfig"] = p.NativeConfig
+			view["ownerCount"] = len(p.Owners)
+			view["forbidSelfApproval"] = p.Approvals.ForbidSelfApproval
+			isOwner := false
+			for _, owner := range p.Owners {
+				isOwner = isOwner || owner == m.SenderID
+			}
+			view["isOwner"] = isOwner
 			view["projectEnv"] = sortedNames(p.Env)
 			view["projectEnvPassthrough"] = sortedPassthrough(p.EnvPassthrough)
 			if p.SettingsFile != "" {
@@ -164,6 +171,6 @@ func runConfigExplain(ctx context.Context, o Options, out io.Writer) error {
 			envDetail += "Settings file: " + settings + "\n"
 		}
 	}
-	_, err = fmt.Fprintf(out, "Configuration policy (offline)\nBinding: %v\nProject: %v\nAuthor authorized: %v\nEvent admitted: %v\nTriggers native input: %v\nManage session: %v\nApprove tools: %v\nReason: %v\n%sThis evaluates configured policy only; it does not verify live membership, credentials or Feishu delivery.\n", view["binding"], view["project"], view["authorAuthorized"], view["eventAdmitted"], view["triggersNative"], view["canManageSession"], view["canApproveTools"], view["reason"], envDetail)
+	_, err = fmt.Fprintf(out, "Configuration policy (offline)\nBinding: %v\nProject: %v\nAuthor authorized: %v\nEvent admitted: %v\nTriggers native input: %v\nManage session: %v\nApprove tools: %v\nOwners: %v\nForbid self approval: %v\nUser is owner: %v\nReason: %v\n%sThis evaluates configured policy only; it does not verify live membership, credentials or Feishu delivery.\n", view["binding"], view["project"], view["authorAuthorized"], view["eventAdmitted"], view["triggersNative"], view["canManageSession"], view["canApproveTools"], view["ownerCount"], view["forbidSelfApproval"], view["isOwner"], view["reason"], envDetail)
 	return err
 }

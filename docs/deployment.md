@@ -107,6 +107,9 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `projects[]` | 至少一项 | 资源／权限单元；`maintainers` 必填，`permissionMode` 默认 `acceptEdits`，`nativeConfig` 默认 `isolated` |
 | `projects[].env`、`projects[].envPassthrough` | 空 | 项目级原生进程环境变量；`env` 为非敏感字面值，`envPassthrough` 从服务环境复制凭据，见[项目环境变量](#项目环境变量) |
 | `projects[].settingsFile` | 空 | 管理员维护的原生 settings 快照；只允许 `env` 和 `permissions.allow/ask/deny`，见[项目设置文件](#项目设置文件) |
+| `projects[].owners` | 空 | maintainers 子集；仅用于 `forbidSelfApproval` 时的 owner 例外，不增加其他权限 |
+| `projects[].approvals.forbidSelfApproval` | `false` | 开启后发起人不能批准自己的请求，owner 例外；见[审批资格与自批](#审批资格与自批) |
+| `actions[].approvers` | 空 | 该操作的指定审批人；配置后替代 maintainers，不隐式加入 maintainers 或 owners |
 | `groups[]`、`dms[]` | 空 | 群与私聊授权，见[飞书应用与授权](#飞书应用与授权) |
 | `runtime.maxWorkers`、`runtime.idleMs` | 8、900000 | 活跃原生进程上限（1–128）与空闲回收时间，见[容量与恢复](#容量与恢复) |
 | `limits.backgroundMessages`／`backgroundMs` | 0／900000 | 非 @ 群消息缓存条数（0–200）与保留时间；默认不缓存 |
@@ -282,6 +285,40 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 ```
 
 写全 runner 前缀（`Bash(uv run --no-sync example-tool sub:*)`）可让该子命令直接放行；不要用 `Bash(uv:*)` 等过宽前缀。需要在执行前确认的命令用 `ask` 和中间通配（`Bash(uv run --no-sync example-tool doc *--input*)`），不要用 allow 加提示词。deny 用于硬边界（如 `Bash(curl:*)`、`Read(./.secrets/**)`）；原生 deny 优先于 allow，但同账户代码仍可能通过其他工具或路径访问数据，不是安全沙箱。
+
+## 审批资格与自批
+
+`projects[].owners` 必须是 `maintainers` 的子集；它的唯一含义是：开启 `projects[].approvals.forbidSelfApproval` 后，owner 仍可以批准自己发起的请求。owner 不因此获得其他管理或审批权限。`forbidSelfApproval` 默认 `false`，保持原有行为。
+
+审批资格统一按以下规则判断；权限审批的卡片回调和私聊转发卡片使用同一套规则，问题回答不使用审批人集合和自批规则，保持现有行为：
+
+- 原生工具 ask 和未配置 `approvers` 的固定操作使用项目 maintainers 作为审批人。
+- 固定操作可以配置 `actions[].approvers`；配置后该操作只认这个列表，不再认 maintainers，也不会隐式加入 maintainers 或 owners。空列表按未配置处理，沿用 maintainers。approvers 不要求是 maintainers，但群内审批卡还要求点击者是该群授权作者；否则点击被拒绝并只能等待超时。`doctor` 无法验证群成员关系。
+- `AskUserQuestion` 不使用审批人列表，也不受自批规则限制，保持现有行为。
+- `forbidSelfApproval: true` 时，请求到达时上下文中的 `senders` 包含点击者、且点击者不是 owner 的批准请求会被拒绝，审批保持待处理，其他审批人仍可批准；拒绝（deny）不受自批限制，但点击者仍必须是审批人。
+- 请求上下文为空（后台任务、没有进行中的输入）时无法确定发起人；此时只有 owner 可以批准，其他审批人批准会被拒绝。拒绝仍允许审批人执行。
+- 私聊中的审批请求如果当前用户不是审批人，会转发到审批人的私聊；配置 approvers 时转发给 approvers，否则转发给 maintainers。指定 approvers 的审批卡标题为“需要指定审批人批准”，摘要显示“审批人：指定审批人”，不列出名单。
+
+`doctor` 在 `forbidSelfApproval` 为 true 且 owners 为空时给出一条提示（不算失败）：只有一个维护者时，他将无法审批自己发起的请求。`config explain` 显示 owners 数量、`forbidSelfApproval` 和当前用户是否 owner；`canApproveTools` 仍只表示 maintainers 身份。
+
+```json
+{
+  "projects": [{
+    "id": "team-tools",
+    "maintainers": ["ou_example_owner", "ou_example_member"],
+    "owners": ["ou_example_owner"],
+    "approvals": { "forbidSelfApproval": true },
+    "actions": [{
+      "id": "publish",
+      "description": "Publish",
+      "executable": "/srv/example/bin/publish",
+      "approvers": ["ou_example_approver"]
+    }]
+  }]
+}
+```
+
+以上是合并到完整配置的项目片段。approvers 仍需是群内授权作者才能点击群里的审批卡；私聊转发只发送操作摘要和参数。
 
 ## 首次启动检查
 

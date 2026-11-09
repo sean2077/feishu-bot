@@ -126,18 +126,28 @@ type ActionSpec struct {
 	ReadOnly    bool                 `json:"readOnly"`
 	TimeoutMS   int64                `json:"timeoutMs"`
 	Parameters  map[string]Parameter `json:"parameters"`
+	Approvers   []string             `json:"approvers,omitempty"`
 }
+
+// ProjectApprovals holds per-project approval policy. The zero value keeps
+// the existing maintainer-only behavior.
+type ProjectApprovals struct {
+	ForbidSelfApproval bool `json:"forbidSelfApproval,omitempty"`
+}
+
 type Project struct {
-	ID               string       `json:"id"`
-	Maintainers      []string     `json:"maintainers"`
-	SeedDir          string       `json:"seedDir,omitempty"`
-	TrustedConfigDir string       `json:"trustedConfigDir,omitempty"`
-	CWD              string       `json:"cwd,omitempty"`
-	SettingsFile     string       `json:"settingsFile,omitempty"`
-	NativeConfig     string       `json:"nativeConfig,omitempty"`
-	PermissionMode   string       `json:"permissionMode"`
-	AllowedTools     []string     `json:"allowedTools"`
-	Actions          []ActionSpec `json:"actions"`
+	ID               string           `json:"id"`
+	Maintainers      []string         `json:"maintainers"`
+	Owners           []string         `json:"owners,omitempty"`
+	Approvals        ProjectApprovals `json:"approvals,omitempty"`
+	SeedDir          string           `json:"seedDir,omitempty"`
+	TrustedConfigDir string           `json:"trustedConfigDir,omitempty"`
+	CWD              string           `json:"cwd,omitempty"`
+	SettingsFile     string           `json:"settingsFile,omitempty"`
+	NativeConfig     string           `json:"nativeConfig,omitempty"`
+	PermissionMode   string           `json:"permissionMode"`
+	AllowedTools     []string         `json:"allowedTools"`
+	Actions          []ActionSpec     `json:"actions"`
 	// Env holds non-secret literal values for the native process and its
 	// descendants. EnvPassthrough names variables copied from the service
 	// environment; absent or empty values are not injected.
