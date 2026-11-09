@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
@@ -84,9 +83,7 @@ VALUES(?, 'room','project','session',NULL,?,'message','ou_example','useless','qu
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.Maintain(context.Background(), now, 0); err != nil {
-		t.Fatal(err)
-	}
+	maintainAllPolicies(t, s, now)
 	var count int
 	if err := s.DB.QueryRow("SELECT count(*) FROM feedback WHERE id='old'").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("old feedback retained: %d %v", count, err)
