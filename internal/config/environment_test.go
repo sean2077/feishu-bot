@@ -129,6 +129,57 @@ func TestProjectEnvironmentRejectsReservedNames(t *testing.T) {
 	}
 }
 
+func TestProjectEnvironmentRejectsFixedActionCredentialSources(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := func() map[string]any {
+		return map[string]any{
+			"id": "publish", "description": "Publish status", "executable": exe,
+			"env": map[string]any{"TARGET": "ACTION_SOURCE_SECRET"}, "parameters": map[string]any{},
+		}
+	}
+	for _, field := range []string{"env", "envPassthrough"} {
+		for _, name := range []string{"ACTION_SOURCE_SECRET", "action_source_secret"} {
+			v := fixture(t)
+			p := projectConfig(v)
+			p["actions"] = []any{action()}
+			if field == "env" {
+				p["env"] = map[string]any{name: "value"}
+			} else {
+				p["envPassthrough"] = []any{name}
+			}
+			_, err := parseFixture(t, v)
+			var envErr *ProjectEnvError
+			if !errors.As(err, &envErr) || envErr.Variable != name || !strings.Contains(envErr.Reason, "fixed action assistant/publish") {
+				t.Fatalf("%s accepted action credential source %q: %v", field, name, err)
+			}
+		}
+	}
+
+	// A target name is not a credential source and remains available.
+	v := fixture(t)
+	p := projectConfig(v)
+	p["actions"] = []any{action()}
+	p["env"] = map[string]any{"TARGET": "literal"}
+	if _, err := parseFixture(t, v); err != nil {
+		t.Fatalf("action target name was treated as a source: %v", err)
+	}
+
+	// Action sources are reserved for every project, not only their owner.
+	v = fixture(t)
+	v["projects"] = append(v["projects"].([]any), map[string]any{
+		"id": "other", "maintainers": []any{"ou_example_other"}, "actions": []any{action()},
+	})
+	projectConfig(v)["envPassthrough"] = []any{"ACTION_SOURCE_SECRET"}
+	_, err = parseFixture(t, v)
+	var envErr *ProjectEnvError
+	if !errors.As(err, &envErr) || envErr.Project != "assistant" || !strings.Contains(envErr.Reason, "fixed action other/publish") {
+		t.Fatalf("cross-project action source was not reserved: %v", err)
+	}
+}
+
 func TestProjectEnvironmentRejectsNullContainers(t *testing.T) {
 	for _, field := range []string{"env", "envPassthrough"} {
 		v := fixture(t)

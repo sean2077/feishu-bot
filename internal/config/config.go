@@ -33,7 +33,9 @@ type ProjectEnvError struct {
 }
 
 func (e *ProjectEnvError) Error() string {
-	return fmt.Sprintf("project %s: environment variable %s: %s", e.Project, e.Variable, e.Reason)
+	// Parentheses keep the variable name from looking like a "SECRET: value"
+	// pair to generic log redaction, which would mangle the reason.
+	return fmt.Sprintf("project %s: environment variable %s (%s)", e.Project, e.Variable, e.Reason)
 }
 
 // Reserved names keep the deployment boundary (native HOME/config, model
@@ -44,39 +46,55 @@ var reservedProjectEnvNames = map[string]bool{
 }
 var reservedProjectEnvPrefixes = []string{"anthropic_", "claude_code_", "claude_agent_sdk", "feishu_action_"}
 
-func derivedProjectEnv(c *core.Config) map[string]bool {
-	derived := map[string]bool{}
-	add := func(name string) {
-		if name != "" {
-			derived[strings.ToLower(name)] = true
+func derivedProjectEnv(c *core.Config) map[string]string {
+	derived := map[string]string{}
+	add := func(name, reason string) {
+		name = strings.ToLower(name)
+		if name == "" {
+			return
+		}
+		if _, exists := derived[name]; !exists {
+			derived[name] = reason
 		}
 	}
-	add(c.AppSecretEnv)
-	add(c.Model.TokenEnv)
+	add(c.AppSecretEnv, "name is reserved by appSecretEnv")
+	add(c.Model.TokenEnv, "name is reserved by model.tokenEnv")
 	for _, source := range c.Model.ExtraHeaders {
 		if strings.HasPrefix(source, "env:") {
-			add(strings.TrimPrefix(source, "env:"))
+			add(strings.TrimPrefix(source, "env:"), "name is reserved by model.extraHeaders")
+		}
+	}
+	// Action credentials reach only the fixed-operation subprocess, never the
+	// native agent. A project passthrough with the same source name would
+	// bypass that boundary, so every referenced source is reserved for every
+	// project.
+	for _, p := range c.Projects {
+		for _, a := range p.Actions {
+			for _, source := range a.Env {
+				add(source, "name is reserved because it is used by fixed action "+p.ID+"/"+a.ID)
+			}
 		}
 	}
 	return derived
 }
 
-func reservedProjectEnv(name string, derived map[string]bool) bool {
+func reservedProjectEnv(name string, derived map[string]string) (string, bool) {
 	lower := strings.ToLower(name)
 	if reservedProjectEnvNames[lower] {
-		return true
+		return "name is reserved by the deployment", true
 	}
 	for _, prefix := range reservedProjectEnvPrefixes {
 		if strings.HasPrefix(lower, prefix) {
-			return true
+			return "name is reserved by the deployment", true
 		}
 	}
-	return derived[lower]
+	reason, ok := derived[lower]
+	return reason, ok
 }
 
 // validateProjectEnvironment rejects unsafe or ambiguous definitions at load
 // time. Errors include the project and variable name only, never the value.
-func validateProjectEnvironment(p *core.Project, derived map[string]bool) error {
+func validateProjectEnvironment(p *core.Project, derived map[string]string) error {
 	fail := func(name, reason string) error {
 		return &ProjectEnvError{Project: p.ID, Variable: name, Reason: reason}
 	}
@@ -90,8 +108,8 @@ func validateProjectEnvironment(p *core.Project, derived map[string]bool) error 
 		if !envNamePattern.MatchString(name) {
 			return fail(name, "name must match ^[A-Za-z_][A-Za-z0-9_]*$")
 		}
-		if reservedProjectEnv(name, derived) {
-			return fail(name, "name is reserved by the deployment")
+		if reason, ok := reservedProjectEnv(name, derived); ok {
+			return fail(name, reason)
 		}
 		if !nonempty(p.Env[name]) {
 			return fail(name, "value must be nonempty and must not contain NUL")
@@ -107,8 +125,8 @@ func validateProjectEnvironment(p *core.Project, derived map[string]bool) error 
 		if !envNamePattern.MatchString(name) {
 			return fail(name, "name must match ^[A-Za-z_][A-Za-z0-9_]*$")
 		}
-		if reservedProjectEnv(name, derived) {
-			return fail(name, "name is reserved by the deployment")
+		if reason, ok := reservedProjectEnv(name, derived); ok {
+			return fail(name, reason)
 		}
 		lower := strings.ToLower(name)
 		if previous, ok := seenPassthrough[lower]; ok {

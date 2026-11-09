@@ -126,21 +126,6 @@ var secretEnvName = regexp.MustCompile(`(?i)(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|A
 // installation.
 func projectEnvChecks(c core.Config) []Diagnostic {
 	checked := map[string]bool{}
-	for _, name := range []string{c.AppSecretEnv, c.Model.TokenEnv} {
-		checked[name] = true
-	}
-	for _, p := range c.Projects {
-		for _, a := range p.Actions {
-			for _, name := range a.Env {
-				checked[name] = true
-			}
-		}
-	}
-	for _, source := range c.Model.ExtraHeaders {
-		if strings.HasPrefix(source, "env:") {
-			checked[strings.TrimPrefix(source, "env:")] = true
-		}
-	}
 	var checks []Diagnostic
 	for _, p := range c.Projects {
 		for _, name := range p.EnvPassthrough {

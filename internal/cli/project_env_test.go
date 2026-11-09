@@ -119,7 +119,6 @@ func explainConfigFile(t *testing.T, mutate func(map[string]any)) string {
 func TestConfigExplainReportsProjectEnvironmentNamesOnly(t *testing.T) {
 	t.Setenv("SET_PASSTHROUGH", "present-value")
 	const missing = "MISSING_PASSTHROUGH_FOR_TEST"
-	unsetEnv(t, missing)
 	path := explainConfigFile(t, func(v map[string]any) {
 		p := v["projects"].([]any)[0].(map[string]any)
 		p["env"] = map[string]any{"PROFILE": "team", "TEAM_REGION": "private-region"}
@@ -143,8 +142,8 @@ func TestConfigExplainReportsProjectEnvironmentNamesOnly(t *testing.T) {
 	if got := strings.Join(anyStrings(view["projectEnvPassthrough"]), ","); got != missing+",SET_PASSTHROUGH" {
 		t.Fatalf("passthrough names = %q", got)
 	}
-	if got := strings.Join(anyStrings(view["projectEnvPassthroughMissing"]), ","); got != missing {
-		t.Fatalf("missing passthrough names = %q", got)
+	if _, ok := view["projectEnvPassthroughMissing"]; ok {
+		t.Fatal("config explain must leave passthrough presence to doctor")
 	}
 	for _, value := range []string{"team", "private-region", "present-value"} {
 		if strings.Contains(out.String(), value) {
@@ -156,8 +155,8 @@ func TestConfigExplainReportsProjectEnvironmentNamesOnly(t *testing.T) {
 	if err := runConfigExplain(context.Background(), o, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "Project env names: PROFILE, TEAM_REGION") || !strings.Contains(out.String(), "Missing passthrough: "+missing) {
-		t.Fatalf("text explain omitted environment names: %s", out.String())
+	if !strings.Contains(out.String(), "Project env names: PROFILE, TEAM_REGION") || !strings.Contains(out.String(), "Project env passthrough: "+missing+", SET_PASSTHROUGH") || strings.Contains(out.String(), "Missing passthrough") {
+		t.Fatalf("text explain environment names mismatch: %s", out.String())
 	}
 }
 

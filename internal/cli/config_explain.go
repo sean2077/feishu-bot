@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 
@@ -98,7 +97,6 @@ func explainRoute(c core.Config, o Options) core.Args {
 			view["nativeConfig"] = p.NativeConfig
 			view["projectEnv"] = sortedNames(p.Env)
 			view["projectEnvPassthrough"] = sortedPassthrough(p.EnvPassthrough)
-			view["projectEnvPassthroughMissing"] = missingPassthrough(p.EnvPassthrough)
 		}
 	}
 	return view
@@ -117,16 +115,6 @@ func sortedPassthrough(values []string) []string {
 	names := append([]string{}, values...)
 	sort.Strings(names)
 	return names
-}
-
-func missingPassthrough(values []string) []string {
-	missing := []string{}
-	for _, name := range sortedPassthrough(values) {
-		if strings.TrimSpace(os.Getenv(name)) == "" {
-			missing = append(missing, name)
-		}
-	}
-	return missing
 }
 
 func listNames(values []string) string {
@@ -168,8 +156,7 @@ func runConfigExplain(ctx context.Context, o Options, out io.Writer) error {
 	envDetail := ""
 	if names, ok := view["projectEnv"].([]string); ok {
 		passthrough, _ := view["projectEnvPassthrough"].([]string)
-		missing, _ := view["projectEnvPassthroughMissing"].([]string)
-		envDetail = fmt.Sprintf("Project env names: %s\nProject env passthrough: %s\nMissing passthrough: %s\n", listNames(names), listNames(passthrough), listNames(missing))
+		envDetail = fmt.Sprintf("Project env names: %s\nProject env passthrough: %s\n", listNames(names), listNames(passthrough))
 	}
 	_, err = fmt.Fprintf(out, "Configuration policy (offline)\nBinding: %v\nProject: %v\nAuthor authorized: %v\nEvent admitted: %v\nTriggers native input: %v\nManage session: %v\nApprove tools: %v\nReason: %v\n%sThis evaluates configured policy only; it does not verify live membership, credentials or Feishu delivery.\n", view["binding"], view["project"], view["authorAuthorized"], view["eventAdmitted"], view["triggersNative"], view["canManageSession"], view["canApproveTools"], view["reason"], envDetail)
 	return err
