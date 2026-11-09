@@ -73,6 +73,13 @@ func replyCard(title, answer string, thinking []string, total int, final bool, d
 	return card
 }
 
+// replyDoneText is the status shown on the final card of a successfully
+// delivered reply. Feedback eligibility checks the rendered row against this
+// shared value instead of duplicating the display wording.
+const replyDoneText = "已回复"
+
+func replyStatusContent(text string) string { return "● " + text }
+
 // replyStatus turns the internal turn title into the compact status label shown
 // at the top of the card. The color carries the same state the header template
 // used to carry, without a full-width colored band.
@@ -93,7 +100,7 @@ func replyStatus(title string, total int, final, success bool) (string, string) 
 		text = "思考中"
 	}
 	if final && success && title == "回复" {
-		text = "已回复"
+		text = replyDoneText
 	}
 	return text, color
 }
@@ -106,7 +113,7 @@ func replyStatusRow(text, color string) core.Args {
 				core.Args{"tag": "markdown", "content": "**飞书助手**"},
 			}},
 			core.Args{"tag": "column", "width": "auto", "horizontal_align": "right", "vertical_align": "center", "elements": []any{
-				core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "text_size": "notation", "text_color": color, "content": "● " + text}},
+				core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "text_size": "notation", "text_color": color, "content": replyStatusContent(text)}},
 			}},
 		},
 	}

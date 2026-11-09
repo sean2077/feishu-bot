@@ -110,6 +110,25 @@ func TestFeedbackButtonsOnlyOnDoneReplyCard(t *testing.T) {
 	}
 }
 
+func TestFeedbackDoneStatusUsesSharedCardText(t *testing.T) {
+	x := newFeedbackFixture(t, true, 0)
+	label, _ := replyStatus("回复", 0, true, true)
+	if label != replyDoneText {
+		t.Fatalf("done label = %q, want %q", label, replyDoneText)
+	}
+	status, _ := replyCardStatus(t, x.card)
+	if status != replyStatusContent(replyDoneText) {
+		t.Fatalf("delivered status = %q", status)
+	}
+	if !strings.Contains(jsonText(x.card), "gateway_quick_feedback") {
+		t.Fatal("done status lost feedback controls")
+	}
+	fragment := replyCard("后台续轮已结束", "answer", nil, 0, true, replyDetails{}, time.Second, true)
+	if replyCardDone(fragment) {
+		t.Fatal("fragment status treated as a completed reply")
+	}
+}
+
 func TestFeedbackClickAuthorizationBindingAndRate(t *testing.T) {
 	x := newFeedbackFixture(t, true, 100)
 	if got := x.click(t, "stranger", "feedback_useful"); got != "" {

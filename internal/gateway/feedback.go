@@ -39,8 +39,10 @@ func (g *Gateway) feedbackControls(r core.Room, session, output, revision string
 	}
 }
 
-// replyCardDone matches the visible green "已回复" row only. Intermediate,
-// failed, cancelled and file-pending cards keep their other status text.
+// replyCardDone matches the visibly completed status row only. Intermediate,
+// failed, cancelled and file-pending cards keep their other status text. The
+// expected content comes from cards.go so a wording change cannot silently
+// drop the feedback controls.
 func replyCardDone(card core.Args) bool {
 	elements, _ := argsOf(card["body"])["elements"].([]any)
 	for i, value := range elements {
@@ -56,7 +58,7 @@ func replyCardDone(card core.Args) bool {
 		if len(right) != 1 {
 			continue
 		}
-		return stringArg(argsOf(argsOf(right[0])["text"]), "content") == "● 已回复"
+		return stringArg(argsOf(argsOf(right[0])["text"]), "content") == replyStatusContent(replyDoneText)
 	}
 	return false
 }
