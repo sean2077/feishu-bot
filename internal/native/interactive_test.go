@@ -13,6 +13,9 @@ func TestInteractiveLaunchKeepsIdentityProfileAndTerminalBoundary(t *testing.T) 
 	t.Setenv("FEISHU_INTERACTIVE_TEST_SECRET", "app-secret-must-not-reach-native")
 	f.config.AppSecretEnv = "FEISHU_INTERACTIVE_TEST_SECRET"
 	f.config.ModelProfiles = map[string]core.ModelProfile{"local": {Model: "selected-model", Effort: "high"}}
+	t.Setenv("TEAM_API_TOKEN", "project-token")
+	f.config.Projects[0].Env = map[string]string{"PROFILE": "team"}
+	f.config.Projects[0].EnvPassthrough = []string{"TEAM_API_TOKEN"}
 	s := f.session
 	s.CCID = core.NewID()
 	s.RoomKey = "room"
@@ -28,7 +31,7 @@ func TestInteractiveLaunchKeepsIdentityProfileAndTerminalBoundary(t *testing.T) 
 		t.Fatal("interactive arguments changed native identity or enabled bridge protocol", args)
 	}
 	env := strings.Join(cmd.Env, "\n")
-	if !strings.Contains(env, "TERM=xterm-256color") || !strings.Contains(env, "CLAUDE_CONFIG_DIR="+filepath.Join(f.workspace.Home, ".claude")) || !strings.Contains(env, "CLAUDE_CODE_EFFORT_LEVEL=high") || strings.Contains(env, "app-secret-must-not-reach-native") || strings.Contains(env, "CLAUDE_CODE_ENTRYPOINT=") {
+	if !strings.Contains(env, "TERM=xterm-256color") || !strings.Contains(env, "CLAUDE_CONFIG_DIR="+filepath.Join(f.workspace.Home, ".claude")) || !strings.Contains(env, "CLAUDE_CODE_EFFORT_LEVEL=high") || !strings.Contains(env, "PROFILE=team") || !strings.Contains(env, "TEAM_API_TOKEN=project-token") || strings.Contains(env, "app-secret-must-not-reach-native") || strings.Contains(env, "CLAUDE_CODE_ENTRYPOINT=") {
 		t.Fatal("interactive environment boundary mismatch")
 	}
 	if cmd.Dir != f.workspace.Work {

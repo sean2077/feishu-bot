@@ -137,7 +137,7 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 				_ = os.Remove(w.settings)
 			}
 		}
-		env := Environment(workspace, c.AppSecretEnv)
+		env := Environment(workspace, project, c.AppSecretEnv)
 		for key, value := range modelEnv {
 			env[key] = value
 		}

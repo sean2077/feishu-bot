@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -16,8 +17,10 @@ const bridgePrompt = "You participate in one Feishu conversation. Input JSON has
 
 // Environment returns the same isolated/inherited configuration boundary used
 // by workspace preparation. Runtime secrets are supplied separately, never in
-// process arguments or in the durable workspace settings.
-func Environment(w core.Workspace, appSecretEnv string) map[string]string {
+// process arguments or in the durable workspace settings. Project variables
+// are merged last so they can intentionally override inherited or proxied
+// values; configuration validation keeps deployment-owned names out.
+func Environment(w core.Workspace, p core.Project, appSecretEnv string) map[string]string {
 	env := map[string]string{}
 	if w.NativeConfig == "inherit" {
 		for _, entry := range os.Environ() {
@@ -66,7 +69,41 @@ func Environment(w core.Workspace, appSecretEnv string) map[string]string {
 			env[name] = value
 		}
 	}
+	applyProjectEnvironment(env, p, runtime.GOOS == "windows")
 	return env
+}
+
+// applyProjectEnvironment adds project literals and passthrough variables
+// after the deployment environment has been assembled. Passthrough values are
+// read from the service process environment; a missing or blank value is
+// skipped instead of failing process startup. When foldCase is true (Windows),
+// an existing name that differs only by case is removed first: environment
+// sorting would otherwise leave two entries whose effective value depends on
+// order.
+func applyProjectEnvironment(env map[string]string, p core.Project, foldCase bool) {
+	set := func(name, value string) {
+		if foldCase {
+			for existing := range env {
+				if existing != name && strings.EqualFold(existing, name) {
+					delete(env, existing)
+				}
+			}
+		}
+		env[name] = value
+	}
+	keys := make([]string, 0, len(p.Env))
+	for name := range p.Env {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	for _, name := range keys {
+		set(name, p.Env[name])
+	}
+	for _, name := range p.EnvPassthrough {
+		if value := os.Getenv(name); strings.TrimSpace(value) != "" {
+			set(name, value)
+		}
+	}
 }
 func environmentList(m map[string]string) []string {
 	keys := make([]string, 0, len(m))

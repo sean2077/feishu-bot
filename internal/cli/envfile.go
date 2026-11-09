@@ -122,6 +122,26 @@ func credentialNames(c core.Config) []string {
 	return names
 }
 
+// passthroughNames returns declared project passthrough variables. They are
+// captured into a generated service.env when present but are not required
+// credentials: doctor reports each missing name explicitly, while foreground
+// `run` starts and lets the downstream capability gate report not_configured.
+func passthroughNames(c core.Config) []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, project := range c.Projects {
+		for _, name := range project.EnvPassthrough {
+			name = strings.TrimSpace(name)
+			if name != "" && !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 func missingCredentials(c core.Config, values map[string]string) []string {
 	var missing []string
 	for _, name := range credentialNames(c) {
@@ -145,6 +165,14 @@ func buildEnvFile(c core.Config) ([]byte, []string, error) {
 			continue
 		}
 		values[name] = value
+	}
+	for _, name := range passthroughNames(c) {
+		if _, exists := values[name]; exists {
+			continue
+		}
+		if value, ok := os.LookupEnv(name); ok && strings.TrimSpace(value) != "" {
+			values[name] = value
+		}
 	}
 	for _, name := range runtimeEnvAllowlist {
 		if _, exists := values[name]; exists {

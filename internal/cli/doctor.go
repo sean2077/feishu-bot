@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -115,6 +116,56 @@ func deploymentChecks(c core.Config) []Diagnostic {
 	return checks
 }
 
+var secretEnvName = regexp.MustCompile(`(?i)(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|AUTHORIZATION|CREDENTIALS?|PRIVATE_KEY)($|_)`)
+
+// projectEnvChecks are reported by doctor and its installation precheck, but
+// are deliberately separate from deploymentChecks so a missing passthrough
+// does not block foreground `run`. A declared passthrough name is still a
+// deployment requirement for daemon install and upgrades: the installation
+// precheck uses the complete doctor report before changing an existing
+// installation.
+func projectEnvChecks(c core.Config) []Diagnostic {
+	checked := map[string]bool{}
+	for _, name := range []string{c.AppSecretEnv, c.Model.TokenEnv} {
+		checked[name] = true
+	}
+	for _, p := range c.Projects {
+		for _, a := range p.Actions {
+			for _, name := range a.Env {
+				checked[name] = true
+			}
+		}
+	}
+	for _, source := range c.Model.ExtraHeaders {
+		if strings.HasPrefix(source, "env:") {
+			checked[strings.TrimPrefix(source, "env:")] = true
+		}
+	}
+	var checks []Diagnostic
+	for _, p := range c.Projects {
+		for _, name := range p.EnvPassthrough {
+			if checked[name] {
+				continue
+			}
+			checked[name] = true
+			value := os.Getenv(name)
+			ok := strings.TrimSpace(value) != "" && !placeholder(value)
+			checks = append(checks, Diagnostic{Name: "project " + p.ID + " credential " + name, OK: ok, Detail: "Declared project passthrough variable; presence only, value is not displayed."})
+		}
+		names := make([]string, 0, len(p.Env))
+		for name := range p.Env {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if secretEnvName.MatchString(name) {
+				checks = append(checks, Diagnostic{Name: "project " + p.ID + " env " + name, OK: false, Detail: "Variable name looks like a credential; use envPassthrough for secrets instead of a literal env value."})
+			}
+		}
+	}
+	return checks
+}
+
 type cappedWriter struct {
 	bytes.Buffer
 	limit int
@@ -147,7 +198,8 @@ func versionCommand(ctx context.Context, program string, args ...string) (string
 	return strings.TrimSpace(b.String()), nil
 }
 func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) DoctorReport {
-	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: deploymentChecks(c), Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made.", Native: native.Compatibility("")}
+	checks := append(deploymentChecks(c), projectEnvChecks(c)...)
+	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: checks, Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made.", Native: native.Compatibility("")}
 	add := func(name string, fn func() (string, error)) {
 		if ctx.Err() != nil {
 			r.Checks = append(r.Checks, Diagnostic{Name: name, Skipped: true, Detail: "Diagnostic cancelled."})

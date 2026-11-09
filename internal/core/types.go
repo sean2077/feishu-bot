@@ -113,6 +113,11 @@ type Project struct {
 	PermissionMode   string       `json:"permissionMode"`
 	AllowedTools     []string     `json:"allowedTools"`
 	Actions          []ActionSpec `json:"actions"`
+	// Env holds non-secret literal values for the native process and its
+	// descendants. EnvPassthrough names variables copied from the service
+	// environment; absent or empty values are not injected.
+	Env            map[string]string `json:"env,omitempty"`
+	EnvPassthrough []string          `json:"envPassthrough,omitempty"`
 }
 type RuntimeConfig struct {
 	MaxWorkers        int    `json:"maxWorkers"`

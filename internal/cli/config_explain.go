@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"sort"
 	"strings"
 
 	"github.com/sean2077/feishu-bot/internal/config"
@@ -94,9 +96,44 @@ func explainRoute(c core.Config, o Options) core.Args {
 		if p, ok := c.Project(r.ProjectID); ok {
 			view["permissionMode"] = p.PermissionMode
 			view["nativeConfig"] = p.NativeConfig
+			view["projectEnv"] = sortedNames(p.Env)
+			view["projectEnvPassthrough"] = sortedPassthrough(p.EnvPassthrough)
+			view["projectEnvPassthroughMissing"] = missingPassthrough(p.EnvPassthrough)
 		}
 	}
 	return view
+}
+
+func sortedNames(values map[string]string) []string {
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func sortedPassthrough(values []string) []string {
+	names := append([]string{}, values...)
+	sort.Strings(names)
+	return names
+}
+
+func missingPassthrough(values []string) []string {
+	missing := []string{}
+	for _, name := range sortedPassthrough(values) {
+		if strings.TrimSpace(os.Getenv(name)) == "" {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+func listNames(values []string) string {
+	if len(values) == 0 {
+		return "(none)"
+	}
+	return strings.Join(values, ", ")
 }
 
 func runConfigExplain(ctx context.Context, o Options, out io.Writer) error {
@@ -112,6 +149,11 @@ func runConfigExplain(ctx context.Context, o Options, out io.Writer) error {
 	}
 	c, err := config.Load(path)
 	if err != nil {
+		var envErr *config.ProjectEnvError
+		if errors.As(err, &envErr) {
+			// This error carries only a project and variable name, never a value.
+			return fmt.Errorf("configuration is invalid: %w", envErr)
+		}
 		return errors.New("configuration cannot be loaded or validated; use doctor for configuration diagnostics")
 	}
 	view := explainRoute(c, o)
@@ -123,6 +165,12 @@ func runConfigExplain(ctx context.Context, o Options, out io.Writer) error {
 		_, err = fmt.Fprintln(out, string(data))
 		return err
 	}
-	_, err = fmt.Fprintf(out, "Configuration policy (offline)\nBinding: %v\nProject: %v\nAuthor authorized: %v\nEvent admitted: %v\nTriggers native input: %v\nManage session: %v\nApprove tools: %v\nReason: %v\nThis evaluates configured policy only; it does not verify live membership, credentials or Feishu delivery.\n", view["binding"], view["project"], view["authorAuthorized"], view["eventAdmitted"], view["triggersNative"], view["canManageSession"], view["canApproveTools"], view["reason"])
+	envDetail := ""
+	if names, ok := view["projectEnv"].([]string); ok {
+		passthrough, _ := view["projectEnvPassthrough"].([]string)
+		missing, _ := view["projectEnvPassthroughMissing"].([]string)
+		envDetail = fmt.Sprintf("Project env names: %s\nProject env passthrough: %s\nMissing passthrough: %s\n", listNames(names), listNames(passthrough), listNames(missing))
+	}
+	_, err = fmt.Fprintf(out, "Configuration policy (offline)\nBinding: %v\nProject: %v\nAuthor authorized: %v\nEvent admitted: %v\nTriggers native input: %v\nManage session: %v\nApprove tools: %v\nReason: %v\n%sThis evaluates configured policy only; it does not verify live membership, credentials or Feishu delivery.\n", view["binding"], view["project"], view["authorAuthorized"], view["eventAdmitted"], view["triggersNative"], view["canManageSession"], view["canApproveTools"], view["reason"], envDetail)
 	return err
 }
