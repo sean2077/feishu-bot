@@ -49,7 +49,15 @@ func interactiveCommand(c core.Config, r core.Room, s core.Session, w core.Works
 		return nil, nil, err
 	}
 	modelEnv := modelEnvironment(c, token, headers)
-	settings, err := privateSettings(w, modelEnv)
+	var projectSettings *config.ProjectSettings
+	if p.SettingsFile != "" {
+		loaded, loadErr := config.LoadProjectSettings(c, p)
+		if loadErr != nil {
+			return nil, nil, loadErr
+		}
+		projectSettings = &loaded
+	}
+	settings, err := privateSettings(w, p, modelEnv, projectSettings)
 	if err != nil {
 		return nil, nil, err
 	}

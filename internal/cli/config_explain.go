@@ -97,6 +97,9 @@ func explainRoute(c core.Config, o Options) core.Args {
 			view["nativeConfig"] = p.NativeConfig
 			view["projectEnv"] = sortedNames(p.Env)
 			view["projectEnvPassthrough"] = sortedPassthrough(p.EnvPassthrough)
+			if p.SettingsFile != "" {
+				view["settingsFile"] = p.SettingsFile
+			}
 		}
 	}
 	return view
@@ -157,6 +160,9 @@ func runConfigExplain(ctx context.Context, o Options, out io.Writer) error {
 	if names, ok := view["projectEnv"].([]string); ok {
 		passthrough, _ := view["projectEnvPassthrough"].([]string)
 		envDetail = fmt.Sprintf("Project env names: %s\nProject env passthrough: %s\n", listNames(names), listNames(passthrough))
+		if settings, ok := view["settingsFile"].(string); ok {
+			envDetail += "Settings file: " + settings + "\n"
+		}
 	}
 	_, err = fmt.Fprintf(out, "Configuration policy (offline)\nBinding: %v\nProject: %v\nAuthor authorized: %v\nEvent admitted: %v\nTriggers native input: %v\nManage session: %v\nApprove tools: %v\nReason: %v\n%sThis evaluates configured policy only; it does not verify live membership, credentials or Feishu delivery.\n", view["binding"], view["project"], view["authorAuthorized"], view["eventAdmitted"], view["triggersNative"], view["canManageSession"], view["canApproveTools"], view["reason"], envDetail)
 	return err

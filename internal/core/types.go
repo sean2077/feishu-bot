@@ -109,6 +109,7 @@ type Project struct {
 	SeedDir          string       `json:"seedDir,omitempty"`
 	TrustedConfigDir string       `json:"trustedConfigDir,omitempty"`
 	CWD              string       `json:"cwd,omitempty"`
+	SettingsFile     string       `json:"settingsFile,omitempty"`
 	NativeConfig     string       `json:"nativeConfig,omitempty"`
 	PermissionMode   string       `json:"permissionMode"`
 	AllowedTools     []string     `json:"allowedTools"`

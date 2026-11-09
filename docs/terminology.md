@@ -58,6 +58,12 @@ _英文_: workspace
 _英文_: project environment variable
 _避免_: 用“项目密钥”指代 `env`（它不保存密钥）
 
+**项目设置文件**
+
+`projects[].settingsFile` 指定的管理员维护的原生 settings 快照。只允许 `env` 和 `permissions.allow/ask/deny`；每次原生进程启动时读取并与模型环境合并成一份临时 `--settings` 文件，读取或校验失败时拒绝该次启动。它是管理员信任输入，不是聊天可控制的规则，也不是安全沙箱。
+_英文_: project settings file
+_避免_: 把 settings 文件称为隔离边界
+
 **话题工作区绑定**
 
 管理员在显式群的 `threadWorkspaces` 中将话题根消息 ID 映射到已有目录。仅改变该话题的原生 cwd，不改变房间键、原生 HOME、附件范围或项目权限；已有会话需通过持久启动身份核对，目录变化须显式新建会话。绑定可以指向人工准备的 Git worktree，网关不管理其创建与清理。

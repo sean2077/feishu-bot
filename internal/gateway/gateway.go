@@ -92,6 +92,7 @@ type Gateway struct {
 	capacityWait                                                 map[string]capacityWait
 	residentBytes                                                func(context.Context) (int64, error)
 	profileWait                                                  map[string]string
+	launchFailure                                                map[string]map[string]bool
 	wakes                                                        map[string]*dispatchWake
 	imageTimers                                                  map[string]imageWake
 	inputLocks, dispatchLocks, receiptLocks, approvalUpdateLocks keyedLocks
@@ -121,7 +122,7 @@ type Gateway struct {
 func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerFactory, log core.Logger) *Gateway {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{config: c, store: st, transport: tr, factory: factory, logger: log, ctx: ctx, cancel: cancel,
-		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
+		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, launchFailure: map[string]map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
 	if _, err := rand.Read(g.historyKey[:]); err != nil {
 		panic("cannot initialize history cursor authentication")
 	}
@@ -639,6 +640,8 @@ func (g *Gateway) kick(r core.Room) {
 			unlock()
 			if err != nil && !g.isClosing() {
 				g.audit(r.Key, "dispatch_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+				var failure *launchFailure
+				repeated := errors.As(err, &failure) && failure.notified
 				if errors.Is(err, config.ErrModelProfileUnavailable) {
 					// The saved session or requested profile no longer exists.
 					// Keep the input without a silent model switch, but stop the
@@ -654,7 +657,10 @@ func (g *Gateway) kick(r core.Room) {
 					}
 					return
 				}
-				if errors.Is(err, store.ErrLaunchIdentityChanged) {
+				if repeated {
+					// The same pending input already produced a failure notice.
+					// Keep it for a later retry without posting another card.
+				} else if errors.Is(err, store.ErrLaunchIdentityChanged) {
 					g.notify(r, "输入已保存。"+store.ErrLaunchIdentityChanged.Error(), nil)
 				} else {
 					g.notify(r, "输入已保存，但运行启动或交付失败；请查看服务诊断。", nil)
@@ -674,6 +680,53 @@ func (g *Gateway) kick(r core.Room) {
 func (g *Gateway) clearProfileWait(key string) {
 	g.mu.Lock()
 	delete(g.profileWait, key)
+	delete(g.launchFailure, key)
+	g.mu.Unlock()
+}
+
+type launchFailure struct {
+	err      error
+	notified bool
+}
+
+func (e *launchFailure) Error() string { return e.err.Error() }
+func (e *launchFailure) Unwrap() error { return e.err }
+
+// markLaunchFailure records which pending inputs already produced a launch
+// failure notice. Periodic sweeps may retry the launch, but the same input
+// must not repeatedly post the same notice to the chat.
+func (g *Gateway) markLaunchFailure(r core.Room, pending []core.Delivery, err error) error {
+	ids := make(map[string]bool, len(pending))
+	for _, d := range pending {
+		ids[d.Message.ID] = true
+	}
+	g.mu.Lock()
+	notified := g.launchFailure[r.Key]
+	if notified == nil {
+		notified = map[string]bool{}
+		g.launchFailure[r.Key] = notified
+	}
+	for id := range notified {
+		if !ids[id] {
+			delete(notified, id)
+		}
+	}
+	fresh := false
+	for id := range ids {
+		if !notified[id] {
+			fresh = true
+		}
+	}
+	for id := range ids {
+		notified[id] = true
+	}
+	g.mu.Unlock()
+	return &launchFailure{err: err, notified: !fresh}
+}
+
+func (g *Gateway) clearLaunchFailure(key string) {
+	g.mu.Lock()
+	delete(g.launchFailure, key)
 	g.mu.Unlock()
 }
 
@@ -809,6 +862,7 @@ func (g *Gateway) dispatch(r core.Room) error {
 		return e
 	}
 	if len(pending) == 0 {
+		g.clearLaunchFailure(r.Key)
 		g.clearImageTimer(r.Key)
 		g.mu.Lock()
 		delete(g.waiting, r.Key)
@@ -940,7 +994,7 @@ func (g *Gateway) dispatch(r core.Room) error {
 				err = errors.Join(err, g.clearUnsentLaunch(s))
 				g.removeSlot(s)
 			}
-			return err
+			return g.markLaunchFailure(r, pending, err)
 		}
 		s.mu.Lock()
 		s.worker = worker
@@ -963,6 +1017,7 @@ func (g *Gateway) dispatch(r core.Room) error {
 			g.removeSlot(s)
 			return nil
 		}
+		g.clearLaunchFailure(r.Key)
 		g.applySessionTitle(s, worker, pending[0].Message)
 	}
 	for g.active(s) && !g.isClosing() {

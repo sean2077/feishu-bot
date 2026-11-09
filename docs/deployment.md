@@ -106,6 +106,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `model.baseUrl`、`model.model` | 无 | 见[模型、网络和时区](#模型网络和时区)；`smallModel` 省略时等于 `model` |
 | `projects[]` | 至少一项 | 资源／权限单元；`maintainers` 必填，`permissionMode` 默认 `acceptEdits`，`nativeConfig` 默认 `isolated` |
 | `projects[].env`、`projects[].envPassthrough` | 空 | 项目级原生进程环境变量；`env` 为非敏感字面值，`envPassthrough` 从服务环境复制凭据，见[项目环境变量](#项目环境变量) |
+| `projects[].settingsFile` | 空 | 管理员维护的原生 settings 快照；只允许 `env` 和 `permissions.allow/ask/deny`，见[项目设置文件](#项目设置文件) |
 | `groups[]`、`dms[]` | 空 | 群与私聊授权，见[飞书应用与授权](#飞书应用与授权) |
 | `runtime.maxWorkers`、`runtime.idleMs` | 8、900000 | 活跃原生进程上限（1–128）与空闲回收时间，见[容量与恢复](#容量与恢复) |
 | `limits.backgroundMessages`／`backgroundMs` | 0／900000 | 非 @ 群消息缓存条数（0–200）与保留时间；默认不缓存 |
@@ -248,6 +249,39 @@ passthrough 值中长度不少于 8 个字符的值会加入日志、回复卡�
 ```
 
 以上是合并到完整配置的项目片段。同一部署中的其他项目可以各自设置不同的 `env` 值；共用的 `cwd`、原生 HOME 和权限规则不受影响。
+
+## 项目设置文件
+
+`projects[].settingsFile` 指向一份由管理员维护的原生 Claude settings 文件。网关在每次启动原生进程时读取并校验它，把其中的 `env`、`permissions.allow/ask/deny` 与模型环境（仅 inherit）合并成一份 0600 私有临时文件，通过 `--settings` 传入；进程结束后删除。相对路径以配置文件目录为基准，可以和 `cwd` 一起使用。settingsFile 不进入会话身份或 resume 判断。
+
+只允许顶层 `env` 和 `permissions`，`permissions` 只允许 `allow`、`ask`、`deny`；每个值必须是非空字符串数组，元素非空且不含 NUL。`env` 的变量名、值、保留名和与 `projects[].env`／`envPassthrough` 的交叠按[项目环境变量](#项目环境变量)的规则校验。`defaultMode`、`hooks`、`additionalDirectories`、`apiKeyHelper`、`model` 等其他键一律拒绝。文件必须是 UTF-8 JSON 对象，最大 1 MiB。错误只报告项目、文件路径、字段或变量名，不报告值或规则内容。
+
+文件按快照读取：修改后，下一次原生进程启动（空闲回收或 `/new`）才生效；网关不监视文件变化。文件缺失、不可读、超限、JSON 损坏或字段不合规时，该原生进程拒绝启动；输入保留、不重放，聊天收到泛化的启动失败提示，服务诊断只记录脱敏后的路径／字段，已有会话映射不变。同一条待交付输入因启动失败只提示一次；新输入会再提示一次。`doctor` 对每个配置了 `settingsFile` 的项目做同样的存在、可读和结构检查，不显示规则内容；`run` 启动本身不读取该文件，但 `daemon install`／升级预检使用完整 doctor 报告，会因此拒绝。
+
+合并规则：
+
+- 未配置 `settingsFile` 时行为不变：isolated 不传 `--settings`，inherit 仅传模型环境。
+- isolated 配置时，临时文件只含文件的 `env` 和 `permissions`；模型凭据仍在进程环境，不写入临时文件。
+- inherit 配置时，模型环境最后合并到文件 `env`；保留名校验保证两者不重名。
+- `--allowedTools`（网关固定只读工具与 `projects[].allowedTools`）照常生成，与文件的 allow 规则叠加；ask／deny 按原生规则生效。
+- `--settings` 的 `env` 覆盖进程环境和 user／project settings 的同名变量。该优先级用 Claude Code 2.1.319 验证；固定回归版本 2.1.316 未单独复验。
+- deny 已在 2.1.319 用本地假 Messages 服务验证：allow 命中时 Bash 执行，同一规则加入 deny 后命令被拒绝；`acceptEdits` 和 `bypassPermissions` 两种模式都生效。
+
+isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings；其 allow、hooks 等按原生规则与 `--settings` 合并（deny 优先是原生文档行为；本项目只验证了 `--settings` 自身的 deny，未单独验证跨来源 deny 冲突）。管理员必须把 cwd 仓库自带的 project settings 与这份文件一起审核，不能只审核 `settingsFile`。
+
+规则写法示例（虚构命令）：
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(uv run --no-sync example-tool sub:*)"],
+    "ask": ["Bash(uv run --no-sync example-tool doc *--input*)"],
+    "deny": ["Bash(curl:*)", "Read(./.secrets/**)"]
+  }
+}
+```
+
+写全 runner 前缀（`Bash(uv run --no-sync example-tool sub:*)`）可让该子命令直接放行；不要用 `Bash(uv:*)` 等过宽前缀。需要在执行前确认的命令用 `ask` 和中间通配（`Bash(uv run --no-sync example-tool doc *--input*)`），不要用 allow 加提示词。deny 用于硬边界（如 `Bash(curl:*)`、`Read(./.secrets/**)`）；原生 deny 优先于 allow，但同账户代码仍可能通过其他工具或路径访问数据，不是安全沙箱。
 
 ## 首次启动检查
 

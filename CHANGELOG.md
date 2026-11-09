@@ -9,6 +9,7 @@
 - 未注入版本的源码构建不再显示过期的 `0.3.0-dev`，改为 `dev-g<提交>`（有未提交改动时加 `-dirty`）；部署文档给出注入 `git describe --tags --long --dirty` 版本（如 `0.5.0-3-g1a2b3c4`）的本地构建命令。发布产物仍注入 `X.Y.Z`。
 - 修复前台轮次中启动的后台命令在轮次结束前完成时，同一条 @ 收到多张回复卡且多出的卡片一直停在“思考中”的问题：原生把任务通知并入当前轮次时，后续输出留在原回复卡片；原生结果到达时一并收尾本轮其余回复卡片，从未发出的片段只关闭、不再新发卡片。
 - 新增项目级环境变量 `projects[].env` 与 `projects[].envPassthrough`：`env` 保存非敏感字面值，`envPassthrough` 从服务环境复制凭据；加载时按大小写不敏感拒绝保留名、重复名和两者交叠。变量在下次原生进程启动时生效，不改变会话身份、工作区或权限规则；`doctor` 检查缺失的 passthrough 和疑似密钥字面量，`config explain` 只显示变量名，`daemon install` 生成的 `service.env` 会捕获当前已存在的 passthrough 值。
+- 新增 `projects[].settingsFile`：挂载管理员维护的原生 settings 快照，只允许 `env` 和 `permissions.allow/ask/deny`；每次启动原生进程时读取并校验，与模型环境合并为 0600 临时 `--settings` 文件，进程结束删除。文件缺失或不合规时拒绝启动该进程，输入保留并提示启动失败；同一条待交付输入因启动失败只提示一次，新输入会再提示一次。`doctor` 检查结构，`config explain` 只显示路径。isolated 下文件 env／permissions 原样传入且模型凭据不落盘，inherit 下合并模型环境。
 
 ## 0.5.0 — 2026-11-07
 
