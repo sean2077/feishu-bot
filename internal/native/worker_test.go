@@ -25,12 +25,22 @@ func TestMain(m *testing.M) {
 	}
 	if len(os.Args) > 2 && os.Args[1] == "feishu-fixture-child" {
 		for {
-			_ = os.WriteFile(os.Args[2], []byte(time.Now().Format(time.RFC3339Nano)), 0600)
+			_ = writeFixtureFile(os.Args[2], []byte(time.Now().Format(time.RFC3339Nano)))
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
 	os.Exit(m.Run())
 }
+
+// The parent polls fixture files while this process writes them. Write to a
+// sibling and rename so a poll never observes an empty or partial file.
+func writeFixtureFile(path string, data []byte) error {
+	if err := os.WriteFile(path+".tmp", data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(path+".tmp", path)
+}
+
 func fakeClaude() {
 	if dump := os.Getenv("FEISHU_NATIVE_TEST_ENV_DUMP"); dump != "" {
 		var lines []string
@@ -39,7 +49,7 @@ func fakeClaude() {
 				lines = append(lines, key+"="+os.Getenv(key))
 			}
 		}
-		if os.WriteFile(dump, []byte(strings.Join(lines, "\n")), 0600) != nil {
+		if writeFixtureFile(dump, []byte(strings.Join(lines, "\n"))) != nil {
 			os.Exit(34)
 		}
 	}
@@ -78,7 +88,7 @@ func fakeClaude() {
 					send(args{"type": "control_response", "response": args{"subtype": "error", "request_id": frame["request_id"], "error": "fixture rejection"}})
 					continue
 				}
-				if os.WriteFile(filepath.Join(os.Getenv("HOME"), "session-title"), []byte(title), 0600) != nil {
+				if writeFixtureFile(filepath.Join(os.Getenv("HOME"), "session-title"), []byte(title)) != nil {
 					os.Exit(33)
 				}
 				if title == "fixture-missing-ack" {

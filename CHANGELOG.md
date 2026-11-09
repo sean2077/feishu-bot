@@ -12,6 +12,7 @@
 - 新增 `projects[].settingsFile`：挂载管理员维护的原生 settings 快照，只允许 `env` 和 `permissions.allow/ask/deny`；每次启动原生进程时读取并校验，与模型环境合并为 0600 临时 `--settings` 文件，进程结束删除。文件缺失或不合规时拒绝启动该进程，输入保留并提示启动失败；同一条待交付输入因启动失败只提示一次，新输入会再提示一次。`doctor` 检查结构，`config explain` 只显示路径。isolated 下文件 env／permissions 原样传入且模型凭据不落盘，inherit 下合并模型环境。
 - 新增请求上下文：固定操作子进程获得 `FEISHU_REQUEST_*` 发起人／消息变量，`action_runs` 增加 `requester` 和 `request_context`，非只读审批卡显示发起人；上下文在请求到达时捕获，审批等待期间变化不影响记录。原生进程始终启动只读 loopback `context` 端点，Bash 子进程可用 `"$FEISHU_ACTION_CLIENT" context` 读取当前输入上下文，无输入时返回 inactive；没有配置 `actions` 的项目不接受 action 调用。
 - 新增审批策略：`projects[].owners`（maintainers 子集）、`projects[].approvals.forbidSelfApproval` 和 `actions[].approvers`。指定 approvers 后该操作只认这些审批人；开启禁止自批后发起人不能批准自己的请求，owner 例外，拒绝不受限制；请求上下文为空时只有 owner 可以批准。原生工具 ask 同样执行自批规则，问题卡保持现状；审批卡显示发起人和指定审批人，私聊转发到对应审批人；`requests` 增加 requester/request_context，自批拒绝写审计事件。
+- 新增按项目开启的回复反馈 `projects[].feedback.enabled`：只在最终成功交付并标记 Done 的回复卡上显示「有用」「无用」，每人每回复一票、最后一次为准，点击只提示不重写卡片。`feedback` 表保存问题与回复摘要快照（截断并脱敏）、open_id、会话和消息 ID，保留 90 天；新增只读 `feedback export` 命令按 value/since/project 导出 JSONL，WAL 下可与运行中的服务并发读取。
 
 ## 0.5.0 — 2026-11-07
 

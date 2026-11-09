@@ -60,6 +60,8 @@ CREATE INDEX IF NOT EXISTS action_runs_terminal_age ON action_runs(at) WHERE sta
 CREATE INDEX IF NOT EXISTS action_runs_session_active ON action_runs(session) WHERE state IN ('running','uncertain');
 CREATE INDEX IF NOT EXISTS action_runs_room_active ON action_runs(room) WHERE state IN ('running','uncertain');
 CREATE INDEX IF NOT EXISTS action_runs_room_age ON action_runs(room,at);
+CREATE INDEX IF NOT EXISTS feedback_at ON feedback(at);
+CREATE INDEX IF NOT EXISTS feedback_project_value_at ON feedback(project,value,at);
 CREATE INDEX IF NOT EXISTS outbox_terminal_age ON outbox(at) WHERE state IN ('done','cancelled');
 CREATE INDEX IF NOT EXISTS outbox_session_active ON outbox(session) WHERE state NOT IN ('done','cancelled');
 CREATE INDEX IF NOT EXISTS outbox_room_active ON outbox(room) WHERE state NOT IN ('done','cancelled');
@@ -114,6 +116,7 @@ func maintenancePolicies(now, backgroundMS int64) []maintenancePolicy {
 		{"outbox", "outbox", "at", "state IN ('done','cancelled')", `file_path IS NOT NULL OR file_state IN ('sending','uncertain') OR EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id)`, "", now - 7*dayMS},
 		{"discarded_output_bodies", "outbox", "at", "state IN ('done','cancelled') AND (text!='' OR card IS NOT NULL OR initial_card IS NOT NULL)", `state!='cancelled' OR file_path IS NOT NULL OR NOT EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id AND d.decision='discard')`, "text='',card=NULL,initial_card=NULL", now - 7*dayMS},
 		{"audit", "audit", "at", "1", "", "", now - 90*dayMS},
+		{"feedback", "feedback", "at", "1", "", "", now - 90*dayMS},
 		{"requests", "requests", "expires", "state IN ('approved','denied','expired','cancelled')", pendingSession("requests"), "", now - 30*dayMS},
 		{"action_runs", "action_runs", "at", "state IN ('done','failed')", pendingSession("action_runs"), "", now - 90*dayMS},
 	}

@@ -82,12 +82,16 @@ func (g *Gateway) quickOutputControls(r core.Room, session, output string, attem
 	return g.quickControlsRevision(r, session, "", output, "retry:"+strconv.Itoa(attempt))
 }
 
+func (g *Gateway) quickRevision(r core.Room, session, turn, output, salt string) string {
+	return core.Hash(jsonText([]string{r.Key, session, turn, output, salt}))[:32]
+}
+
 func (g *Gateway) quickControlsRevision(r core.Room, session, turn, output, salt string) []any {
 	if session == "" {
 		return nil
 	}
 	p := quickControl{Room: r.Key, Session: session, Turn: turn, Output: output}
-	p.Revision = core.Hash(jsonText([]string{r.Key, session, turn, output, salt}))[:32]
+	p.Revision = g.quickRevision(r, session, turn, output, salt)
 	makeButton := func(action, label, style string) core.Args {
 		q := p
 		q.Action = action
@@ -371,6 +375,13 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 		}
 		g.task(func() { g.quickStop(r, a, p) })
 		return "已请求停止这次前台运行。", true, nil
+	case "feedback_useful", "feedback_useless":
+		value := "useful"
+		if p.Action == "feedback_useless" {
+			value = "useless"
+		}
+		text, err := g.recordFeedback(ctx, r, p, a, value)
+		return text, true, err
 	case "retry":
 		o, err := g.outputContext(ctx, p.Output)
 		allowed := err == nil && p.Output != "" && o.Room == r.Key && o.Session == p.Session && g.outputAllowedContext(ctx, o, r)
