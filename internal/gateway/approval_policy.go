@@ -40,10 +40,11 @@ func approvalPolicyForTool(p core.Project, requestContext *core.RequestContext) 
 
 // decisionAllowed is the single approval-qualification check used by every
 // permission entry point. Denials are not restricted by the self-approval
-// rule, but the user must still be an approver.
-func (p *approval) decisionAllowed(user string, deny bool) (bool, string) {
+// rule, but the user must still be an approver. The third return value names
+// the security-relevant rejection reason for audit, if any.
+func (p *approval) decisionAllowed(user string, deny bool) (bool, string, string) {
 	if p.kind != "permission" {
-		return true, ""
+		return true, "", ""
 	}
 	approvers := p.approvers
 	if len(approvers) == 0 {
@@ -53,23 +54,23 @@ func (p *approval) decisionAllowed(user string, deny bool) (bool, string) {
 	}
 	if !contains(approvers, user) {
 		if p.designated {
-			return false, "仅指定审批人可以审批"
+			return false, "仅指定审批人可以审批", ""
 		}
-		return false, "仅维护者可以审批"
+		return false, "仅维护者可以审批", ""
 	}
 	if deny {
-		return true, ""
+		return true, "", ""
 	}
 	if p.forbidSelfApproval {
 		if p.requester == nil || len(p.requester.Senders) == 0 {
 			if !contains(p.owners, user) {
-				return false, unknownRequesterToast
+				return false, unknownRequesterToast, "unknown_requester"
 			}
 		} else if contains(p.requester.Senders, user) && !contains(p.owners, user) {
-			return false, selfApprovalToast
+			return false, selfApprovalToast, "self"
 		}
 	}
-	return true, ""
+	return true, "", ""
 }
 
 func (p *approval) approverLabel() string {

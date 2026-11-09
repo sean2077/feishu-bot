@@ -69,6 +69,10 @@ func TestApproversReplaceMaintainers(t *testing.T) {
 	if got := clickApproval(t, f, card, value, "owner"); got != "仅指定审批人可以审批" {
 		t.Fatalf("maintainer outside approvers: %q", got)
 	}
+	var rejected int
+	if err := f.s.DB.QueryRow("SELECT count(*) FROM audit WHERE event='approval_self_rejected'").Scan(&rejected); err != nil || rejected != 0 {
+		t.Fatalf("non-approver rejection wrote self audit: %d %v", rejected, err)
+	}
 	if got := clickApproval(t, f, card, value, "member"); got != "已批准一次" {
 		t.Fatalf("designated approver: %q", got)
 	}
@@ -106,7 +110,7 @@ func TestForbidSelfApprovalBlocksRequesterButKeepsRequestPending(t *testing.T) {
 	if err := json.Unmarshal([]byte(detail), &audit); err != nil {
 		t.Fatal(err)
 	}
-	if audit["request"] != request || audit["user"] != "member" || strings.Contains(detail, "Alice") {
+	if audit["request"] != request || audit["user"] != "member" || audit["reason"] != "self" || strings.Contains(detail, "Alice") {
 		t.Fatalf("self rejection audit = %#v", audit)
 	}
 	if got := clickApproval(t, f, card, value, "owner"); got != "已批准一次" {
@@ -183,6 +187,17 @@ func TestUnknownRequesterOnlyOwnerCanApprove(t *testing.T) {
 	card, value := approvalCardFor(t, f)
 	if got := clickApproval(t, f, card, value, "member"); got != unknownRequesterToast {
 		t.Fatalf("non-owner with unknown requester: %q", got)
+	}
+	var detail string
+	if err := f.s.DB.QueryRow("SELECT detail FROM audit WHERE event='approval_self_rejected' ORDER BY seq DESC LIMIT 1").Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	var audit map[string]any
+	if err := json.Unmarshal([]byte(detail), &audit); err != nil {
+		t.Fatal(err)
+	}
+	if audit["request"] != stringArg(value, "request") || audit["user"] != "member" || audit["reason"] != "unknown_requester" {
+		t.Fatalf("unknown requester audit = %#v", audit)
 	}
 	if got := clickApproval(t, f, card, value, "owner"); got != "已批准一次" {
 		t.Fatalf("owner with unknown requester: %q", got)

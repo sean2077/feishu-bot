@@ -630,11 +630,11 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 	}
 	decision := stringArg(a.Value, "decision")
 	if p.kind == "permission" {
-		allowed, toast := p.decisionAllowed(a.UserID, decision == "deny")
+		allowed, toast, reason := p.decisionAllowed(a.UserID, decision == "deny")
 		if !allowed {
 			g.approvalMu.Unlock()
-			if toast == selfApprovalToast {
-				g.audit(p.room.Key, "approval_self_rejected", core.Args{"request": id, "user": a.UserID})
+			if reason != "" {
+				g.audit(p.room.Key, "approval_self_rejected", core.Args{"request": id, "user": a.UserID, "reason": reason})
 			}
 			return actionToast(toast), nil
 		}
