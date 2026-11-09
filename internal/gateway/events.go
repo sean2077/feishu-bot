@@ -46,6 +46,10 @@ func (g *Gateway) renderFor(s *slot, uuid, source, backgroundID string) *render 
 		r = newRender(g, s, anchor)
 		s.renders[key] = r
 	}
+	if s.turnRenders == nil {
+		s.turnRenders = map[string]bool{}
+	}
+	s.turnRenders[key] = true
 	return r
 }
 func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
@@ -364,6 +368,19 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 		}
 		r = g.renderFor(s, uuid, source, ev.BackgroundID)
 	}
+	// The native turn ends here. Another render that received output in it,
+	// e.g. a background card opened by a task notification the native turn
+	// absorbed, would otherwise keep streaming forever.
+	s.mu.Lock()
+	var orphans []*render
+	for k := range s.turnRenders {
+		if p := s.renders[k]; p != nil && p != r && p != excerpt {
+			delete(s.renders, k)
+			orphans = append(orphans, p)
+		}
+	}
+	s.turnRenders = nil
+	s.mu.Unlock()
 	model := ev.Model
 	if model == "" {
 		model = strings.Join(ev.Models, " / ")
@@ -405,9 +422,11 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	if err != nil {
 		g.audit(s.room.Key, "final_reply_persistence_failed", core.Args{"session": s.session.ID, "error": err.Error()})
 		g.abandonResult(s, key, r, finished, nativeIDs, who)
-		if excerpt != nil {
-			// Already detached from s.renders; nothing else would close it.
-			g.task(func() { excerpt.cancel("后台续轮已结束") })
+		for _, p := range append(orphans, excerpt) {
+			if p != nil {
+				// Already detached from s.renders; nothing else would close it.
+				g.task(func() { p.cancel("后台续轮已结束") })
+			}
 		}
 		g.notify(s.room, "回复保存失败，本轮不标记完成；未确认输入不会自动重放。请检查服务诊断和磁盘状态。", nil)
 		return
@@ -437,19 +456,40 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 		drain()
 	}
 	if excerpt != nil {
-		if finish, e := excerpt.persist("本轮后台片段已结束；后续消息的答复见本轮另一张回复卡片。", true, nil, "后台续轮已结束", nil); e == nil {
-			s.mu.Lock()
-			s.activeRequests++
-			s.mu.Unlock()
-			if !g.task(func() { defer func() { s.mu.Lock(); s.activeRequests--; s.mu.Unlock(); g.kickWaiting() }(); finish() }) {
-				s.mu.Lock()
-				s.activeRequests--
-				s.mu.Unlock()
-				finish()
-			}
-		}
+		g.finishFragment(s, excerpt)
+	}
+	for _, p := range orphans {
+		g.finishFragment(s, p)
 	}
 	g.kickWaiting()
+}
+
+// finishFragment finalizes a detached render whose native turn was answered
+// on another reply card. A render that never reached the platform is only
+// closed, so ending it does not post a new card.
+func (g *Gateway) finishFragment(s *slot, p *render) {
+	p.mu.Lock()
+	visible := p.messageID != "" || p.flushing || p.createUncertain || p.initialCard != nil
+	p.mu.Unlock()
+	if !visible {
+		p.cancel("后台续轮已结束")
+		return
+	}
+	finish, e := p.persist("本轮后台片段已结束；后续消息的答复见本轮另一张回复卡片。", true, nil, "后台续轮已结束", nil)
+	if e != nil {
+		g.audit(s.room.Key, "final_reply_persistence_failed", core.Args{"session": s.session.ID, "error": e.Error()})
+		g.task(func() { p.cancel("后台续轮已结束") })
+		return
+	}
+	s.mu.Lock()
+	s.activeRequests++
+	s.mu.Unlock()
+	if !g.task(func() { defer func() { s.mu.Lock(); s.activeRequests--; s.mu.Unlock(); g.kickWaiting() }(); finish() }) {
+		s.mu.Lock()
+		s.activeRequests--
+		s.mu.Unlock()
+		finish()
+	}
 }
 func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 	cleanupFailed := ev.CleanupConfirmed != nil && !*ev.CleanupConfirmed

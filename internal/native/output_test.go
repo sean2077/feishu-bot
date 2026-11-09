@@ -41,6 +41,37 @@ func TestBackgroundOriginsNeverBorrowOrCompleteCurrentHumanInput(t *testing.T) {
 		t.Fatalf("retained human anchor not used: %s %v", uuid, ids)
 	}
 }
+
+// Event order observed from the native CLI when a background command started
+// by the running turn completes before that turn ends: the notification is
+// absorbed mid-turn and replayed, then the turn continues and its result names
+// the human input.
+func TestTaskNotificationAbsorbedIntoItsOwnTurnStaysForeground(t *testing.T) {
+	known := map[string]bool{"human": true}
+	out := newOutput(func(id string) bool { return known[id] })
+	out.handle(args{"type": "user", "uuid": "human", "isReplay": true})
+	out.handle(args{"type": "assistant", "user_message_uuid": "human", "message": args{"id": "m1", "content": []any{args{"type": "tool_use"}}}})
+	out.handle(args{"type": "system", "subtype": "task_started", "task_id": "task", "run_id": "run"})
+	out.handle(args{"type": "user", "message": args{"content": []any{args{"type": "tool_result"}}}})
+	out.handle(args{"type": "assistant", "message": args{"id": "m2", "content": []any{args{"type": "tool_use"}}}})
+	out.handle(args{"type": "user", "uuid": "replayed", "isReplay": true, "origin": args{"kind": "task-notification", "producer": "session-task", "runId": "run"}})
+	events := out.handle(args{"type": "assistant", "message": args{"id": "m3", "content": []any{args{"type": "thinking", "thinking": "continue"}, args{"type": "text", "text": "final"}}}})
+	if len(events) != 2 {
+		t.Fatal(events)
+	}
+	for _, ev := range events {
+		if ev.Source != "foreground" || ev.TurnID != "human" || ev.BackgroundID != "" {
+			t.Fatalf("absorbed notification split the human reply: %+v", ev)
+		}
+	}
+	result := args{"type": "result", "user_message_uuid": "human", "user_message_uuids": []any{"human"}}
+	if source := out.eventSource(result); source != "foreground" {
+		t.Fatal(source)
+	}
+	if uuid, ids := resultOrigin(result, known, out.origin(result), out.eventSource(result)); uuid != "human" || len(ids) != 1 {
+		t.Fatal(uuid, ids)
+	}
+}
 func TestNestedTaskOriginAndSubagentContent(t *testing.T) {
 	known := map[string]bool{"human": true}
 	out := newOutput(func(id string) bool { return known[id] })
