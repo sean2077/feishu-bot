@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sean2077/feishu-bot/internal/config"
 	"github.com/sean2077/feishu-bot/internal/core"
 )
 
@@ -133,21 +134,51 @@ func modelEnvironment(c core.Config, token string, headers map[string]string) ma
 	}
 	return result
 }
-func privateSettings(w core.Workspace, modelEnv map[string]string) (string, error) {
-	if w.NativeConfig != "inherit" {
+func privateSettings(w core.Workspace, p core.Project, modelEnv map[string]string, projectSettings *config.ProjectSettings) (string, error) {
+	if p.SettingsFile == "" && w.NativeConfig != "inherit" {
 		return "", nil
 	}
-	if w.Inbound == "" {
-		return "", fmt.Errorf("inherited configuration requires private conversation state")
+	dir := w.Root
+	if w.NativeConfig == "inherit" {
+		if w.Inbound == "" {
+			return "", fmt.Errorf("inherited configuration requires private conversation state")
+		}
+		if dir == "" {
+			dir = filepath.Dir(w.Inbound)
+		}
+	} else if dir == "" {
+		// Never fall back to the process cwd or the native work/home
+		// directories for an isolated project settings file.
+		return "", fmt.Errorf("project settings require a workspace root")
 	}
 	// Private room state lives in the workspace root, next to the shared
 	// inbound tree; topic attachment directories are nested deeper.
-	dir := w.Root
-	if dir == "" {
-		dir = filepath.Dir(w.Inbound)
-	}
 	path := filepath.Join(dir, "native-settings-"+core.NewID()+".json")
-	data, err := json.Marshal(args{"env": modelEnv})
+	if (w.Work != "" && core.Inside(w.Work, path)) || (w.Home != "" && core.Inside(w.Home, path)) {
+		return "", fmt.Errorf("project settings must not be placed inside the native work or home directory")
+	}
+	env := map[string]string{}
+	if projectSettings != nil {
+		for key, value := range projectSettings.Env {
+			env[key] = value
+		}
+	}
+	if w.NativeConfig == "inherit" {
+		for key, value := range modelEnv {
+			env[key] = value
+		}
+	}
+	document := args{}
+	if len(env) > 0 || p.SettingsFile != "" {
+		document["env"] = env
+	}
+	if projectSettings != nil && projectSettings.Permissions != nil {
+		document["permissions"] = projectSettings.Permissions
+	}
+	if len(document) == 0 {
+		return "", nil
+	}
+	data, err := json.Marshal(document)
 	if err != nil {
 		return "", err
 	}

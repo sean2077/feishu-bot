@@ -151,6 +151,22 @@ func projectEnvChecks(c core.Config) []Diagnostic {
 	return checks
 }
 
+func projectSettingsChecks(c core.Config) []Diagnostic {
+	var checks []Diagnostic
+	for _, p := range c.Projects {
+		if p.SettingsFile == "" {
+			continue
+		}
+		_, err := config.LoadProjectSettings(c, p)
+		detail := "Settings file is readable and structurally valid; rule contents are not displayed."
+		if err != nil {
+			detail = core.Redact(err.Error(), config.Secrets(c))
+		}
+		checks = append(checks, Diagnostic{Name: "project " + p.ID + " settings file", OK: err == nil, Detail: detail})
+	}
+	return checks
+}
+
 type cappedWriter struct {
 	bytes.Buffer
 	limit int
@@ -184,6 +200,7 @@ func versionCommand(ctx context.Context, program string, args ...string) (string
 }
 func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) DoctorReport {
 	checks := append(deploymentChecks(c), projectEnvChecks(c)...)
+	checks = append(checks, projectSettingsChecks(c)...)
 	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: checks, Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made.", Native: native.Compatibility("")}
 	add := func(name string, fn func() (string, error)) {
 		if ctx.Err() != nil {

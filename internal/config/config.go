@@ -218,7 +218,7 @@ func Parse(data []byte, baseDir string) (core.Config, error) {
 		if p == nil {
 			return core.Config{}, errors.New("project must be an object")
 		}
-		if err := nonemptyFields(p, "cwd", "seedDir", "trustedConfigDir"); err != nil {
+		if err := nonemptyFields(p, "cwd", "seedDir", "trustedConfigDir", "settingsFile"); err != nil {
 			return core.Config{}, err
 		}
 		mode := "acceptEdits"
@@ -495,7 +495,7 @@ func validate(c *core.Config, base string) error {
 		if p.CWD != "" && (p.SeedDir != "" || p.TrustedConfigDir != "") {
 			return errors.New("project.cwd cannot be combined with seedDir or trustedConfigDir")
 		}
-		for _, path := range []*string{&p.CWD, &p.SeedDir, &p.TrustedConfigDir} {
+		for _, path := range []*string{&p.CWD, &p.SeedDir, &p.TrustedConfigDir, &p.SettingsFile} {
 			if *path != "" {
 				if !nonempty(*path) {
 					return errors.New("invalid project directory")

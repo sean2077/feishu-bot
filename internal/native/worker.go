@@ -123,7 +123,16 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 			return nil, err
 		}
 		modelEnv := modelEnvironment(c, token, headers)
-		w.settings, err = privateSettings(workspace, modelEnv)
+		var projectSettings *config.ProjectSettings
+		if project.SettingsFile != "" {
+			loaded, loadErr := config.LoadProjectSettings(c, project)
+			if loadErr != nil {
+				cancel()
+				return nil, loadErr
+			}
+			projectSettings = &loaded
+		}
+		w.settings, err = privateSettings(workspace, project, modelEnv, projectSettings)
 		if err != nil {
 			cancel()
 			return nil, err
