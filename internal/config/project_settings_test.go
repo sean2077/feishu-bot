@@ -82,6 +82,7 @@ func TestLoadProjectSettingsRejectsInvalidContent(t *testing.T) {
 		{name: "env reserved", body: `{"env":{"HOME":"value-marker"}}`, field: "env.HOME", reason: "reserved"},
 		{name: "env app secret", body: `{"env":{"DEPLOY_APP_SECRET":"value-marker"}}`, field: "env.DEPLOY_APP_SECRET", reason: "reserved"},
 		{name: "env model token", body: `{"env":{"DEPLOY_MODEL_TOKEN":"value-marker"}}`, field: "env.DEPLOY_MODEL_TOKEN", reason: "reserved"},
+		{name: "env request context", body: `{"env":{"FEISHU_REQUEST_CHAT_ID":"value-marker"}}`, field: "env.FEISHU_REQUEST_CHAT_ID", reason: "reserved"},
 		{name: "env header", body: `{"env":{"TEAM_HEADER_SECRET":"value-marker"}}`, field: "env.TEAM_HEADER_SECRET", reason: "reserved", configSetup: func(c *core.Config) {
 			c.Model.ExtraHeaders = map[string]string{"X-Team": "env:TEAM_HEADER_SECRET"}
 		}},

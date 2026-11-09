@@ -218,7 +218,7 @@ Go 飞书 HTTP／WebSocket 客户端使用系统证书及 Go 的代理环境规�
 
 - `env` 是变量名到非敏感字面值的映射；值必须非空且不含 NUL。URL、profile 名、目录等非敏感值放这里；不要把密钥写在这里：变量名疑似凭据（`TOKEN`、`SECRET`、`PASSWORD`、`PASSWD`、`API_KEY`、`AUTHORIZATION`、`CREDENTIAL`、`PRIVATE_KEY` 等按段匹配）时，`doctor` 报告失败并提示改用 `envPassthrough`。
 - `envPassthrough` 是变量名列表，只放密钥；运行时从网关服务进程环境（包括 `service.env`）按名复制。缺失或空值时该变量不注入，`run` 仍会启动；但声明的名字视为部署要求：`doctor` 失败，`daemon install` 和升级会在改动现有安装前拒绝。下游工具应把缺失报告为未配置，而不是假设变量一定存在。
-- 加载配置时按大小写不敏感拒绝重复名、`env` 与 `envPassthrough` 的交叠，以及保留名。保留名包括 `HOME`、`USERPROFILE`、`HOMEDRIVE`、`HOMEPATH`、`CLAUDE_CONFIG_DIR`、`CLAUDECODE`、`NODE_OPTIONS`、`DEBUG`，前缀 `ANTHROPIC_`、`CLAUDE_CODE_`、`CLAUDE_AGENT_SDK`、`FEISHU_ACTION_`，以及 `appSecretEnv`、`model.tokenEnv`、`model.extraHeaders` 中 `env:NAME` 引用的变量和各项目 `actions[].env` 引用的源变量。固定操作的凭据只应进入操作子进程，不能通过项目 passthrough 交给原生 Agent；违规时加载失败，错误只包含项目 ID、变量名和原因，不包含值。
+- 加载配置时按大小写不敏感拒绝重复名、`env` 与 `envPassthrough` 的交叠，以及保留名。保留名包括 `HOME`、`USERPROFILE`、`HOMEDRIVE`、`HOMEPATH`、`CLAUDE_CONFIG_DIR`、`CLAUDECODE`、`NODE_OPTIONS`、`DEBUG`，前缀 `ANTHROPIC_`、`CLAUDE_CODE_`、`CLAUDE_AGENT_SDK`、`FEISHU_ACTION_`、`FEISHU_REQUEST_`，以及 `appSecretEnv`、`model.tokenEnv`、`model.extraHeaders` 中 `env:NAME` 引用的变量和各项目 `actions[].env` 引用的源变量。固定操作的凭据只应进入操作子进程，不能通过项目 passthrough 交给原生 Agent；违规时加载失败，错误只包含项目 ID、变量名和原因，不包含值。
 - 项目变量在隔离／继承边界和代理、CA 变量之后叠加，因此可以覆盖同名继承值或代理设置；Windows 上写入前会删除仅大小写不同的同名键。
 - 环境只在下一次原生进程启动时生效，不进入房间键、会话身份或 resume 判断。修改配置后，等待空闲回收或显式 `/new`，新进程才使用新值。
 - 项目环境不进入固定操作子进程；固定操作仍只使用 `actions[].env`。

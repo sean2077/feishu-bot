@@ -162,6 +162,8 @@ type fakeWorker struct {
 	// real CLI reports its session only once a query starts.
 	pendingReady string
 	readyMu      sync.Mutex
+	contextMu    sync.Mutex
+	contextFn    func() *core.RequestContext
 	emit         func(core.WorkerEvent)
 	sent         chan core.Delivery
 	responses    chan core.Args
@@ -169,6 +171,22 @@ type fakeWorker struct {
 	stops        atomic.Int64
 	failStop     atomic.Bool
 	stopHook     func(context.Context) error
+}
+
+func (w *fakeWorker) SetRequestContext(fn func() *core.RequestContext) {
+	w.contextMu.Lock()
+	w.contextFn = fn
+	w.contextMu.Unlock()
+}
+
+func (w *fakeWorker) requestContext() *core.RequestContext {
+	w.contextMu.Lock()
+	fn := w.contextFn
+	w.contextMu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
 }
 
 func (w *fakeWorker) Send(ctx context.Context, d core.Delivery) error {

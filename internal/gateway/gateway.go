@@ -996,6 +996,9 @@ func (g *Gateway) dispatch(r core.Room) error {
 			}
 			return g.markLaunchFailure(r, pending, err)
 		}
+		if provider, ok := worker.(core.RequestContextProvider); ok {
+			provider.SetRequestContext(func() *core.RequestContext { return g.requestContext(s) })
+		}
 		s.mu.Lock()
 		s.worker = worker
 		close(s.workerReady)

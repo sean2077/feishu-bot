@@ -30,6 +30,8 @@ feishu-bot run [--config path] [--env-file path] [--log-file path]
 feishu-bot daemon install|uninstall|start|stop|restart|status|logs
 feishu-bot config path|example|format|explain
 feishu-bot session run --session FULL_SESSION_ID [--config path] [--env-file path]
+feishu-bot action <operation> '<parameters-json>'
+feishu-bot context
 feishu-bot version
 
 Doctor is offline by default. --probe-feishu reads application identity;
@@ -81,6 +83,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		case "action":
 			secrets = []string{os.Getenv("FEISHU_ACTION_TOKEN")}
 			return native.RunActionClient(ctx, o.ActionArgs, stdout)
+		case "context":
+			secrets = []string{os.Getenv("FEISHU_ACTION_TOKEN")}
+			return native.RunContextClient(ctx, stdout)
 		case "daemon":
 			return runDaemon(ctx, o, stdout, stderr)
 		case "config":

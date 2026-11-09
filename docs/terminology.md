@@ -126,6 +126,12 @@ _英文_: question
 _英文_: project action
 _同义_: 项目操作（如[可选项目操作](project-actions.md)的标题）
 
+**请求上下文**
+
+网关在请求到达时从当前 slot 的 deliveries 和 anchor 得到的发起信息：chat、thread、消息、anchor 发送者 open_id 与显示名、去重后的 senders 和 messageIds。由网关根据飞书事件给出，不是模型报告；没有进行中的输入时视为无上下文。用于固定操作环境、审计和只读 context 端点。
+_英文_: request context
+_避免_: 用“发起人”指代整个上下文（发起人只是 anchor 发送者）
+
 **交付**
 
 把最终回复、卡片更新和必要附件完整送达并确认的过程。本轮成功且全部交付后才标记 Done。

@@ -18,7 +18,7 @@ func (g *Gateway) request(s *slot, ev core.WorkerEvent) (core.Args, error) {
 	case "history":
 		return g.history(s.ctx, current, s.session.ID, ev.Input)
 	case "action":
-		return g.executeAction(s.ctx, current, s.session.ID, project, ev.Name, ev.Input, s.workspace)
+		return g.executeAction(s.ctx, current, s.session.ID, project, ev.Name, ev.Input, s.workspace, g.requestContext(s))
 	case "attachment":
 		id, key := stringArg(ev.Input, "messageId"), stringArg(ev.Input, "key")
 		message, e := g.store.ContextMessage(current.Key, id)
