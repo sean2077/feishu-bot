@@ -273,7 +273,7 @@ func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string
 	if !spec.ReadOnly {
 		summary := "项目：" + p.ID + "\n"
 		if requestContext != nil {
-			if requester := requestContext.RequesterLabel(); requester != "" {
+			if requester := formattedRequester(requestContext); requester != "" {
 				summary += "发起人：" + requester + "\n"
 			}
 		}

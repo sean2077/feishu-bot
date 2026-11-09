@@ -107,6 +107,24 @@ func TestActionWithoutDeliveriesHasEmptyContext(t *testing.T) {
 	}
 }
 
+func TestFormattedRequesterEscapesMarkdownAndShowsOpenID(t *testing.T) {
+	got := formattedRequester(&core.RequestContext{SenderName: "*Alice*\n[link](https://example.invalid) <b>", SenderOpenID: "ou_example"})
+	for _, want := range []string{`\*Alice\*`, `\[link\]`, `\(https://example.invalid\)`, `\<b\>`, "（`ou_example`）"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("requester %q missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "\n") || strings.Contains(got, "[link](https") {
+		t.Fatalf("requester was not flattened or escaped: %q", got)
+	}
+	if got := formattedRequester(&core.RequestContext{SenderOpenID: "ou_example"}); got != "`ou_example`" {
+		t.Fatalf("name-less requester = %q", got)
+	}
+	if got := formattedRequester(nil); got != "" {
+		t.Fatalf("nil requester = %q", got)
+	}
+}
+
 func TestActionCapturesContextBeforeApprovalWait(t *testing.T) {
 	f := newFixture(t, func(c *core.Config) {
 		c.Projects[0].Actions = []core.ActionSpec{{ID: "publish", Description: "Publish", Executable: "fixture"}}
@@ -117,15 +135,19 @@ func TestActionCapturesContextBeforeApprovalWait(t *testing.T) {
 		return 0, "", nil
 	}
 	message := f.message("message-a", "work", "member")
-	message.SenderName = "Alice"
+	message.SenderName = "*Alice* [link](https://example.invalid)"
 	f.send(message)
 	w := f.worker()
 	_ = f.delivery(w)
 	w.emit(core.WorkerEvent{Type: "request", ID: "action-request", Kind: "action", Name: "publish", Input: core.Args{}})
 	eventually(t, func() bool { return f.tr.cardCount() > 0 })
 	card := f.tr.cardLast()
-	if !strings.Contains(jsonText(card.card), "发起人：Alice") {
-		t.Fatal("approval card omitted the requester")
+	cardText := jsonText(card.card)
+	if !strings.Contains(cardText, `发起人：\\*Alice\\*`) || !strings.Contains(cardText, `\\[link\\]`) || !strings.Contains(cardText, "`member`") {
+		t.Fatalf("approval card did not escape the requester and show the open ID: %s", cardText)
+	}
+	if strings.Contains(cardText, "[link](https") {
+		t.Fatalf("approval card contained an unescaped link: %s", cardText)
 	}
 
 	// Change the slot while the approval is waiting; the action must keep the
@@ -155,7 +177,7 @@ func TestActionCapturesContextBeforeApprovalWait(t *testing.T) {
 		"FEISHU_REQUEST_CHAT_TYPE":      "group",
 		"FEISHU_REQUEST_MESSAGE_ID":     "message-a",
 		"FEISHU_REQUEST_SENDER_OPEN_ID": "member",
-		"FEISHU_REQUEST_SENDER_NAME":    "Alice",
+		"FEISHU_REQUEST_SENDER_NAME":    "*Alice* [link](https://example.invalid)",
 		"FEISHU_REQUEST_SENDERS":        "member",
 	} {
 		if environment[key] != want {

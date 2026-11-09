@@ -92,26 +92,28 @@ func cut(s string, n int) string {
 
 const nativeTitleRunes = 60
 
+// cleanLine removes control characters and collapses whitespace for display.
+func cleanLine(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, value)
+	return strings.Join(strings.Fields(value), " ")
+}
+
 // nativeSessionTitle derives the native session-list title from the first
 // admitted human message. The native process would otherwise name the session
 // from the raw JSON input frame. Group messages keep their author; all other
 // input stays as a single short line.
 func nativeSessionTitle(m core.Message) string {
-	clean := func(value string) string {
-		value = strings.Map(func(r rune) rune {
-			if unicode.IsControl(r) {
-				return ' '
-			}
-			return r
-		}, value)
-		return strings.Join(strings.Fields(value), " ")
-	}
-	text := clean(m.Text)
+	text := cleanLine(m.Text)
 	if text == "" {
 		return ""
 	}
 	if m.ChatType == "group" {
-		if sender := clean(m.SenderName); sender != "" {
+		if sender := cleanLine(m.SenderName); sender != "" {
 			text = sender + "：" + text
 		}
 	}

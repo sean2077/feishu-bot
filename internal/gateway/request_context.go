@@ -2,9 +2,51 @@ package gateway
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
+
+var markdownEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	"`", "\\`",
+	"*", "\\*",
+	"_", "\\_",
+	"~", "\\~",
+	"[", "\\[",
+	"]", "\\]",
+	"(", "\\(",
+	")", "\\)",
+	"#", "\\#",
+	">", "\\>",
+	"<", "\\<",
+	"-", "\\-",
+	"+", "\\+",
+	"=", "\\=",
+	"|", "\\|",
+	"{", "\\{",
+	"}", "\\}",
+	"!", "\\!",
+	"&", "\\&",
+)
+
+// formattedRequester renders an untrusted display name safely for a markdown
+// approval card and always includes the open ID.
+func formattedRequester(context *core.RequestContext) string {
+	if context == nil {
+		return ""
+	}
+	name := cut(cleanLine(context.SenderName), 80)
+	openID := strings.ReplaceAll(cleanLine(context.SenderOpenID), "`", "")
+	switch {
+	case openID == "":
+		return markdownEscaper.Replace(name)
+	case name == "":
+		return "`" + openID + "`"
+	default:
+		return markdownEscaper.Replace(name) + "（`" + openID + "`）"
+	}
+}
 
 // requestContext reads the slot's live deliveries and anchor. It returns nil
 // when no human delivery is in progress; it never falls back to a previous

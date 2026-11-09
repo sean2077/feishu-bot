@@ -55,7 +55,7 @@
 
 - `action_runs.requester` 保存 anchor 发送者 open_id，`action_runs.request_context` 保存上下文 JSON；两列可空，旧库升级时自动追加。保留期沿用 `action_runs` 的 90 天。
 - `action_started` 审计事件包含 `requester` 和 `messageId`，不写显示名。
-- 非只读操作的审批卡摘要增加一行「发起人：<显示名或 open_id>」。显示名来自事件，不额外调用通讯录 API。
+- 非只读操作的审批卡摘要增加一行「发起人：<转义后的显示名>（`open_id`）」；没有显示名时只显示 open_id。显示名来自事件，经过控制字符和空白清理以及 markdown 转义，不额外调用通讯录 API。
 
 原生进程始终启动一个只绑定 `127.0.0.1` 的中继；即使项目没有配置 `actions`，也可以通过 `FEISHU_ACTION_CLIENT`、`FEISHU_ACTION_URL` 和 `FEISHU_ACTION_TOKEN` 查询只读上下文：
 
