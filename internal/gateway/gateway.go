@@ -47,7 +47,6 @@ type slot struct {
 	renders                             map[string]*render
 	replyAnchors                        map[string]core.Delivery
 	replyOrder                          []string
-	compact                             string
 	compacting                          string
 	requests                            map[string]bool
 	activeRequests                      int

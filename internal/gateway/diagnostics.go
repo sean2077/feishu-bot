@@ -233,8 +233,6 @@ func workerFailureReason(message string) string {
 	switch {
 	case strings.Contains(lower, "timed out"), strings.Contains(lower, "timeout"):
 		return "timeout"
-	case strings.Contains(lower, "initialization"):
-		return "other"
 	case strings.Contains(lower, "settings"):
 		return "settings_file"
 	case strings.Contains(lower, "session id"):
