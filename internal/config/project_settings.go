@@ -15,11 +15,13 @@ import (
 const maxProjectSettingsBytes = 1 << 20
 
 // ProjectSettings is the administrator-maintained native settings snapshot
-// loaded from projects[].settingsFile. Only env and permissions.allow/ask/deny
-// are accepted; rule contents are never included in errors.
+// loaded from projects[].settingsFile. Only env, permissions.allow/ask/deny and
+// an optional autoMode object are accepted; rule contents and autoMode fields
+// are never included in errors.
 type ProjectSettings struct {
 	Env         map[string]string
 	Permissions map[string][]string
+	AutoMode    json.RawMessage
 }
 
 // ProjectSettingsError reports an invalid project settings file without
@@ -72,9 +74,18 @@ func LoadProjectSettings(c core.Config, p core.Project) (ProjectSettings, error)
 		return fail("file", "must be a JSON object")
 	}
 	for _, key := range sortedKeys(top) {
-		if key != "env" && key != "permissions" {
+		if key != "env" && key != "permissions" && key != "autoMode" {
 			return fail(key, "unknown field")
 		}
+	}
+	if raw, ok := top["autoMode"]; ok {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+			return fail("autoMode", "must be an object")
+		}
+		// autoMode is administrator-trusted classifier guidance. Validate only
+		// that it is an object and pass all subfields through unchanged.
+		settings.AutoMode = append(json.RawMessage(nil), raw...)
 	}
 	derived := derivedProjectEnv(&c)
 	projectEnv := map[string]string{}

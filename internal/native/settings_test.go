@@ -57,6 +57,7 @@ func nativeSettingsWorkspace(t *testing.T, mode string) core.Workspace {
 type privateSettingsDocument struct {
 	Env         map[string]string   `json:"env"`
 	Permissions map[string][]string `json:"permissions"`
+	AutoMode    json.RawMessage     `json:"autoMode"`
 }
 
 func readPrivateSettings(t *testing.T, path string) privateSettingsDocument {
@@ -70,6 +71,40 @@ func readPrivateSettings(t *testing.T, path string) privateSettingsDocument {
 		t.Fatal(err)
 	}
 	return doc
+}
+
+func TestPrivateSettingsPassesAutoModeThroughBothModes(t *testing.T) {
+	path := writeNativeSettings(t, `{
+  "env": {"EXAMPLE_PROFILE": "team"},
+  "autoMode": {
+    "environment": "classifier guidance",
+    "allow": ["Bash(echo:*)"],
+    "soft_deny": ["git push"],
+    "futureField": {"nested": true}
+  }
+}`)
+	p, loaded := loadNativeSettings(t, path)
+	for _, mode := range []string{"isolated", "inherit"} {
+		t.Run(mode, func(t *testing.T) {
+			w := nativeSettingsWorkspace(t, mode)
+			generated, err := privateSettings(w, p, map[string]string{"ANTHROPIC_AUTH_TOKEN": "token"}, &loaded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(generated)
+			doc := readPrivateSettings(t, generated)
+			var autoMode map[string]any
+			if err := json.Unmarshal(doc.AutoMode, &autoMode); err != nil {
+				t.Fatal(err)
+			}
+			if autoMode["environment"] != "classifier guidance" || autoMode["futureField"] == nil {
+				t.Fatalf("autoMode not preserved: %#v", autoMode)
+			}
+			if allow, _ := autoMode["allow"].([]any); len(allow) != 1 || allow[0] != "Bash(echo:*)" {
+				t.Fatalf("autoMode allow not preserved: %#v", autoMode)
+			}
+		})
+	}
 }
 
 func TestPrivateSettingsMergesModelEnvironmentForInherit(t *testing.T) {

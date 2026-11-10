@@ -41,12 +41,25 @@ func TestLoadProjectSettingsAcceptsAdministratorShape(t *testing.T) {
     "allow": ["Bash(uv run --no-sync example-tool sub:*)"],
     "ask": ["Bash(uv run --no-sync example-tool doc *--input*)"],
     "deny": ["Bash(curl:*)", "Read(./.secrets/**)"]
+  },
+  "autoMode": {
+    "environment": "classifier guidance",
+    "allow": ["Bash(echo:*)"],
+    "soft_deny": ["git push"],
+    "futureField": {"nested": true}
   }
 }`
 	path := writeProjectSettings(t, body)
 	settings, err := loadProjectSettings(t, path, core.Project{ID: "team-tools"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	var autoMode map[string]any
+	if err := json.Unmarshal(settings.AutoMode, &autoMode); err != nil {
+		t.Fatal(err)
+	}
+	if autoMode["environment"] != "classifier guidance" || autoMode["futureField"] == nil {
+		t.Fatalf("autoMode not passed through: %#v", autoMode)
 	}
 	if settings.Env["EXAMPLE_PROFILE"] != "team" {
 		t.Fatalf("env not preserved: %#v", settings.Env)
@@ -72,6 +85,11 @@ func TestLoadProjectSettingsRejectsInvalidContent(t *testing.T) {
 		configSetup  func(*core.Config)
 	}{
 		{name: "unknown top-level", body: `{"hooks":{}}`, field: "hooks", reason: "unknown field"},
+		{name: "unknown defaultMode", body: `{"defaultMode":"acceptEdits"}`, field: "defaultMode", reason: "unknown field"},
+		{name: "unknown apiKeyHelper", body: `{"apiKeyHelper":"/tmp/helper"}`, field: "apiKeyHelper", reason: "unknown field"},
+		{name: "autoMode array", body: `{"autoMode":[]}`, field: "autoMode", reason: "must be an object"},
+		{name: "autoMode string", body: `{"autoMode":"x"}`, field: "autoMode", reason: "must be an object"},
+		{name: "autoMode null", body: `{"autoMode":null}`, field: "autoMode", reason: "must be an object"},
 		{name: "unknown permission", body: `{"permissions":{"defaultMode":"acceptEdits"}}`, field: "permissions.defaultMode", reason: "unknown field"},
 		{name: "env array", body: `{"env":[]}`, field: "env", reason: "must be an object"},
 		{name: "env null", body: `{"env":null}`, field: "env", reason: "must be an object"},
