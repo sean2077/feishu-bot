@@ -110,6 +110,9 @@ func (g *Gateway) stopRoomGeneration(ctx context.Context, r core.Room, expected 
 	}
 	if s != nil {
 		s.mu.Lock()
+		if s.worker != nil {
+			setWorkerStopReason(s.worker, "stop")
+		}
 		s.live = false
 		s.cancel()
 		s.mu.Unlock()
@@ -169,7 +172,7 @@ func (g *Gateway) stopRoomGeneration(ctx context.Context, r core.Room, expected 
 		s.mu.Unlock()
 		var err error
 		if worker != nil {
-			err = stopWorker(ctx, worker)
+			err = stopWorkerReason(ctx, worker, "stop")
 		}
 		for _, r := range renders {
 			r.cancel("已停止")
@@ -328,12 +331,15 @@ func (g *Gateway) releaseIdle(ctx context.Context, s *slot) bool {
 		return false
 	}
 	s.mu.Lock()
+	if s.worker != nil {
+		setWorkerStopReason(s.worker, "idle_release")
+	}
 	s.live = false
 	s.cancel()
 	worker := s.worker
 	s.mu.Unlock()
 	s.events.Unlock()
-	if e := stopWorker(ctx, worker); e != nil {
+	if e := stopWorkerReason(ctx, worker, "idle_release"); e != nil {
 		s.mu.Lock()
 		s.stopUnconfirmed = true
 		s.mu.Unlock()
@@ -477,6 +483,9 @@ func (g *Gateway) Close(ctx context.Context) error {
 		g.closeApprovals()
 		for _, s := range slots {
 			s.mu.Lock()
+			if s.worker != nil {
+				setWorkerStopReason(s.worker, "shutdown")
+			}
 			s.live = false
 			s.cancel()
 			s.mu.Unlock()
@@ -500,7 +509,7 @@ func (g *Gateway) Close(ctx context.Context) error {
 			s.mu.Unlock()
 			s.events.Unlock()
 			if worker != nil {
-				err := stopWorker(ctx, worker)
+				err := stopWorkerReason(ctx, worker, "shutdown")
 				if err == nil {
 					err = g.clearUnsentLaunch(s)
 				}

@@ -81,6 +81,35 @@ type worker struct {
 	started                time.Time
 	exiting                bool
 	readyReported          bool
+	diagMu                 sync.Mutex
+	stopReason             string
+	turnActive             bool
+}
+
+// SetStopReason records the host's stop intent before Stop is called so the
+// exit log can distinguish idle reclamation from an unexpected crash.
+func (w *worker) SetStopReason(reason string) {
+	w.diagMu.Lock()
+	w.stopReason = reason
+	w.diagMu.Unlock()
+}
+
+// SetTurnActive lets the host mark whether a turn is still in progress when
+// the native process exits.
+func (w *worker) SetTurnActive(active bool) {
+	w.diagMu.Lock()
+	w.turnActive = active
+	w.diagMu.Unlock()
+}
+
+func (w *worker) exitDiagnostics() (string, bool) {
+	w.diagMu.Lock()
+	defer w.diagMu.Unlock()
+	reason := w.stopReason
+	if reason == "" {
+		reason = "crash"
+	}
+	return reason, w.turnActive
 }
 
 // NewFactory creates one persistent native Claude process for each admitted
@@ -649,10 +678,11 @@ func (w *worker) observe(event args) ([]core.WorkerEvent, error) {
 			if w.session.CCID != "" && id != w.session.CCID {
 				return nil, fmt.Errorf("Native session ID changed during resume; refusing a silent reset")
 			}
-			events = append(events, core.WorkerEvent{Type: "ready", CCID: id})
+			startupMs := time.Since(w.started).Milliseconds()
+			events = append(events, core.WorkerEvent{Type: "ready", CCID: id, StartupMS: startupMs})
 			if !w.readyReported {
 				w.readyReported = true
-				w.log("worker_ready", args{"startupMs": time.Since(w.started).Milliseconds(), "resumed": w.session.CCID != ""})
+				w.log("worker_ready", args{"startupMs": startupMs, "resumed": w.session.CCID != ""})
 			}
 		}
 	}
@@ -665,6 +695,16 @@ func (w *worker) observe(event args) ([]core.WorkerEvent, error) {
 			}
 		}
 		events = append(events, core.WorkerEvent{Type: "compaction", Phase: "complete", Trigger: trigger})
+	}
+	if event["type"] == "user" && !has(event["parent_tool_use_id"]) {
+		if message := object(event["message"]); message != nil {
+			for _, raw := range array(message["content"]) {
+				block := object(raw)
+				if text(block["type"]) == "tool_result" {
+					events = append(events, core.WorkerEvent{Type: "activity", Phase: "tool_end", ToolUseID: text(block["tool_use_id"])})
+				}
+			}
+		}
 	}
 	if !has(event["parent_tool_use_id"]) {
 		var message args
@@ -794,7 +834,7 @@ func (w *worker) beginStop() {
 	})
 }
 func (w *worker) waitProcess() {
-	err := w.cmd.Wait()
+	_ = w.cmd.Wait()
 	close(w.exited)
 	w.mu.Lock()
 	w.exiting = true
@@ -838,9 +878,8 @@ func (w *worker) waitProcess() {
 		confirmed := false
 		event.CleanupConfirmed = &confirmed
 	}
-	if err != nil && code != 0 {
-		w.log("worker_exit", args{"code": code})
-	}
+	reason, inTurn := w.exitDiagnostics()
+	w.log("worker_exit", args{"code": code, "reason": reason, "inTurn": inTurn})
 	w.emit(event)
 	close(w.done)
 }

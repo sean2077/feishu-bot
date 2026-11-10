@@ -106,12 +106,21 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 			return
 		}
 		s.mu.Lock()
+		if ev.StartupMS > 0 {
+			s.startupMs = ev.StartupMS
+		}
+		if s.turn != nil && !s.turn.reused {
+			s.turn.startupMs = ev.StartupMS
+		}
 		s.session.CCID = ev.CCID
 		s.mu.Unlock()
 	case "accepted":
 		s.mu.Lock()
 		d, ok := s.deliveries[ev.UUID]
 		accepted := s.accepted[ev.UUID]
+		if s.turn != nil && s.turn.acceptedAt.IsZero() {
+			s.turn.acceptedAt = time.Now()
+		}
 		if ok && d.SupplementTo != "" && !accepted {
 			s.accepted[ev.UUID] = true
 		}
@@ -166,6 +175,19 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		}
 	case "activity":
 		s.mu.Lock()
+		if s.turn != nil {
+			switch ev.Phase {
+			case "tool_start":
+				if ev.ToolUseID != "" {
+					s.turn.toolStarts[ev.ToolUseID] = time.Now()
+				}
+			case "tool_end":
+				if start, ok := s.turn.toolStarts[ev.ToolUseID]; ok {
+					s.turn.tools += time.Since(start)
+					delete(s.turn.toolStarts, ev.ToolUseID)
+				}
+			}
+		}
 		if ev.Background != nil {
 			s.background = *ev.Background
 		}
@@ -184,6 +206,11 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		}
 		g.kickWaiting()
 	case "text", "thinking":
+		s.mu.Lock()
+		if s.turn != nil && s.turn.firstAt.IsZero() {
+			s.turn.firstAt = time.Now()
+		}
+		s.mu.Unlock()
 		g.renderFor(s, ev.TurnID, ev.Source, ev.BackgroundID).update(core.Redact(ev.Text, g.secrets), ev.Partial, ev.Type, ev.BlockID)
 	case "compaction":
 		s.mu.Lock()
@@ -247,6 +274,7 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		s.mu.Lock()
 		d, ok := s.deliveries[s.anchor]
 		s.mu.Unlock()
+		g.audit(s.room.Key, "worker_failure", core.Args{"session": s.session.ID, "phase": "initialize", "reason": workerFailureReason(ev.Message), "error": core.Redact(ev.Message, g.secrets)})
 		var m *core.Message
 		if ok {
 			m = &d.Message
@@ -295,7 +323,22 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	if disposition == "duplicate" {
 		return
 	}
-	g.audit(s.room.Key, "turn_result", core.Args{"session": s.session.ID, "success": ev.Success, "compact": ev.Compact, "resultId": ev.ResultID, "models": ev.Models, "usage": ev.Usage})
+	s.mu.Lock()
+	var turn *turnTiming
+	if ev.Source != "background" {
+		turn = s.turn
+		s.turn = nil
+	}
+	worker := s.worker
+	s.mu.Unlock()
+	if ev.Source != "background" {
+		setWorkerTurn(worker, false)
+	}
+	turnArgs := core.Args{"session": s.session.ID, "success": ev.Success, "compact": ev.Compact, "resultId": ev.ResultID, "models": ev.Models, "usage": ev.Usage}
+	for key, value := range turnResultTiming(turn) {
+		turnArgs[key] = value
+	}
+	g.audit(s.room.Key, "turn_result", turnArgs)
 	nativeIDs := ev.UUIDs
 	if len(nativeIDs) == 0 && ev.UUID != "" {
 		nativeIDs = []string{ev.UUID}
@@ -430,6 +473,12 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 		}
 		g.notify(s.room, "回复保存失败，本轮不标记完成；未确认输入不会自动重放。请检查服务诊断和磁盘状态。", nil)
 		return
+	}
+	r.mu.Lock()
+	outputID := r.finalID
+	r.mu.Unlock()
+	if turn != nil && outputID != "" {
+		g.rememberTurnDelivery(outputID, &turnDeliveryReport{turn: turn.turn, session: s.session.ID, startedAt: turn.queuedAt})
 	}
 	s.mu.Lock()
 	delete(s.renders, key)

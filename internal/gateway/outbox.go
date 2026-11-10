@@ -233,6 +233,9 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 	// intermediate card never advertises a retry for work that is still being
 	// delivered; failed attempts reload the durable state before rendering it.
 	o.State = "sending"
+	deliveryAttempt := o.RetryCount + 1
+	started := time.Now()
+	defer func() { g.auditTurnDelivery(id, o, deliveryAttempt, started) }()
 	target := o.Target
 	phase := "card"
 	knownFile := o.FileState == "done" && o.FileTarget != ""
@@ -454,7 +457,7 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 		}
 	}
 	_, dbErr := g.store.DB.Exec(`UPDATE outbox SET state=?,target=COALESCE(?,target),file_state=CASE WHEN ?!='' THEN ? ELSE file_state END,delivery_error=?,retry_count=?,retry_after=? WHERE id=? AND state='sending'`, state, nullString(target), fileState, fileState, reason, attempt, time.Now().Add(delay).UnixMilli(), id)
-	g.audit(r.Key, "output_delivery_failed", core.Args{"id": id, "phase": phase, "kind": o.Kind, "knownTarget": target != "", "knownFile": knownFile})
+	g.audit(r.Key, "output_delivery_failed", core.Args{"id": id, "phase": "delivery", "stage": phase, "reason": failureReason(err), "kind": o.Kind, "knownTarget": target != "", "knownFile": knownFile})
 	if ctx.Err() == nil && target != "" && phase != "card" && !knownFile {
 		g.pendingOutputNotice(ctx, o, r, target, "完整文件尚未确认送达；未标记完成。可用 /outputs 查看状态；明确补发可能重复。")
 	}

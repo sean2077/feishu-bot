@@ -76,13 +76,16 @@ func (g *Gateway) prepareProfile(r core.Room) (bool, error) {
 			return false, err
 		}
 		s.mu.Lock()
+		if s.worker != nil {
+			setWorkerStopReason(s.worker, "profile_switch")
+		}
 		s.live = false
 		s.cancel()
 		worker := s.worker
 		s.mu.Unlock()
 		s.events.Unlock()
 		ctx, cancel := context.WithTimeout(g.ctx, 10*time.Second)
-		err = stopWorker(ctx, worker)
+		err = stopWorkerReason(ctx, worker, "profile_switch")
 		cancel()
 		if err != nil {
 			s.mu.Lock()

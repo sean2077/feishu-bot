@@ -171,7 +171,12 @@ type fakeWorker struct {
 	stops        atomic.Int64
 	failStop     atomic.Bool
 	stopHook     func(context.Context) error
+	stopReason   atomic.Value
+	turnActive   atomic.Bool
 }
+
+func (w *fakeWorker) SetStopReason(reason string) { w.stopReason.Store(reason) }
+func (w *fakeWorker) SetTurnActive(active bool)   { w.turnActive.Store(active) }
 
 func (w *fakeWorker) SetRequestContext(fn func() *core.RequestContext) {
 	w.contextMu.Lock()
