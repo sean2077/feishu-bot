@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +91,18 @@ func nonemptyLines(data []byte) [][]byte {
 		lines = append(lines, data[start:])
 	}
 	return lines
+}
+
+func TestFeedbackExportErrorKeyIgnoresTemporaryPaths(t *testing.T) {
+	first := &os.PathError{Op: "open", Path: filepath.Join("tmp", ".feedback-p-2026-11-10.jsonl.tmp-1"), Err: os.ErrPermission}
+	second := &os.PathError{Op: "open", Path: filepath.Join("tmp", ".feedback-p-2026-11-10.jsonl.tmp-2"), Err: os.ErrPermission}
+	key := feedbackExportErrorKey(first)
+	if key != feedbackExportErrorKey(second) {
+		t.Fatalf("temporary path changed the audit key: %q vs %q", key, feedbackExportErrorKey(second))
+	}
+	if strings.Contains(key, "tmp-") {
+		t.Fatalf("audit key contains a temporary name: %q", key)
+	}
 }
 
 func TestScheduledFeedbackExportFailurePausesRetentionAndAuditsOnce(t *testing.T) {
