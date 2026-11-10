@@ -111,6 +111,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `projects[].approvals.forbidSelfApproval` | `false` | 开启后发起人不能批准自己的请求，owner 例外；见[审批资格与自批](#审批资格与自批) |
 | `actions[].approvers` | 空 | 该操作的指定审批人；配置后替代 maintainers，不隐式加入 maintainers 或 owners |
 | `projects[].feedback.enabled` | `false` | 在最终 Done 回复卡上显示「有用／无用」反馈，见[回复反馈](#回复反馈) |
+| `projects[].displayWorkspace` | 空 | 回复卡工作目录显示：`full`、`basename`、`project`、`hidden`；空时群聊显示项目 id，私聊显示完整路径 |
 | `groups[]`、`dms[]` | 空 | 群与私聊授权，见[飞书应用与授权](#飞书应用与授权) |
 | `runtime.maxWorkers`、`runtime.idleMs` | 8、900000 | 活跃原生进程上限（1–128）与空闲回收时间，见[容量与恢复](#容量与恢复) |
 | `limits.backgroundMessages`／`backgroundMs` | 0／900000 | 非 @ 群消息缓存条数（0–200）与保留时间；默认不缓存 |
@@ -123,6 +124,8 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `limits.imageBatchMs` 等 | 0 | 连续图片合批，见[连续图片](image-batches.md) |
 
 `modelProfiles`、`runtime.claudeExecutable` 与容量参数分别在下文说明。场景化配置片段见[使用场景](usage.md)。
+
+回复卡页脚的工作目录由 `projects[].displayWorkspace` 控制：`full` 显示绝对路径，`basename` 只显示目录名，`project` 显示项目 id，`hidden` 不显示。省略时群聊默认 `project`、私聊默认 `full`；已有卡片保留生成时的内容。该设置只影响展示，不改变原生工作目录。
 
 ## 飞书应用与授权
 
