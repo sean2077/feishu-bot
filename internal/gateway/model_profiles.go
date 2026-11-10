@@ -20,6 +20,27 @@ func profileLabel(name string) string {
 	return name
 }
 
+// profileSelection is display-only. Actual launches resolve again and surface
+// errors instead of silently substituting another model.
+func profileSelection(c core.Config, project core.Project, sessionProfile string) config.ModelSelection {
+	_, selection, err := config.ResolveProjectModel(c, project, sessionProfile)
+	if err != nil {
+		return config.ModelSelection{Profile: profileLabel(sessionProfile), Source: "session"}
+	}
+	return selection
+}
+
+func profileSourceLabel(source string) string {
+	switch source {
+	case "session":
+		return "会话选择"
+	case "project":
+		return "项目默认"
+	default:
+		return "部署默认"
+	}
+}
+
 func (g *Gateway) sessionProfile(s *core.Session) error {
 	p, err := g.store.Preferences(s.RoomKey, s.ID)
 	if err != nil {
@@ -159,13 +180,18 @@ func (g *Gateway) profileInputs(r core.Room, inputs []core.Delivery) ([]core.Del
 }
 
 func (g *Gateway) modelCommand(r core.Room, m core.Message, arg string) error {
+	project, ok := g.config.Project(r.ProjectID)
+	if !ok {
+		return errors.New("unknown conversation project")
+	}
 	if arg == "" || arg == "--json" {
 		names := []string{"default"}
 		for name := range g.config.ModelProfiles {
 			names = append(names, name)
 		}
 		sort.Strings(names[1:])
-		current, requested := "default", ""
+		selection := profileSelection(g.config, project, "")
+		requested := ""
 		id, err := g.currentSession(r)
 		if err != nil {
 			return err
@@ -175,13 +201,17 @@ func (g *Gateway) modelCommand(r core.Room, m core.Message, arg string) error {
 			if err != nil {
 				return err
 			}
-			current = profileLabel(p.Profile)
+			selection = profileSelection(g.config, project, p.Profile)
 			if p.RequestedProfile != nil {
 				requested = profileLabel(*p.RequestedProfile)
 			}
 		}
+		projectDefault := "未设置（使用部署默认）"
+		if project.ModelProfile != "" {
+			projectDefault = project.ModelProfile
+		}
 		items := []core.Args{}
-		lines := []string{"**本会话模型配置**", "当前选择：" + current}
+		lines := []string{"**本会话模型配置**", "当前选择：" + selection.Profile + "（" + profileSourceLabel(selection.Source) + "）", "项目默认：" + projectDefault}
 		if requested != "" {
 			lines = append(lines, "下一安全边界："+requested)
 		}
@@ -197,10 +227,14 @@ func (g *Gateway) modelCommand(r core.Room, m core.Message, arg string) error {
 			items = append(items, core.Args{"name": name, "model": c.Model.Model, "smallModel": c.Model.SmallModel, "effort": effort})
 			lines = append(lines, fmt.Sprintf("`%s` · %s · effort %s", name, c.Model.Model, effort))
 		}
-		lines = append(lines, "", "用 /model 配置名 选择管理员配置。运行、审批和后台工作结束后，下一轮使用新配置并保留原生会话 ID。实际模型与 effort 支持以原生运行时和模型服务为准。")
+		lines = append(lines, "", "用 /model 配置名 选择管理员配置；/model default 固定使用部署默认，不再跟随项目默认。运行、审批和后台工作结束后，下一轮使用新配置并保留原生会话 ID。实际模型与 effort 支持以原生运行时和模型服务为准。")
 		text := strings.Join(lines, "\n")
 		if arg == "--json" {
-			text = jsonPretty(core.Args{"current": current, "requested": requested, "profiles": items})
+			var projectDefaultValue any
+			if project.ModelProfile != "" {
+				projectDefaultValue = project.ModelProfile
+			}
+			text = jsonPretty(core.Args{"current": selection.Profile, "currentSource": selection.Source, "projectDefault": projectDefaultValue, "requested": requested, "profiles": items})
 		}
 		g.notify(r, text, &m)
 		return nil
@@ -208,9 +242,6 @@ func (g *Gateway) modelCommand(r core.Room, m core.Message, arg string) error {
 	if !canManage(r, m.SenderID) {
 		g.notify(r, "切换共享会话模型配置需要项目维护者。", &m)
 		return nil
-	}
-	if arg == "default" {
-		arg = ""
 	}
 	if _, err := config.ResolveSessionModel(g.config, arg); err != nil {
 		g.notify(r, "配置不存在；用 /model 查看可选配置。", &m)

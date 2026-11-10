@@ -371,3 +371,81 @@ func TestRealClaudeProjectPromptReachesSystem(t *testing.T) {
 		t.Fatalf("project prompt order: bridge=%d project=%d", bridge, project)
 	}
 }
+
+func TestRealClaudeProjectProfileResumeKeepsConversation(t *testing.T) {
+	executable := nativeTestExecutable(t)
+	f := newFixture(t)
+	f.config.Runtime.ClaudeExecutable = executable
+	f.config.ModelProfiles = map[string]core.ModelProfile{
+		"first":  {Model: "profile-model-first"},
+		"second": {Model: "profile-model-second"},
+	}
+	f.config.Projects[0].ModelProfile = "first"
+	var mu sync.Mutex
+	var requests []args
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		var body args
+		_ = json.Unmarshal(data, &body)
+		if strings.Contains(r.URL.Path, "count_tokens") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"input_tokens": 1}`)
+			return
+		}
+		mu.Lock()
+		requests = append(requests, body)
+		n := len(requests)
+		mu.Unlock()
+		writeModelResponse(w, body, fmt.Sprintf("msg_project_profile_%d", n), []args{{"type": "text", "text": "profile resume fixture"}})
+	}))
+	defer server.Close()
+	f.config.Model.BaseURL = server.URL
+	f.start()
+	d := f.send("FIRST_TURN_ONLY_MARKER from the initial project profile turn")
+	result := waitReal(f, "result", 30*time.Second)
+	if !result.Success || result.UUID != d.UUID {
+		t.Fatalf("initial project profile result = %+v", result)
+	}
+	f.mu.Lock()
+	sessionID := ""
+	for _, e := range f.all {
+		if e.Type == "ready" {
+			sessionID = e.CCID
+		}
+	}
+	f.mu.Unlock()
+	if sessionID == "" {
+		t.Fatal("native did not report a session ID")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	err := f.worker.Stop(ctx)
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitReal(f, "exit", 5*time.Second)
+	f.session.CCID = sessionID
+	f.config.Projects[0].ModelProfile = "second"
+	mu.Lock()
+	before := len(requests)
+	mu.Unlock()
+	f.start()
+	d = f.send("Continue the same native conversation.")
+	result = waitReal(f, "result", 35*time.Second)
+	if !result.Success || result.UUID != d.UUID {
+		t.Fatalf("resumed project profile result = %+v", result)
+	}
+	mu.Lock()
+	after := append([]args(nil), requests[before:]...)
+	mu.Unlock()
+	if len(after) == 0 {
+		t.Fatal("resumed native process made no model request")
+	}
+	if got := text(after[0]["model"]); got != "profile-model-second" {
+		t.Fatalf("resume did not switch to the changed project default: %q", got)
+	}
+	encoded, _ := json.Marshal(after)
+	if !strings.Contains(string(encoded), "FIRST_TURN_ONLY_MARKER") {
+		t.Fatal("changed project default did not preserve native conversation history")
+	}
+}

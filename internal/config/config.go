@@ -510,6 +510,11 @@ func validate(c *core.Config, base string) error {
 		if p.NativeConfig != "isolated" && p.NativeConfig != "inherit" {
 			return errors.New("nativeConfig must be isolated or inherit")
 		}
+		if p.ModelProfile != "" && p.ModelProfile != "default" {
+			if _, ok := c.ModelProfiles[p.ModelProfile]; !ok {
+				return errors.New("project modelProfile must name a configured profile or default")
+			}
+		}
 		if p.PermissionMode != "default" && p.PermissionMode != "acceptEdits" && p.PermissionMode != "bypassPermissions" && p.PermissionMode != "auto" {
 			return errors.New("invalid permissionMode")
 		}

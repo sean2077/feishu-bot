@@ -198,6 +198,20 @@ func permissionModeChecks(c core.Config) []Diagnostic {
 	return checks
 }
 
+func projectModelProfileChecks(c core.Config) []Diagnostic {
+	var checks []Diagnostic
+	for _, p := range c.Projects {
+		detail := "No project default; sessions without a selection use the deployment model."
+		if p.ModelProfile == "default" {
+			detail = "Project default: default (deployment model)."
+		} else if p.ModelProfile != "" {
+			detail = "Project default: " + p.ModelProfile + ". Applies when a session has no explicit selection; credentials and endpoint remain deployment settings."
+		}
+		checks = append(checks, Diagnostic{Name: "project " + p.ID + " model profile", OK: true, Detail: detail})
+	}
+	return checks
+}
+
 func projectPromptChecks(c core.Config) []Diagnostic {
 	var checks []Diagnostic
 	for _, p := range c.Projects {
@@ -291,6 +305,7 @@ func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) Doct
 	checks = append(checks, projectSettingsChecks(c)...)
 	checks = append(checks, approvalPolicyChecks(c)...)
 	checks = append(checks, permissionModeChecks(c)...)
+	checks = append(checks, projectModelProfileChecks(c)...)
 	checks = append(checks, projectPromptChecks(c)...)
 	checks = append(checks, feedbackExportChecks(c)...)
 	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: checks, Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made.", Native: native.Compatibility("")}
