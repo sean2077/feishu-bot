@@ -26,6 +26,7 @@
 - 新增默认关闭的 `projects[].bash.rejectCwdPrefix`：开启后在 PreToolUse Bash hook 中拒绝以当前原生 cwd 的 `cd <cwd> &&` 或 `cd <cwd>;` 开头的命令，返回可直接照做的说明，减少重复审批噪音；支持引号、正反斜杠、Windows 大小写和 MSYS 路径、`~` 展开。它只检查开头一个 cd，不处理环境变量/`cd -`/`cd ..`/`pushd`，不是安全边界。每次触发写 `bash_cwd_prefix_rejected` 审计（room、session），不记录命令全文。
 - 新增项目系统提示词 `projects[].appendSystemPrompt` / `appendSystemPromptFile`（二选一，16 KiB，UTF-8，无 NUL）：在初始化 appendSystemPrompt 中按 bridge → action → `Project instructions:` 顺序拼接，interactive 通过 `--append-system-prompt` 传入。文件每次启动读取；缺失/不可读/超长/编码错误时 fail-open，不带提示词并写 `project_prompt_unavailable` 审计（project、原因分类，不写内容），doctor 报告但不阻止启动；doctor/config explain 只显示配置、来源和字节数。提示词是指引，不改变授权、范围或权限规则。
 
+- `auto_mode_denied` 在分类器原因为 `Stage 2 classifier error` 时增加 `stage2Error: true` 审计标记；表示 Stage 2 出错后 CLI 按 Stage 1 结论拦截，可能误拦且耗时偏长。卡片文案不变。
 - `read_chat_history` 对当前房间中本机器人已交付的回复卡片，在飞书返回空文本或「请升级至最新版本客户端，以查看内容」占位时，用 outbox 中 `state=done`、`kind=reply` 的保存正文回填；只匹配卡片 target，不回填文件消息，不跨房间；7 天后 outbox 清理则保留原样；回填查询失败不影响历史返回，只写 `history_backfill_failed` 审计。
 
 ## 0.5.0 — 2026-11-07

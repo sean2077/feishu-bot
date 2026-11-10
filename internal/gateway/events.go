@@ -237,7 +237,11 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		s.mu.Unlock()
 		reason := core.Redact(ev.Text, g.secrets)
 		if ev.Phase == "classifier" {
-			g.audit(s.room.Key, "auto_mode_denied", core.Args{"session": session, "tool": tool, "reason": reason})
+			detail := core.Args{"session": session, "tool": tool, "reason": reason}
+			if ev.Stage2Error {
+				detail["stage2Error"] = true
+			}
+			g.audit(s.room.Key, "auto_mode_denied", detail)
 		} else {
 			kind := ev.Phase
 			if kind != "unavailable" {

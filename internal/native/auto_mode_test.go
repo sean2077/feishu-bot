@@ -16,6 +16,7 @@ const (
 	autoDeniedText      = "Permission for this action was denied by the Claude Code auto mode classifier. Reason: Blocked by classifier. If you have other tasks that don't depend on this action, continue working on those. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request, first try a safer method. Get as much of the rest of the task done as you can, then STOP and explain to the user what you were trying to do and why you need this permission. Let the user decide how to proceed. To allow this type of action in the future, the user can add a permission rule for Bash to their settings."
 	autoUnavailableText = "Auto mode is unavailable: its safety check does not run for this session, so Bash was not run. Other actions that need the check will be denied too, and retrying won't help. Finish what you can without them, then tell the user what is blocked and that they can switch to another permission mode."
 	autoUnevaluableText = "Auto mode could not evaluate this action and is blocking it for safety — run with --debug for details. This is not a judgment that the action is unsafe. This is usually transient — wait briefly and try this action again as-is; don't rewrite it. If it keeps failing, continue with other tasks that don't require this action and come back to it later. Note: reading files, searching code, and other read-only operations do not require the classifier and can still be used."
+	autoStage2Text      = "Permission for this action was denied by the Claude Code auto mode classifier. Reason: Stage 2 classifier error - blocking based on stage 1 assessment (usually transient)..."
 )
 
 func TestAutoModeLaunchAndInteractiveArguments(t *testing.T) {
@@ -68,17 +69,19 @@ func TestObserveEmitsConfirmedAutoSafetyEvents(t *testing.T) {
 	for name, tc := range map[string]struct {
 		mode, content, phase, reason string
 		isError                      bool
+		stage2                       bool
 		denials                      []any
 	}{
-		"classifier":  {"auto", autoDeniedText, "classifier", "Blocked by classifier", true, []any{args{"tool_use_id": "tool-1"}}},
-		"unavailable": {"auto", autoUnavailableText, "unavailable", "safety check does not run for this session", true, []any{args{"tool_use_id": "tool-1"}}},
-		"unevaluable": {"auto", autoUnevaluableText, "unevaluable", "could not evaluate this action", true, []any{args{"tool_use_id": "tool-1"}}},
+		"classifier":  {"auto", autoDeniedText, "classifier", "Blocked by classifier", true, false, []any{args{"tool_use_id": "tool-1"}}},
+		"stage2":      {"auto", autoStage2Text, "classifier", "Stage 2 classifier error - blocking based on stage 1 assessment (usually transient)", true, true, []any{args{"tool_use_id": "tool-1"}}},
+		"unavailable": {"auto", autoUnavailableText, "unavailable", "safety check does not run for this session", true, false, []any{args{"tool_use_id": "tool-1"}}},
+		"unevaluable": {"auto", autoUnevaluableText, "unevaluable", "could not evaluate this action", true, false, []any{args{"tool_use_id": "tool-1"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			events := observe(tc.mode, tc.content, tc.isError, tc.denials)
 			for _, event := range events {
 				if event.Type == "auto_denied" {
-					if event.Phase != tc.phase || event.ToolUseID != "tool-1" || event.Text != tc.reason {
+					if event.Phase != tc.phase || event.ToolUseID != "tool-1" || event.Text != tc.reason || event.Stage2Error != tc.stage2 {
 						t.Fatalf("auto event = %+v", event)
 					}
 					return

@@ -701,6 +701,7 @@ const (
 	autoDeniedDefault    = "Blocked by classifier"
 	autoUnavailableCause = "safety check does not run for this session"
 	autoUnevaluableCause = "could not evaluate this action"
+	autoStage2Prefix     = "Stage 2 classifier error"
 )
 
 // autoSafetyResult recognizes the native CLI's auto-mode safety messages. The
@@ -785,7 +786,7 @@ func (w *worker) confirmedAutoEvents(denials any) []core.WorkerEvent {
 	var events []core.WorkerEvent
 	for _, candidate := range candidates {
 		if confirmed[candidate.toolUseID] {
-			events = append(events, core.WorkerEvent{Type: "auto_denied", Phase: candidate.phase, ToolUseID: candidate.toolUseID, Text: candidate.reason})
+			events = append(events, core.WorkerEvent{Type: "auto_denied", Phase: candidate.phase, ToolUseID: candidate.toolUseID, Text: candidate.reason, Stage2Error: candidate.phase == "classifier" && strings.HasPrefix(candidate.reason, autoStage2Prefix)})
 		}
 	}
 	return events
