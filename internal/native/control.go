@@ -680,7 +680,7 @@ func bashCwdPrefix(command string) (target string, quoted, matched bool) {
 
 func bashSpace(b byte) bool { return b == ' ' || b == '\t' || b == '\r' || b == '\n' }
 
-func normalizeBashCwd(value, home string, quoted bool) string {
+func expandBashCwd(value, home string, quoted bool) string {
 	if !quoted {
 		if value == "~" {
 			value = home
@@ -688,7 +688,11 @@ func normalizeBashCwd(value, home string, quoted bool) string {
 			value = filepath.Join(home, value[2:])
 		}
 	}
-	value = msysDrivePath(value)
+	return msysDrivePath(value)
+}
+
+func normalizeBashCwd(value, home string, quoted bool) string {
+	value = expandBashCwd(value, home, quoted)
 	value = strings.ReplaceAll(value, `\`, "/")
 	value = path.Clean(value)
 	if runtime.GOOS == "windows" {
@@ -698,9 +702,35 @@ func normalizeBashCwd(value, home string, quoted bool) string {
 }
 
 func bashCwdMatches(target string, quoted bool, work, home string) bool {
-	// Compare against the physical native cwd; a textual workspace alias is
-	// not the same directory identity.
-	return normalizeBashCwd(target, home, quoted) == normalizeBashCwd(bashCwdDisplay(work), home, true)
+	normalizedTarget := normalizeBashCwd(target, home, quoted)
+	// The configured path and the physical path can differ for symlinks,
+	// junctions and Windows 8.3 short names. Accept either textual match.
+	if normalizedTarget == normalizeBashCwd(work, home, true) || normalizedTarget == normalizeBashCwd(bashCwdDisplay(work), home, true) {
+		return true
+	}
+	// An existing target resolves to the same file identity as the native cwd
+	// even when stat/EvalSymlinks rewrites its spelling.
+	targetPath := expandBashCwd(target, home, quoted)
+	if !filepath.IsAbs(targetPath) {
+		return false
+	}
+	if _, err := os.Stat(targetPath); err != nil {
+		return false
+	}
+	targetPhysical, err := physicalPath(targetPath)
+	if err != nil {
+		return false
+	}
+	workPhysical, err := physicalPath(work)
+	if err != nil {
+		return false
+	}
+	targetPhysical = stripWindowsExtendedPath(targetPhysical)
+	workPhysical = stripWindowsExtendedPath(workPhysical)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(targetPhysical, workPhysical)
+	}
+	return targetPhysical == workPhysical
 }
 
 func bashCwdDisplay(work string) string {

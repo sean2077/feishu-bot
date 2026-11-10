@@ -78,6 +78,21 @@ func TestBashCwdPrefixMatching(t *testing.T) {
 	}
 }
 
+func TestBashCwdPrefixMatchesSymlinkTarget(t *testing.T) {
+	home := t.TempDir()
+	work := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(work, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "workspace-link")
+	if err := os.Symlink(work, link); err != nil {
+		t.Skipf("symbolic links unavailable: %v", err)
+	}
+	if !bashCwdMatches(link, false, work, home) {
+		t.Fatal("symlink target did not match the physical cwd")
+	}
+}
+
 func TestBashCwdPrefixHookDeniesAndAudits(t *testing.T) {
 	f := newFixture(t)
 	f.config.Projects[0].Bash.RejectCwdPrefix = true
