@@ -108,7 +108,7 @@ func TestProjectEnvironmentRejectsUnsafeDefinitions(t *testing.T) {
 }
 
 func TestProjectEnvironmentRejectsReservedNames(t *testing.T) {
-	reserved := []string{"HOME", "home", "UserProfile", "HOMEDRIVE", "homedrive", "HOMEPATH", "CLAUDE_CONFIG_DIR", "claude_config_dir", "CLAUDECODE", "claudecode", "NODE_OPTIONS", "node_options", "DEBUG", "debug", "ANTHROPIC_BASE_URL", "anthropic_api_key", "CLAUDE_CODE_ENTRYPOINT", "claude_code_x", "CLAUDE_AGENT_SDK", "claude_agent_sdk_v2", "FEISHU_ACTION_TOKEN", "feishu_action_client", "FEISHU_REQUEST_CHAT_ID", "feishu_request_sender_open_id"}
+	reserved := []string{"HOME", "home", "UserProfile", "HOMEDRIVE", "homedrive", "HOMEPATH", "CLAUDE_CONFIG_DIR", "claude_config_dir", "CLAUDECODE", "claudecode", "NODE_OPTIONS", "node_options", "DEBUG", "debug", "ANTHROPIC_BASE_URL", "anthropic_api_key", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_AUTO_MODE_SERVER", "claude_code_x", "CLAUDE_AGENT_SDK", "claude_agent_sdk_v2", "FEISHU_ACTION_TOKEN", "feishu_action_client", "FEISHU_REQUEST_CHAT_ID", "feishu_request_sender_open_id"}
 	for _, name := range reserved {
 		t.Run(name, func(t *testing.T) {
 			for _, field := range []string{"env", "envPassthrough"} {

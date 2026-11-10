@@ -44,6 +44,9 @@ var reservedProjectEnvNames = map[string]bool{
 	"home": true, "userprofile": true, "homedrive": true, "homepath": true,
 	"claude_config_dir": true, "claudecode": true, "node_options": true, "debug": true,
 }
+
+// "claude_code_" also reserves CLAUDE_CODE_AUTO_MODE_SERVER, which the
+// gateway sets for auto projects to force the local safety classifier.
 var reservedProjectEnvPrefixes = []string{"anthropic_", "claude_code_", "claude_agent_sdk", "feishu_action_", "feishu_request_"}
 
 func derivedProjectEnv(c *core.Config) map[string]string {
@@ -507,7 +510,7 @@ func validate(c *core.Config, base string) error {
 		if p.NativeConfig != "isolated" && p.NativeConfig != "inherit" {
 			return errors.New("nativeConfig must be isolated or inherit")
 		}
-		if p.PermissionMode != "default" && p.PermissionMode != "acceptEdits" && p.PermissionMode != "bypassPermissions" {
+		if p.PermissionMode != "default" && p.PermissionMode != "acceptEdits" && p.PermissionMode != "bypassPermissions" && p.PermissionMode != "auto" {
 			return errors.New("invalid permissionMode")
 		}
 		switch p.DisplayWorkspace {

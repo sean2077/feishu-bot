@@ -48,7 +48,7 @@ func interactiveCommand(c core.Config, r core.Room, s core.Session, w core.Works
 	if err != nil {
 		return nil, nil, err
 	}
-	modelEnv := modelEnvironment(c, token, headers)
+	modelEnv := modelEnvironment(c, token, headers, p.PermissionMode == "auto")
 	var projectSettings *config.ProjectSettings
 	if p.SettingsFile != "" {
 		loaded, loadErr := config.LoadProjectSettings(c, p)

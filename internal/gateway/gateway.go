@@ -52,6 +52,7 @@ type slot struct {
 	activeRequests                      int
 	turn                                *turnTiming
 	startupMs                           int64
+	effectivePermissionMode             string
 	titleSync                           *sessionTitleSync
 	// topicRootUnavailable names the session whose topic root was fetched
 	// successfully but is absent or not readable in this room. It avoids a

@@ -182,6 +182,22 @@ func approvalPolicyChecks(c core.Config) []Diagnostic {
 	return checks
 }
 
+func permissionModeChecks(c core.Config) []Diagnostic {
+	var checks []Diagnostic
+	for _, p := range c.Projects {
+		mode := p.PermissionMode
+		if mode == "" {
+			mode = "acceptEdits"
+		}
+		detail := "Configured permissionMode: " + mode + "."
+		if mode == "auto" {
+			detail += " Auto mode forces the CLI's local safety classifier (CLAUDE_CODE_AUTO_MODE_SERVER=0); nonessential traffic stays disabled. The classifier uses claude-sonnet-5 through model.baseUrl, sends up to two billable requests per classification, and its availability is not_checked by doctor."
+		}
+		checks = append(checks, Diagnostic{Name: "project " + p.ID + " permission mode", OK: true, Detail: detail})
+	}
+	return checks
+}
+
 // feedbackExportChecks validates the configured archive directory before the
 // service relies on it to precede feedback retention. It only creates and
 // removes a temporary probe file; archive contents are never read.
@@ -249,6 +265,7 @@ func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) Doct
 	checks := append(deploymentChecks(c), projectEnvChecks(c)...)
 	checks = append(checks, projectSettingsChecks(c)...)
 	checks = append(checks, approvalPolicyChecks(c)...)
+	checks = append(checks, permissionModeChecks(c)...)
 	checks = append(checks, feedbackExportChecks(c)...)
 	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: checks, Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made.", Native: native.Compatibility("")}
 	add := func(name string, fn func() (string, error)) {

@@ -80,6 +80,7 @@ func TestLoadProjectSettingsRejectsInvalidContent(t *testing.T) {
 		{name: "env value nul", body: `{"env":{"EXAMPLE_PROFILE":"\u0000"}}`, field: "env.EXAMPLE_PROFILE", reason: "nonempty"},
 		{name: "env invalid name", body: `{"env":{"1BAD":"x"}}`, field: "env.1BAD", reason: "name must match"},
 		{name: "env reserved", body: `{"env":{"HOME":"value-marker"}}`, field: "env.HOME", reason: "reserved"},
+		{name: "env auto mode reserved", body: `{"env":{"CLAUDE_CODE_AUTO_MODE_SERVER":"1"}}`, field: "env.CLAUDE_CODE_AUTO_MODE_SERVER", reason: "reserved"},
 		{name: "env app secret", body: `{"env":{"DEPLOY_APP_SECRET":"value-marker"}}`, field: "env.DEPLOY_APP_SECRET", reason: "reserved"},
 		{name: "env model token", body: `{"env":{"DEPLOY_MODEL_TOKEN":"value-marker"}}`, field: "env.DEPLOY_MODEL_TOKEN", reason: "reserved"},
 		{name: "env request context", body: `{"env":{"FEISHU_REQUEST_CHAT_ID":"value-marker"}}`, field: "env.FEISHU_REQUEST_CHAT_ID", reason: "reserved"},

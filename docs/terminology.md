@@ -115,6 +115,17 @@ _英文_: supplement
 原生权限请求或固定外部写操作的管理者确认。绑定请求、会话、操作、参数和操作者，一次性生效；停止、超时或重启后失效。
 _英文_: approval
 
+**auto 模式**
+
+`projects[].permissionMode: "auto"` 使用的原生权限模式：白名单外操作由 Claude Code 的本地安全分类器判断，不再弹维护者审批卡。分类器使用当前模型凭据和 `baseUrl`，固定模型 `claude-sonnet-5`，每次最多两段请求；deny 规则仍是硬边界，ask 规则仍进入审批。分类器不是安全沙箱，也不替代项目外部权限。
+_英文_: auto permission mode
+_避免_: 把 auto 称为“无权限”或“自动批准所有操作”
+
+**自动模式分类器事件**
+
+`auto_mode_denied`（分类器拒绝工具）和 `auto_mode_unavailable`（分类器不可用或无法评估，`kind=unavailable|unevaluable`）两种审计。只记录 session、工具名和脱敏短原因；工具输入不进入审计或卡片。
+_英文_: auto-mode classifier event
+
 **追问**
 
 Claude Code `AskUserQuestion` 交互。每题支持选项和可选自定义文字，整张表单一次提交；非空自定义文字覆盖该题选项，不跨操作者拼接草稿。客户端缓存失效时使用 `/answer <请求ID> <回答>` 恢复。

@@ -26,6 +26,7 @@ type turnTiming struct {
 	reused       bool
 	tools        time.Duration
 	toolStarts   map[string]time.Time
+	toolNames    map[string]string
 }
 
 type turnDeliveryReport struct {
@@ -58,6 +59,7 @@ func newTurnTiming(s *slot, d core.Delivery) *turnTiming {
 		dispatchedAt: time.Now(),
 		reused:       s.inputsServed > 0,
 		toolStarts:   map[string]time.Time{},
+		toolNames:    map[string]string{},
 	}
 	if !t.reused {
 		t.startupMs = s.startupMs
