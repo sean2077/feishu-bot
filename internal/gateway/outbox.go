@@ -229,6 +229,10 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 	if n == 0 {
 		return false, nil
 	}
+	// The row is in flight now. Reflect that in the in-memory copy so an
+	// intermediate card never advertises a retry for work that is still being
+	// delivered; failed attempts reload the durable state before rendering it.
+	o.State = "sending"
 	target := o.Target
 	phase := "card"
 	knownFile := o.FileState == "done" && o.FileTarget != ""
@@ -732,8 +736,13 @@ func (g *Gateway) outputCard(o outgoing, room core.Room, filesPending bool) core
 	}
 	if o.Kind == "status" {
 		card = replaceQuickControls(card, nil)
-	} else {
+	} else if o.State == "pending" || o.State == "uncertain" || o.State == "blocked" {
+		// Only a delivery that can still be retried gets the retry control.
+		// An in-flight delivery that later succeeds must not leave a stale retry
+		// button behind when the final cosmetic card refresh is rejected.
 		card = g.withOutputControls(card, room, o.Session, o.ID, o.RetryCount)
+	} else {
+		card = replaceQuickControls(card, g.quickControls(room, o.Session, "", ""))
 	}
 	if filesPending {
 		card = setReplyCardStatus(card, "模型已完成 · 文件待送达", "orange")
