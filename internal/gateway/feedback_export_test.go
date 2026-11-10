@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +46,39 @@ func TestScheduledFeedbackExportWritesOneFilePerProjectAndDay(t *testing.T) {
 		mark, ok, err := f.s.FeedbackExportMark(context.Background(), project)
 		if err != nil || !ok || mark.File != path || mark.Rows != int64(count) {
 			t.Fatalf("%s mark = %+v %t %v", project, mark, ok, err)
+		}
+	}
+	rows, err := f.s.DB.Query("SELECT detail FROM audit WHERE event='feedback_exported' ORDER BY seq")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exported := map[string]map[string]any{}
+	for rows.Next() {
+		var detail string
+		if err = rows.Scan(&detail); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err = json.Unmarshal([]byte(detail), &fields); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		exported[fmt.Sprint(fields["project"])] = fields
+	}
+	rows.Close()
+	if len(exported) != 2 {
+		t.Fatalf("feedback export audits = %#v", exported)
+	}
+	for project, count := range map[string]int64{"p1": 2, "p2": 1} {
+		fields := exported[project]
+		if fields["date"] != "2026-11-10" || int64(fields["rows"].(float64)) != count || fields["file"] != "feedback-"+project+"-2026-11-10.jsonl" {
+			t.Fatalf("%s export audit = %#v", project, fields)
+		}
+		for _, forbidden := range []string{"question", "answer", "answerSummary", "user", "open_id", "message"} {
+			if _, ok := fields[forbidden]; ok {
+				t.Fatalf("%s export audit leaked %s: %#v", project, forbidden, fields)
+			}
 		}
 	}
 	firstP1, err := os.ReadFile(filepath.Join(dir, "feedback-p1-2026-11-10.jsonl"))

@@ -2,9 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
-- 新增默认关闭的 `projects[].bash.rejectCwdPrefix`：开启后在 PreToolUse Bash hook 中拒绝以当前原生 cwd 的 `cd <cwd> &&` 或 `cd <cwd>;` 开头的命令，返回可直接照做的说明，减少重复审批噪音；支持引号、正反斜杠、Windows 大小写和 MSYS 路径、`~` 展开。它只检查开头一个 cd，不处理环境变量/`cd -`/`cd ..`/`pushd`，不是安全边界。每次触发写 `bash_cwd_prefix_rejected` 审计（room、session），不记录命令全文。
 - 修复项目 `settingsFile` 含顶层 `autoMode` 时原生进程拒绝启动的问题：现在允许 `autoMode` 为 JSON 对象并原样透传到生成的临时 settings（isolated 和 inherit 都覆盖），已知 `environment`/`allow`/`soft_deny` 和未知子字段均不逐项校验；`autoMode` 不是对象时仍拒绝。`hooks`、`defaultMode`、`apiKeyHelper`、`additionalDirectories` 等其他未知顶层字段继续 fail-closed，错误日志和 doctor 显示具体字段名。
-
 - 新增 `projects[].permissionMode: "auto"`：网关只对 auto 项目注入 `CLAUDE_CODE_AUTO_MODE_SERVER=0`，强制使用 Claude Code 本地安全分类器；不改变 API_KEY 或非必要流量开关。分类器使用现有模型凭据和 `baseUrl`，固定 `claude-sonnet-5`，每次最多两段、约 40 秒且计费。分类器拒绝写 `auto_mode_denied`，不可用／无法评估写 `auto_mode_unavailable`（`kind=unavailable|unevaluable`），并在回复卡追加一条固定中文提示；工具输入不进入卡片或审计。init 回显 `permissionMode`，不一致写 `permission_mode_mismatch`；`/status` 显示请求与生效值，doctor/config explain 标注运行时 `not_checked`。deny 仍是硬边界，ask 仍进入维护者审批。默认值不变，线上配置未切换。
 - 修复回复反馈按钮从未上卡的问题：CardKit 的 `element_id` 上限为 20 字符，原反馈控件 ID 过长，服务端按重复 ID 以 300301 拒绝最终控件刷新。反馈控件改用短 ID；发送前统一校验所有 `element_id` 长度，超限在本地明确拒绝。正常一轮不再产生 `output_controls_refresh_failed`，控件内容不变时仍由客户端快照比较跳过更新，永久拒绝仍只按外观失败处理。
 - `worker_exit` 增加 `session`，并在宿主提供房间键时带 `room`，多个 worker 同时退出时可区分来源。
@@ -24,6 +22,8 @@
 - 新增每轮阶段耗时诊断：`turn_result` 记录排队、启动／复用、发送、首个模型输出和工具累计耗时；`turn_delivery` 记录每次交付尝试及 done 时的总时长。`dispatch_failed`、`worker_failure` 和 `output_delivery_failed` 增加 phase 与固定分类原因，`worker_exit` 增加停止意图 `reason` 和 `inTurn`；只写日志和审计，不改变卡片内容。
 - 新增默认关闭的定时回复反馈归档 `feedback.export`：开启后每轮维护清理前按项目和 UTC 日期写 `feedback-<project>-<YYYY-MM-DD>.jsonl`，复用 `feedback export` 的 JSONL 记录与只读查询；临时文件同步后 rename、0600，当日文件不覆盖，`feedback_exports` 保存 `(at,id)` 水位。`feedback` 保留策略只删除 `(at,id)` 不高于本项目水位的旧行；归档失败暂停整个策略并只审计一次，修复后自动恢复。归档是至少一次语义，写文件后水位保存失败会在下一天重复导出，消费方按 `(messageId, user, at)` 去重；`doctor` 检查目录存在、非符号链接且可写。手工 `feedback export` 行为不变。
 - 原生协议回归固定版本更新为 Claude Code 2.1.321（CI fixture 使用 Agent SDK 0.3.321）。本地假 Messages 流程确认 `[1m]` 模型名只产生已知 stderr 告警，不终止会话；1M 上下文窗口和 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 均按配置生效。该结论是模拟证据，未复现真实流量下的 SIGKILL。
+- 新增反馈审计：点击保存成功后写 `feedback_recorded`（room、session、output、value），定时导出成功后写 `feedback_exported`（project、date、rows、文件 basename）；只记录元数据，不含问答内容、open_id 或其他用户标识。
+- 新增默认关闭的 `projects[].bash.rejectCwdPrefix`：开启后在 PreToolUse Bash hook 中拒绝以当前原生 cwd 的 `cd <cwd> &&` 或 `cd <cwd>;` 开头的命令，返回可直接照做的说明，减少重复审批噪音；支持引号、正反斜杠、Windows 大小写和 MSYS 路径、`~` 展开。它只检查开头一个 cd，不处理环境变量/`cd -`/`cd ..`/`pushd`，不是安全边界。每次触发写 `bash_cwd_prefix_rejected` 审计（room、session），不记录命令全文。
 
 ## 0.5.0 — 2026-11-07
 

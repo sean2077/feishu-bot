@@ -72,6 +72,7 @@ func (g *Gateway) exportFeedback(ctx context.Context, now int64) []string {
 			paused = true
 			continue
 		}
+		g.audit("", "feedback_exported", core.Args{"project": project, "date": day.Format("2006-01-02"), "rows": len(records), "file": filepath.Base(path)})
 		delete(g.exportFailures, project)
 	}
 	if paused {
