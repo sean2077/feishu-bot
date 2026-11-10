@@ -154,11 +154,18 @@ type FeedbackSettings struct {
 	Export FeedbackExportConfig `json:"export,omitempty"`
 }
 
+// ProjectBash holds native Bash hook preferences. The zero value keeps the
+// existing hook behavior.
+type ProjectBash struct {
+	RejectCwdPrefix bool `json:"rejectCwdPrefix,omitempty"`
+}
+
 type Project struct {
 	ID                     string           `json:"id"`
 	Maintainers            []string         `json:"maintainers"`
 	Owners                 []string         `json:"owners,omitempty"`
 	Approvals              ProjectApprovals `json:"approvals,omitempty"`
+	Bash                   ProjectBash      `json:"bash,omitempty"`
 	Feedback               FeedbackConfig   `json:"feedback,omitempty"`
 	DisplayWorkspace       string           `json:"displayWorkspace,omitempty"`
 	SeedDir                string           `json:"seedDir,omitempty"`

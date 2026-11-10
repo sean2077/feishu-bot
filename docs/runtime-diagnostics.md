@@ -66,6 +66,7 @@ auto 权限模式补充：
 - `worker_ready` 的 `permissionMode` 是原生 init 回显；`permission_mode_mismatch` 在请求值与回显不一致时写审计（`requested`、`effective`）。init 不可用时也可能回显 `auto`，所以它不能证明分类器真的可用。
 - `auto_mode_denied`：`session`、`tool`、已脱敏的短 `reason`；分类器直接拒绝工具，不经过 `can_use_tool`。`tool_input` 不写入审计或卡片。
 - `auto_mode_unavailable`：分类器不可用或无法评估，带 `session`、`tool`、`kind=unavailable|unevaluable` 和脱敏短原因。卡片提示每轮最多一条；`reply_auto_notice` 是追加的可见 markdown 元素，不改变模型答案正文。
+- `bash_cwd_prefix_rejected`：开启 `projects[].bash.rejectCwdPrefix` 后，Bash 命令以当前原生 cwd 的 `cd ... &&`／`;` 前缀开头时写一条；room 为当前房间，detail 只有 `session`，不记录命令全文。
 - 上述两类事件只在 `permissionMode=auto`、tool_result 带 `is_error=true` 且该 `tool_use_id` 出现在同一轮 result 的 `permission_denials` 时才确认；普通工具输出或非 auto 项目不能伪造审计/卡片提示。审计和提示会延迟到该轮 result 到达。
 - 分类器文本识别与 Claude Code 版本绑定；未识别的文本只记录普通工具结果，不猜造拦截。deny 规则会让工具根本不出现；ask 规则仍走 `can_use_tool` 维护者审批。
 - `project_prompt_unavailable`：项目系统提示词文件缺失、不可读、超长、编码错误、含 NUL 或路径在受保护目录时写一条；detail 只有 `project` 和固定 `reason` 分类，不记录提示词内容。每个原生进程最多一次，原生进程仍照常启动；`doctor` 会单独报告该文件问题。
@@ -95,7 +96,7 @@ auto 权限模式补充：
 
 服务每 30 秒执行一次 `Sweep`。其中普通数据库维护总截止 500 ms，每种策略最多检查 128 个候选、修改 64 行，游标和下一种策略持久保存。受保护的旧记录不会堵住其后的可清理记录；失败回滚该策略的变更与游标，已提交的前序策略仍计入报告。超时是单轮软上限：已提交游标保留，下一轮从被中断的策略继续，`store_maintenance` 以 `deadline` 和 `progress` 记录；只有连续多轮没有任何策略提交时才写 `maintenance_stalled` 审计。`/status` 显示最近一次所有策略按顺序完成一整圈的时间（可跨多个 500 ms 轮次）。已清空的正文不再重复 UPDATE。`store_maintenance` 记录持续时间、候选、修改数、各策略及脱敏错误；它不保证数据库文件立即缩小，也不等于 RSS 回收。
 
-开启 `feedback.export` 时，`Sweep` 先按项目写当日反馈归档，再执行维护。`store_maintenance.policies[]` 的 `paused: true` 表示该策略本轮被跳过（目前只会是 `feedback`，因为归档失败）；失败同时写 `feedback_export_failed` 审计，带项目、UTC 日期和已脱敏错误，同一项目／日期／错误类别在后续轮次不重复。`feedback` 策略即使本轮归档成功，也只删除 `(at,id)` 不大于本项目水位的旧行；项目尚无水位或行在水位之后时继续保留。归档失败时 `lastFullAt` 不前进，因为它没有完成包含保留策略的完整一圈。成功归档不逐日写审计。日志和审计不含归档正文。
+开启 `feedback.export` 时，`Sweep` 先按项目写当日反馈归档，再执行维护。`store_maintenance.policies[]` 的 `paused: true` 表示该策略本轮被跳过（目前只会是 `feedback`，因为归档失败）；失败同时写 `feedback_export_failed` 审计，带项目、UTC 日期和已脱敏错误，同一项目／日期／错误类别在后续轮次不重复。`feedback` 策略即使本轮归档成功，也只删除 `(at,id)` 不大于本项目水位的旧行；项目尚无水位或行在水位之后时继续保留。归档失败时 `lastFullAt` 不前进，因为它没有完成包含保留策略的完整一圈。成功归档写 `feedback_exported` 审计（project、date、rows、文件 basename），不含正文；点击反馈保存成功后写 `feedback_recorded`（session、output、value）。两条审计都不含问题、回答、open_id 或其他用户标识。日志和审计不含归档正文或问答内容。
 
 | 记录 | 正常保留政策与例外 |
 |---|---|

@@ -89,6 +89,7 @@ ON CONFLICT(output,user) DO UPDATE SET value=excluded.value,question=excluded.qu
 		g.audit(r.Key, "feedback_store_failed", core.Args{"output": o.ID, "error": core.Redact(err.Error(), g.secrets)})
 		return "反馈记录失败，请稍后再试。", nil
 	}
+	g.audit(r.Key, "feedback_recorded", core.Args{"session": o.Session, "output": o.ID, "value": value})
 	if value == "useful" {
 		return "已记录：有用", nil
 	}

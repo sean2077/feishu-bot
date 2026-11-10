@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -243,6 +244,15 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			return denyHook("Unable to verify conversation file scope"), nil
 		}
 		toolInput := object(input["tool_input"])
+		if name == "Bash" && w.project.Bash.RejectCwdPrefix {
+			if command, ok := toolInput["command"].(string); ok {
+				if target, quoted, matched := bashCwdPrefix(command); matched && bashCwdMatches(target, quoted, w.workspace.Work, w.workspace.Home) {
+					w.emit(core.WorkerEvent{Type: "bash_cwd_prefix_rejected"})
+					cwd := bashCwdDisplay(w.workspace.Work)
+					return denyHook(fmt.Sprintf("Already in %s; run the command without the leading `cd %s &&` (it triggers extra approval).", cwd, cwd)), nil
+				}
+			}
+		}
 		keys := []string{"file_path", "notebook_path"}
 		if name == "Grep" || name == "Glob" {
 			keys = append(keys, "path")
@@ -619,6 +629,125 @@ func msysDrivePath(path string) string {
 		return path
 	}
 	return strings.ToUpper(string(letter)) + ":" + path[2:]
+}
+
+// bashCwdPrefix extracts the target from a leading `cd <target> &&` or
+// `cd <target>;` prefix. Only the first cd is considered; commands after the
+// separator are ignored. false means the command does not match the shape.
+func bashCwdPrefix(command string) (target string, quoted, matched bool) {
+	value := strings.TrimSpace(command)
+	if len(value) < 3 || value[:2] != "cd" || !bashSpace(value[2]) {
+		return "", false, false
+	}
+	i := 2
+	for i < len(value) && bashSpace(value[i]) {
+		i++
+	}
+	if i >= len(value) {
+		return "", false, false
+	}
+	if value[i] == '\'' || value[i] == '"' {
+		quote := value[i]
+		quoted = true
+		i++
+		start := i
+		for i < len(value) && value[i] != quote {
+			i++
+		}
+		if i >= len(value) {
+			return "", false, false
+		}
+		target = value[start:i]
+		i++
+	} else {
+		start := i
+		for i < len(value) && !bashSpace(value[i]) && value[i] != '&' && value[i] != ';' {
+			i++
+		}
+		target = value[start:i]
+	}
+	for i < len(value) && bashSpace(value[i]) {
+		i++
+	}
+	if i+1 < len(value) && value[i] == '&' && value[i+1] == '&' {
+		return target, quoted, true
+	}
+	if i < len(value) && value[i] == ';' {
+		return target, quoted, true
+	}
+	return "", false, false
+}
+
+func bashSpace(b byte) bool { return b == ' ' || b == '\t' || b == '\r' || b == '\n' }
+
+func expandBashCwd(value, home string, quoted bool) string {
+	if !quoted {
+		if value == "~" {
+			value = home
+		} else if strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `~\`) {
+			value = filepath.Join(home, value[2:])
+		}
+	}
+	return msysDrivePath(value)
+}
+
+func normalizeBashCwd(value, home string, quoted bool) string {
+	value = expandBashCwd(value, home, quoted)
+	value = strings.ReplaceAll(value, `\`, "/")
+	value = path.Clean(value)
+	if runtime.GOOS == "windows" {
+		value = strings.ToLower(value)
+	}
+	return value
+}
+
+func bashCwdMatches(target string, quoted bool, work, home string) bool {
+	normalizedTarget := normalizeBashCwd(target, home, quoted)
+	// The configured path and the physical path can differ for symlinks,
+	// junctions and Windows 8.3 short names. Accept either textual match.
+	if normalizedTarget == normalizeBashCwd(work, home, true) || normalizedTarget == normalizeBashCwd(bashCwdDisplay(work), home, true) {
+		return true
+	}
+	// An existing target resolves to the same file identity as the native cwd
+	// even when stat/EvalSymlinks rewrites its spelling.
+	targetPath := expandBashCwd(target, home, quoted)
+	if !filepath.IsAbs(targetPath) {
+		return false
+	}
+	if _, err := os.Stat(targetPath); err != nil {
+		return false
+	}
+	targetPhysical, err := physicalPath(targetPath)
+	if err != nil {
+		return false
+	}
+	workPhysical, err := physicalPath(work)
+	if err != nil {
+		return false
+	}
+	targetPhysical = stripWindowsExtendedPath(targetPhysical)
+	workPhysical = stripWindowsExtendedPath(workPhysical)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(targetPhysical, workPhysical)
+	}
+	return targetPhysical == workPhysical
+}
+
+func bashCwdDisplay(work string) string {
+	if value, err := physicalPath(work); err == nil {
+		return stripWindowsExtendedPath(value)
+	}
+	return filepath.Clean(work)
+}
+
+func stripWindowsExtendedPath(value string) string {
+	if runtime.GOOS != "windows" {
+		return value
+	}
+	if strings.HasPrefix(value, `\\?\UNC\`) {
+		return `\\` + strings.TrimPrefix(value, `\\?\UNC\`)
+	}
+	return strings.TrimPrefix(value, `\\?\`)
 }
 
 // edgeInvisible reports a leading or trailing rune that JavaScript trim() or a

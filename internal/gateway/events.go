@@ -223,6 +223,11 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		g.kickWaiting()
 	case "project_prompt_unavailable":
 		g.audit(s.room.Key, "project_prompt_unavailable", core.Args{"project": s.room.ProjectID, "reason": ev.Reason})
+	case "bash_cwd_prefix_rejected":
+		s.mu.Lock()
+		session := s.session.ID
+		s.mu.Unlock()
+		g.audit(s.room.Key, "bash_cwd_prefix_rejected", core.Args{"session": session})
 	case "auto_denied":
 		s.mu.Lock()
 		tool, session, anchor := "", s.session.ID, s.anchor

@@ -106,6 +106,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `model.baseUrl`、`model.model` | 无 | 见[模型、网络和时区](#模型网络和时区)；`smallModel` 省略时等于 `model` |
 | `projects[]` | 至少一项 | 资源／权限单元；`maintainers` 必填，`permissionMode` 默认 `acceptEdits`，`nativeConfig` 默认 `isolated` |
 | `projects[].permissionMode` | `acceptEdits` | `default`、`acceptEdits`、`bypassPermissions` 或 `auto`；`auto` 使用原生安全分类器，见[auto 权限模式](#auto-权限模式) |
+| `projects[].bash.rejectCwdPrefix` | `false` | 拒绝以 `cd <当前原生 cwd> &&`／`;` 开头的 Bash 命令，减少重复审批噪音；不是安全边界，见[Bash cwd 前缀](#bash-cwd-前缀) |
 | `projects[].env`、`projects[].envPassthrough` | 空 | 项目级原生进程环境变量；`env` 为非敏感字面值，`envPassthrough` 从服务环境复制凭据，见[项目环境变量](#项目环境变量) |
 | `projects[].settingsFile` | 空 | 管理员维护的原生 settings 快照；只允许 `env`、`permissions.allow/ask/deny` 和 `autoMode`，见[项目设置文件](#项目设置文件) |
 | `projects[].appendSystemPrompt`、`appendSystemPromptFile` | 空 | 二选一的项目系统提示词；只作为模型指引，不改变授权/权限，见[项目系统提示词](#项目系统提示词) |
@@ -227,6 +228,14 @@ Go 飞书 HTTP／WebSocket 客户端使用系统证书及 Go 的代理环境规�
 分类器拦截时直接返回工具错误，不经过 `can_use_tool`；网关写 `auto_mode_denied` 审计，并在当前回复卡追加一条「安全分类器拦截了 <工具名>，操作未执行；如需执行请联系维护者。」。分类器不可用或无法评估时写 `auto_mode_unavailable`（`kind=unavailable|unevaluable`），卡片提示「自动模式安全审查不可用，<工具名> 未执行；请联系维护者。」。每轮最多一条卡片提示；工具输入不进入卡片或审计。`doctor`、`config explain` 和 `/status` 会显示配置/生效的权限模式；auto 分类器是否真的可用只能在运行时由工具结果确认，doctor 标为 `not_checked`。
 
 `nativeConfig: "inherit"` 时，原生文件钩子会拒绝范围覆盖网关状态目录（`dataDir` 下的房间目录）的 Grep／Glob，例如对用户主目录整体搜索；请搜索项目目录或更具体的子目录。Grep／Glob 的路径还须是普通绝对路径或相对路径：首尾不可见字符、`~` 展开、Windows 无盘符的根路径、驱动器相对路径、UNC 与设备路径（`\\?\`、`\\server\share`）均被拒绝，共享目录请映射盘符后使用；Windows 上路径经过目录联接（junction）或其他重解析点时也会被拒绝。这只是纵深防护，同账号目录不是安全沙箱，Bash 仍可读取同账号可访问的文件。
+
+### Bash cwd 前缀
+
+`projects[].bash.rejectCwdPrefix` 默认 `false`。开启后，原生 PreToolUse `tool` hook 对 Bash 命令做一次轻量检查：去掉首尾空白后，命令以 `cd <目标> &&` 或 `cd <目标>;` 开头，且目标规范化后等于该 worker 的原生 cwd（`workspace.Work` 的物理路径）时，直接返回可执行的 deny 说明，提示模型去掉开头的 `cd` 后重试。它只检查开头的那一个 `cd`，不再解析后续命令。
+
+规范化规则：去掉单引号或双引号；`/` 与 `\` 等价；去掉末尾分隔符；Windows 比较不区分大小写，Linux／macOS 区分；Windows 上 MSYS 形式 `/c/Users/...` 先转换为 `C:\Users\...`；`~` 只在未加引号时按传给原生进程的 `HOME` 展开（isolated 下是工作区 home，不是真实用户 home）。不展开环境变量，也不处理 `cd -`、`cd ..`、`pushd`；`cd` 到其他目录、子目录或不带 `&&`／`;` 的命令不拦。
+
+这是审批噪音优化，不是安全边界：模型可以去掉开头的 `cd` 后重新执行，届时仍按原生 allow/ask/deny 规则判断。每次触发写 `bash_cwd_prefix_rejected` 审计（room 为当前房间，detail 只有 `session`），不记录命令全文。开启不需要改动线上配置；由维护者在项目上显式打开。
 
 `runtime.claudeExecutable` 指定原生 Claude Code 可执行文件，相对路径以配置文件目录为基准；省略时使用服务账户 PATH 中的 `claude`。Go 版不内置或自动下载 CLI。`doctor` 执行选定程序的 `--version`，确认其能启动并标识为 Claude Code；继承模式还检查原生配置目录存在，但不执行 hooks、MCP 或插件，不证明它们已可用。升级 CLI 后按[验证与验收](validation.md)重跑协议回归。
 
