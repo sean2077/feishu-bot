@@ -65,7 +65,7 @@ go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 
 ## 真实 Claude 协议 fixture
 
-协议测试使用原生 **Claude Code 2.1.316** 和仅监听回环地址的确定性模型服务；不使用真实模型凭据，不连接真实飞书。指向已安装的固定版本 CLI：
+协议测试使用原生 **Claude Code 2.1.321** 和仅监听回环地址的确定性模型服务；不使用真实模型凭据，不连接真实飞书。指向已安装的固定版本 CLI：
 
 ```sh
 CLAUDE_NATIVE_PATH=/absolute/path/to/claude go test -race -count=1 -timeout 180s -v ./internal/native ./internal/integration ./cmd/benchmark-native
@@ -78,7 +78,7 @@ $env:CLAUDE_NATIVE_PATH = "C:/tools/claude.exe"
 go test -race -count=1 -timeout 180s -v ./internal/native ./internal/integration ./cmd/benchmark-native
 ```
 
-未设置变量时真实 CLI 用例明确 skip，普通单元测试继续运行；不得把 skip 写成真实协议已验证。CI 通过 npm 安装 `@anthropic-ai/claude-agent-sdk@0.3.316` 携带的原生 CLI（`--ignore-scripts`），核对 runner 平台／架构和 `--version` 为 2.1.316，缺失或不匹配即失败。这是获取 fixture 的测试依赖，生产服务不运行该 SDK。
+未设置变量时真实 CLI 用例明确 skip，普通单元测试继续运行；不得把 skip 写成真实协议已验证。CI 通过 npm 安装 `@anthropic-ai/claude-agent-sdk@0.3.321` 携带的原生 CLI（`--ignore-scripts`），核对 runner 平台／架构和 `--version` 为 2.1.321，缺失或不匹配即失败。这是获取 fixture 的测试依赖，生产服务不运行该 SDK。
 
 - **组合回归**通过网关实际审批卡和追问表单完成原生 Write／AskUserQuestion，混合自定义与多选回答，核对下一次本地模型请求中的工具结果、临时文件内容与超长回复导出，确认文件交付回执之前没有 Done；随后触发空闲回收、停止并重开数据库，检查三代原生进程保持同一会话 ID 和历史。飞书传输和模型仍是本地替身。
 - **文件路径 fixture** 让固定 CLI 实际执行 Read／Grep／Glob，检查当前工作区、当前话题附件、其他话题附件、波浪号、首尾空白和符号链接路径；Windows 另覆盖 MSYS 路径。允许路径返回测试文件内容，受保护路径返回工具错误且不含受保护内容；无法创建符号链接的 runner 会明确记录跳过的子项。原生路径规范化顺序只能由这类实际工具调用证明，不能由直接构造 hook 输入的单元测试推断。`FuzzOtherTopicFilePathsRemainDenied` 另检查任意子路径仍被附件范围规则拒绝，不代表真实模型效果或同账号 OS 沙箱隔离。

@@ -21,7 +21,7 @@
 
 - 构建：`go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot`；Windows 输出 `./bin/feishu-bot.exe`。生产构建使用 `CGO_ENABLED=0`；注入 `git describe` 版本的本地构建见[从源码构建](docs/deployment.md#从源码构建)。
 - 检查：`go test -race ./...`、`go vet ./...`。竞态检测需要平台的 C 工具链；CI 保留 Ubuntu／Windows 的 Go 1.25／1.27，并覆盖 Linux arm64 与 macOS 两种架构。
-- 原生协议回归：设置 `CLAUDE_NATIVE_PATH` 指向 Claude Code 2.1.316 后运行 `go test -race -count=1 -timeout 180s ./internal/native ./internal/integration ./cmd/benchmark-native`；未设置时相关用例明确跳过。
+- 原生协议回归：设置 `CLAUDE_NATIVE_PATH` 指向 Claude Code 2.1.321 后运行 `go test -race -count=1 -timeout 180s ./internal/native ./internal/integration ./cmd/benchmark-native`；未设置时相关用例明确跳过。
 - 使用与部署命令：`./bin/feishu-bot init|doctor|run|daemon ...`；完整路径、配置和限制见[部署与配置](docs/deployment.md)。
 
 ## 文档、规格与术语
@@ -39,7 +39,7 @@
 
 ## 环境与协作
 
-- 需要 Go 1.25+ 和 Git；真实原生协议测试还需要 Claude Code 2.1.316。生产二进制不依赖 Node.js、npm 或 CGO 动态库。
+- 需要 Go 1.25+ 和 Git；真实原生协议测试还需要 Claude Code 2.1.321。生产二进制不依赖 Node.js、npm 或 CGO 动态库。
 - Windows 使用 Git for Windows；Linux、macOS 和 Windows 共用同一原生服务。macOS 使用前台 `run` 或外部服务管理，内置 `daemon` 暂不支持 macOS。
 - Agent harness 位于 `.agents/`，`.claude/` 和 `.codex/` 是投影。Hooks 需要 Python 3.8+ 和真实符号链接；Windows 需启用 Git `core.symlinks`，否则 `agent-scaffold verify` 会失败。
 
