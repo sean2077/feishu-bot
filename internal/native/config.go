@@ -154,7 +154,14 @@ func privateSettings(w core.Workspace, p core.Project, modelEnv map[string]strin
 	// Private room state lives in the workspace root, next to the shared
 	// inbound tree; topic attachment directories are nested deeper.
 	path := filepath.Join(dir, "native-settings-"+core.NewID()+".json")
-	if (w.Work != "" && core.Inside(w.Work, path)) || (w.Home != "" && core.Inside(w.Home, path)) {
+	// Inherit mode intentionally uses the user's real home, and the managed
+	// room root normally lives under dataDir inside that home. Only isolated
+	// mode rejects the managed home wholesale; inherit still rejects the work
+	// and native configuration directories, while the model already receives
+	// the model credential in its environment in that mode.
+	if (w.Work != "" && core.Inside(w.Work, path)) ||
+		(w.ConfigDir != "" && core.Inside(w.ConfigDir, path)) ||
+		(w.NativeConfig != "inherit" && w.Home != "" && core.Inside(w.Home, path)) {
 		return "", fmt.Errorf("project settings must not be placed inside the native work or home directory")
 	}
 	env := map[string]string{}
