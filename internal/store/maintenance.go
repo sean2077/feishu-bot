@@ -176,17 +176,14 @@ func (s *Store) Maintain(ctx context.Context, now, backgroundMS int64) (report M
 		committed++
 	}
 	report.Progress = true
-	// Only a complete sweep records the retention watermark used by /status.
-	// A failed marker write must not turn a completed cleanup into an error.
-	markCtx, cancelMark := context.WithTimeout(context.Background(), 2*time.Second)
-	_, _ = s.DB.ExecContext(markCtx, `INSERT INTO maintenance_cursors(name,at,row_id) VALUES('last_full',?,0) ON CONFLICT(name) DO UPDATE SET at=excluded.at,row_id=0`, time.Now().UnixMilli())
-	cancelMark()
 	return report, nil
 }
 
-// LastFullMaintenance returns the completion time of the last sweep that
-// visited every policy. The second result is false before the first complete
-// sweep (including after upgrading an older database).
+// LastFullMaintenance returns the completion time of the last ordered pass
+// through every maintenance policy. A pass may span several bounded sweeps;
+// the marker is written when the persisted cursor wraps back to the first
+// policy. The second result is false before the first complete pass
+// (including after upgrading an older database).
 func (s *Store) LastFullMaintenance(ctx context.Context) (int64, bool, error) {
 	var at int64
 	err := s.DB.QueryRowContext(ctx, "SELECT at FROM maintenance_cursors WHERE name='last_full'").Scan(&at)
@@ -258,6 +255,14 @@ func (s *Store) maintainPolicy(ctx context.Context, p maintenancePolicy, next in
 				}
 			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO maintenance_cursors(name,at,row_id) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET at=excluded.at,row_id=excluded.row_id`, p.name, at, rowID); err != nil {
+				return err
+			}
+		}
+		// next wraps to the first policy only after the cursor has committed
+		// every policy in order. A failed policy rolls back this transaction,
+		// including the marker, so a non-deadline error cannot fake a full pass.
+		if next == 0 {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO maintenance_cursors(name,at,row_id) VALUES('last_full',?,0) ON CONFLICT(name) DO UPDATE SET at=excluded.at,row_id=0`, time.Now().UnixMilli()); err != nil {
 				return err
 			}
 		}
