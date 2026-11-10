@@ -107,7 +107,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `projects[]` | 至少一项 | 资源／权限单元；`maintainers` 必填，`permissionMode` 默认 `acceptEdits`，`nativeConfig` 默认 `isolated` |
 | `projects[].permissionMode` | `acceptEdits` | `default`、`acceptEdits`、`bypassPermissions` 或 `auto`；`auto` 使用原生安全分类器，见[auto 权限模式](#auto-权限模式) |
 | `projects[].env`、`projects[].envPassthrough` | 空 | 项目级原生进程环境变量；`env` 为非敏感字面值，`envPassthrough` 从服务环境复制凭据，见[项目环境变量](#项目环境变量) |
-| `projects[].settingsFile` | 空 | 管理员维护的原生 settings 快照；只允许 `env` 和 `permissions.allow/ask/deny`，见[项目设置文件](#项目设置文件) |
+| `projects[].settingsFile` | 空 | 管理员维护的原生 settings 快照；只允许 `env`、`permissions.allow/ask/deny` 和 `autoMode`，见[项目设置文件](#项目设置文件) |
 | `projects[].owners` | 空 | maintainers 子集；仅用于 `forbidSelfApproval` 时的 owner 例外，不增加其他权限 |
 | `projects[].approvals.forbidSelfApproval` | `false` | 开启后发起人不能批准自己的请求，owner 例外；见[审批资格与自批](#审批资格与自批) |
 | `actions[].approvers` | 空 | 该操作的指定审批人；配置后替代 maintainers，不隐式加入 maintainers 或 owners |
@@ -221,7 +221,7 @@ Go 飞书 HTTP／WebSocket 客户端使用系统证书及 Go 的代理环境规�
 
 每次分类先发一段 `max_tokens=64` 的快速判断，只有需要深度判断时才再发一段 `max_tokens=8192` 的请求；只快筛即放行时只发一段。每次分类最多两段请求，会计费。真实网关上的单次分类约 40 秒，这是外部真实 CLI 测量值；本地假 Messages 服务无法复现该延迟。分类器请求包含当前会话 transcript、CLAUDE.md 和相关工具输入，因此 auto 只应用于可信的项目和模型端点。
 
-本地 2.1.321 + 假 Messages + 本地 HTTPS 代理实测（AUTH_TOKEN only、`DISABLE_TELEMETRY=1`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`、`CLAUDE_CODE_AUTO_MODE_SERVER=0`）：分类器请求走配置的 `baseUrl`，`Authorization` 头可用，模型为 `claude-sonnet-5`；代理未观察到 `baseUrl` 之外的出站连接。该测量只覆盖一轮本地 fixture，不是完整抓包，其他可能目的地以 Claude Code 官方说明为准。
+本地 2.1.321 + 假 Messages + 本地 HTTPS 代理实测（AUTH_TOKEN only、`DISABLE_TELEMETRY=1`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`、`CLAUDE_CODE_AUTO_MODE_SERVER=0`）：分类器请求走配置的 `baseUrl`，`Authorization` 头可用，模型为 `claude-sonnet-5`；代理未观察到 `baseUrl` 之外的出站连接。该测量只覆盖一轮本地 fixture，不是完整抓包，其他可能目的地以 Claude Code 官方说明为准。`settingsFile.autoMode` 会原样透传；2.1.321 本地 fixture 验证 CLI 正常启动且分类器运行，但未在分类器请求中观察到测试标记，CLI 是否使用其中内容未验证。
 
 分类器拦截时直接返回工具错误，不经过 `can_use_tool`；网关写 `auto_mode_denied` 审计，并在当前回复卡追加一条「安全分类器拦截了 <工具名>，操作未执行；如需执行请联系维护者。」。分类器不可用或无法评估时写 `auto_mode_unavailable`（`kind=unavailable|unevaluable`），卡片提示「自动模式安全审查不可用，<工具名> 未执行；请联系维护者。」。每轮最多一条卡片提示；工具输入不进入卡片或审计。`doctor`、`config explain` 和 `/status` 会显示配置/生效的权限模式；auto 分类器是否真的可用只能在运行时由工具结果确认，doctor 标为 `not_checked`。
 
@@ -275,15 +275,15 @@ passthrough 值中长度不少于 8 个字符的值会加入日志、回复卡�
 
 `projects[].settingsFile` 指向一份由管理员维护的原生 Claude settings 文件。网关在每次启动原生进程时读取并校验它，把其中的 `env`、`permissions.allow/ask/deny` 与模型环境（仅 inherit）合并成一份 0600 私有临时文件，通过 `--settings` 传入；进程结束后删除。相对路径以配置文件目录为基准，可以和 `cwd` 一起使用。settingsFile 不进入会话身份或 resume 判断。
 
-只允许顶层 `env` 和 `permissions`，`permissions` 只允许 `allow`、`ask`、`deny`；每个值必须是非空字符串数组，元素非空且不含 NUL。`env` 的变量名、值、保留名和与 `projects[].env`／`envPassthrough` 的交叠按[项目环境变量](#项目环境变量)的规则校验。`defaultMode`、`hooks`、`additionalDirectories`、`apiKeyHelper`、`model` 等其他键一律拒绝。文件必须是 UTF-8 JSON 对象，最大 1 MiB。错误只报告项目、文件路径、字段或变量名，不报告值或规则内容。
+只允许顶层 `env`、`permissions` 和 `autoMode`。`permissions` 只允许 `allow`、`ask`、`deny`；每个值必须是非空字符串数组，元素非空且不含 NUL。`env` 的变量名、值、保留名和与 `projects[].env`／`envPassthrough` 的交叠按[项目环境变量](#项目环境变量)的规则校验。`autoMode` 必须是 JSON 对象，网关不逐项校验其内容，已知字段（如 `environment`、`allow`、`soft_deny`）和未知子字段都原样透传给原生 CLI；它是管理员信任的分类器提示输入，不是普通聊天的可配置项。`permissionMode` 不是 `auto` 时也允许透传，CLI 会忽略。`defaultMode`、`hooks`、`additionalDirectories`、`apiKeyHelper`、`model` 等其他顶层键一律拒绝，不会静默忽略或透传，因为其中一些会执行代码或覆盖网关管理的模式。文件必须是 UTF-8 JSON 对象，最大 1 MiB。错误只报告项目、文件路径、字段或变量名，不报告值、规则内容或 `autoMode` 子字段值；服务日志和 `doctor` 会显示具体失败字段。上游 settings 生成器新增顶层字段前，应先确认 feishu-bot 已支持，否则该项目的原生进程会拒绝启动。
 
 文件按快照读取：修改后，下一次原生进程启动（空闲回收或 `/new`）才生效；网关不监视文件变化。文件缺失、不可读、超限、JSON 损坏或字段不合规时，该原生进程拒绝启动；输入保留、不重放，聊天收到泛化的启动失败提示，服务诊断只记录脱敏后的路径／字段，已有会话映射不变。同一条待交付输入因启动失败只提示一次；新输入会再提示一次。`doctor` 对每个配置了 `settingsFile` 的项目做同样的存在、可读和结构检查，不显示规则内容；`run` 启动本身不读取该文件，但 `daemon install`／升级预检使用完整 doctor 报告，会因此拒绝。
 
 合并规则：
 
 - 未配置 `settingsFile` 时行为不变：isolated 不传 `--settings`，inherit 仅传模型环境。
-- isolated 配置时，临时文件只含文件的 `env` 和 `permissions`；模型凭据仍在进程环境，不写入临时文件。
-- inherit 配置时，模型环境最后合并到文件 `env`；保留名校验保证两者不重名。
+- isolated 配置时，临时文件只含文件的 `env`、`permissions` 和 `autoMode`；模型凭据仍在进程环境，不写入临时文件。
+- inherit 配置时，模型环境最后合并到文件 `env`；保留名校验保证两者不重名。`autoMode` 在两条路径都原样写入临时 settings。
 - `--allowedTools`（网关固定只读工具与 `projects[].allowedTools`）照常生成，与文件的 allow 规则叠加；ask／deny 按原生规则生效。
 - `--settings` 的 `env` 覆盖进程环境和 user／project settings 的同名变量。该优先级用 Claude Code 2.1.319 验证；固定回归版本 2.1.321 未单独复验。
 - deny 已在 2.1.319 用本地假 Messages 服务验证：allow 命中时 Bash 执行，同一规则加入 deny 后命令被拒绝；`acceptEdits` 和 `bypassPermissions` 两种模式都生效。
