@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -221,7 +222,7 @@ func Parse(data []byte, baseDir string) (core.Config, error) {
 		if p == nil {
 			return core.Config{}, errors.New("project must be an object")
 		}
-		if err := nonemptyFields(p, "cwd", "seedDir", "trustedConfigDir", "settingsFile"); err != nil {
+		if err := nonemptyFields(p, "cwd", "seedDir", "trustedConfigDir", "settingsFile", "appendSystemPromptFile"); err != nil {
 			return core.Config{}, err
 		}
 		mode := "acceptEdits"
@@ -524,13 +525,27 @@ func validate(c *core.Config, base string) error {
 		if p.CWD != "" && (p.SeedDir != "" || p.TrustedConfigDir != "") {
 			return errors.New("project.cwd cannot be combined with seedDir or trustedConfigDir")
 		}
-		for _, path := range []*string{&p.CWD, &p.SeedDir, &p.TrustedConfigDir, &p.SettingsFile} {
+		for _, path := range []*string{&p.CWD, &p.SeedDir, &p.TrustedConfigDir, &p.SettingsFile, &p.AppendSystemPromptFile} {
 			if *path != "" {
 				if !nonempty(*path) {
 					return errors.New("invalid project directory")
 				}
 				*path = absolute(base, *path)
 			}
+		}
+		if p.AppendSystemPrompt != "" && p.AppendSystemPromptFile != "" {
+			return errors.New("appendSystemPrompt and appendSystemPromptFile are mutually exclusive")
+		}
+		if p.AppendSystemPrompt != "" {
+			if len(p.AppendSystemPrompt) > 16<<10 {
+				return errors.New("appendSystemPrompt exceeds 16 KiB")
+			}
+			if !utf8.ValidString(p.AppendSystemPrompt) || strings.ContainsRune(p.AppendSystemPrompt, 0) {
+				return errors.New("appendSystemPrompt must be valid UTF-8 without NUL")
+			}
+		}
+		if p.AppendSystemPromptFile != "" && core.Inside(filepath.Join(c.DataDir, "rooms"), p.AppendSystemPromptFile) {
+			return errors.New("appendSystemPromptFile must not be inside the dataDir room tree")
 		}
 		for _, tool := range p.AllowedTools {
 			if !nonempty(tool) {

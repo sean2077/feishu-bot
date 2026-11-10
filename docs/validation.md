@@ -29,7 +29,7 @@ go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 | store／workspace | 旧 schema 增量迁移、原生 ID、聊天内会话名称与 resume、launch identity、未知写入恢复、路径与快照 |
 | gateway | 授权及零副作用、忙时输入／补充／compact、审批、历史范围、图片批次、按实际字节限卡与完整文件、模型切换边界、签名快捷操作、容量准入（聊天额度、内存阈值、观测不可用）与复用保温 |
 | feishu | 原始事件、明确 @、逐群免 @、交付步骤日志、限流与未知结果分类、CardKit 序号和过期同卡替换、快照恢复与保留、有界文件与可取消连接 |
-| native | stream-json、公开内容归属、会话显示名、权限／MCP 控制、原生配置、auto 分类器文本与本地分类器注入、热续轮、停止与恢复 |
+| native | stream-json、公开内容归属、会话显示名、权限／MCP 控制、原生配置、auto 分类器文本与本地分类器注入、项目系统提示词注入、热续轮、停止与恢复 |
 | process | 子进程组／Job Object、父进程先退出后的派生进程清理、终止确认、进程树内存观测；Darwin 还核对进程表身份和僵尸状态 |
 | daemon | install/uninstall/start/stop/restart/status/logs；env 文件、二进制复制、离线预检、幂等、同名任务所有权、stale lock 恢复、日志轮转、任务动作无脚本 |
 | integration | 真实原生 CLI + 网关 + SQLite 配合本地模型：审批写入、追问、完整交付、会话显示名、空闲回收与重启续接 |

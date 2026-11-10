@@ -94,6 +94,18 @@ func explainRoute(c core.Config, o Options) core.Args {
 		}
 		if p, ok := c.Project(r.ProjectID); ok {
 			view["permissionMode"] = p.PermissionMode
+			promptView := core.Args{"configured": false}
+			if p.AppendSystemPrompt != "" {
+				promptView = core.Args{"configured": true, "source": "inline", "bytes": len(p.AppendSystemPrompt)}
+			} else if p.AppendSystemPromptFile != "" {
+				data, reason := readProjectPromptFile(p.AppendSystemPromptFile)
+				promptView = core.Args{"configured": true, "source": "file", "bytes": len(data)}
+				if reason != "" {
+					promptView["bytes"] = nil
+					promptView["status"] = reason
+				}
+			}
+			view["appendSystemPrompt"] = promptView
 			if p.PermissionMode == "auto" {
 				view["autoMode"] = core.Args{
 					"classifier":          "local",
