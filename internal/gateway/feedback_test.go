@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -126,6 +127,29 @@ func TestFeedbackDoneStatusUsesSharedCardText(t *testing.T) {
 	fragment := replyCard("后台续轮已结束", "answer", nil, 0, true, replyDetails{}, time.Second, true)
 	if replyCardDone(fragment) {
 		t.Fatal("fragment status treated as a completed reply")
+	}
+}
+
+func TestFeedbackRecordedAuditContainsOnlyMetadata(t *testing.T) {
+	x := newFeedbackFixture(t, true, 0)
+	if got := x.click(t, "member", "feedback_useful"); got != "已记录：有用" {
+		t.Fatalf("feedback toast = %q", got)
+	}
+	var detail string
+	if err := x.f.s.DB.QueryRow("SELECT detail FROM audit WHERE room=? AND event='feedback_recorded'", x.room.Key).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(detail), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["session"] != x.session || fields["output"] != x.output || fields["value"] != "useful" {
+		t.Fatalf("feedback audit fields = %#v", fields)
+	}
+	for _, forbidden := range []string{"question", "answer", "answerSummary", "user", "open_id", "message"} {
+		if _, ok := fields[forbidden]; ok {
+			t.Fatalf("feedback audit leaked %s: %#v", forbidden, fields)
+		}
 	}
 }
 
