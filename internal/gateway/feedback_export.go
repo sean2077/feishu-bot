@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -78,16 +80,30 @@ func (g *Gateway) exportFeedback(ctx context.Context, now int64) []string {
 	return nil
 }
 
-// feedbackExportFailure audits one failure per project, day and error text so
-// a repeated 30-second sweep does not flood the audit table.
+// feedbackExportFailure audits one failure per project, day and stable error
+// category so a repeated 30-second sweep does not flood the audit table. The
+// category drops temporary file names; the audit keeps the full redacted
+// error for diagnosis.
 func (g *Gateway) feedbackExportFailure(project string, day time.Time, err error) {
 	if g.exportFailures == nil {
 		g.exportFailures = map[string]string{}
 	}
-	key := day.Format("2006-01-02") + "|" + err.Error()
+	key := day.Format("2006-01-02") + "|" + feedbackExportErrorKey(err)
 	if g.exportFailures[project] == key {
 		return
 	}
 	g.exportFailures[project] = key
 	g.audit("", "feedback_export_failed", core.Args{"project": project, "date": day.Format("2006-01-02"), "error": err.Error()})
+}
+
+func feedbackExportErrorKey(err error) string {
+	var link *os.LinkError
+	if errors.As(err, &link) {
+		return link.Op + ": " + link.Err.Error()
+	}
+	var path *os.PathError
+	if errors.As(err, &path) {
+		return path.Op + ": " + path.Err.Error()
+	}
+	return err.Error()
 }
