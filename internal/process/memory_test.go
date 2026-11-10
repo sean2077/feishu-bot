@@ -4,6 +4,7 @@ import (
 	"context"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestResidentTreeIncludesDescendantsAndRejectsUnknownMemory(t *testing.T) {
@@ -24,8 +25,23 @@ func TestResidentTreeObservesRunningProcess(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
 		t.Skip("platform collector unsupported")
 	}
-	n, err := ResidentTreeBytes(context.Background())
-	if err != nil || n <= 0 {
-		t.Fatalf("RSS=%d: %v", n, err)
+	// The collector documents a process snapshot, not an atomic tree census.
+	// A short-lived descendant can exit between snapshot and memory lookup, so
+	// one incomplete sample does not mean this live process has no RSS. Retry
+	// only until a complete positive sample is available.
+	deadline := time.Now().Add(2 * time.Second)
+	var lastBytes int64
+	var lastErr error
+	for {
+		n, err := ResidentTreeBytes(context.Background())
+		if err == nil && n > 0 {
+			return
+		}
+		lastBytes, lastErr = n, err
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	t.Fatalf("RSS=%d after retries: %v", lastBytes, lastErr)
 }

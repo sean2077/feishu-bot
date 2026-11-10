@@ -314,6 +314,51 @@ class ArtifactTrustTests(unittest.TestCase):
                     artifact_trust.remove_macos_trust(record, key)
                 command.assert_not_called()
 
+    def test_windows_administrator_timeout_retries_read_only_check(self):
+        outputs = [artifact_trust.TrustError("OS certificate operation timed out: powershell.exe"),
+                   subprocess.CompletedProcess([], 0, '{"administrator":true}', "")]
+        with mock.patch.object(artifact_trust, "invoke", side_effect=outputs) as command, mock.patch.object(artifact_trust.time, "sleep") as sleep:
+            self.administrator_check()
+        self.assertEqual(command.call_count, 2)
+        sleep.assert_called_once()
+
+    def test_windows_timed_out_import_removes_partial_certificate_then_retries(self):
+        commands, present = [], False
+
+        def certificate(operation, _path, _state):
+            nonlocal present
+            commands.append(operation)
+            if operation == "inspect":
+                return present
+            if operation == "import":
+                present = True  # A killed PowerShell process may still have imported it.
+                if commands.count("import") == 1:
+                    raise artifact_trust.TrustError("OS certificate operation timed out: LocalMachine Root import")
+                return True
+            if operation == "remove":
+                present = False
+                return False
+            raise AssertionError(operation)
+
+        with mock.patch.object(artifact_trust.platform, "system", return_value="Windows"), mock.patch.object(
+                artifact_trust, "windows_certificate", side_effect=certificate), mock.patch.object(artifact_trust.time, "sleep"):
+            record = artifact_trust.install(self.certificate)
+            self.assertEqual(commands, ["inspect", "import", "inspect", "remove", "inspect", "import"])
+            self.assertTrue(present)
+            commands.clear()
+            artifact_trust.cleanup(record)
+        self.assertFalse(present)
+        self.assertEqual(commands, ["inspect", "remove", "inspect"])
+        self.assertFalse(record.parent.exists())
+
+    def test_windows_administrator_timeout_failure_is_not_retried_after_second_attempt(self):
+        error = artifact_trust.TrustError("OS certificate operation timed out: powershell.exe")
+        with mock.patch.object(artifact_trust, "invoke", side_effect=error) as command, mock.patch.object(artifact_trust.time, "sleep") as sleep:
+            with self.assertRaisesRegex(artifact_trust.TrustError, "timed out"):
+                self.administrator_check()
+        self.assertEqual(command.call_count, 2)
+        sleep.assert_called_once()
+
     def test_windows_failed_import_is_cleaned_before_reporting_the_failure(self):
         commands = []
 

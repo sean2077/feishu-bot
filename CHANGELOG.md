@@ -28,6 +28,7 @@
 
 - `auto_mode_denied` 在分类器原因为 `Stage 2 classifier error` 时增加 `stage2Error: true` 审计标记；表示 Stage 2 出错后 CLI 按 Stage 1 结论拦截，可能误拦且耗时偏长。卡片文案不变。
 - `read_chat_history` 对当前房间中本机器人已交付的回复卡片，在飞书返回空文本或「请升级至最新版本客户端，以查看内容」占位时，用 outbox 中 `state=done`、`kind=reply` 的保存正文回填；只匹配卡片 target，不回填文件消息，不跨房间；7 天后 outbox 清理则保留原样；回填查询失败不影响历史返回，只写 `history_backfill_failed` 审计。
+- 稳定 Windows 偶发测试（仅测试工具，不改变生产行为）：进程树 RSS 采样在短暂不完整快照时重试；benchmark 趋势采样改为等待捕获和维护事件后再读取进度文件；快捷回调测试显式同步启动 worker；升级回滚测试只在已确认回滚后重试 Windows 文件共享冲突；artifact TLS fixture 对 PowerShell 超时重试，并在证书导入超时后按指纹清理可能已半导入的证书再重试，清理失败时保留恢复记录。
 
 ## 0.5.0 — 2026-11-07
 

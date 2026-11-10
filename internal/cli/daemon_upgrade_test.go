@@ -6,8 +6,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -55,7 +57,8 @@ func TestUpgradeStagesBinaryBeforeTouchingRunningService(t *testing.T) {
 	}
 }
 
-func TestUpgradeRegistrationFailureRestoresAllPublishedFiles(t *testing.T) {
+func prepareUpgradeRegistrationRestore(t *testing.T) (Options, []string, *fakeServiceManager) {
+	t.Helper()
 	o, _, _ := upgradeFixture(t)
 	meta, err := daemonMetaPath()
 	if err != nil {
@@ -70,8 +73,34 @@ func TestUpgradeRegistrationFailureRestoresAllPublishedFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	manager := &fakeServiceManager{platform: "test", present: true, owned: true, installErr: errors.New("registration rejected after write")}
-	err = installWithManager(context.Background(), o, manager, &bytes.Buffer{}, &bytes.Buffer{})
+	return o, paths, &fakeServiceManager{platform: "test", present: true, owned: true, installErr: errors.New("registration rejected after write")}
+}
+
+// windowsTransientRename reports the hosted-Windows sharing violation seen when
+// an antivirus or indexer briefly holds a just-written file. The caller must
+// only retry after a confirmed rollback, never over a partial installation.
+func windowsTransientRename(err error) bool {
+	if runtime.GOOS != "windows" || err == nil {
+		return false
+	}
+	return errors.Is(err, os.ErrPermission) || strings.Contains(strings.ToLower(err.Error()), "access is denied")
+}
+
+func TestUpgradeRegistrationFailureRestoresAllPublishedFiles(t *testing.T) {
+	var paths []string
+	var manager *fakeServiceManager
+	var workDir string
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		var o Options
+		o, paths, manager = prepareUpgradeRegistrationRestore(t)
+		workDir = o.WorkDir
+		err = installWithManager(context.Background(), o, manager, &bytes.Buffer{}, &bytes.Buffer{})
+		if err == nil || !windowsTransientRename(err) || !strings.Contains(err.Error(), "previous installation restored") || attempt == 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err == nil || !strings.Contains(err.Error(), "previous installation restored") {
 		t.Fatal(err)
 	}
@@ -83,7 +112,7 @@ func TestUpgradeRegistrationFailureRestoresAllPublishedFiles(t *testing.T) {
 			t.Fatalf("restore %s: %q %v", path, b, err)
 		}
 	}
-	backups, _ := filepath.Glob(filepath.Join(o.WorkDir, ".feishu-bot-upgrade-*"))
+	backups, _ := filepath.Glob(filepath.Join(workDir, ".feishu-bot-upgrade-*"))
 	if len(backups) != 0 {
 		t.Fatalf("completed rollback leaked recovery copies: %v", backups)
 	}
