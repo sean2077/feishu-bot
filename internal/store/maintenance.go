@@ -87,6 +87,23 @@ type maintenancePolicy struct {
 	cutoff                                     int64
 }
 
+// MaintainOptions carries per-sweep policy adjustments. The zero value keeps
+// the existing behavior.
+type MaintainOptions struct {
+	// PausedPolicies are left untouched this sweep. A required archive uses
+	// this as a second line of defense while its failure is being fixed.
+	PausedPolicies []string
+	// FeedbackExport protects feedback rows whose (at,id) is above the saved
+	// per-project export watermark, so retention only deletes rows a prior
+	// archive covered.
+	FeedbackExport bool
+}
+
+// feedbackUnexported protects rows that no successful per-project export
+// covered. The watermark is the (at,id) of the last row written to an archive;
+// rows at or below it are eligible for normal retention.
+const feedbackUnexported = `NOT EXISTS(SELECT 1 FROM feedback_exports e WHERE e.project=feedback.project AND (feedback.at<e.at OR (feedback.at=e.at AND feedback.id<=e.id)))`
+
 // A selected native conversation may stay open for months. Only actual pending
 // work protects its terminal rows; merely being selected does not. An uncertain
 // input or action has no later resolution, so it keeps only its own row as
@@ -108,8 +125,12 @@ EXISTS(SELECT 1 FROM requests r WHERE r.room=` + table + `.room AND r.state='pen
 EXISTS(SELECT 1 FROM action_runs a WHERE a.room=` + table + `.room AND a.state IN ('running','uncertain') AND a.state='running')`
 }
 
-func maintenancePolicies(now, backgroundMS int64) []maintenancePolicy {
+func maintenancePolicies(now, backgroundMS int64, feedbackExport ...bool) []maintenancePolicy {
 	inputRefs := pendingSession("inbox") + ` OR EXISTS(SELECT 1 FROM outbox o WHERE o.room=inbox.room AND o.reply_to=inbox.id AND o.state NOT IN ('done','cancelled'))`
+	feedbackProtect := ""
+	if len(feedbackExport) > 0 && feedbackExport[0] {
+		feedbackProtect = feedbackUnexported
+	}
 	return []maintenancePolicy{
 		{"card_controls", "card_controls", "expires", "1", "", "", now},
 		{"context_refs", "context_refs", "at", "1", pendingRoom("context_refs"), "", now - dayMS},
@@ -121,7 +142,7 @@ func maintenancePolicies(now, backgroundMS int64) []maintenancePolicy {
 		{"outbox", "outbox", "at", "state IN ('done','cancelled')", `file_path IS NOT NULL OR file_state IN ('sending','uncertain') OR EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id)`, "", now - 7*dayMS},
 		{"discarded_output_bodies", "outbox", "at", "state IN ('done','cancelled') AND (text!='' OR card IS NOT NULL OR initial_card IS NOT NULL)", `state!='cancelled' OR file_path IS NOT NULL OR NOT EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id AND d.decision='discard')`, "text='',card=NULL,initial_card=NULL", now - 7*dayMS},
 		{"audit", "audit", "at", "1", "", "", now - 90*dayMS},
-		{"feedback", "feedback", "at", "1", "", "", now - 90*dayMS},
+		{"feedback", "feedback", "at", "1", feedbackProtect, "", now - 90*dayMS},
 		{"requests", "requests", "expires", "state IN ('approved','denied','expired','cancelled')", pendingSession("requests"), "", now - 30*dayMS},
 		{"action_runs", "action_runs", "at", "state IN ('done','failed')", pendingSession("action_runs"), "", now - 90*dayMS},
 	}
@@ -130,17 +151,21 @@ func maintenancePolicies(now, backgroundMS int64) []maintenancePolicy {
 // Maintain bounds both old candidates and mutations for every policy. Cursors
 // survive restart and advance even across protected rows, so a long-lived
 // uncertain record cannot starve later eligible data. It never prunes usage
-// results: those rows are also native-result deduplication keys. Named paused
-// policies are left untouched this sweep; callers use that when a required
-// archive failed so retention cannot delete unexported rows.
-func (s *Store) Maintain(ctx context.Context, now, backgroundMS int64, pausedPolicies ...string) (report MaintenanceReport, err error) {
+// results: those rows are also native-result deduplication keys. Paused
+// policies are left untouched this sweep; FeedbackExport additionally protects
+// rows above the archive watermark.
+func (s *Store) Maintain(ctx context.Context, now, backgroundMS int64, options ...MaintainOptions) (report MaintenanceReport, err error) {
 	started := time.Now()
 	defer func() { report.DurationMS = time.Since(started).Milliseconds() }()
 	ctx, cancel := context.WithTimeout(ctx, maintenanceTimeout)
 	defer cancel()
-	policies := maintenancePolicies(now, backgroundMS)
+	var option MaintainOptions
+	if len(options) > 0 {
+		option = options[0]
+	}
+	policies := maintenancePolicies(now, backgroundMS, option.FeedbackExport)
 	paused := map[string]bool{}
-	for _, name := range pausedPolicies {
+	for _, name := range option.PausedPolicies {
 		paused[name] = true
 	}
 	var next int

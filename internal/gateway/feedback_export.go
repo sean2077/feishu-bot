@@ -93,7 +93,7 @@ func (g *Gateway) feedbackExportFailure(project string, day time.Time, err error
 		return
 	}
 	g.exportFailures[project] = key
-	g.audit("", "feedback_export_failed", core.Args{"project": project, "date": day.Format("2006-01-02"), "error": err.Error()})
+	g.audit("", "feedback_export_failed", core.Args{"project": project, "date": day.Format("2006-01-02"), "error": core.Redact(err.Error(), g.secrets)})
 }
 
 func feedbackExportErrorKey(err error) string {

@@ -25,6 +25,11 @@ func maintenancePolicyNamed(t *testing.T, name string, now int64) maintenancePol
 // expires. Require committed progress across calls before checking retention.
 func maintainAllPolicies(t *testing.T, s *Store, now int64) {
 	t.Helper()
+	maintainAllPoliciesWith(t, s, now)
+}
+
+func maintainAllPoliciesWith(t *testing.T, s *Store, now int64, options ...MaintainOptions) {
+	t.Helper()
 	policies := maintenancePolicies(now, 1)
 	pending := map[string]bool{}
 	for _, policy := range policies {
@@ -35,7 +40,7 @@ func maintainAllPolicies(t *testing.T, s *Store, now int64) {
 	var lastReport MaintenanceReport
 	var lastErr error
 	for round := 0; round < 2*len(policies) && ctx.Err() == nil; round++ {
-		lastReport, lastErr = s.Maintain(ctx, now, 1)
+		lastReport, lastErr = s.Maintain(ctx, now, 1, options...)
 		if lastErr != nil && !errors.Is(lastErr, context.DeadlineExceeded) {
 			t.Fatalf("maintenance round %d: %+v: %v", round+1, lastReport, lastErr)
 		}
@@ -344,7 +349,7 @@ VALUES('old','r','p','s','o','m','ou_old','useless','','answer',1)`); err != nil
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	for round := 0; round < 3*len(maintenancePolicies(now, 1)) && ctx.Err() == nil; round++ {
-		report, err := s.Maintain(ctx, now, 1, "feedback")
+		report, err := s.Maintain(ctx, now, 1, MaintainOptions{PausedPolicies: []string{"feedback"}})
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("paused maintenance: %+v %v", report, err)
 		}
@@ -380,5 +385,43 @@ VALUES('old','r','p','s','o','m','ou_old','useless','','answer',1)`); err != nil
 	}
 	if _, ok, err := s.LastFullMaintenance(context.Background()); err != nil || !ok {
 		t.Fatalf("resumed full pass was not recorded: %t %v", ok, err)
+	}
+}
+
+func TestFeedbackRetentionRequiresExportWatermarkCoverage(t *testing.T) {
+	s := openTest(t)
+	now := time.Now().UnixMilli()
+	ctx := context.Background()
+	if err := s.SaveFeedbackExport(ctx, "p", FeedbackExportMark{At: 1, ID: "b", File: "feedback-p-old.jsonl", Rows: 1, Updated: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		id string
+		at int64
+	}{
+		{"a", 1},       // at the watermark time, but at or below its id: covered
+		{"c", 1},       // same time, above the watermark id: not covered
+		{"later", 100}, // older than retention, but above the watermark: not covered
+	} {
+		if _, err := s.DB.Exec(`INSERT INTO feedback(id,room,project,session,output,message,user,value,question,answer_summary,at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`, row.id, "room", "p", "session", "output-"+row.id, "message", "ou_"+row.id, "useless", "", "answer", row.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	maintainAllPoliciesWith(t, s, now, MaintainOptions{FeedbackExport: true})
+	for id, want := range map[string]int{"a": 0, "c": 1, "later": 1} {
+		var rows int
+		if err := s.DB.QueryRow("SELECT count(*) FROM feedback WHERE id=?", id).Scan(&rows); err != nil || rows != want {
+			t.Fatalf("feedback %s rows = %d, want %d: %v", id, rows, want, err)
+		}
+	}
+	// Disabling export restores the old unconditional 90-day retention. The
+	// previous pass may leave the feedback cursor at the end of the table, so one
+	// pass clears it and the next rescans from the beginning.
+	maintainAllPoliciesWith(t, s, now, MaintainOptions{FeedbackExport: false})
+	maintainAllPoliciesWith(t, s, now, MaintainOptions{FeedbackExport: false})
+	var rows int
+	if err := s.DB.QueryRow("SELECT count(*) FROM feedback").Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("feedback rows after disabled export = %d: %v", rows, err)
 	}
 }
