@@ -26,6 +26,8 @@
 - 新增默认关闭的 `projects[].bash.rejectCwdPrefix`：开启后在 PreToolUse Bash hook 中拒绝以当前原生 cwd 的 `cd <cwd> &&` 或 `cd <cwd>;` 开头的命令，返回可直接照做的说明，减少重复审批噪音；支持引号、正反斜杠、Windows 大小写和 MSYS 路径、`~` 展开。它只检查开头一个 cd，不处理环境变量/`cd -`/`cd ..`/`pushd`，不是安全边界。每次触发写 `bash_cwd_prefix_rejected` 审计（room、session），不记录命令全文。
 - 新增项目系统提示词 `projects[].appendSystemPrompt` / `appendSystemPromptFile`（二选一，16 KiB，UTF-8，无 NUL）：在初始化 appendSystemPrompt 中按 bridge → action → `Project instructions:` 顺序拼接，interactive 通过 `--append-system-prompt` 传入。文件每次启动读取；缺失/不可读/超长/编码错误时 fail-open，不带提示词并写 `project_prompt_unavailable` 审计（project、原因分类，不写内容），doctor 报告但不阻止启动；doctor/config explain 只显示配置、来源和字节数。提示词是指引，不改变授权、范围或权限规则。
 
+- `read_chat_history` 对当前房间中本机器人已交付的回复卡片，在飞书返回空文本或「请升级至最新版本客户端，以查看内容」占位时，用 outbox 中 `state=done`、`kind=reply` 的保存正文回填；只匹配卡片 target，不回填文件消息，不跨房间；7 天后 outbox 清理则保留原样。
+
 ## 0.5.0 — 2026-11-07
 
 - 原生启动前持久记录身份未决，停止／回收／关闭等待最终身份事件，防止迟到 ready 与下一次启动竞争；退出时数据库收尾失败继续协调，不自动重放；停止暂停与用量待补写支持恢复，统计缺口保持可见。

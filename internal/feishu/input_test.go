@@ -235,3 +235,18 @@ func TestExplicitGroupBindingOverridesDefaultPolicy(t *testing.T) {
 		t.Fatalf("explicit binding inherited default policy: %+v", received)
 	}
 }
+
+func TestInteractiveHistoryCardDegradedContent(t *testing.T) {
+	// CardKit history content carries only the card entity; clients without the
+	// rendered entity fall back to no text or this public placeholder.
+	cardEntity := map[string]any{"type": "card", "data": map[string]any{"card_id": "card_example"}}
+	if text, ok := renderInteractive(cardEntity); !ok || text != "" {
+		t.Fatalf("card entity content = %q, %t", text, ok)
+	}
+	placeholder := map[string]any{"body": map[string]any{"elements": []any{
+		map[string]any{"tag": "markdown", "content": core.HistoryCardPlaceholder},
+	}}}
+	if text, ok := renderInteractive(placeholder); !ok || text != core.HistoryCardPlaceholder {
+		t.Fatalf("degraded card content = %q, %t", text, ok)
+	}
+}

@@ -20,6 +20,11 @@ type historyCursor struct {
 	Expires int64             `json:"expires"`
 }
 
+func historyCardTextMissing(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return trimmed == "" || trimmed == core.HistoryCardPlaceholder
+}
+
 func (g *Gateway) history(ctx context.Context, r core.Room, session string, input core.Args) (core.Args, error) {
 	current, ok := RoomFromKey(g.config, r.Key)
 	if !ok || ctx.Err() != nil {
@@ -118,11 +123,27 @@ func (g *Gateway) history(ctx context.Context, r core.Room, session string, inpu
 	if ctx.Err() != nil || !ok {
 		return nil, errors.New("history request cancelled")
 	}
-	remaining := min(g.config.Limits.TextChars*2, 40000)
-	messages := []core.Message{}
-	for _, m := range page.Messages[:min(q.Limit, len(page.Messages))] {
+	selected := page.Messages[:min(q.Limit, len(page.Messages))]
+	readable := make([]core.Message, 0, len(selected))
+	ids := make([]string, 0, len(selected))
+	for _, m := range selected {
 		if !Readable(latest, m) {
 			continue
+		}
+		if m.SenderIsBot && m.SenderIsSelf && historyCardTextMissing(m.Text) && m.ID != "" {
+			ids = append(ids, m.ID)
+		}
+		readable = append(readable, m)
+	}
+	replyTexts, e := g.store.HistoryReplyTexts(ctx, r.Key, ids)
+	if e != nil {
+		return nil, e
+	}
+	remaining := min(g.config.Limits.TextChars*2, 40000)
+	messages := []core.Message{}
+	for _, m := range readable {
+		if text, found := replyTexts[m.ID]; found && m.SenderIsBot && m.SenderIsSelf && historyCardTextMissing(m.Text) {
+			m.Text = text
 		}
 		m.Text = cut(m.Text, min(g.config.Limits.TextChars, remaining))
 		remaining -= len([]rune(m.Text))
