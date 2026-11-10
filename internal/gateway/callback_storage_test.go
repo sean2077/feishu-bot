@@ -26,13 +26,17 @@ func cancelWhileStorageWaits(t *testing.T, f *fixture, call func(context.Context
 	go func() { done <- call(ctx) }()
 	eventually(t, func() bool { return f.s.DB.Stats().WaitCount > before })
 	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("expired storage wait returned %v", err)
+	var callErr error
+	eventually(t, func() bool {
+		select {
+		case callErr = <-done:
+			return true
+		default:
+			return false
 		}
-	case <-time.After(time.Second):
-		t.Fatal("callback continued waiting for storage after cancellation")
+	})
+	if !errors.Is(callErr, context.Canceled) {
+		t.Fatalf("expired storage wait returned %v", callErr)
 	}
 }
 
@@ -49,6 +53,15 @@ func TestQuickCallbacksDoNotClaimAfterStorageDeadline(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.send(f.message("work", "work", "member"))
+			// Message returns before its asynchronous kick runs. Dispatch here
+			// under the same room lock so worker startup is part of the test's
+			// deterministic setup instead of racing a short wall-clock gate.
+			unlock := f.g.dispatchLocks.lock(r.Key)
+			err = f.g.dispatch(r)
+			unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
 			w := f.worker()
 			d := f.delivery(w)
 			output, err := f.g.saveOutput(f.s.DB, r, d.SessionID, "saved", true, "", "work", "", nil, origin(d.Message), "", "", "reply", "blocked")

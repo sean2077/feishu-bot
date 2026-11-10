@@ -22,6 +22,7 @@ import shutil
 import ssl
 import subprocess
 import sys
+import time
 import uuid
 
 
@@ -98,11 +99,31 @@ def invoke(args: list[str], *, check: bool = True) -> subprocess.CompletedProces
     return result
 
 
+def operation_timed_out(exc: BaseException) -> bool:
+    return "OS certificate operation timed out" in str(exc)
+
+
+def retry_timeout(action):
+    """Retry one timed-out Windows operation, never a real failure result.
+
+    Hosted Windows runners occasionally need longer than the per-command bound
+    to cold-start PowerShell. Retrying is safe only for read-only checks and
+    for import after the caller has removed a possibly partial certificate.
+    """
+    for attempt in range(2):
+        try:
+            return action()
+        except TrustError as exc:
+            if attempt or not operation_timed_out(exc):
+                raise
+            time.sleep(1)
+
+
 def windows_administrator() -> None:
     # The hosted job must already have the administrator token. Do not launch
     # an elevated process, request credentials, change policy or relax ACLs.
     script = "$ErrorActionPreference='Stop'; $p=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()); @{administrator=$p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)} | ConvertTo-Json -Compress"
-    result = invoke(["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
+    result = retry_timeout(lambda: invoke(["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]))
     try:
         identity = json.loads(result.stdout)
     except ValueError as exc:
@@ -136,6 +157,30 @@ def windows_certificate(operation: str, certificate: Path, state: dict) -> bool:
     if not isinstance(status, dict) or set(status) != {"present"} or type(status["present"]) is not bool:
         raise TrustError(scope + " Root certificate presence could not be confirmed")
     return status["present"]
+
+
+def windows_certificate_retry(operation: str, certificate: Path, state: dict) -> bool:
+    return retry_timeout(lambda: windows_certificate(operation, certificate, state))
+
+
+def windows_import(certificate: Path, state: dict) -> bool:
+    try:
+        return windows_certificate("import", certificate, state)
+    except TrustError as exc:
+        if not operation_timed_out(exc):
+            raise
+        # A killed PowerShell process may still have committed the import. The
+        # exact thumbprint and bytes are journalled, so inspect and remove that
+        # certificate before retrying; otherwise the retry would fail because
+        # the certificate already exists.
+        try:
+            if windows_certificate_retry("inspect", certificate, state):
+                windows_certificate_retry("remove", certificate, state)
+            if windows_certificate_retry("inspect", certificate, state):
+                raise TrustError("temporary certificate remains after a timed-out import")
+        except TrustError as cleanup:
+            raise TrustError(f"temporary certificate import timed out; partial cleanup failed: {cleanup}") from exc
+        return windows_certificate("import", certificate, state)
 
 
 def macos_settings(path: Path) -> dict:
@@ -240,11 +285,11 @@ def install(certificate: Path) -> Path:
             encoded = entry / "certificate.cer"
             encoded.write_bytes(der)
             encoded.chmod(0o600)
-            if windows_certificate("inspect", encoded, state):
+            if windows_certificate_retry("inspect", encoded, state):
                 raise TrustError("fixture certificate already exists in LocalMachine Root")
             state["trust_attempted"] = True
             save(record, state)
-            if not windows_certificate("import", encoded, state):
+            if not windows_import(encoded, state):
                 raise TrustError("temporary certificate import could not be confirmed")
         else:
             security = "/usr/bin/security"
@@ -290,9 +335,9 @@ def cleanup(record: Path) -> dict | None:
     if state["platform"] == "Windows":
         if state["trust_attempted"]:
             encoded = record.parent / "certificate.cer"
-            if windows_certificate("inspect", encoded, state):
-                windows_certificate("remove", encoded, state)
-            if windows_certificate("inspect", encoded, state):
+            if windows_certificate_retry("inspect", encoded, state):
+                windows_certificate_retry("remove", encoded, state)
+            if windows_certificate_retry("inspect", encoded, state):
                 raise TrustError("temporary certificate remains in " + state.get("windows_scope", "CurrentUser") + " Root")
     else:
         security = "/usr/bin/security"
