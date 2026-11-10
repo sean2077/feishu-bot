@@ -85,6 +85,12 @@ type worker struct {
 	diagMu                 sync.Mutex
 	stopReason             string
 	turnActive             bool
+	autoMu                 sync.Mutex
+	autoCandidates         []autoCandidate
+}
+
+type autoCandidate struct {
+	toolUseID, phase, reason string
 }
 
 // SetStopReason records the host's stop intent before Stop is called so the
@@ -733,6 +739,52 @@ func toolResultText(content any) string {
 	}
 }
 
+// rememberAutoCandidate holds a tool_result that looks like an auto-mode
+// safety message. It becomes an event only when the same tool_use_id appears in
+// this turn's result permission_denials, so ordinary tool output cannot forge
+// an audit or card notice.
+func (w *worker) rememberAutoCandidate(block args) {
+	if w.project.PermissionMode != "auto" || !truth(block["is_error"]) {
+		return
+	}
+	phase, reason, ok := autoSafetyResult(block["content"])
+	if !ok {
+		return
+	}
+	toolUseID := text(block["tool_use_id"])
+	if toolUseID == "" {
+		return
+	}
+	w.autoMu.Lock()
+	defer w.autoMu.Unlock()
+	for _, existing := range w.autoCandidates {
+		if existing.toolUseID == toolUseID {
+			return
+		}
+	}
+	w.autoCandidates = append(w.autoCandidates, autoCandidate{toolUseID: toolUseID, phase: phase, reason: reason})
+}
+
+func (w *worker) confirmedAutoEvents(denials any) []core.WorkerEvent {
+	confirmed := map[string]bool{}
+	for _, raw := range array(denials) {
+		if id := text(object(raw)["tool_use_id"]); id != "" {
+			confirmed[id] = true
+		}
+	}
+	w.autoMu.Lock()
+	candidates := w.autoCandidates
+	w.autoCandidates = nil
+	w.autoMu.Unlock()
+	var events []core.WorkerEvent
+	for _, candidate := range candidates {
+		if confirmed[candidate.toolUseID] {
+			events = append(events, core.WorkerEvent{Type: "auto_denied", Phase: candidate.phase, ToolUseID: candidate.toolUseID, Text: candidate.reason})
+		}
+	}
+	return events
+}
+
 func (w *worker) observe(event args) ([]core.WorkerEvent, error) {
 	var events []core.WorkerEvent
 	w.snapshot.observe(event)
@@ -770,9 +822,7 @@ func (w *worker) observe(event args) ([]core.WorkerEvent, error) {
 				if !has(event["parent_tool_use_id"]) {
 					events = append(events, core.WorkerEvent{Type: "activity", Phase: "tool_end", ToolUseID: toolUseID})
 				}
-				if phase, reason, ok := autoSafetyResult(block["content"]); ok {
-					events = append(events, core.WorkerEvent{Type: "auto_denied", Phase: phase, ToolUseID: toolUseID, Text: reason})
-				}
+				w.rememberAutoCandidate(block)
 			}
 		}
 	}
@@ -826,6 +876,7 @@ func (w *worker) observe(event args) ([]core.WorkerEvent, error) {
 		}
 	}
 	if event["type"] == "result" {
+		events = append(events, w.confirmedAutoEvents(event["permission_denials"])...)
 		isCompact := false
 		if w.compact != nil {
 			isCompact = event["local_command"] == "compact" || event["local_command"] == "/compact"

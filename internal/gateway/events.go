@@ -123,6 +123,8 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 			if requested == "" {
 				requested = "acceptEdits"
 			}
+			// Claude Code 2.1.321 echoes default, acceptEdits, bypassPermissions
+			// and auto verbatim; report any future mismatch instead of mapping it.
 			if ev.PermissionMode != requested {
 				g.audit(s.room.Key, "permission_mode_mismatch", core.Args{"requested": requested, "effective": ev.PermissionMode})
 			}

@@ -66,6 +66,7 @@ auto 权限模式补充：
 - `worker_ready` 的 `permissionMode` 是原生 init 回显；`permission_mode_mismatch` 在请求值与回显不一致时写审计（`requested`、`effective`）。init 不可用时也可能回显 `auto`，所以它不能证明分类器真的可用。
 - `auto_mode_denied`：`session`、`tool`、已脱敏的短 `reason`；分类器直接拒绝工具，不经过 `can_use_tool`。`tool_input` 不写入审计或卡片。
 - `auto_mode_unavailable`：分类器不可用或无法评估，带 `session`、`tool`、`kind=unavailable|unevaluable` 和脱敏短原因。卡片提示每轮最多一条；`reply_auto_notice` 是追加的可见 markdown 元素，不改变模型答案正文。
+- 上述两类事件只在 `permissionMode=auto`、tool_result 带 `is_error=true` 且该 `tool_use_id` 出现在同一轮 result 的 `permission_denials` 时才确认；普通工具输出或非 auto 项目不能伪造审计/卡片提示。审计和提示会延迟到该轮 result 到达。
 - 分类器文本识别与 Claude Code 版本绑定；未识别的文本只记录普通工具结果，不猜造拦截。deny 规则会让工具根本不出现；ask 规则仍走 `can_use_tool` 维护者审批。
 
 ## 容量等待、复用与回收

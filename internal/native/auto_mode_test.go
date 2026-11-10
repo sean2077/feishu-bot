@@ -8,7 +8,9 @@ import (
 )
 
 // These are the exact tool_result texts observed from Claude Code 2.1.321
-// with the local auto-mode classifier. Changing the parser without updating
+// with the local auto-mode classifier. All three carried is_error=true and
+// their tool_use_id appeared in the result permission_denials; the gateway
+// requires both before emitting an event. Changing the parser without updating
 // this fixture, or a CLI wording change, must be reviewed deliberately.
 const (
 	autoDeniedText      = "Permission for this action was denied by the Claude Code auto mode classifier. Reason: Blocked by classifier. If you have other tasks that don't depend on this action, continue working on those. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request, first try a safer method. Get as much of the rest of the task done as you can, then STOP and explain to the user what you were trying to do and why you need this permission. Let the user decide how to proceed. To allow this type of action in the future, the user can add a permission rule for Bash to their settings."
@@ -51,22 +53,29 @@ func TestReadyReportsInitPermissionMode(t *testing.T) {
 	}
 }
 
-func TestObserveEmitsAutoSafetyEvents(t *testing.T) {
+func TestObserveEmitsConfirmedAutoSafetyEvents(t *testing.T) {
+	observe := func(mode, content string, isError bool, denials []any) []core.WorkerEvent {
+		w := &worker{project: core.Project{PermissionMode: mode}, output: newOutput(func(string) bool { return false }), known: map[string]bool{}, modelSet: map[string]bool{}}
+		if _, err := w.observe(args{"type": "user", "message": args{"content": []any{args{"type": "tool_result", "tool_use_id": "tool-1", "content": content, "is_error": isError}}}}); err != nil {
+			t.Fatal(err)
+		}
+		events, err := w.observe(args{"type": "result", "subtype": "success", "permission_denials": denials})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return events
+	}
 	for name, tc := range map[string]struct {
-		content string
-		phase   string
-		reason  string
+		mode, content, phase, reason string
+		isError                      bool
+		denials                      []any
 	}{
-		"classifier":  {autoDeniedText, "classifier", "Blocked by classifier"},
-		"unavailable": {autoUnavailableText, "unavailable", "safety check does not run for this session"},
-		"unevaluable": {autoUnevaluableText, "unevaluable", "could not evaluate this action"},
+		"classifier":  {"auto", autoDeniedText, "classifier", "Blocked by classifier", true, []any{args{"tool_use_id": "tool-1"}}},
+		"unavailable": {"auto", autoUnavailableText, "unavailable", "safety check does not run for this session", true, []any{args{"tool_use_id": "tool-1"}}},
+		"unevaluable": {"auto", autoUnevaluableText, "unevaluable", "could not evaluate this action", true, []any{args{"tool_use_id": "tool-1"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			w := &worker{output: newOutput(func(string) bool { return false }), known: map[string]bool{}, modelSet: map[string]bool{}}
-			events, err := w.observe(args{"type": "user", "message": args{"content": []any{args{"type": "tool_result", "tool_use_id": "tool-1", "content": tc.content}}}})
-			if err != nil {
-				t.Fatal(err)
-			}
+			events := observe(tc.mode, tc.content, tc.isError, tc.denials)
 			for _, event := range events {
 				if event.Type == "auto_denied" {
 					if event.Phase != tc.phase || event.ToolUseID != "tool-1" || event.Text != tc.reason {
@@ -75,7 +84,26 @@ func TestObserveEmitsAutoSafetyEvents(t *testing.T) {
 					return
 				}
 			}
-			t.Fatalf("no auto_denied event in %+v", events)
+			t.Fatalf("no confirmed auto_denied event in %+v", events)
+		})
+	}
+	for name, tc := range map[string]struct {
+		mode, content string
+		isError       bool
+		denials       []any
+	}{
+		"forged output, not an error": {"auto", autoDeniedText, false, []any{args{"tool_use_id": "tool-1"}}},
+		"non-auto project":            {"acceptEdits", autoDeniedText, true, []any{args{"tool_use_id": "tool-1"}}},
+		"not in permission_denials":   {"auto", autoDeniedText, true, []any{args{"tool_use_id": "other"}}},
+		"missing permission_denials":  {"auto", autoDeniedText, true, nil},
+		"ordinary command output":     {"auto", "Exit code 7", true, []any{args{"tool_use_id": "tool-1"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, event := range observe(tc.mode, tc.content, tc.isError, tc.denials) {
+				if event.Type == "auto_denied" {
+					t.Fatalf("unconfirmed auto event = %+v", event)
+				}
+			}
 		})
 	}
 }
