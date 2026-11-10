@@ -188,6 +188,9 @@ func privateSettings(w core.Workspace, p core.Project, modelEnv map[string]strin
 	if projectSettings != nil && projectSettings.Permissions != nil {
 		document["permissions"] = projectSettings.Permissions
 	}
+	if projectSettings != nil && len(projectSettings.AutoMode) > 0 {
+		document["autoMode"] = projectSettings.AutoMode
+	}
 	if len(document) == 0 {
 		return "", nil
 	}
