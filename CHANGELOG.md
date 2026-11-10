@@ -27,6 +27,7 @@
 - 新增项目系统提示词 `projects[].appendSystemPrompt` / `appendSystemPromptFile`（二选一，16 KiB，UTF-8，无 NUL）：在初始化 appendSystemPrompt 中按 bridge → action → `Project instructions:` 顺序拼接，interactive 通过 `--append-system-prompt` 传入。文件每次启动读取；缺失/不可读/超长/编码错误时 fail-open，不带提示词并写 `project_prompt_unavailable` 审计（project、原因分类，不写内容），doctor 报告但不阻止启动；doctor/config explain 只显示配置、来源和字节数。提示词是指引，不改变授权、范围或权限规则。
 
 - `auto_mode_denied` 在分类器原因为 `Stage 2 classifier error` 时增加 `stage2Error: true` 审计标记；表示 Stage 2 出错后 CLI 按 Stage 1 结论拦截，可能误拦且耗时偏长。卡片文案不变。
+- `read_chat_history` 对当前房间中本机器人已交付的回复卡片，在飞书返回空文本或「请升级至最新版本客户端，以查看内容」占位时，用 outbox 中 `state=done`、`kind=reply` 的保存正文回填；只匹配卡片 target，不回填文件消息，不跨房间；7 天后 outbox 清理则保留原样；回填查询失败不影响历史返回，只写 `history_backfill_failed` 审计。
 - 新增 `projects[].modelProfile`：值须引用已声明的 `modelProfiles` 或 `default`，否则配置加载失败。解析顺序为会话显式选择（包括显式 `default`）优先，其次项目默认，最后部署默认；项目默认只影响从未显式选择的会话，`/model default` 固定使用部署默认。改变项目默认后，会话在下次原生进程启动或按同一原生 ID 续接时使用新的 `--model`，保留已有历史；凭据、`baseUrl` 和权限仍来自部署配置。`/status` 显示生效配置及来源（`session`／`project`／`default`），`/sessions --json` 按会话显示 `profile` 和 `profileSource`，`/model --json` 增加 `currentSource` 和 `projectDefault`；doctor 与 config explain 显示项目默认配置名，不显示凭据。
 
 ## 0.5.0 — 2026-11-07

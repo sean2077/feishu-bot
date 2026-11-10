@@ -10,6 +10,11 @@ type Resource struct {
 	Kind string `json:"kind"`
 	Name string `json:"name"`
 }
+
+// HistoryCardPlaceholder is the text some Feishu clients/API versions return
+// for interactive cards they cannot render from history.
+const HistoryCardPlaceholder = "请升级至最新版本客户端，以查看内容"
+
 type Message struct {
 	ID                   string     `json:"id"`
 	ChatID               string     `json:"chatId"`
