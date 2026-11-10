@@ -22,6 +22,8 @@ func diagnosticRemedy(name string) string {
 		return "Set CLAUDE_CODE_GIT_BASH_PATH to Git for Windows bash.exe in the service environment."
 	case name == "data directory / SQLite":
 		return "Check service-account access and free disk space for dataDir. Preserve the existing database and native history."
+	case name == "feedback export directory":
+		return "Create feedback.export.dir as a real directory writable by the service account; do not use a symbolic link. Feedback retention stays paused until a scheduled archive succeeds."
 	case name == "Feishu identity probe":
 		return "Check app ID, secret variable and app availability first; distinguish feishuAuth from feishuIdentity. Verify DNS, proxy and CA trust for network failures."
 	case name == "model endpoint basic probe":

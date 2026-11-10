@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/store"
 	"time"
 )
 
@@ -408,7 +409,11 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 	g.poolMu.Unlock()
 	g.kickWaiting()
 	g.pruneExports(now)
-	report, maintenanceErr := g.store.Maintain(ctx, now, g.config.Limits.BackgroundMS)
+	paused := g.exportFeedback(ctx, now)
+	report, maintenanceErr := g.store.Maintain(ctx, now, g.config.Limits.BackgroundMS, store.MaintainOptions{
+		PausedPolicies: paused,
+		FeedbackExport: g.config.Feedback.Export.Enabled,
+	})
 	g.noteMaintenance(report.Deadline, report.Progress)
 	if g.logger != nil {
 		for i := range report.Policies {

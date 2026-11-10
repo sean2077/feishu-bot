@@ -108,6 +108,7 @@ type Gateway struct {
 	maintenanceMu                                                sync.Mutex
 	maintenanceNoProgress                                        int
 	maintenanceStalled                                           bool
+	exportFailures                                               map[string]string
 	outMu                                                        sync.Mutex
 	turnMu                                                       sync.Mutex
 	turnReports                                                  map[string]*turnDeliveryReport
@@ -130,7 +131,7 @@ type Gateway struct {
 func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerFactory, log core.Logger) *Gateway {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{config: c, store: st, transport: tr, factory: factory, logger: log, ctx: ctx, cancel: cancel,
-		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, launchFailure: map[string]map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}}
+		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, launchFailure: map[string]map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}, exportFailures: map[string]string{}}
 	if _, err := rand.Read(g.historyKey[:]); err != nil {
 		panic("cannot initialize history cursor authentication")
 	}

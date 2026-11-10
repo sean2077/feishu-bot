@@ -377,6 +377,16 @@ func TestMCPAndHumanControlRequestsBridgeWithoutBlockingReadLoop(t *testing.T) {
 	if scope["permissionDecision"] != "deny" {
 		t.Fatal(scope)
 	}
+	toolsRPC := object(object(object(replies["tools"])["response"])["mcp_response"])
+	advertised := map[string]bool{}
+	for _, tool := range array(object(toolsRPC["result"])["tools"]) {
+		advertised[text(object(tool)["name"])] = true
+	}
+	for _, name := range []string{"read_chat_history", "fetch_attachment", "send_file", "project_action"} {
+		if !advertised[name] {
+			t.Fatalf("gateway tools/list omitted %s: %v", name, toolsRPC)
+		}
+	}
 	for _, name := range []string{"history", "attachment", "file", "action"} {
 		rpc := object(object(replies[name])["response"])["mcp_response"]
 		if len(array(object(object(rpc)["result"])["content"])) != 1 {

@@ -25,6 +25,11 @@ func maintenancePolicyNamed(t *testing.T, name string, now int64) maintenancePol
 // expires. Require committed progress across calls before checking retention.
 func maintainAllPolicies(t *testing.T, s *Store, now int64) {
 	t.Helper()
+	maintainAllPoliciesWith(t, s, now)
+}
+
+func maintainAllPoliciesWith(t *testing.T, s *Store, now int64, options ...MaintainOptions) {
+	t.Helper()
 	policies := maintenancePolicies(now, 1)
 	pending := map[string]bool{}
 	for _, policy := range policies {
@@ -35,7 +40,7 @@ func maintainAllPolicies(t *testing.T, s *Store, now int64) {
 	var lastReport MaintenanceReport
 	var lastErr error
 	for round := 0; round < 2*len(policies) && ctx.Err() == nil; round++ {
-		lastReport, lastErr = s.Maintain(ctx, now, 1)
+		lastReport, lastErr = s.Maintain(ctx, now, 1, options...)
 		if lastErr != nil && !errors.Is(lastErr, context.DeadlineExceeded) {
 			t.Fatalf("maintenance round %d: %+v: %v", round+1, lastReport, lastErr)
 		}
@@ -65,7 +70,7 @@ func TestMaintenanceBudgetsAndPersistentProgress(t *testing.T) {
 	}
 	p := maintenancePolicyNamed(t, "audit", 100*dayMS)
 	for i := 0; i < 3; i++ {
-		r, err := s.maintainPolicy(context.Background(), p, 0)
+		r, err := s.maintainPolicy(context.Background(), p, 0, false)
 		if err != nil || r.Changed != maintenanceChanges || r.Candidates > maintenanceCandidates {
 			t.Fatalf("batch %d: %+v %v", i, r, err)
 		}
@@ -74,7 +79,7 @@ func TestMaintenanceBudgetsAndPersistentProgress(t *testing.T) {
 	if err := s.DB.QueryRow("SELECT count(*) FROM audit").Scan(&n); err != nil || n != 0 {
 		t.Fatal(n, err)
 	}
-	r, err := s.maintainPolicy(context.Background(), p, 0)
+	r, err := s.maintainPolicy(context.Background(), p, 0, false)
 	if err != nil || r.Candidates != 0 {
 		t.Fatal(r, err)
 	}
@@ -102,13 +107,13 @@ func TestMaintenanceProtectedRowsCannotStarveLaterRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := maintenancePolicyNamed(t, "outputs", 40*dayMS)
-	r, err := s.maintainPolicy(context.Background(), p, 0)
+	r, err := s.maintainPolicy(context.Background(), p, 0, false)
 	if err != nil || r.Candidates != maintenanceCandidates || r.Changed != 0 {
 		t.Fatal(r, err)
 	}
 	// Simulate another Store after restart: no in-memory cursor is required.
 	restarted := &Store{DB: s.DB}
-	r, err = restarted.maintainPolicy(context.Background(), p, 0)
+	r, err = restarted.maintainPolicy(context.Background(), p, 0, false)
 	if err != nil || r.Changed != 1 {
 		t.Fatal("later unreferenced output starved", r, err)
 	}
@@ -164,12 +169,12 @@ func TestMaintenanceDoesNotRewriteEmptyBodies(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := maintenancePolicyNamed(t, "inbox_bodies", 2*dayMS)
-	r, err := s.maintainPolicy(context.Background(), p, 0)
+	r, err := s.maintainPolicy(context.Background(), p, 0, false)
 	if err != nil || r.Candidates != 1 || r.Changed != 1 {
 		t.Fatal(r, err)
 	}
 	for i := 0; i < 2; i++ {
-		r, err = s.maintainPolicy(context.Background(), p, 0)
+		r, err = s.maintainPolicy(context.Background(), p, 0, false)
 		if err != nil || r.Changed != 0 || r.Candidates != 0 {
 			t.Fatal("empty body revisited", r, err)
 		}
@@ -315,7 +320,7 @@ func TestMaintenanceFullPassRecordsLastFullAcrossRounds(t *testing.T) {
 				t.Fatalf("last full recorded before the cursor wrapped: %t %v", ok, err)
 			}
 		}
-		if _, err := s.maintainPolicy(context.Background(), policy, (i+1)%len(policies)); err != nil {
+		if _, err := s.maintainPolicy(context.Background(), policy, (i+1)%len(policies), i == len(policies)-1); err != nil {
 			t.Fatalf("policy %s: %v", policy.name, err)
 		}
 		if i < len(policies)-1 {
@@ -327,5 +332,96 @@ func TestMaintenanceFullPassRecordsLastFullAcrossRounds(t *testing.T) {
 	at, ok, err := s.LastFullMaintenance(context.Background())
 	if err != nil || !ok || at <= 0 {
 		t.Fatalf("last full after full pass = %d %t %v", at, ok, err)
+	}
+}
+
+func TestMaintenancePausedPolicyKeepsFeedbackAndSuppressesFullMarker(t *testing.T) {
+	s := openTest(t)
+	now := time.Now().UnixMilli()
+	if _, err := s.DB.Exec(`INSERT INTO feedback(id,room,project,session,output,message,user,value,question,answer_summary,at)
+VALUES('old','r','p','s','o','m','ou_old','useless','','answer',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec("INSERT INTO audit(at,room,event,detail) VALUES(1,'r','old','{}')"); err != nil {
+		t.Fatal(err)
+	}
+	paused := false
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for round := 0; round < 3*len(maintenancePolicies(now, 1)) && ctx.Err() == nil; round++ {
+		report, err := s.Maintain(ctx, now, 1, MaintainOptions{PausedPolicies: []string{"feedback"}})
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("paused maintenance: %+v %v", report, err)
+		}
+		for _, entry := range report.Policies {
+			if entry.Name == "feedback" {
+				paused = entry.Paused
+			}
+		}
+		var feedbackRows, auditRows int
+		if err := s.DB.QueryRow("SELECT count(*) FROM feedback").Scan(&feedbackRows); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DB.QueryRow("SELECT count(*) FROM audit WHERE event='old'").Scan(&auditRows); err != nil {
+			t.Fatal(err)
+		}
+		if feedbackRows == 1 && auditRows == 0 && paused {
+			break
+		}
+	}
+	var feedbackRows int
+	if err := s.DB.QueryRow("SELECT count(*) FROM feedback").Scan(&feedbackRows); err != nil || feedbackRows != 1 {
+		t.Fatalf("paused policy deleted feedback: %d %v", feedbackRows, err)
+	}
+	if !paused {
+		t.Fatal("paused policy was not reported")
+	}
+	if _, ok, err := s.LastFullMaintenance(context.Background()); err != nil || ok {
+		t.Fatalf("paused sweep recorded a full pass: %t %v", ok, err)
+	}
+	maintainAllPolicies(t, s, now)
+	if err := s.DB.QueryRow("SELECT count(*) FROM feedback").Scan(&feedbackRows); err != nil || feedbackRows != 0 {
+		t.Fatalf("resumed policy did not delete feedback: %d %v", feedbackRows, err)
+	}
+	if _, ok, err := s.LastFullMaintenance(context.Background()); err != nil || !ok {
+		t.Fatalf("resumed full pass was not recorded: %t %v", ok, err)
+	}
+}
+
+func TestFeedbackRetentionRequiresExportWatermarkCoverage(t *testing.T) {
+	s := openTest(t)
+	now := time.Now().UnixMilli()
+	ctx := context.Background()
+	if err := s.SaveFeedbackExport(ctx, "p", FeedbackExportMark{At: 1, ID: "b", File: "feedback-p-old.jsonl", Rows: 1, Updated: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		id string
+		at int64
+	}{
+		{"a", 1},       // at the watermark time, but at or below its id: covered
+		{"c", 1},       // same time, above the watermark id: not covered
+		{"later", 100}, // older than retention, but above the watermark: not covered
+	} {
+		if _, err := s.DB.Exec(`INSERT INTO feedback(id,room,project,session,output,message,user,value,question,answer_summary,at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`, row.id, "room", "p", "session", "output-"+row.id, "message", "ou_"+row.id, "useless", "", "answer", row.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	maintainAllPoliciesWith(t, s, now, MaintainOptions{FeedbackExport: true})
+	for id, want := range map[string]int{"a": 0, "c": 1, "later": 1} {
+		var rows int
+		if err := s.DB.QueryRow("SELECT count(*) FROM feedback WHERE id=?", id).Scan(&rows); err != nil || rows != want {
+			t.Fatalf("feedback %s rows = %d, want %d: %v", id, rows, want, err)
+		}
+	}
+	// Disabling export restores the old unconditional 90-day retention. The
+	// previous pass may leave the feedback cursor at the end of the table, so one
+	// pass clears it and the next rescans from the beginning.
+	maintainAllPoliciesWith(t, s, now, MaintainOptions{FeedbackExport: false})
+	maintainAllPoliciesWith(t, s, now, MaintainOptions{FeedbackExport: false})
+	var rows int
+	if err := s.DB.QueryRow("SELECT count(*) FROM feedback").Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("feedback rows after disabled export = %d: %v", rows, err)
 	}
 }

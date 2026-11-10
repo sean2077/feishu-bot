@@ -16,6 +16,7 @@
 - 修复交付成功后的控件刷新失败在回复卡上残留「重试交付」或追加卡片的噪音：进行中的交付不再提前显示重试，最终刷新失败只记外观未更新；维护超时改为可续跑状态，`/status` 增加最近一次完整清理时间；新增 `projects[].displayWorkspace` 控制回复卡工作目录显示，群聊默认项目 id，私聊默认完整路径。
 - 修复维护游标跨轮次完成一整圈时未写入 `last_full`、`/status` 一直显示“尚未完成一次完整清理”的问题；现在最后一条策略提交时在同一事务写入，非 deadline 错误回滚时不会误记。
 - 新增每轮阶段耗时诊断：`turn_result` 记录排队、启动／复用、发送、首个模型输出和工具累计耗时；`turn_delivery` 记录每次交付尝试及 done 时的总时长。`dispatch_failed`、`worker_failure` 和 `output_delivery_failed` 增加 phase 与固定分类原因，`worker_exit` 增加停止意图 `reason` 和 `inTurn`；只写日志和审计，不改变卡片内容。
+- 新增默认关闭的定时回复反馈归档 `feedback.export`：开启后每轮维护清理前按项目和 UTC 日期写 `feedback-<project>-<YYYY-MM-DD>.jsonl`，复用 `feedback export` 的 JSONL 记录与只读查询；临时文件同步后 rename、0600，当日文件不覆盖，`feedback_exports` 保存 `(at,id)` 水位。`feedback` 保留策略只删除 `(at,id)` 不高于本项目水位的旧行；归档失败暂停整个策略并只审计一次，修复后自动恢复。归档是至少一次语义，写文件后水位保存失败会在下一天重复导出，消费方按 `(messageId, user, at)` 去重；`doctor` 检查目录存在、非符号链接且可写。手工 `feedback export` 行为不变。
 - 原生协议回归固定版本更新为 Claude Code 2.1.321（CI fixture 使用 Agent SDK 0.3.321）。本地假 Messages 流程确认 `[1m]` 模型名只产生已知 stderr 告警，不终止会话；1M 上下文窗口和 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 均按配置生效。该结论是模拟证据，未复现真实流量下的 SIGKILL。
 
 ## 0.5.0 — 2026-11-07

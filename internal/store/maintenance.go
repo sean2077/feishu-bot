@@ -31,6 +31,7 @@ type MaintenancePolicyReport struct {
 	Candidates int64  `json:"candidates"`
 	Changed    int64  `json:"changed"`
 	Deadline   bool   `json:"deadline,omitempty"`
+	Paused     bool   `json:"paused,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 
@@ -65,6 +66,7 @@ CREATE INDEX IF NOT EXISTS action_runs_room_active ON action_runs(room) WHERE st
 CREATE INDEX IF NOT EXISTS action_runs_room_age ON action_runs(room,at);
 CREATE INDEX IF NOT EXISTS feedback_at ON feedback(at);
 CREATE INDEX IF NOT EXISTS feedback_project_value_at ON feedback(project,value,at);
+CREATE TABLE IF NOT EXISTS feedback_exports(project TEXT PRIMARY KEY,at INTEGER NOT NULL,id TEXT NOT NULL,file TEXT NOT NULL,rows INTEGER NOT NULL,updated INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS outbox_terminal_age ON outbox(at) WHERE state IN ('done','cancelled');
 CREATE INDEX IF NOT EXISTS outbox_session_active ON outbox(session) WHERE state NOT IN ('done','cancelled');
 CREATE INDEX IF NOT EXISTS outbox_room_active ON outbox(room) WHERE state NOT IN ('done','cancelled');
@@ -84,6 +86,23 @@ type maintenancePolicy struct {
 	name, table, at, eligible, protect, change string
 	cutoff                                     int64
 }
+
+// MaintainOptions carries per-sweep policy adjustments. The zero value keeps
+// the existing behavior.
+type MaintainOptions struct {
+	// PausedPolicies are left untouched this sweep. A required archive uses
+	// this as a second line of defense while its failure is being fixed.
+	PausedPolicies []string
+	// FeedbackExport protects feedback rows whose (at,id) is above the saved
+	// per-project export watermark, so retention only deletes rows a prior
+	// archive covered.
+	FeedbackExport bool
+}
+
+// feedbackUnexported protects rows that no successful per-project export
+// covered. The watermark is the (at,id) of the last row written to an archive;
+// rows at or below it are eligible for normal retention.
+const feedbackUnexported = `NOT EXISTS(SELECT 1 FROM feedback_exports e WHERE e.project=feedback.project AND (feedback.at<e.at OR (feedback.at=e.at AND feedback.id<=e.id)))`
 
 // A selected native conversation may stay open for months. Only actual pending
 // work protects its terminal rows; merely being selected does not. An uncertain
@@ -106,8 +125,12 @@ EXISTS(SELECT 1 FROM requests r WHERE r.room=` + table + `.room AND r.state='pen
 EXISTS(SELECT 1 FROM action_runs a WHERE a.room=` + table + `.room AND a.state IN ('running','uncertain') AND a.state='running')`
 }
 
-func maintenancePolicies(now, backgroundMS int64) []maintenancePolicy {
+func maintenancePolicies(now, backgroundMS int64, feedbackExport ...bool) []maintenancePolicy {
 	inputRefs := pendingSession("inbox") + ` OR EXISTS(SELECT 1 FROM outbox o WHERE o.room=inbox.room AND o.reply_to=inbox.id AND o.state NOT IN ('done','cancelled'))`
+	feedbackProtect := ""
+	if len(feedbackExport) > 0 && feedbackExport[0] {
+		feedbackProtect = feedbackUnexported
+	}
 	return []maintenancePolicy{
 		{"card_controls", "card_controls", "expires", "1", "", "", now},
 		{"context_refs", "context_refs", "at", "1", pendingRoom("context_refs"), "", now - dayMS},
@@ -119,7 +142,7 @@ func maintenancePolicies(now, backgroundMS int64) []maintenancePolicy {
 		{"outbox", "outbox", "at", "state IN ('done','cancelled')", `file_path IS NOT NULL OR file_state IN ('sending','uncertain') OR EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id)`, "", now - 7*dayMS},
 		{"discarded_output_bodies", "outbox", "at", "state IN ('done','cancelled') AND (text!='' OR card IS NOT NULL OR initial_card IS NOT NULL)", `state!='cancelled' OR file_path IS NOT NULL OR NOT EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id AND d.decision='discard')`, "text='',card=NULL,initial_card=NULL", now - 7*dayMS},
 		{"audit", "audit", "at", "1", "", "", now - 90*dayMS},
-		{"feedback", "feedback", "at", "1", "", "", now - 90*dayMS},
+		{"feedback", "feedback", "at", "1", feedbackProtect, "", now - 90*dayMS},
 		{"requests", "requests", "expires", "state IN ('approved','denied','expired','cancelled')", pendingSession("requests"), "", now - 30*dayMS},
 		{"action_runs", "action_runs", "at", "state IN ('done','failed')", pendingSession("action_runs"), "", now - 90*dayMS},
 	}
@@ -128,13 +151,23 @@ func maintenancePolicies(now, backgroundMS int64) []maintenancePolicy {
 // Maintain bounds both old candidates and mutations for every policy. Cursors
 // survive restart and advance even across protected rows, so a long-lived
 // uncertain record cannot starve later eligible data. It never prunes usage
-// results: those rows are also native-result deduplication keys.
-func (s *Store) Maintain(ctx context.Context, now, backgroundMS int64) (report MaintenanceReport, err error) {
+// results: those rows are also native-result deduplication keys. Paused
+// policies are left untouched this sweep; FeedbackExport additionally protects
+// rows above the archive watermark.
+func (s *Store) Maintain(ctx context.Context, now, backgroundMS int64, options ...MaintainOptions) (report MaintenanceReport, err error) {
 	started := time.Now()
 	defer func() { report.DurationMS = time.Since(started).Milliseconds() }()
 	ctx, cancel := context.WithTimeout(ctx, maintenanceTimeout)
 	defer cancel()
-	policies := maintenancePolicies(now, backgroundMS)
+	var option MaintainOptions
+	if len(options) > 0 {
+		option = options[0]
+	}
+	policies := maintenancePolicies(now, backgroundMS, option.FeedbackExport)
+	paused := map[string]bool{}
+	for _, name := range option.PausedPolicies {
+		paused[name] = true
+	}
 	var next int
 	readErr := s.DB.QueryRowContext(ctx, "SELECT at FROM maintenance_cursors WHERE name='next_policy'").Scan(&next)
 	if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
@@ -151,7 +184,13 @@ func (s *Store) Maintain(ctx context.Context, now, backgroundMS int64) (report M
 	for i := 0; i < len(policies); i++ {
 		index := (next + i) % len(policies)
 		p := policies[index]
-		entry, policyErr := s.maintainPolicy(ctx, p, (index+1)%len(policies))
+		if paused[p.name] {
+			report.Policies = append(report.Policies, MaintenancePolicyReport{Name: p.name, Paused: true})
+			continue
+		}
+		// A pass with a paused policy is intentionally incomplete: do not
+		// advertise a full maintenance circle while retention is behind.
+		entry, policyErr := s.maintainPolicy(ctx, p, (index+1)%len(policies), len(paused) == 0)
 		if policyErr != nil {
 			entry.Error = policyErr.Error()
 			if errors.Is(policyErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -193,7 +232,7 @@ func (s *Store) LastFullMaintenance(ctx context.Context) (int64, bool, error) {
 	return at, err == nil, err
 }
 
-func (s *Store) maintainPolicy(ctx context.Context, p maintenancePolicy, next int) (MaintenancePolicyReport, error) {
+func (s *Store) maintainPolicy(ctx context.Context, p maintenancePolicy, next int, markFull bool) (MaintenancePolicyReport, error) {
 	entry := MaintenancePolicyReport{Name: p.name}
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		at, rowID := int64(-9223372036854775808), int64(0)
@@ -261,7 +300,7 @@ func (s *Store) maintainPolicy(ctx context.Context, p maintenancePolicy, next in
 		// next wraps to the first policy only after the cursor has committed
 		// every policy in order. A failed policy rolls back this transaction,
 		// including the marker, so a non-deadline error cannot fake a full pass.
-		if next == 0 {
+		if next == 0 && markFull {
 			if _, err = tx.ExecContext(ctx, `INSERT INTO maintenance_cursors(name,at,row_id) VALUES('last_full',?,0) ON CONFLICT(name) DO UPDATE SET at=excluded.at,row_id=0`, time.Now().UnixMilli()); err != nil {
 				return err
 			}

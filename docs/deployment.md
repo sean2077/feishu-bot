@@ -111,6 +111,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `projects[].approvals.forbidSelfApproval` | `false` | 开启后发起人不能批准自己的请求，owner 例外；见[审批资格与自批](#审批资格与自批) |
 | `actions[].approvers` | 空 | 该操作的指定审批人；配置后替代 maintainers，不隐式加入 maintainers 或 owners |
 | `projects[].feedback.enabled` | `false` | 在最终 Done 回复卡上显示「有用／无用」反馈，见[回复反馈](#回复反馈) |
+| `feedback.export.enabled`、`feedback.export.dir` | `false`、空 | 维护前按项目、UTC 日期归档反馈；开启时 `dir` 必填且目录须已存在，见[回复反馈](#回复反馈) |
 | `projects[].displayWorkspace` | 空 | 回复卡工作目录显示：`full`、`basename`、`project`、`hidden`；空时群聊显示项目 id，私聊显示完整路径 |
 | `groups[]`、`dms[]` | 空 | 群与私聊授权，见[飞书应用与授权](#飞书应用与授权) |
 | `runtime.maxWorkers`、`runtime.idleMs` | 8、900000 | 活跃原生进程上限（1–128）与空闲回收时间，见[容量与恢复](#容量与恢复) |
@@ -332,7 +333,13 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 
 点击时在 `feedback` 表保存快照：问题取自 outbox origins 对应的 inbox 消息，找不到或已被清理时留空；回复正文取自 outbox。两者分别截断为 4000／2000 字符，并使用现有 secrets 脱敏；同时记录 room、project、gateway session、原生 session（有则记录）、outbox ID、卡片消息 ID、open_id、value 和时间。`feedback` 保留 90 天，维护者应定期导出。
 
-导出命令只读打开状态库；WAL 模式下可与运行中的服务并发读取，不加锁、不修改数据：
+部署级 `feedback.export` 默认关闭。开启时必须配置 `feedback.export.dir`，相对路径按配置文件目录解析；目录须预先存在，`doctor` 会检查它存在、不是符号链接且可写。服务在每轮维护清理前先归档，再执行反馈表的 90 天保留策略。归档按项目和 UTC 日期写成 `feedback-<project>-<YYYY-MM-DD>.jsonl`，每行字段与手工导出相同；文件名中的日期是归档执行日，积压记录写入执行当天的文件。每个项目每天最多写一个文件；写完后在状态库 `feedback_exports` 保存已导出的 `(at,id)` 水位和文件路径，已存在的当日文件不会被覆盖，之后的新反馈留到下一个 UTC 日期。文件先写同目录临时文件、同步后 rename，权限 0600，避免读到半行。
+
+归档是至少一次语义：如果文件已经写入、但水位保存失败，下一个 UTC 日期的文件会再次包含这些行。消费方应按 `(messageId, user, at)` 去重，不能假定每个反馈只出现一次。当日文件已存在而水位不匹配时，导出返回 `ErrExists` 并且不覆盖该文件；当天 `feedback` 保留策略保持暂停，等待下一个 UTC 日期重新归档。
+
+任一项目归档失败时，本轮暂停 `feedback` 保留策略并写一次 `feedback_export_failed` 审计；同一项目、日期和错误类别在后续 30 秒轮次中不重复审计。其他维护策略继续。修复目录后，下一轮成功归档并更新水位，随后恢复删除；失败期间不会删除尚未归档的反馈。成功归档不写逐日审计。关闭 `feedback.export` 时行为与旧版完全一致。
+
+手工导出命令只读打开状态库，独立于定时归档；WAL 模式下可与运行中的服务并发读取，不加锁、不修改数据：
 
 ```sh
 ./bin/feishu-bot feedback export --config ~/.feishu-bot/config.json \
@@ -347,6 +354,7 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 
 - 使用独立配置时传完整参数，例如 `doctor --config ./config.local.json`；`--env-file <KEY=VALUE 文件>` 可在检查前载入凭据。
 - 数据目录检查使用独立临时 SQLite 文件，结束后删除，不打开现有 `gateway.sqlite`，也不留下固定 `doctor.sqlite`。目录不可写或配置的资料目录不存在时仍输出其余检查项；先处理报告中的失败项，再启动。
+- 开启 `feedback.export` 时，`doctor` 还检查归档目录是否存在、是否为符号链接、是否可写；只创建并删除临时探针文件，不读取归档内容。
 - `native` 字段报告实际版本、固定已测版本与 `tested`／`untested` 状态；未知版本不被伪装成已验证，也不单凭版本不同阻止启动。`storage` 只读取数据库、WAL、SHM 和导出目录文件元数据，不打开生产 SQLite 或执行 checkpoint。
 - Windows 上 CC 找不到 Git Bash 时，可设置 `CLAUDE_CODE_GIT_BASH_PATH` 指向实际 `bash.exe`；`doctor` 会执行该程序并检查版本，不只凭文件存在判断就绪。未显式设置时不强制要求 Git Bash，原生工具支持情况仍需实际验证。JSON 中的 Windows 路径使用正斜杠或转义反斜杠。
 - 显式 `--probe-feishu` 只查询应用认证与机器人身份；显式 `--probe` 发送一个可能计费的基础模型请求，未完成配置时跳过，HTTP 200 的登录页或非 Messages JSON 不算通过，只检查基础连接，不代表流式、工具、子代理、图片或长上下文已验收。诊断不打印模型回复或凭据。
