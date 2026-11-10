@@ -8,7 +8,7 @@
 
 ### 1. 准备环境
 
-- Git 与原生 Claude Code；Windows 使用 Git for Windows。协议回归固定使用 Claude Code 2.1.316，其他版本须另行验收。
+- Git 与原生 Claude Code；Windows 使用 Git for Windows。协议回归固定使用 Claude Code 2.1.321，其他版本须另行验收。
 - 一个开启机器人、长连接和卡片回调的飞书自建应用，权限清单见[飞书应用与授权](docs/deployment.md#飞书应用与授权)。
 - 一个兼容 Anthropic Messages 的模型入口。项目不绑定特定供应商，也不提供协议转换层；兼容接口不等于所有模型能力均已验证。
 

@@ -15,6 +15,7 @@
 - 新增按项目开启的回复反馈 `projects[].feedback.enabled`：只在最终成功交付并标记 Done 的回复卡上显示「有用」「无用」，每人每回复一票、最后一次为准，点击只提示不重写卡片。`feedback` 表保存问题与回复摘要快照（截断并脱敏）、open_id、会话和消息 ID，保留 90 天；新增只读 `feedback export` 命令按 value/since/project 导出 JSONL，WAL 下可与运行中的服务并发读取。
 - 修复交付成功后的控件刷新失败在回复卡上残留「重试交付」或追加卡片的噪音：进行中的交付不再提前显示重试，最终刷新失败只记外观未更新；维护超时改为可续跑状态，`/status` 增加最近一次完整清理时间；新增 `projects[].displayWorkspace` 控制回复卡工作目录显示，群聊默认项目 id，私聊默认完整路径。
 - 修复维护游标跨轮次完成一整圈时未写入 `last_full`、`/status` 一直显示“尚未完成一次完整清理”的问题；现在最后一条策略提交时在同一事务写入，非 deadline 错误回滚时不会误记。
+- 原生协议回归固定版本更新为 Claude Code 2.1.321（CI fixture 使用 Agent SDK 0.3.321）。本地假 Messages 流程确认 `[1m]` 模型名只产生已知 stderr 告警，不终止会话；1M 上下文窗口和 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 均按配置生效。该结论是模拟证据，未复现真实流量下的 SIGKILL。
 
 ## 0.5.0 — 2026-11-07
 

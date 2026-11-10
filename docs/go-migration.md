@@ -29,7 +29,7 @@ Go 解码保持旧版的字段大小写、默认值和整数校验，但更严�
 
 ## 迁移步骤
 
-1. **安装原生 Claude Code**。生产版不再依赖 Agent SDK 代为携带 CLI。将可执行文件放入服务账户 PATH，或设置 `runtime.claudeExecutable`。协议回归固定 Claude Code **2.1.316**（对应旧 SDK 0.3.316 携带的版本）；自行升级后应重跑原生测试。
+1. **安装原生 Claude Code**。生产版不再依赖 Agent SDK 代为携带 CLI。将可执行文件放入服务账户 PATH，或设置 `runtime.claudeExecutable`。协议回归固定 Claude Code **2.1.321**（CI fixture 由 Agent SDK 0.3.321 携带）；自行升级后应重跑原生测试。
 2. **获取 Go 网关**：下载发布包或从源码构建，见[获取程序](deployment.md#获取程序)。运行二进制不需要 Go 编译器、Node.js、npm 或 CGO 动态库。
 3. **停止旧服务及自动启动入口**：确认其原生子进程已退出，删除旧的 launcher／stop 脚本和自启动任务。不要让旧版和 Go 版同时连接同一应用或使用同一数据目录。
 4. **备份完整状态**：保存配置、SQLite 及 WAL／SHM、工作区和原生历史；继承模式另保存实际 Claude 配置和历史目录。正常停止后再备份数据库能获得一致快照。

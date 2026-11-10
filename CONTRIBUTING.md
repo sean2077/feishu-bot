@@ -4,7 +4,7 @@
 
 ## 环境与检查
 
-需要 Go 1.25+ 和 Git；真实原生协议测试还需要 Claude Code 2.1.316。在仓库根目录运行：
+需要 Go 1.25+ 和 Git；真实原生协议测试还需要 Claude Code 2.1.321。在仓库根目录运行：
 
 ```sh
 go mod download
