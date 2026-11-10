@@ -10,8 +10,10 @@ import (
 	"github.com/sean2077/feishu-bot/internal/core"
 )
 
-// cardUpdateRejected replays the observed non-retryable CardKit 300301
-// rejection from the final cosmetic control refresh.
+// cardUpdateRejected replays a permanent CardKit rejection from the final
+// cosmetic control refresh. The observed 300301 was traced to overlong
+// feedback element IDs; this test keeps the no-retry/no-second-card safeguard
+// for any future permanent rejection.
 type cardUpdateRejected struct{}
 
 func (cardUpdateRejected) Error() string {

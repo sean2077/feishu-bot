@@ -34,6 +34,7 @@ type compactState struct {
 type worker struct {
 	config                 core.Config
 	project                core.Project
+	room                   core.Room
 	session                core.Session
 	workspace              core.Workspace
 	scopeOnce              sync.Once
@@ -112,6 +113,16 @@ func (w *worker) exitDiagnostics() (string, bool) {
 	return reason, w.turnActive
 }
 
+// exitLogArgs identifies the exited native process when several workers run at
+// once. Room keys are included only when the host supplied one.
+func (w *worker) exitLogArgs(code int, reason string, inTurn bool) args {
+	detail := args{"code": code, "reason": reason, "inTurn": inTurn, "session": w.session.ID}
+	if w.room.Key != "" {
+		detail["room"] = w.room.Key
+	}
+	return detail
+}
+
 // NewFactory creates one persistent native Claude process for each admitted
 // conversation. Workspace policy and lifecycle admission remain in the host.
 func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
@@ -147,7 +158,7 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 		if queueLimit > 128 {
 			queueLimit = 128
 		}
-		w := &worker{config: c, project: project, session: session, workspace: workspace, log: log, secrets: config.Secrets(c), ctx: workerCtx, cancel: cancel, known: map[string]bool{}, modelSet: map[string]bool{}, requests: map[string]chan args{}, controls: map[string]context.CancelFunc{}, controlSeen: map[string]bool{}, pending: make(chan args, queueLimit), initialized: make(chan struct{}), events: make(chan core.WorkerEvent, 256), eventsDone: make(chan struct{}), exited: make(chan struct{}), done: make(chan struct{}), stdoutDone: make(chan struct{}), stderrDone: make(chan struct{}), cleanupDone: make(chan struct{}), started: time.Now(), initID: core.NewID()}
+		w := &worker{config: c, project: project, room: room, session: session, workspace: workspace, log: log, secrets: config.Secrets(c), ctx: workerCtx, cancel: cancel, known: map[string]bool{}, modelSet: map[string]bool{}, requests: map[string]chan args{}, controls: map[string]context.CancelFunc{}, controlSeen: map[string]bool{}, pending: make(chan args, queueLimit), initialized: make(chan struct{}), events: make(chan core.WorkerEvent, 256), eventsDone: make(chan struct{}), exited: make(chan struct{}), done: make(chan struct{}), stdoutDone: make(chan struct{}), stderrDone: make(chan struct{}), cleanupDone: make(chan struct{}), started: time.Now(), initID: core.NewID()}
 		w.output = newOutput(func(id string) bool { return w.known[id] })
 		if _, err := w.fileScope(); err != nil {
 			cancel()
@@ -879,7 +890,7 @@ func (w *worker) waitProcess() {
 		event.CleanupConfirmed = &confirmed
 	}
 	reason, inTurn := w.exitDiagnostics()
-	w.log("worker_exit", args{"code": code, "reason": reason, "inTurn": inTurn})
+	w.log("worker_exit", w.exitLogArgs(code, reason, inTurn))
 	w.emit(event)
 	close(w.done)
 }

@@ -16,26 +16,28 @@ func (g *Gateway) feedbackEnabled(r core.Room) bool {
 }
 
 // feedbackControls are appended only to the final, delivered reply card. The
-// tokens share the quick-control revision and card binding.
+// tokens share the quick-control revision and card binding. CardKit limits
+// element_id to 20 characters; longer IDs are truncated server-side and
+// collide, which the API reports as code 300301 (duplicate element_id).
 func (g *Gateway) feedbackControls(r core.Room, session, output, revision string) []any {
 	if session == "" || output == "" || !g.feedbackEnabled(r) {
 		return nil
 	}
-	makeButton := func(action, label string) core.Args {
+	makeButton := func(action, label, elementID string) core.Args {
 		p := quickControl{Room: r.Key, Session: session, Output: output, Revision: revision, Action: action}
 		b := button(label, nil, "default")
 		delete(b, "value")
-		b["element_id"] = "gateway_quick_" + action
+		b["element_id"] = elementID
 		b["behaviors"] = []any{core.Args{"type": "callback", "value": core.Args{"quick_control": g.signQuick(p)}}}
 		return b
 	}
 	columns := []any{
-		core.Args{"tag": "column", "width": "auto", "elements": []any{makeButton("feedback_useful", "有用")}},
-		core.Args{"tag": "column", "width": "auto", "elements": []any{makeButton("feedback_useless", "无用")}},
+		core.Args{"tag": "column", "width": "auto", "elements": []any{makeButton("feedback_useful", "有用", "gateway_quick_fb_yes")}},
+		core.Args{"tag": "column", "width": "auto", "elements": []any{makeButton("feedback_useless", "无用", "gateway_quick_fb_no")}},
 	}
 	return []any{
-		core.Args{"tag": "hr", "element_id": "gateway_quick_feedback_div"},
-		core.Args{"tag": "column_set", "element_id": "gateway_quick_feedback", "flex_mode": "none", "horizontal_spacing": "medium", "columns": columns},
+		core.Args{"tag": "hr", "element_id": "gateway_quick_fb_div"},
+		core.Args{"tag": "column_set", "element_id": "gateway_quick_fb", "flex_mode": "none", "horizontal_spacing": "medium", "columns": columns},
 	}
 }
 

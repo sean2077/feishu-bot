@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -43,6 +44,33 @@ func cardTexts(value any) map[string]string {
 	visit(value, 0)
 	return result
 }
+
+// CardKit only accepts element_id values up to 20 characters. Longer values
+// are reported as duplicate element_id (code 300301), which makes the failure
+// look unrelated to the actual cause.
+const cardElementIDLimit = 20
+
+func validateCardElementIDs(v any) error {
+	switch value := v.(type) {
+	case map[string]any:
+		if id, ok := value["element_id"].(string); ok && utf8.RuneCountInString(id) > cardElementIDLimit {
+			return errors.New("feishu: card element id exceeds 20 characters")
+		}
+		for _, child := range value {
+			if err := validateCardElementIDs(child); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range value {
+			if err := validateCardElementIDs(child); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func normalizedCard(card core.Args) (core.Args, string, error) {
 	encoded, err := canonicalJSON(card)
 	budget, budgetErr := core.CardPayloadBytes(card)
@@ -57,6 +85,9 @@ func normalizedCard(card core.Args) (core.Args, string, error) {
 	var normalized core.Args
 	if json.Unmarshal([]byte(encoded), &normalized) != nil {
 		return nil, "", errors.New("feishu: invalid card")
+	}
+	if err := validateCardElementIDs(normalized); err != nil {
+		return nil, "", err
 	}
 	return normalized, encoded, nil
 }

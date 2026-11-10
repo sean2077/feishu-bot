@@ -250,7 +250,7 @@ func (f *fixture) start() {
 
 func (f *fixture) startWithLogger(log core.Logger) {
 	f.t.Helper()
-	w, err := NewFactory(f.config, log)(context.Background(), core.Room{ProjectID: "p"}, f.session, f.workspace, func(e core.WorkerEvent) {
+	w, err := NewFactory(f.config, log)(context.Background(), core.Room{Key: "room-key", ProjectID: "p"}, f.session, f.workspace, func(e core.WorkerEvent) {
 		f.mu.Lock()
 		f.all = append(f.all, e)
 		f.mu.Unlock()
@@ -613,8 +613,19 @@ func TestWorkerExitReportsStopReasonAndTurnState(t *testing.T) {
 	if len(exits) != 1 {
 		t.Fatalf("worker_exit logs = %#v", exits)
 	}
-	if exits[0]["reason"] != "idle_release" || exits[0]["inTurn"] != true {
+	if exits[0]["reason"] != "idle_release" || exits[0]["inTurn"] != true || exits[0]["session"] != "session" || exits[0]["room"] != "room-key" {
 		t.Fatalf("worker_exit diagnostics = %#v", exits[0])
+	}
+}
+
+func TestWorkerExitLogOmitsEmptyRoom(t *testing.T) {
+	w := &worker{session: core.Session{ID: "session-a"}}
+	detail := w.exitLogArgs(0, "stop", false)
+	if detail["session"] != "session-a" || detail["reason"] != "stop" || detail["inTurn"] != false {
+		t.Fatalf("worker exit detail = %#v", detail)
+	}
+	if _, ok := detail["room"]; ok {
+		t.Fatalf("empty room was included: %#v", detail)
 	}
 }
 
