@@ -40,7 +40,7 @@ func maintainAllPolicies(t *testing.T, s *Store, now int64) {
 			t.Fatalf("maintenance round %d: %+v: %v", round+1, lastReport, lastErr)
 		}
 		for _, entry := range lastReport.Policies {
-			if entry.Error == "" {
+			if entry.Error == "" && !entry.Deadline {
 				delete(pending, entry.Name)
 			}
 		}
@@ -283,5 +283,21 @@ INSERT INTO output_discarded_origins(room,session,origin,output,actor,at) VALUES
 	var body string
 	if err = s.DB.QueryRow("SELECT message FROM inbox WHERE room='r' AND id='discard-source'").Scan(&body); err != nil || body != "{}" {
 		t.Fatal("dedup marker retained the unnecessary message body", body, err)
+	}
+}
+
+func TestMaintenanceDeadlineIsResumableAndRecordsFullCompletion(t *testing.T) {
+	s := openTest(t)
+	expired, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	time.Sleep(time.Millisecond)
+	report, err := s.Maintain(expired, time.Now().UnixMilli(), 1)
+	if err != nil || !report.Deadline || report.Progress {
+		t.Fatalf("deadline report = %+v, %v", report, err)
+	}
+	maintainAllPolicies(t, s, time.Now().UnixMilli())
+	at, ok, err := s.LastFullMaintenance(context.Background())
+	if err != nil || !ok || at <= 0 {
+		t.Fatalf("last full maintenance = %d %t %v", at, ok, err)
 	}
 }

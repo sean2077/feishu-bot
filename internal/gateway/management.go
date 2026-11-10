@@ -130,6 +130,15 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 	}
 	view["outboxStates"] = outboxStates
 	view["cardSnapshots"] = core.Args{"count": snapshotCount, "bytes": snapshotBytes}
+	maintenanceCtx, cancelMaintenance := context.WithTimeout(context.Background(), time.Second)
+	if at, ok, err := g.store.LastFullMaintenance(maintenanceCtx); err == nil {
+		if ok {
+			view["maintenance"] = core.Args{"lastFullAt": time.UnixMilli(at).UTC().Format(time.RFC3339)}
+		} else {
+			view["maintenance"] = core.Args{"lastFullAt": nil}
+		}
+	}
+	cancelMaintenance()
 	if saved != nil {
 		view["session"] = saved.ID
 		p, err := g.store.Preferences(r.Key, saved.ID)
@@ -263,6 +272,13 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 		}
 		if n, _ := numberArg(v, "pendingOutputs"); n > 0 {
 			text += "\n用 /outputs 查看尚未送达的回复或文件，不必让模型重新执行任务。"
+		}
+		if maintenance := argsOf(v["maintenance"]); maintenance != nil {
+			if at := stringArg(maintenance, "lastFullAt"); at != "" {
+				text += "\n维护：最近完整清理 " + at
+			} else {
+				text += "\n维护：尚未完成一次完整清理"
+			}
 		}
 		return text, true, nil
 	}

@@ -21,6 +21,8 @@ type MaintenanceReport struct {
 	DurationMS int64                     `json:"durationMs"`
 	Candidates int64                     `json:"candidates"`
 	Changed    int64                     `json:"changed"`
+	Deadline   bool                      `json:"deadline,omitempty"`
+	Progress   bool                      `json:"progress,omitempty"`
 	Policies   []MaintenancePolicyReport `json:"policies"`
 }
 
@@ -28,6 +30,7 @@ type MaintenancePolicyReport struct {
 	Name       string `json:"name"`
 	Candidates int64  `json:"candidates"`
 	Changed    int64  `json:"changed"`
+	Deadline   bool   `json:"deadline,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 
@@ -135,17 +138,34 @@ func (s *Store) Maintain(ctx context.Context, now, backgroundMS int64) (report M
 	var next int
 	readErr := s.DB.QueryRowContext(ctx, "SELECT at FROM maintenance_cursors WHERE name='next_policy'").Scan(&next)
 	if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+		if errors.Is(readErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			report.Deadline = true
+			return report, nil
+		}
 		return report, readErr
 	}
 	if next < 0 || next >= len(policies) {
 		next = 0
 	}
+	committed := 0
 	for i := 0; i < len(policies); i++ {
 		index := (next + i) % len(policies)
 		p := policies[index]
 		entry, policyErr := s.maintainPolicy(ctx, p, (index+1)%len(policies))
 		if policyErr != nil {
 			entry.Error = policyErr.Error()
+			if errors.Is(policyErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				// The budget is a soft bound for one sweep, not a failure of the
+				// policy. Cursors already committed by earlier policies point at
+				// the interrupted one, so the next sweep resumes there.
+				entry.Deadline = true
+				report.Deadline = true
+				report.Progress = committed > 0
+				report.Policies = append(report.Policies, entry)
+				report.Candidates += entry.Candidates
+				report.Changed += entry.Changed
+				return report, nil
+			}
 		}
 		report.Policies = append(report.Policies, entry)
 		report.Candidates += entry.Candidates
@@ -153,8 +173,27 @@ func (s *Store) Maintain(ctx context.Context, now, backgroundMS int64) (report M
 		if policyErr != nil {
 			return report, fmt.Errorf("maintenance %s: %w", p.name, policyErr)
 		}
+		committed++
 	}
+	report.Progress = true
+	// Only a complete sweep records the retention watermark used by /status.
+	// A failed marker write must not turn a completed cleanup into an error.
+	markCtx, cancelMark := context.WithTimeout(context.Background(), 2*time.Second)
+	_, _ = s.DB.ExecContext(markCtx, `INSERT INTO maintenance_cursors(name,at,row_id) VALUES('last_full',?,0) ON CONFLICT(name) DO UPDATE SET at=excluded.at,row_id=0`, time.Now().UnixMilli())
+	cancelMark()
 	return report, nil
+}
+
+// LastFullMaintenance returns the completion time of the last sweep that
+// visited every policy. The second result is false before the first complete
+// sweep (including after upgrading an older database).
+func (s *Store) LastFullMaintenance(ctx context.Context) (int64, bool, error) {
+	var at int64
+	err := s.DB.QueryRowContext(ctx, "SELECT at FROM maintenance_cursors WHERE name='last_full'").Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	return at, err == nil, err
 }
 
 func (s *Store) maintainPolicy(ctx context.Context, p maintenancePolicy, next int) (MaintenancePolicyReport, error) {

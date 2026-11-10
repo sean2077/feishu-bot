@@ -354,6 +354,32 @@ func (g *Gateway) releaseIdle(ctx context.Context, s *slot) bool {
 	return true
 }
 
+const maintenanceStallRounds = 3
+
+// A bounded sweep may legitimately stop before every policy runs. Progress
+// resets the counter; only consecutive rounds that commit nothing are treated
+// as a stall worth an audit event.
+func (g *Gateway) noteMaintenance(deadline, progress bool) {
+	if !deadline || progress {
+		g.maintenanceMu.Lock()
+		g.maintenanceNoProgress = 0
+		g.maintenanceStalled = false
+		g.maintenanceMu.Unlock()
+		return
+	}
+	g.maintenanceMu.Lock()
+	g.maintenanceNoProgress++
+	rounds := 0
+	if g.maintenanceNoProgress >= maintenanceStallRounds && !g.maintenanceStalled {
+		g.maintenanceStalled = true
+		rounds = g.maintenanceNoProgress
+	}
+	g.maintenanceMu.Unlock()
+	if rounds > 0 {
+		g.audit("", "maintenance_stalled", core.Args{"rounds": rounds})
+	}
+}
+
 // Sweep reclaims confirmed idle native workers before retrying any network I/O.
 // A stalled provider must not postpone reclamation of unrelated idle sessions.
 func (g *Gateway) Sweep(ctx context.Context, now int64) {
@@ -377,11 +403,18 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 	g.kickWaiting()
 	g.pruneExports(now)
 	report, maintenanceErr := g.store.Maintain(ctx, now, g.config.Limits.BackgroundMS)
+	g.noteMaintenance(report.Deadline, report.Progress)
 	if g.logger != nil {
 		for i := range report.Policies {
 			report.Policies[i].Error = core.Redact(report.Policies[i].Error, g.secrets)
 		}
 		detail := core.Args{"durationMs": report.DurationMS, "candidates": report.Candidates, "changed": report.Changed, "policies": report.Policies}
+		if report.Deadline {
+			detail["deadline"] = true
+		}
+		if report.Progress {
+			detail["progress"] = true
+		}
 		if maintenanceErr != nil {
 			detail["error"] = core.Redact(maintenanceErr.Error(), g.secrets)
 		}

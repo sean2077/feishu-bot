@@ -103,6 +103,9 @@ type Gateway struct {
 	attachmentLocks                                              keyedLocks
 	statusLocks                                                  keyedLocks
 	poolMu, sweepMu                                              sync.Mutex
+	maintenanceMu                                                sync.Mutex
+	maintenanceNoProgress                                        int
+	maintenanceStalled                                           bool
 	outMu                                                        sync.Mutex
 	outActive                                                    map[string]bool
 	outCursor                                                    map[string]outputCursor
