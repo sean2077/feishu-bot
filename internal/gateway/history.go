@@ -137,7 +137,10 @@ func (g *Gateway) history(ctx context.Context, r core.Room, session string, inpu
 	}
 	replyTexts, e := g.store.HistoryReplyTexts(ctx, r.Key, ids)
 	if e != nil {
-		return nil, e
+		// Backfill is additive context; a local lookup failure must not lose
+		// the readable history page.
+		g.audit(r.Key, "history_backfill_failed", core.Args{"error": core.Redact(e.Error(), g.secrets)})
+		replyTexts = map[string]string{}
 	}
 	remaining := min(g.config.Limits.TextChars*2, 40000)
 	messages := []core.Message{}

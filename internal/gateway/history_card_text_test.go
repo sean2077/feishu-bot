@@ -81,3 +81,25 @@ func TestHistoryBackfillsOnlyDeliveredReplyCards(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoryBackfillFailureLeavesHistoryReadable(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	f.tr.historyPage = core.HistoryPage{Messages: []core.Message{historyBotMessage(f, "card-backfill-error", core.HistoryCardPlaceholder)}}
+	if _, err := f.s.DB.Exec("ALTER TABLE outbox RENAME TO outbox_backfill_unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	defer f.s.DB.Exec("ALTER TABLE outbox_backfill_unavailable RENAME TO outbox")
+	page, err := f.g.history(context.Background(), r, "session-a", core.Args{"limit": 5})
+	if err != nil {
+		t.Fatalf("history failed when backfill lookup failed: %v", err)
+	}
+	messages := page["messages"].([]core.Message)
+	if len(messages) != 1 || messages[0].Text != core.HistoryCardPlaceholder {
+		t.Fatalf("history changed on backfill failure: %#v", messages)
+	}
+	var count int
+	if err := f.s.DB.QueryRow("SELECT count(*) FROM audit WHERE room=? AND event='history_backfill_failed'", r.Key).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("backfill failure audit = %d, %v", count, err)
+	}
+}
