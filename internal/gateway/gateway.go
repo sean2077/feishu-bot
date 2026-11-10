@@ -50,6 +50,8 @@ type slot struct {
 	compacting                          string
 	requests                            map[string]bool
 	activeRequests                      int
+	turn                                *turnTiming
+	startupMs                           int64
 	titleSync                           *sessionTitleSync
 	// topicRootUnavailable names the session whose topic root was fetched
 	// successfully but is absent or not readable in this room. It avoids a
@@ -107,6 +109,9 @@ type Gateway struct {
 	maintenanceNoProgress                                        int
 	maintenanceStalled                                           bool
 	outMu                                                        sync.Mutex
+	turnMu                                                       sync.Mutex
+	turnReports                                                  map[string]*turnDeliveryReport
+	turnReportOrder                                              []string
 	outActive                                                    map[string]bool
 	outCursor                                                    map[string]outputCursor
 	stopBlocked                                                  map[string]bool
@@ -642,7 +647,7 @@ func (g *Gateway) kick(r core.Room) {
 			err := g.dispatch(r)
 			unlock()
 			if err != nil && !g.isClosing() {
-				g.audit(r.Key, "dispatch_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+				g.audit(r.Key, "dispatch_failed", core.Args{"error": core.Redact(err.Error(), g.secrets), "phase": failurePhase(err), "reason": failureReasonOf(err)})
 				var failure *launchFailure
 				repeated := errors.As(err, &failure) && failure.notified
 				if errors.Is(err, config.ErrModelProfileUnavailable) {
@@ -828,7 +833,16 @@ func (g *Gateway) reserve(r core.Room) (*slot, error) {
 	g.audit(r.Key, "worker_slot_reserved", detail)
 	return s, nil
 }
-func (g *Gateway) dispatch(r core.Room) error {
+func (g *Gateway) dispatch(r core.Room) (err error) {
+	phase := "launch"
+	defer func() {
+		if err != nil {
+			var failure *dispatchFailure
+			if !errors.As(err, &failure) {
+				err = &dispatchFailure{phase: phase, reason: failureReason(err), err: err}
+			}
+		}
+	}()
 	if g.isClosing() || g.stopIsBlocked(r.Key) {
 		// A kick may have been waiting on the dispatch lock while a stop
 		// failed; the block must hold for it too.
@@ -1009,7 +1023,11 @@ func (g *Gateway) dispatch(r core.Room) error {
 		s.mu.Unlock()
 		if !live || g.isClosing() {
 			stopCtx, cancelStop := context.WithTimeout(context.Background(), 10*time.Second)
-			err = stopWorker(stopCtx, worker)
+			reason := "stop"
+			if g.isClosing() {
+				reason = "shutdown"
+			}
+			err = stopWorkerReason(stopCtx, worker, reason)
 			cancelStop()
 			if err != nil {
 				s.mu.Lock()
@@ -1026,6 +1044,7 @@ func (g *Gateway) dispatch(r core.Room) error {
 		g.clearLaunchFailure(r.Key)
 		g.applySessionTitle(s, worker, pending[0].Message)
 	}
+	phase = "send"
 	for g.active(s) && !g.isClosing() {
 		queued, err := g.store.Pending(r.Key)
 		if err != nil {
@@ -1147,12 +1166,16 @@ func (g *Gateway) dispatch(r core.Room) error {
 			if s.anchor == "" {
 				s.anchor = d.UUID
 			}
+			if s.turn == nil {
+				s.turn = newTurnTiming(s, d)
+			}
 			if d.Command != nil {
 				s.compacting = d.UUID
 			}
 			s.busy = true
 			s.lastActivity = time.Now().UnixMilli()
 			s.mu.Unlock()
+			setWorkerTurn(worker, true)
 			for _, m := range members {
 				g.acceptReceipt(r, s.session.ID, m.Message)
 			}
@@ -1210,7 +1233,7 @@ func (g *Gateway) dispatch(r core.Room) error {
 			g.notify(r, "本条交付未确认，不会自动重放："+core.Redact(err.Error(), g.secrets), &d.Message)
 			if handedOff {
 				stopCtx, cancelStop := context.WithTimeout(context.Background(), 10*time.Second)
-				stopErr := stopWorker(stopCtx, worker)
+				stopErr := stopWorkerReason(stopCtx, worker, "delivery_failed")
 				cancelStop()
 				confirmed := stopErr == nil
 				g.event(s, core.WorkerEvent{Type: "exit", CleanupConfirmed: &confirmed})

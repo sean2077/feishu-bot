@@ -245,7 +245,12 @@ func newFixture(t *testing.T) *fixture {
 }
 func (f *fixture) start() {
 	f.t.Helper()
-	w, err := NewFactory(f.config, nil)(context.Background(), core.Room{ProjectID: "p"}, f.session, f.workspace, func(e core.WorkerEvent) {
+	f.startWithLogger(nil)
+}
+
+func (f *fixture) startWithLogger(log core.Logger) {
+	f.t.Helper()
+	w, err := NewFactory(f.config, log)(context.Background(), core.Room{ProjectID: "p"}, f.session, f.workspace, func(e core.WorkerEvent) {
 		f.mu.Lock()
 		f.all = append(f.all, e)
 		f.mu.Unlock()
@@ -572,4 +577,47 @@ func TestQueueLimitAndDuplicateInputRejected(t *testing.T) {
 func ExampleNewFactory() {
 	fmt.Println("One admitted conversation, one persistent native Claude process.")
 	// Output: One admitted conversation, one persistent native Claude process.
+}
+
+func TestWorkerExitReportsStopReasonAndTurnState(t *testing.T) {
+	var mu sync.Mutex
+	var exits []core.Args
+	f := newFixture(t)
+	f.startWithLogger(func(event string, value core.Args) {
+		if event != "worker_exit" {
+			return
+		}
+		mu.Lock()
+		exits = append(exits, value)
+		mu.Unlock()
+	})
+	f.worker.(interface{ SetStopReason(string) }).SetStopReason("idle_release")
+	f.worker.(interface{ SetTurnActive(bool) }).SetTurnActive(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := f.worker.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(exits) != 1 {
+		t.Fatalf("worker_exit logs = %#v", exits)
+	}
+	if exits[0]["reason"] != "idle_release" || exits[0]["inTurn"] != true {
+		t.Fatalf("worker_exit diagnostics = %#v", exits[0])
+	}
+}
+
+func TestObserveReportsToolResultActivity(t *testing.T) {
+	w := &worker{output: newOutput(func(string) bool { return false }), known: map[string]bool{}, session: core.Session{}}
+	events, err := w.observe(args{"type": "user", "message": args{"content": []any{args{"type": "tool_result", "tool_use_id": "tool-1"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == "activity" && event.Phase == "tool_end" && event.ToolUseID == "tool-1" {
+			return
+		}
+	}
+	t.Fatalf("tool result event missing: %+v", events)
 }

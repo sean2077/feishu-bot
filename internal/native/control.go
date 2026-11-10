@@ -237,7 +237,7 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			return args{}, nil
 		}
 		name := text(input["tool_name"])
-		w.emit(core.WorkerEvent{Type: "activity", Tool: name})
+		w.emit(core.WorkerEvent{Type: "activity", Tool: name, Phase: "tool_start", ToolUseID: text(input["tool_use_id"])})
 		scope, err := w.fileScope()
 		if err != nil {
 			return denyHook("Unable to verify conversation file scope"), nil

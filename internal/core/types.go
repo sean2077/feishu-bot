@@ -75,6 +75,7 @@ type Delivery struct {
 	UUID         string       `json:"uuid"`
 	RoomKey      string       `json:"roomKey"`
 	SessionID    string       `json:"sessionId"`
+	QueuedAt     int64        `json:"queuedAt,omitempty"`
 	Message      Message      `json:"message"`
 	Background   []Message    `json:"background"`
 	Quote        *Message     `json:"quote,omitempty"`
@@ -288,6 +289,8 @@ type WorkerEvent struct {
 	ReplyToUUID      string   `json:"replyToUuid,omitempty"`
 	Compact          string   `json:"compact,omitempty"`
 	Tool             string   `json:"tool,omitempty"`
+	ToolUseID        string   `json:"toolUseId,omitempty"`
+	StartupMS        int64    `json:"startupMs,omitempty"`
 	Background       *int     `json:"background,omitempty"`
 	Pinned           *bool    `json:"pinned,omitempty"`
 	State            string   `json:"state,omitempty"`

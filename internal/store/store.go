@@ -429,7 +429,7 @@ func (s *Store) Queue(d core.Delivery) error {
 	return e
 }
 func (s *Store) Pending(room string) ([]core.Delivery, error) {
-	rows, e := s.DB.Query("SELECT payload FROM inbox WHERE room=? AND status='queued' ORDER BY rowid", room)
+	rows, e := s.DB.Query("SELECT payload, at FROM inbox WHERE room=? AND status='queued' ORDER BY rowid", room)
 	if e != nil {
 		return nil, e
 	}
@@ -437,13 +437,15 @@ func (s *Store) Pending(room string) ([]core.Delivery, error) {
 	result := []core.Delivery{}
 	for rows.Next() {
 		var raw string
+		var at int64
 		var d core.Delivery
-		if e = rows.Scan(&raw); e != nil {
+		if e = rows.Scan(&raw, &at); e != nil {
 			return nil, e
 		}
 		if e = json.Unmarshal([]byte(raw), &d); e != nil {
 			return nil, e
 		}
+		d.QueuedAt = at
 		result = append(result, d)
 	}
 	return result, rows.Err()
