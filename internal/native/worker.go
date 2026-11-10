@@ -37,6 +37,7 @@ type worker struct {
 	room                   core.Room
 	session                core.Session
 	workspace              core.Workspace
+	projectPrompt          string
 	scopeOnce              sync.Once
 	scope                  nativeFileScope
 	scopeErr               error
@@ -165,6 +166,11 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 			queueLimit = 128
 		}
 		w := &worker{config: c, project: project, room: room, session: session, workspace: workspace, log: log, secrets: config.Secrets(c), ctx: workerCtx, cancel: cancel, known: map[string]bool{}, modelSet: map[string]bool{}, requests: map[string]chan args{}, controls: map[string]context.CancelFunc{}, controlSeen: map[string]bool{}, pending: make(chan args, queueLimit), initialized: make(chan struct{}), events: make(chan core.WorkerEvent, 256), eventsDone: make(chan struct{}), exited: make(chan struct{}), done: make(chan struct{}), stdoutDone: make(chan struct{}), stderrDone: make(chan struct{}), cleanupDone: make(chan struct{}), started: time.Now(), initID: core.NewID()}
+		prompt, promptReason := loadProjectPrompt(project, workspace)
+		w.projectPrompt = prompt
+		if promptReason != "" {
+			w.emit(core.WorkerEvent{Type: "project_prompt_unavailable", Reason: promptReason})
+		}
 		w.output = newOutput(func(id string) bool { return w.known[id] })
 		if _, err := w.fileScope(); err != nil {
 			cancel()
@@ -300,7 +306,7 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 			}
 		}()
 		go func() { <-workerCtx.Done(); w.beginStop() }()
-		if err = w.write(args{"type": "control_request", "request_id": w.initID, "request": initialization(project, c.Limits.ApprovalMS)}); err != nil {
+		if err = w.write(args{"type": "control_request", "request_id": w.initID, "request": initialization(project, c.Limits.ApprovalMS, w.projectPrompt)}); err != nil {
 			w.fail("Claude initialization write failed", err)
 			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer stopCancel()

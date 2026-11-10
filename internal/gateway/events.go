@@ -221,6 +221,8 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 			g.cancelLostSupplements(s.room)
 		}
 		g.kickWaiting()
+	case "project_prompt_unavailable":
+		g.audit(s.room.Key, "project_prompt_unavailable", core.Args{"project": s.room.ProjectID, "reason": ev.Reason})
 	case "bash_cwd_prefix_rejected":
 		s.mu.Lock()
 		session := s.session.ID

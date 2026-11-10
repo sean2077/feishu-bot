@@ -109,6 +109,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `projects[].bash.rejectCwdPrefix` | `false` | 拒绝以 `cd <当前原生 cwd> &&`／`;` 开头的 Bash 命令，减少重复审批噪音；不是安全边界，见[Bash cwd 前缀](#bash-cwd-前缀) |
 | `projects[].env`、`projects[].envPassthrough` | 空 | 项目级原生进程环境变量；`env` 为非敏感字面值，`envPassthrough` 从服务环境复制凭据，见[项目环境变量](#项目环境变量) |
 | `projects[].settingsFile` | 空 | 管理员维护的原生 settings 快照；只允许 `env`、`permissions.allow/ask/deny` 和 `autoMode`，见[项目设置文件](#项目设置文件) |
+| `projects[].appendSystemPrompt`、`appendSystemPromptFile` | 空 | 二选一的项目系统提示词；只作为模型指引，不改变授权/权限，见[项目系统提示词](#项目系统提示词) |
 | `projects[].owners` | 空 | maintainers 子集；仅用于 `forbidSelfApproval` 时的 owner 例外，不增加其他权限 |
 | `projects[].approvals.forbidSelfApproval` | `false` | 开启后发起人不能批准自己的请求，owner 例外；见[审批资格与自批](#审批资格与自批) |
 | `actions[].approvers` | 空 | 该操作的指定审批人；配置后替代 maintainers，不隐式加入 maintainers 或 owners |
@@ -298,6 +299,14 @@ passthrough 值中长度不少于 8 个字符的值会加入日志、回复卡�
 - deny 已在 2.1.319 用本地假 Messages 服务验证：allow 命中时 Bash 执行，同一规则加入 deny 后命令被拒绝；`acceptEdits` 和 `bypassPermissions` 两种模式都生效。
 
 isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings；其 allow、hooks 等按原生规则与 `--settings` 合并（deny 优先是原生文档行为；本项目只验证了 `--settings` 自身的 deny，未单独验证跨来源 deny 冲突）。管理员必须把 cwd 仓库自带的 project settings 与这份文件一起审核，不能只审核 `settingsFile`。
+
+## 项目系统提示词
+
+`projects[].appendSystemPrompt`（内联）和 `appendSystemPromptFile`（文件）二选一；两个同时配置时配置加载失败。提示词上限 **16 KiB**，必须是 UTF-8 且不含 NUL。文件路径按配置文件目录解析，不能位于 `dataDir/rooms` 房间目录或该会话的原生 HOME 下。网关在每次启动原生进程时读取一次快照：文件修改在下一次启动（空闲回收或 `/new`）后生效。原生进程收到的拼接顺序是 bridge 提示词 → action 段 → `Project instructions:` 固定标题 + 项目提示词；interactive 本地接管使用原生 `--append-system-prompt`（2.1.321 支持）。
+
+提示词只是给模型的指引，不能突破网关的授权、聊天/作者范围、工具 allow/ask/deny 或 `permissionMode`；它不是安全边界。提示词文件与 cwd 中的 `CLAUDE.md` 一样，如果放在会话可写的目录里，会话可能修改它，管理员必须自行保护文件权限和内容。
+
+提示词读取采用 fail-open：文件缺失、不可读、超长、非 UTF-8 或含 NUL 时，原生进程照常启动但不带项目提示词，并写一次 `project_prompt_unavailable` 审计（project、固定原因分类，不写内容）；每个进程最多一次。`doctor` 对同一问题报失败并提示管理员修复，但不阻止启动；`doctor` 和 `config explain` 只显示是否配置、来源（内联/文件）和字节数，不显示提示词内容。interactive 本地接管无法写网关审计，失败时同样只省略提示词。
 
 规则写法示例（虚构命令）：
 

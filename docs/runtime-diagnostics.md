@@ -69,6 +69,7 @@ auto 权限模式补充：
 - `bash_cwd_prefix_rejected`：开启 `projects[].bash.rejectCwdPrefix` 后，Bash 命令以当前原生 cwd 的 `cd ... &&`／`;` 前缀开头时写一条；room 为当前房间，detail 只有 `session`，不记录命令全文。
 - 上述两类事件只在 `permissionMode=auto`、tool_result 带 `is_error=true` 且该 `tool_use_id` 出现在同一轮 result 的 `permission_denials` 时才确认；普通工具输出或非 auto 项目不能伪造审计/卡片提示。审计和提示会延迟到该轮 result 到达。
 - 分类器文本识别与 Claude Code 版本绑定；未识别的文本只记录普通工具结果，不猜造拦截。deny 规则会让工具根本不出现；ask 规则仍走 `can_use_tool` 维护者审批。
+- `project_prompt_unavailable`：项目系统提示词文件缺失、不可读、超长、编码错误、含 NUL 或路径在受保护目录时写一条；detail 只有 `project` 和固定 `reason` 分类，不记录提示词内容。每个原生进程最多一次，原生进程仍照常启动；`doctor` 会单独报告该文件问题。
 
 ## 容量等待、复用与回收
 

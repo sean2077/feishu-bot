@@ -24,6 +24,7 @@
 - 原生协议回归固定版本更新为 Claude Code 2.1.321（CI fixture 使用 Agent SDK 0.3.321）。本地假 Messages 流程确认 `[1m]` 模型名只产生已知 stderr 告警，不终止会话；1M 上下文窗口和 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 均按配置生效。该结论是模拟证据，未复现真实流量下的 SIGKILL。
 - 新增反馈审计：点击保存成功后写 `feedback_recorded`（room、session、output、value），定时导出成功后写 `feedback_exported`（project、date、rows、文件 basename）；只记录元数据，不含问答内容、open_id 或其他用户标识。
 - 新增默认关闭的 `projects[].bash.rejectCwdPrefix`：开启后在 PreToolUse Bash hook 中拒绝以当前原生 cwd 的 `cd <cwd> &&` 或 `cd <cwd>;` 开头的命令，返回可直接照做的说明，减少重复审批噪音；支持引号、正反斜杠、Windows 大小写和 MSYS 路径、`~` 展开。它只检查开头一个 cd，不处理环境变量/`cd -`/`cd ..`/`pushd`，不是安全边界。每次触发写 `bash_cwd_prefix_rejected` 审计（room、session），不记录命令全文。
+- 新增项目系统提示词 `projects[].appendSystemPrompt` / `appendSystemPromptFile`（二选一，16 KiB，UTF-8，无 NUL）：在初始化 appendSystemPrompt 中按 bridge → action → `Project instructions:` 顺序拼接，interactive 通过 `--append-system-prompt` 传入。文件每次启动读取；缺失/不可读/超长/编码错误时 fail-open，不带提示词并写 `project_prompt_unavailable` 审计（project、原因分类，不写内容），doctor 报告但不阻止启动；doctor/config explain 只显示配置、来源和字节数。提示词是指引，不改变授权、范围或权限规则。
 
 ## 0.5.0 — 2026-11-07
 

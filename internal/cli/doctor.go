@@ -198,6 +198,31 @@ func permissionModeChecks(c core.Config) []Diagnostic {
 	return checks
 }
 
+func projectPromptChecks(c core.Config) []Diagnostic {
+	var checks []Diagnostic
+	for _, p := range c.Projects {
+		name := "project " + p.ID + " system prompt"
+		if p.AppendSystemPromptFile != "" && core.Inside(filepath.Join(c.DataDir, "rooms"), p.AppendSystemPromptFile) {
+			checks = append(checks, Diagnostic{Name: name, OK: false, Detail: "Configured prompt file is unavailable (path); content is not displayed."})
+			continue
+		}
+		prompt, reason := config.LoadProjectPrompt(p)
+		if reason != "" {
+			checks = append(checks, Diagnostic{Name: name, OK: false, Detail: "Configured prompt is unavailable (" + reason + "); content is not displayed."})
+			continue
+		}
+		detail, ok := "Not configured.", true
+		switch {
+		case p.AppendSystemPrompt != "":
+			detail = fmt.Sprintf("Configured inline prompt: %d bytes; content is not displayed.", len(prompt))
+		case p.AppendSystemPromptFile != "":
+			detail = fmt.Sprintf("Configured file prompt: %d bytes; content is not displayed.", len(prompt))
+		}
+		checks = append(checks, Diagnostic{Name: name, OK: ok, Detail: detail})
+	}
+	return checks
+}
+
 // feedbackExportChecks validates the configured archive directory before the
 // service relies on it to precede feedback retention. It only creates and
 // removes a temporary probe file; archive contents are never read.
@@ -266,6 +291,7 @@ func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) Doct
 	checks = append(checks, projectSettingsChecks(c)...)
 	checks = append(checks, approvalPolicyChecks(c)...)
 	checks = append(checks, permissionModeChecks(c)...)
+	checks = append(checks, projectPromptChecks(c)...)
 	checks = append(checks, feedbackExportChecks(c)...)
 	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: checks, Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made.", Native: native.Compatibility("")}
 	add := func(name string, fn func() (string, error)) {

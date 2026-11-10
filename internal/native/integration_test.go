@@ -317,3 +317,57 @@ func TestRealClaudeRejectsMissingResumeWithoutModelCall(t *testing.T) {
 		}
 	}
 }
+
+func TestRealClaudeProjectPromptReachesSystem(t *testing.T) {
+	executable := nativeTestExecutable(t)
+	f := newFixture(t)
+	f.config.Runtime.ClaudeExecutable = executable
+	f.config.Projects[0].AppendSystemPrompt = "PROJECT_PROMPT_MARKER_321"
+	var mu sync.Mutex
+	system := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		var body args
+		_ = json.Unmarshal(data, &body)
+		if strings.Contains(r.URL.Path, "count_tokens") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"input_tokens": 1}`)
+			return
+		}
+		mu.Lock()
+		candidate := ""
+		switch v := body["system"].(type) {
+		case string:
+			candidate = v
+		case []any:
+			var b strings.Builder
+			for _, item := range v {
+				b.WriteString(text(object(item)["text"]))
+			}
+			candidate = b.String()
+		}
+		if strings.Contains(candidate, "PROJECT_PROMPT_MARKER_321") {
+			system = candidate
+		}
+		mu.Unlock()
+		writeModelResponse(w, body, "msg_project_prompt", []args{{"type": "text", "text": "project prompt fixture"}})
+	}))
+	defer server.Close()
+	f.config.Model.BaseURL = server.URL
+	f.start()
+	d := f.send("Show the project prompt.")
+	result := waitReal(f, "result", 30*time.Second)
+	if !result.Success || result.UUID != d.UUID {
+		t.Fatalf("project prompt result = %+v", result)
+	}
+	mu.Lock()
+	captured := system
+	mu.Unlock()
+	if captured == "" {
+		t.Fatal("project prompt did not appear in the native system field")
+	}
+	bridge, project := strings.Index(captured, "Feishu"), strings.Index(captured, "Project instructions:")
+	if bridge < 0 || project < 0 || bridge > project {
+		t.Fatalf("project prompt order: bridge=%d project=%d", bridge, project)
+	}
+}

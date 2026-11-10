@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -94,6 +95,29 @@ func explainRoute(c core.Config, o Options) core.Args {
 		}
 		if p, ok := c.Project(r.ProjectID); ok {
 			view["permissionMode"] = p.PermissionMode
+			promptView := core.Args{"configured": false}
+			if p.AppendSystemPrompt != "" || p.AppendSystemPromptFile != "" {
+				source := "inline"
+				if p.AppendSystemPrompt == "" {
+					source = "file"
+				}
+				reason := ""
+				if p.AppendSystemPromptFile != "" && core.Inside(filepath.Join(c.DataDir, "rooms"), p.AppendSystemPromptFile) {
+					reason = "path"
+				} else if prompt, loadReason := config.LoadProjectPrompt(p); loadReason != "" {
+					reason = loadReason
+					promptView["bytes"] = len(prompt)
+				} else {
+					promptView["bytes"] = len(prompt)
+				}
+				promptView["configured"] = true
+				promptView["source"] = source
+				if reason != "" {
+					promptView["bytes"] = nil
+					promptView["status"] = reason
+				}
+			}
+			view["appendSystemPrompt"] = promptView
 			if p.PermissionMode == "auto" {
 				view["autoMode"] = core.Args{
 					"classifier":          "local",

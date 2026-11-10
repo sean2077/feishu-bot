@@ -49,6 +49,7 @@ func interactiveCommand(c core.Config, r core.Room, s core.Session, w core.Works
 		return nil, nil, err
 	}
 	modelEnv := modelEnvironment(c, token, headers, p.PermissionMode == "auto")
+	projectPrompt, _ := loadProjectPrompt(p, w)
 	var projectSettings *config.ProjectSettings
 	if p.SettingsFile != "" {
 		loaded, loadErr := config.LoadProjectSettings(c, p)
@@ -88,6 +89,9 @@ func interactiveCommand(c core.Config, r core.Room, s core.Session, w core.Works
 	args = append(args, "--permission-mode", mode)
 	if mode == "bypassPermissions" {
 		args = append(args, "--allow-dangerously-skip-permissions")
+	}
+	if prompt := projectPromptText(projectPrompt); prompt != "" {
+		args = append(args, "--append-system-prompt", prompt)
 	}
 	sources := "project"
 	if w.NativeConfig == "inherit" {
