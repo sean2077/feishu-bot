@@ -305,6 +305,7 @@ type WorkerEvent struct {
 	Tool             string   `json:"tool,omitempty"`
 	ToolUseID        string   `json:"toolUseId,omitempty"`
 	StartupMS        int64    `json:"startupMs,omitempty"`
+	PermissionMode   string   `json:"permissionMode,omitempty"`
 	Background       *int     `json:"background,omitempty"`
 	Pinned           *bool    `json:"pinned,omitempty"`
 	State            string   `json:"state,omitempty"`

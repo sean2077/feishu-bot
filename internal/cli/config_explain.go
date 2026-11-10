@@ -94,6 +94,16 @@ func explainRoute(c core.Config, o Options) core.Args {
 		}
 		if p, ok := c.Project(r.ProjectID); ok {
 			view["permissionMode"] = p.PermissionMode
+			if p.PermissionMode == "auto" {
+				view["autoMode"] = core.Args{
+					"classifier":          "local",
+					"classifierServerEnv": "CLAUDE_CODE_AUTO_MODE_SERVER=0",
+					"classifierModel":     "claude-sonnet-5",
+					"classifierRequests":  "up to 2 per classification",
+					"nonessentialTraffic": "disabled",
+					"availability":        "runtime_not_checked",
+				}
+			}
 			view["nativeConfig"] = p.NativeConfig
 			view["ownerCount"] = len(p.Owners)
 			view["forbidSelfApproval"] = p.Approvals.ForbidSelfApproval

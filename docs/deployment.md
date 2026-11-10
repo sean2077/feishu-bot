@@ -105,6 +105,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `dataDir` | `state` | 状态库、工作区与隔离模式原生历史；须持久保存 |
 | `model.baseUrl`、`model.model` | 无 | 见[模型、网络和时区](#模型网络和时区)；`smallModel` 省略时等于 `model` |
 | `projects[]` | 至少一项 | 资源／权限单元；`maintainers` 必填，`permissionMode` 默认 `acceptEdits`，`nativeConfig` 默认 `isolated` |
+| `projects[].permissionMode` | `acceptEdits` | `default`、`acceptEdits`、`bypassPermissions` 或 `auto`；`auto` 使用原生安全分类器，见[auto 权限模式](#auto-权限模式) |
 | `projects[].env`、`projects[].envPassthrough` | 空 | 项目级原生进程环境变量；`env` 为非敏感字面值，`envPassthrough` 从服务环境复制凭据，见[项目环境变量](#项目环境变量) |
 | `projects[].settingsFile` | 空 | 管理员维护的原生 settings 快照；只允许 `env` 和 `permissions.allow/ask/deny`，见[项目设置文件](#项目设置文件) |
 | `projects[].owners` | 空 | maintainers 子集；仅用于 `forbidSelfApproval` 时的 owner 例外，不增加其他权限 |
@@ -210,7 +211,19 @@ Go 飞书 HTTP／WebSocket 客户端使用系统证书及 Go 的代理环境规�
 }
 ```
 
-以上是合并到完整配置的项目片段。`permissionMode` 可选 `default`、`acceptEdits`（默认）和 `bypassPermissions`。`bypassPermissions` 是显式选择的原生 YOLO 权限模式：它跳过常规工具权限确认，但不取消显式 deny／ask 规则或原生规则；追问仍需交互，网关的受控操作、发送文件等独立确认也不因此全部放行。不要把该选项理解为聊天成员获得管理员权限。权限边界见[权限与信任范围](../SECURITY.md)。
+以上是合并到完整配置的项目片段。`permissionMode` 可选 `default`、`acceptEdits`（默认）、`bypassPermissions` 和 `auto`。`bypassPermissions` 是显式选择的原生 YOLO 权限模式：它跳过常规工具权限确认，但不取消显式 deny／ask 规则或原生规则；追问仍需交互，网关的受控操作、发送文件等独立确认也不因此全部放行。不要把该选项理解为聊天成员获得管理员权限。权限边界见[权限与信任范围](../SECURITY.md)。
+
+### auto 权限模式
+
+`permissionMode: "auto"` 使用 Claude Code 的原生安全分类器判断白名单外的操作，不再为这些操作弹维护者审批卡。它不是安全沙箱：`permissions.deny` 仍是硬边界（被 deny 的工具不会出现在原生工具列表中）；`permissions.ask` 仍会把请求交给网关的维护者审批流程；PowerShell、Bash 等其他执行工具如需限制，也要分别配置 deny/ask。分类器只做一次性判断，不替代最小权限、外部系统额度和审计。
+
+网关只为 `auto` 项目注入 `CLAUDE_CODE_AUTO_MODE_SERVER=0`，强制 CLI 使用本地分类器；其他项目、API_KEY 和 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 保持不变（项目 env/settings 不能覆盖该变量，`claude_code_` 前缀已保留）。分类器读取与主模型相同的 `model.tokenEnv` 凭据，请求发往同一个 `model.baseUrl`，模型名固定为 `claude-sonnet-5`（不是 `model.model`）。部署侧必须让该端点支持这个模型名并接受现有凭据，否则分类器请求失败，CLI 会 fail-closed：相关工具不执行并提示自动模式不可用。
+
+每次分类先发一段 `max_tokens=64` 的快速判断，只有需要深度判断时才再发一段 `max_tokens=8192` 的请求；只快筛即放行时只发一段。每次分类最多两段请求，会计费。真实网关上的单次分类约 40 秒，这是外部真实 CLI 测量值；本地假 Messages 服务无法复现该延迟。分类器请求包含当前会话 transcript、CLAUDE.md 和相关工具输入，因此 auto 只应用于可信的项目和模型端点。
+
+本地 2.1.321 + 假 Messages + 本地 HTTPS 代理实测（AUTH_TOKEN only、`DISABLE_TELEMETRY=1`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`、`CLAUDE_CODE_AUTO_MODE_SERVER=0`）：分类器请求走配置的 `baseUrl`，`Authorization` 头可用，模型为 `claude-sonnet-5`；代理未观察到 `baseUrl` 之外的出站连接。该测量只覆盖一轮本地 fixture，不是完整抓包，其他可能目的地以 Claude Code 官方说明为准。
+
+分类器拦截时直接返回工具错误，不经过 `can_use_tool`；网关写 `auto_mode_denied` 审计，并在当前回复卡追加一条「安全分类器拦截了 <工具名>，操作未执行；如需执行请联系维护者。」。分类器不可用或无法评估时写 `auto_mode_unavailable`（`kind=unavailable|unevaluable`），卡片提示「自动模式安全审查不可用，<工具名> 未执行；请联系维护者。」。每轮最多一条卡片提示；工具输入不进入卡片或审计。`doctor`、`config explain` 和 `/status` 会显示配置/生效的权限模式；auto 分类器是否真的可用只能在运行时由工具结果确认，doctor 标为 `not_checked`。
 
 `nativeConfig: "inherit"` 时，原生文件钩子会拒绝范围覆盖网关状态目录（`dataDir` 下的房间目录）的 Grep／Glob，例如对用户主目录整体搜索；请搜索项目目录或更具体的子目录。Grep／Glob 的路径还须是普通绝对路径或相对路径：首尾不可见字符、`~` 展开、Windows 无盘符的根路径、驱动器相对路径、UNC 与设备路径（`\\?\`、`\\server\share`）均被拒绝，共享目录请映射盘符后使用；Windows 上路径经过目录联接（junction）或其他重解析点时也会被拒绝。这只是纵深防护，同账号目录不是安全沙箱，Bash 仍可读取同账号可访问的文件。
 

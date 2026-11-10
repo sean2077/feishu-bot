@@ -118,7 +118,7 @@ func environmentList(m map[string]string) []string {
 	}
 	return out
 }
-func modelEnvironment(c core.Config, token string, headers map[string]string) map[string]string {
+func modelEnvironment(c core.Config, token string, headers map[string]string, auto bool) map[string]string {
 	keys := make([]string, 0, len(headers))
 	for key := range headers {
 		keys = append(keys, key)
@@ -129,6 +129,12 @@ func modelEnvironment(c core.Config, token string, headers map[string]string) ma
 		lines = append(lines, key+": "+headers[key])
 	}
 	result := map[string]string{"ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": token, "ANTHROPIC_BASE_URL": c.Model.BaseURL, "ANTHROPIC_CUSTOM_HEADERS": strings.Join(lines, "\n"), "ANTHROPIC_MODEL": c.Model.Model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": c.Model.SmallModel, "ANTHROPIC_DEFAULT_SONNET_MODEL": c.Model.Model, "ANTHROPIC_DEFAULT_OPUS_MODEL": c.Model.Model, "ANTHROPIC_DEFAULT_FABLE_MODEL": c.Model.Model, "CLAUDE_CODE_SUBAGENT_MODEL": c.Model.Model, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+	if auto {
+		// The default server-side classifier does not run when nonessential
+		// traffic is disabled. Force the CLI's local classifier, which uses the
+		// configured model credential and base URL.
+		result["CLAUDE_CODE_AUTO_MODE_SERVER"] = "0"
+	}
 	if c.Model.Effort != "" {
 		result["CLAUDE_CODE_EFFORT_LEVEL"] = c.Model.Effort
 	}

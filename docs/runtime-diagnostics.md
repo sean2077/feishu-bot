@@ -28,6 +28,7 @@
 | 基础模型成功、工具／流式未测 | 继续做原生 CLI 的本地模型回归及测试群验收 |
 | 模型已结束、文件仍待交付 | 查看 `/outputs`；先确认交付，不能重复模型任务来补文件 |
 | 正常回复后出现 `output_controls_refresh_failed` | 检查控件 `element_id` 是否超过 CardKit 的 20 字符上限或重复；该失败只影响卡片外观，不改变已送达状态，也不会生成重试按钮 |
+| auto 下工具被拒绝但没有审批卡 | 查看 `auto_mode_denied`（分类器拦截）或 `auto_mode_unavailable`（分类器不可用／无法评估）；这是预期路径之一，deny 规则会让工具直接不可见 |
 | 平台暂时拒绝 | 查看安全的错误阶段、HTTP 状态、平台码及请求标识，等待有界重试结果 |
 | 写入结果未知 | 先检查远端卡片／文件，再显式补发；不能把超时当作未执行 |
 
@@ -59,6 +60,14 @@
 - `worker_failure`：原生初始化／运行错误通知的审计，`phase=initialize`，`reason` 使用同一组固定分类；`error` 脱敏。
 - `output_delivery_failed`：`phase=delivery`，`stage` 为 `card`／`file_prepare`／`file_send`／`card_finalize`，`reason` 为固定分类。
 - `worker_exit`：原生进程退出，包含 `code`、`session`、`reason`（`idle_release`、`stop`、`shutdown`、`profile_switch`、`delivery_failed`、`crash`）和 `inTurn`；宿主提供了房间键时还带 `room`，便于多个 worker 同时运行时区分。`reason` 来自网关的停止意图，不靠退出码；Windows 空闲回收即使 code=1 也标为 `idle_release`，没有停止意图的自然退出标为 `crash`。
+
+auto 权限模式补充：
+
+- `worker_ready` 的 `permissionMode` 是原生 init 回显；`permission_mode_mismatch` 在请求值与回显不一致时写审计（`requested`、`effective`）。init 不可用时也可能回显 `auto`，所以它不能证明分类器真的可用。
+- `auto_mode_denied`：`session`、`tool`、已脱敏的短 `reason`；分类器直接拒绝工具，不经过 `can_use_tool`。`tool_input` 不写入审计或卡片。
+- `auto_mode_unavailable`：分类器不可用或无法评估，带 `session`、`tool`、`kind=unavailable|unevaluable` 和脱敏短原因。卡片提示每轮最多一条；`reply_auto_notice` 是追加的可见 markdown 元素，不改变模型答案正文。
+- 上述两类事件只在 `permissionMode=auto`、tool_result 带 `is_error=true` 且该 `tool_use_id` 出现在同一轮 result 的 `permission_denials` 时才确认；普通工具输出或非 auto 项目不能伪造审计/卡片提示。审计和提示会延迟到该轮 result 到达。
+- 分类器文本识别与 Claude Code 版本绑定；未识别的文本只记录普通工具结果，不猜造拦截。deny 规则会让工具根本不出现；ask 规则仍走 `can_use_tool` 维护者审批。
 
 ## 容量等待、复用与回收
 

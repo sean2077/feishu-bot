@@ -35,6 +35,7 @@ type render struct {
 	thinkingCount                                            int
 	legacy                                                   int
 	messageID, finalID, replyTo, threadID, status, last      string
+	notice                                                   string
 	started                                                  int64
 	details                                                  replyDetails
 	createUncertain, createRejected, closed, flushing, dirty bool
@@ -101,6 +102,19 @@ func (r *render) setStatus(text string) {
 	r.urgent = true
 	r.scheduleLocked()
 	r.mu.Unlock()
+}
+
+// setNotice adds at most one visible auto-mode safety notice per reply card.
+// Later denials in the same turn are audited but do not add more card text.
+func (r *render) setNotice(text string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || r.ctx.Err() != nil || text == "" || r.notice != "" {
+		return
+	}
+	r.notice = core.Redact(text, r.g.secrets)
+	r.urgent = true
+	r.scheduleLocked()
 }
 func (r *render) update(text string, partial bool, kind, key string) {
 	r.mu.Lock()
@@ -176,6 +190,9 @@ func (r *render) cardFitLocked(title, answer string, final, success bool) (core.
 	d.Model = core.Redact(d.Model, r.g.secrets)
 	d.ProjectPath = core.Redact(d.ProjectPath, r.g.secrets)
 	card, needsFile := boundedReplyCard(title, answer, r.thinkingLocked(), r.thinkingCount, final, d, time.Duration(max(int64(0), time.Now().UnixMilli()-r.started))*time.Millisecond, success, r.g.quickControls(r.room, r.session, r.turn, r.finalID))
+	if r.notice != "" {
+		card = fitCardBudget(appendReplyNotice(card, r.notice), core.CardPayloadLimit, "…")
+	}
 	if r.waiting > 0 && !final {
 		cfg := argsOf(card["config"])
 		cfg["streaming_mode"] = false

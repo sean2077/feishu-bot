@@ -138,6 +138,25 @@ func replyStatus(title string, total int, final, success bool) (string, string) 
 	return text, color
 }
 
+// appendReplyNotice adds or replaces the single visible auto-mode safety
+// notice. The element_id stays within CardKit's 20-character limit.
+func appendReplyNotice(card core.Args, notice string) core.Args {
+	body := argsOf(card["body"])
+	if body == nil || notice == "" {
+		return card
+	}
+	elements, _ := body["elements"].([]any)
+	kept := elements[:0]
+	for _, item := range elements {
+		if stringArg(argsOf(item), "element_id") != "reply_auto_notice" {
+			kept = append(kept, item)
+		}
+	}
+	body["elements"] = append(kept, core.Args{"tag": "markdown", "element_id": "reply_auto_notice", "text_size": "notation", "content": notice})
+	card["body"] = body
+	return card
+}
+
 func replyStatusRow(text, color string) core.Args {
 	return core.Args{
 		"tag": "column_set", "element_id": "reply_status", "flex_mode": "none", "horizontal_spacing": "medium",

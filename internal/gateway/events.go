@@ -113,7 +113,22 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 			s.turn.startupMs = ev.StartupMS
 		}
 		s.session.CCID = ev.CCID
+		if ev.PermissionMode != "" {
+			s.effectivePermissionMode = ev.PermissionMode
+		}
 		s.mu.Unlock()
+		if ev.PermissionMode != "" {
+			project, _ := g.config.Project(s.room.ProjectID)
+			requested := project.PermissionMode
+			if requested == "" {
+				requested = "acceptEdits"
+			}
+			// Claude Code 2.1.321 echoes default, acceptEdits, bypassPermissions
+			// and auto verbatim; report any future mismatch instead of mapping it.
+			if ev.PermissionMode != requested {
+				g.audit(s.room.Key, "permission_mode_mismatch", core.Args{"requested": requested, "effective": ev.PermissionMode})
+			}
+		}
 	case "accepted":
 		s.mu.Lock()
 		d, ok := s.deliveries[ev.UUID]
@@ -180,6 +195,7 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 			case "tool_start":
 				if ev.ToolUseID != "" {
 					s.turn.toolStarts[ev.ToolUseID] = time.Now()
+					s.turn.toolNames[ev.ToolUseID] = ev.Tool
 				}
 			case "tool_end":
 				if start, ok := s.turn.toolStarts[ev.ToolUseID]; ok {
@@ -205,6 +221,34 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 			g.cancelLostSupplements(s.room)
 		}
 		g.kickWaiting()
+	case "auto_denied":
+		s.mu.Lock()
+		tool, session, anchor := "", s.session.ID, s.anchor
+		if s.turn != nil {
+			tool = s.turn.toolNames[ev.ToolUseID]
+		}
+		s.mu.Unlock()
+		reason := core.Redact(ev.Text, g.secrets)
+		if ev.Phase == "classifier" {
+			g.audit(s.room.Key, "auto_mode_denied", core.Args{"session": session, "tool": tool, "reason": reason})
+		} else {
+			kind := ev.Phase
+			if kind != "unavailable" {
+				kind = "unevaluable"
+			}
+			g.audit(s.room.Key, "auto_mode_unavailable", core.Args{"session": session, "tool": tool, "kind": kind, "reason": reason})
+		}
+		if anchor != "" {
+			label := tool
+			if label == "" {
+				label = "工具"
+			}
+			notice := fmt.Sprintf("自动模式安全审查不可用，%s 未执行；请联系维护者。", label)
+			if ev.Phase == "classifier" {
+				notice = fmt.Sprintf("安全分类器拦截了 %s，操作未执行；如需执行请联系维护者。", label)
+			}
+			g.renderFor(s, anchor, "foreground", "").setNotice(notice)
+		}
 	case "text", "thinking":
 		s.mu.Lock()
 		if s.turn != nil && s.turn.firstAt.IsZero() {

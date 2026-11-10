@@ -244,7 +244,8 @@ type fixture struct {
 	starts  atomic.Int64
 	// readyMode: "" emits ready at start, "input" on the first input for a
 	// new session, "never" never reports a native session.
-	readyMode string
+	readyMode      string
+	permissionMode string
 }
 
 func newFixture(t *testing.T, mutate func(*core.Config), loggers ...core.Logger) *fixture {
@@ -274,7 +275,7 @@ func newFixture(t *testing.T, mutate func(*core.Config), loggers ...core.Logger)
 		case f.readyMode == "input" && s.CCID == "":
 			worker.pendingReady = cc
 		default:
-			emit(core.WorkerEvent{Type: "ready", CCID: cc})
+			emit(core.WorkerEvent{Type: "ready", CCID: cc, PermissionMode: f.permissionMode})
 		}
 		zero := 0
 		emit(core.WorkerEvent{Type: "activity", State: "idle", Background: &zero})

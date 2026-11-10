@@ -78,6 +78,7 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 	background := any(int64(0))
 	pinned := false
 	approvals := 0
+	effectivePermissionMode := ""
 	s := g.getSlot(r.Key)
 	if s != nil {
 		approvals = g.approvalCount(s.session.ID)
@@ -85,6 +86,7 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 		ss := s.session
 		saved = &ss
 		pinned = s.pinned
+		effectivePermissionMode = s.effectivePermissionMode
 		background = any(s.background)
 		if s.background < 0 {
 			background = nil
@@ -124,6 +126,12 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 		phase = "queued"
 	}
 	view := core.Args{"project": r.ProjectID, "state": state, "phase": phase, "background": background, "monitorPinned": pinned, "pendingOrUnconfirmed": total, "inputs": inputs, "approvals": approvals, "pendingOutputs": outputs}
+	project, _ := g.config.Project(r.ProjectID)
+	requestedPermissionMode := project.PermissionMode
+	if requestedPermissionMode == "" {
+		requestedPermissionMode = "acceptEdits"
+	}
+	view["permissionMode"] = core.Args{"requested": requestedPermissionMode, "effective": effectivePermissionMode}
 	if r.Thread != "" {
 		view["threadRoot"] = r.Thread
 		view["workspaceBinding"] = r.WorkspaceCWD
@@ -235,6 +243,15 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 			pin = "是"
 		}
 		text := fmt.Sprintf("**本聊天状态**\n状态：%s\n项目：%s\n当前会话：`%s`\n原生会话：`%s`\n\n输入 · 排队：%v · 已交给原生：%v · 已消费待结果：%v · 结果未知：%v\n等待审批或回答：%v · 待交付输出：%v\n后台活动：%s · 监控保留：%s", phases[phase], r.ProjectID, session, native, inputs["queued"], inputs["sent"], inputs["consumed"], inputs["uncertain"], v["approvals"], v["pendingOutputs"], background, pin)
+		if mode := argsOf(v["permissionMode"]); mode != nil {
+			line := "\n权限模式：" + stringArg(mode, "requested")
+			if effective := stringArg(mode, "effective"); effective != "" {
+				line += "（原生确认：" + effective + "）"
+			} else {
+				line += "（原生尚未确认）"
+			}
+			text += line
+		}
 		if r.Thread != "" {
 			binding := "使用群默认目录"
 			if r.WorkspaceCWD != "" {

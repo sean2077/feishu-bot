@@ -2,6 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
+- 新增 `projects[].permissionMode: "auto"`：网关只对 auto 项目注入 `CLAUDE_CODE_AUTO_MODE_SERVER=0`，强制使用 Claude Code 本地安全分类器；不改变 API_KEY 或非必要流量开关。分类器使用现有模型凭据和 `baseUrl`，固定 `claude-sonnet-5`，每次最多两段、约 40 秒且计费。分类器拒绝写 `auto_mode_denied`，不可用／无法评估写 `auto_mode_unavailable`（`kind=unavailable|unevaluable`），并在回复卡追加一条固定中文提示；工具输入不进入卡片或审计。init 回显 `permissionMode`，不一致写 `permission_mode_mismatch`；`/status` 显示请求与生效值，doctor/config explain 标注运行时 `not_checked`。deny 仍是硬边界，ask 仍进入维护者审批。默认值不变，线上配置未切换。
 - 修复回复反馈按钮从未上卡的问题：CardKit 的 `element_id` 上限为 20 字符，原反馈控件 ID 过长，服务端按重复 ID 以 300301 拒绝最终控件刷新。反馈控件改用短 ID；发送前统一校验所有 `element_id` 长度，超限在本地明确拒绝。正常一轮不再产生 `output_controls_refresh_failed`，控件内容不变时仍由客户端快照比较跳过更新，永久拒绝仍只按外观失败处理。
 - `worker_exit` 增加 `session`，并在宿主提供房间键时带 `room`，多个 worker 同时退出时可区分来源。
 - 追问改用 Card 2.0 整张表单：每题支持单／多选及自定义文字，非空自定义覆盖选项、空白回退选项；一次提交避免刷新丢失输入和跨作者拼接草稿，保留 `/answer`。回调校验请求、会话、卡片、版本、作者及截止，持久提交时再确认会话仍有效。

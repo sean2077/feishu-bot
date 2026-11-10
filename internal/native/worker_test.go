@@ -121,7 +121,7 @@ func fakeClaude() {
 						}
 					}
 				}
-				send(args{"type": "system", "subtype": "init", "session_id": id})
+				send(args{"type": "system", "subtype": "init", "session_id": id, "permissionMode": "auto"})
 				ready = true
 			}
 			if object(frame["origin"])["kind"] != "human" || frame["parent_tool_use_id"] != nil {
