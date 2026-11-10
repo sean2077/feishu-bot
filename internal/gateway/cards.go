@@ -2,11 +2,44 @@ package gateway
 
 import (
 	"fmt"
-	"github.com/sean2077/feishu-bot/internal/core"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/sean2077/feishu-bot/internal/core"
 )
+
+// workspaceLabel controls the working-directory line on a reply card. Group
+// chats default to the project id so absolute deployment paths do not leak;
+// DMs keep the full path, matching the previous behavior. An explicit project
+// setting overrides both defaults. Existing saved cards are left untouched.
+func (g *Gateway) workspaceLabel(room core.Room, projectID, work string) string {
+	mode := ""
+	if project, ok := g.config.Project(projectID); ok {
+		mode = project.DisplayWorkspace
+	}
+	if mode == "" {
+		if room.DMUser != "" {
+			mode = "full"
+		} else {
+			mode = "project"
+		}
+	}
+	switch mode {
+	case "full":
+		return work
+	case "basename":
+		return filepath.Base(filepath.Clean(work))
+	case "project":
+		if projectID != "" {
+			return projectID
+		}
+		return work
+	default:
+		return ""
+	}
+}
 
 func DisplayCard(title, text string, buttons ...any) core.Args {
 	elements := []any{core.Args{"tag": "markdown", "content": text}}

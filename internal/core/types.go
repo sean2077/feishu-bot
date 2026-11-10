@@ -146,6 +146,7 @@ type Project struct {
 	Owners           []string         `json:"owners,omitempty"`
 	Approvals        ProjectApprovals `json:"approvals,omitempty"`
 	Feedback         FeedbackConfig   `json:"feedback,omitempty"`
+	DisplayWorkspace string           `json:"displayWorkspace,omitempty"`
 	SeedDir          string           `json:"seedDir,omitempty"`
 	TrustedConfigDir string           `json:"trustedConfigDir,omitempty"`
 	CWD              string           `json:"cwd,omitempty"`

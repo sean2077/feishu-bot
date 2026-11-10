@@ -501,6 +501,11 @@ func validate(c *core.Config, base string) error {
 		if p.PermissionMode != "default" && p.PermissionMode != "acceptEdits" && p.PermissionMode != "bypassPermissions" {
 			return errors.New("invalid permissionMode")
 		}
+		switch p.DisplayWorkspace {
+		case "", "full", "basename", "project", "hidden":
+		default:
+			return errors.New("displayWorkspace must be full, basename, project or hidden")
+		}
 		if err := validateProjectEnvironment(p, derivedEnv); err != nil {
 			return err
 		}
