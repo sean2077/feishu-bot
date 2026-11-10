@@ -135,6 +135,50 @@ func TestPrivateSettingsWithoutSettingsFileKeepsExistingBehavior(t *testing.T) {
 	}
 }
 
+func TestPrivateSettingsInheritAllowsRoomRootUnderUserHome(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "state", "rooms", "room")
+	w := core.Workspace{
+		Root:         root,
+		Work:         filepath.Join(home, "workspace"),
+		Home:         home,
+		Inbound:      filepath.Join(root, "inbound"),
+		ConfigDir:    filepath.Join(home, ".claude"),
+		NativeConfig: "inherit",
+	}
+	for _, dir := range []string{w.Work, w.Inbound, w.ConfigDir} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	modelEnv := map[string]string{"ANTHROPIC_AUTH_TOKEN": "model-token"}
+	generated, err := privateSettings(w, core.Project{ID: "p"}, modelEnv, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(generated)
+	if !core.Inside(w.Home, generated) {
+		t.Fatalf("inherit settings were not under the user home: %s", generated)
+	}
+	if core.Inside(w.Work, generated) || core.Inside(w.ConfigDir, generated) {
+		t.Fatalf("inherit settings were placed in the work or config directory: %s", generated)
+	}
+	w.Root = w.Work
+	if _, err := privateSettings(w, core.Project{ID: "p"}, modelEnv, nil); err == nil {
+		t.Fatal("inherit settings accepted a file inside the work directory")
+	}
+	w.Root = w.ConfigDir
+	if _, err := privateSettings(w, core.Project{ID: "p"}, modelEnv, nil); err == nil {
+		t.Fatal("inherit settings accepted a file inside the native config directory")
+	}
+	w.NativeConfig = "isolated"
+	w.Root = w.Home
+	p, loaded := loadNativeSettings(t, writeNativeSettings(t, nativeSettingsBody))
+	if _, err := privateSettings(w, p, nil, &loaded); err == nil {
+		t.Fatal("isolated settings accepted a file inside the managed home")
+	}
+}
+
 func TestPrivateSettingsRequiresIsolatedWorkspaceRoot(t *testing.T) {
 	path := writeNativeSettings(t, nativeSettingsBody)
 	p, loaded := loadNativeSettings(t, path)
