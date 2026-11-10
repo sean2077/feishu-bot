@@ -246,7 +246,7 @@ jobs:
           native = fixture / 'node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude'
           actual = subprocess.check_output([str(native), '--version'], text=True).strip()
           print('Candidate actual identity:', actual)
-          print('Repository tested native fixture: 2.1.316')
+          print('Repository tested native fixture: 2.1.321')
           if actual != expected + ' (Claude Code)':
               raise SystemExit('Candidate package/native identity mismatch')
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:

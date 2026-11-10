@@ -1,7 +1,7 @@
 // Package native implements Claude Code's persistent, bidirectional stream-json
 // host protocol. Production does not load the TypeScript Agent SDK or Node.
-// Protocol behavior is contract-tested against native Claude Code 2.1.316 (the
-// version shipped by the previous pinned Agent SDK 0.3.316).
+// Protocol behavior is contract-tested against native Claude Code 2.1.321 (the
+// version shipped by the pinned Agent SDK 0.3.321).
 package native
 
 import (

@@ -2,7 +2,7 @@
 
 本页是安装、配置、飞书应用权限、常驻服务、升级与恢复的操作说明。对话与会话行为以[对话行为](conversation-contract.md)为准，模块与并发模型见[架构](architecture.md)。
 
-Linux、macOS 和 Windows 运行同一个 Go 服务。部署只需网关二进制、Git 和原生 Claude Code；Windows 使用 Git for Windows。协议测试固定使用 Claude Code 2.1.316，升级 CLI 后须重新验收。内置 `daemon` 管理仅支持 Linux／Windows；macOS 使用前台 `run` 或自行配置服务管理。
+Linux、macOS 和 Windows 运行同一个 Go 服务。部署只需网关二进制、Git 和原生 Claude Code；Windows 使用 Git for Windows。协议测试固定使用 Claude Code 2.1.321，升级 CLI 后须重新验收。内置 `daemon` 管理仅支持 Linux／Windows；macOS 使用前台 `run` 或自行配置服务管理。
 
 下文命令以源码构建的 `./bin/feishu-bot` 为例；使用发布包时换成解压目录中的 `./feishu-bot`，Windows 对应 `.\feishu-bot.exe` 或 `.\bin\feishu-bot.exe`。
 
@@ -231,7 +231,7 @@ Go 飞书 HTTP／WebSocket 客户端使用系统证书及 Go 的代理环境规�
 - 项目环境不进入固定操作子进程；固定操作仍只使用 `actions[].env`。
 - 这些变量对该项目所有获准聊天的原生工具和 Bash 可见，不是权限或信任隔离边界；权限仍由 `permissionMode`、`allowedTools` 和原生规则决定。见[权限与信任范围](../SECURITY.md)。
 
-原生 settings 的 `env` 块会覆盖进程环境中的同名变量；隔离模式会加载工作目录的 project settings，继承模式还会加载 user／local settings。因此不要在原生 settings 的 `env` 中定义同名变量来“覆盖项目值”：项目值只在 settings 未定义该变量时生效。该优先级已用 Claude Code 2.1.319 的显式 `--settings` 和用户 settings 验证；固定回归版本 2.1.316 未单独复验。
+原生 settings 的 `env` 块会覆盖进程环境中的同名变量；隔离模式会加载工作目录的 project settings，继承模式还会加载 user／local settings。因此不要在原生 settings 的 `env` 中定义同名变量来“覆盖项目值”：项目值只在 settings 未定义该变量时生效。该优先级已用 Claude Code 2.1.319 的显式 `--settings` 和用户 settings 验证；固定回归版本 2.1.321 未单独复验。
 
 替换 `HOME`／`USERPROFILE` 后，部分工具不再读取默认配置目录。优先用工具自身的配置目录变量指向真实目录，例如 `GLAB_CONFIG_DIR`、`LARKSUITE_CLI_CONFIG_DIR`，不要为了工具配置放宽原生 HOME 边界。不同工具、版本和登录态存储方式的兼容性不同，需按实际版本验证；SSH 客户端是否读取替换后的 HOME 也随平台和调用方式而异，需要时使用显式 `-F`。
 
@@ -271,7 +271,7 @@ passthrough 值中长度不少于 8 个字符的值会加入日志、回复卡�
 - isolated 配置时，临时文件只含文件的 `env` 和 `permissions`；模型凭据仍在进程环境，不写入临时文件。
 - inherit 配置时，模型环境最后合并到文件 `env`；保留名校验保证两者不重名。
 - `--allowedTools`（网关固定只读工具与 `projects[].allowedTools`）照常生成，与文件的 allow 规则叠加；ask／deny 按原生规则生效。
-- `--settings` 的 `env` 覆盖进程环境和 user／project settings 的同名变量。该优先级用 Claude Code 2.1.319 验证；固定回归版本 2.1.316 未单独复验。
+- `--settings` 的 `env` 覆盖进程环境和 user／project settings 的同名变量。该优先级用 Claude Code 2.1.319 验证；固定回归版本 2.1.321 未单独复验。
 - deny 已在 2.1.319 用本地假 Messages 服务验证：allow 命中时 Bash 执行，同一规则加入 deny 后命令被拒绝；`acceptEdits` 和 `bypassPermissions` 两种模式都生效。
 
 isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings；其 allow、hooks 等按原生规则与 `--settings` 合并（deny 优先是原生文档行为；本项目只验证了 `--settings` 自身的 deny，未单独验证跨来源 deny 冲突）。管理员必须把 cwd 仓库自带的 project settings 与这份文件一起审核，不能只审核 `settingsFile`。

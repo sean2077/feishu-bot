@@ -15,7 +15,7 @@
 
 `doctor` 默认只作本地检查。`--probe-feishu` 检查应用认证和机器人身份；`--probe` 可能计费，只检查基础 Messages 响应。它们不修改应用权限，不验证实际卡片、文件、手机／桌面体验或工具安全性。逐层接入流程见[首次接入](first-connection.md)。
 
-- **`native`** 给出 `actual`、`tested` 和 `status`。协议回归固定在 Claude Code **2.1.316**：版本一致为 `tested`，其他可识别版本为 `untested`，无法识别为 `unavailable`。`tested` 只表示版本与回归基准一致，`verification.nativeProtocol` 仍是 `not_checked`——本机 `--version` 没有运行权限、追问、MCP、compact 或恢复测试。未测试版本不会仅因版本不同而阻止启动。
+- **`native`** 给出 `actual`、`tested` 和 `status`。协议回归固定在 Claude Code **2.1.321**：版本一致为 `tested`，其他可识别版本为 `untested`，无法识别为 `unavailable`。`tested` 只表示版本与回归基准一致，`verification.nativeProtocol` 仍是 `not_checked`——本机 `--version` 没有运行权限、追问、MCP、compact 或恢复测试。未测试版本不会仅因版本不同而阻止启动。
 - **`verification`** 按项记录 `passed`／`failed`／`blocked`／`not_checked`：`local`、`configuration`、`nativeExecutable`、`nativeProtocol`、`model`、`modelStreaming`、`modelTools`、`feishuAuth`、`feishuIdentity`、`messageDelivery`、`cardCallbacks`、`fileDelivery`、`nativeTools`、`feishuReconnect`、`storageRows`。本地检查只设置 `local`、`configuration`、`nativeExecutable`；`--probe` 设置 `model`，`--probe-feishu` 设置 `feishuAuth`／`feishuIdentity`，`--verify-chat` 再写入 `incomingMessage`、`messageDelivery`、`fileDelivery`、`cardCallbacks` 和 `fileDownload`。`nativeProtocol`、`modelStreaming`、`modelTools`、`nativeTools`、`feishuReconnect`、`storageRows` 始终是 `not_checked`。不能把任意一个 `passed` 推广成完整验收；`ready` 只表示本次请求的检查全部通过。
 - **`checks`** 中每个失败项带 `remedy`；`nextSteps` 按当前结果提示下一步。
 - **`storage`** 是磁盘占用观察：数据库、WAL、SHM 的字节数，以及 `exports` 的文件数和总字节数。它只读文件元数据，不打开生产 SQLite、不做 checkpoint、不扫描聊天内容、不删除文件。导出目录最多扫描 10,000 项、不跟随符号链接；权限、上限或扫描不完整时标明 `partial`／`unavailable`。这些数字不能证明进程 RSS 泄漏；服务运行时文件大小可能变化，应视为一次快照。
@@ -43,6 +43,8 @@
 ## 原生会话
 
 `worker_ready`（含 `startupMs`、`resumed`）观察初始化和进程生命周期，不是用户首字延迟。原生恢复失败保留原 session ID；先检查 CLI 版本、cwd、配置身份和历史目录，不通过删除状态来掩盖故障。
+
+原生 CLI 的 `[claude-code:unrecognized_model]` 是已知的 stderr 告警：在 2.1.321 的本地假 Messages 流程中不终止会话、不拒绝请求；模型名带 `[1m]` 时仍报告 1,000,000 上下文窗口，不带时为 200,000。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 实测在 `/context` 中生效（例如 800000 显示 800k 预算）。`worker_stderr` 保留这条告警原文供排障，不过滤、不降级；以上是模拟证据，真实流量仍需验收。
 
 `shutdown_unconfirmed` 或 `worker_stop_unconfirmed` 表示尚不能证明本实例的原生进程已退出。服务保留 `gateway.lock` 或会话名额，防止并行接管。核实派生进程后再处置，不能只检查主 PID。
 
