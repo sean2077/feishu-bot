@@ -82,11 +82,11 @@ func (x *feedbackFixture) feedback(t *testing.T) (value, user, question, answer,
 func TestFeedbackButtonsOnlyOnDoneReplyCard(t *testing.T) {
 	done := newFeedbackFixture(t, true, 0)
 	text := jsonText(done.card)
-	if !strings.Contains(text, "gateway_quick_feedback_useful") || !strings.Contains(text, "gateway_quick_feedback_useless") || !strings.Contains(text, "有用") || !strings.Contains(text, "无用") {
+	if !strings.Contains(text, "gateway_quick_fb_yes") || !strings.Contains(text, "gateway_quick_fb_no") || !strings.Contains(text, "有用") || !strings.Contains(text, "无用") {
 		t.Fatalf("done card missing feedback buttons: %s", text)
 	}
 	disabled := newFeedbackFixture(t, false, 0)
-	if text := jsonText(disabled.card); strings.Contains(text, "gateway_quick_feedback") {
+	if text := jsonText(disabled.card); strings.Contains(text, "gateway_quick_fb") {
 		t.Fatalf("disabled project received feedback buttons: %s", text)
 	}
 	for name, card := range map[string]core.Args{
@@ -104,7 +104,7 @@ func TestFeedbackButtonsOnlyOnDoneReplyCard(t *testing.T) {
 		if name != "file pending" {
 			rendered = done.f.g.deliveredOutputCard(o, done.room)
 		}
-		if strings.Contains(jsonText(rendered), "gateway_quick_feedback") {
+		if strings.Contains(jsonText(rendered), "gateway_quick_fb") {
 			t.Fatalf("%s card received feedback buttons", name)
 		}
 	}
@@ -120,7 +120,7 @@ func TestFeedbackDoneStatusUsesSharedCardText(t *testing.T) {
 	if status != replyStatusContent(replyDoneText) {
 		t.Fatalf("delivered status = %q", status)
 	}
-	if !strings.Contains(jsonText(x.card), "gateway_quick_feedback") {
+	if !strings.Contains(jsonText(x.card), "gateway_quick_fb") {
 		t.Fatal("done status lost feedback controls")
 	}
 	fragment := replyCard("后台续轮已结束", "answer", nil, 0, true, replyDetails{}, time.Second, true)

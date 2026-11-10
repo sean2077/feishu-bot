@@ -218,3 +218,16 @@ func TestConcurrentCardUpdatesSerializeMonotonicSequences(t *testing.T) {
 		t.Fatal("per-card serialization retained idle locks")
 	}
 }
+
+func TestCardRejectsOverlongElementID(t *testing.T) {
+	card := core.Args{"schema": "2.0", "config": core.Args{"streaming_mode": false}, "body": core.Args{"elements": []any{
+		core.Args{"tag": "markdown", "element_id": strings.Repeat("x", cardElementIDLimit+1), "content": "answer"},
+	}}}
+	if _, _, err := normalizedCard(card); err == nil || !strings.Contains(err.Error(), "exceeds 20 characters") {
+		t.Fatalf("overlong element_id = %v", err)
+	}
+	card["body"] = core.Args{"elements": []any{core.Args{"tag": "markdown", "element_id": strings.Repeat("x", cardElementIDLimit), "content": "answer"}}}
+	if _, _, err := normalizedCard(card); err != nil {
+		t.Fatalf("20-character element_id rejected: %v", err)
+	}
+}

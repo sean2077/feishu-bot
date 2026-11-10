@@ -27,6 +27,7 @@
 | 认证成功、身份失败 | 检查机器人功能和身份接口；还不能判断事件订阅是否完整 |
 | 基础模型成功、工具／流式未测 | 继续做原生 CLI 的本地模型回归及测试群验收 |
 | 模型已结束、文件仍待交付 | 查看 `/outputs`；先确认交付，不能重复模型任务来补文件 |
+| 正常回复后出现 `output_controls_refresh_failed` | 检查控件 `element_id` 是否超过 CardKit 的 20 字符上限或重复；该失败只影响卡片外观，不改变已送达状态，也不会生成重试按钮 |
 | 平台暂时拒绝 | 查看安全的错误阶段、HTTP 状态、平台码及请求标识，等待有界重试结果 |
 | 写入结果未知 | 先检查远端卡片／文件，再显式补发；不能把超时当作未执行 |
 
@@ -57,7 +58,7 @@
 - `dispatch_failed`：`phase` 为 `launch` 或 `send`，`reason` 为固定分类（`settings_file`、`launch_identity`、`process_start`、`process_unconfirmed`、`timeout`、`model_profile`、`workspace`、`other`）；`error` 仍先脱敏。
 - `worker_failure`：原生初始化／运行错误通知的审计，`phase=initialize`，`reason` 使用同一组固定分类；`error` 脱敏。
 - `output_delivery_failed`：`phase=delivery`，`stage` 为 `card`／`file_prepare`／`file_send`／`card_finalize`，`reason` 为固定分类。
-- `worker_exit`：原生进程退出，包含 `code`、`reason`（`idle_release`、`stop`、`shutdown`、`profile_switch`、`delivery_failed`、`crash`）和 `inTurn`。`reason` 来自网关的停止意图，不靠退出码；Windows 空闲回收即使 code=1 也标为 `idle_release`，没有停止意图的自然退出标为 `crash`。
+- `worker_exit`：原生进程退出，包含 `code`、`session`、`reason`（`idle_release`、`stop`、`shutdown`、`profile_switch`、`delivery_failed`、`crash`）和 `inTurn`；宿主提供了房间键时还带 `room`，便于多个 worker 同时运行时区分。`reason` 来自网关的停止意图，不靠退出码；Windows 空闲回收即使 code=1 也标为 `idle_release`，没有停止意图的自然退出标为 `crash`。
 
 ## 容量等待、复用与回收
 
