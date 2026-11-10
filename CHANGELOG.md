@@ -2,6 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
+- 新增默认关闭的 `projects[].bash.rejectCwdPrefix`：开启后在 PreToolUse Bash hook 中拒绝以当前原生 cwd 的 `cd <cwd> &&` 或 `cd <cwd>;` 开头的命令，返回可直接照做的说明，减少重复审批噪音；支持引号、正反斜杠、Windows 大小写和 MSYS 路径、`~` 展开。它只检查开头一个 cd，不处理环境变量/`cd -`/`cd ..`/`pushd`，不是安全边界。每次触发写 `bash_cwd_prefix_rejected` 审计（room、session），不记录命令全文。
 - 修复项目 `settingsFile` 含顶层 `autoMode` 时原生进程拒绝启动的问题：现在允许 `autoMode` 为 JSON 对象并原样透传到生成的临时 settings（isolated 和 inherit 都覆盖），已知 `environment`/`allow`/`soft_deny` 和未知子字段均不逐项校验；`autoMode` 不是对象时仍拒绝。`hooks`、`defaultMode`、`apiKeyHelper`、`additionalDirectories` 等其他未知顶层字段继续 fail-closed，错误日志和 doctor 显示具体字段名。
 
 - 新增 `projects[].permissionMode: "auto"`：网关只对 auto 项目注入 `CLAUDE_CODE_AUTO_MODE_SERVER=0`，强制使用 Claude Code 本地安全分类器；不改变 API_KEY 或非必要流量开关。分类器使用现有模型凭据和 `baseUrl`，固定 `claude-sonnet-5`，每次最多两段、约 40 秒且计费。分类器拒绝写 `auto_mode_denied`，不可用／无法评估写 `auto_mode_unavailable`（`kind=unavailable|unevaluable`），并在回复卡追加一条固定中文提示；工具输入不进入卡片或审计。init 回显 `permissionMode`，不一致写 `permission_mode_mismatch`；`/status` 显示请求与生效值，doctor/config explain 标注运行时 `not_checked`。deny 仍是硬边界，ask 仍进入维护者审批。默认值不变，线上配置未切换。
