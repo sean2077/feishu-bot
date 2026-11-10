@@ -440,6 +440,15 @@ func validate(c *core.Config, base string) error {
 		return errors.New("dataDir and model.model must be nonempty")
 	}
 	c.DataDir = absolute(base, c.DataDir)
+	if c.Feedback.Export.Enabled && !nonempty(c.Feedback.Export.Dir) {
+		return errors.New("feedback.export.dir is required when feedback.export.enabled is true")
+	}
+	if c.Feedback.Export.Dir != "" {
+		if !nonempty(c.Feedback.Export.Dir) {
+			return errors.New("invalid feedback.export.dir")
+		}
+		c.Feedback.Export.Dir = absolute(base, c.Feedback.Export.Dir)
+	}
 	if c.Runtime.ClaudeExecutable != "" {
 		c.Runtime.ClaudeExecutable = absolute(base, c.Runtime.ClaudeExecutable)
 	}

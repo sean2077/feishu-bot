@@ -141,6 +141,19 @@ type FeedbackConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 }
 
+// FeedbackExportConfig writes per-project daily feedback archives before the
+// feedback retention policy can delete those rows. It is disabled by default.
+type FeedbackExportConfig struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	Dir     string `json:"dir,omitempty"`
+}
+
+// FeedbackSettings holds deployment-wide feedback options. Project-level
+// collection remains in Project.Feedback.
+type FeedbackSettings struct {
+	Export FeedbackExportConfig `json:"export,omitempty"`
+}
+
 type Project struct {
 	ID               string           `json:"id"`
 	Maintainers      []string         `json:"maintainers"`
@@ -225,6 +238,7 @@ type Config struct {
 	Groups        []Group                 `json:"groups"`
 	DMs           []DM                    `json:"dms"`
 	Limits        Limits                  `json:"limits"`
+	Feedback      FeedbackSettings        `json:"feedback,omitempty"`
 }
 
 func (c Config) Project(id string) (Project, bool) {

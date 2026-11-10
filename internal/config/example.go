@@ -27,6 +27,12 @@ const Example = `{
     "mentionOptional": false
   }],
   "dms": [{ "userId": "ou_example_owner", "projectId": "assistant" }],
+  "feedback": {
+    "export": {
+      "enabled": false,
+      "dir": "./feedback-export"
+    }
+  },
   "limits": {
     "backgroundMessages": 0,
     "imageBatchMs": 0,

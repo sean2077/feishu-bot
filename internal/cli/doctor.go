@@ -182,6 +182,38 @@ func approvalPolicyChecks(c core.Config) []Diagnostic {
 	return checks
 }
 
+// feedbackExportChecks validates the configured archive directory before the
+// service relies on it to precede feedback retention. It only creates and
+// removes a temporary probe file; archive contents are never read.
+func feedbackExportChecks(c core.Config) []Diagnostic {
+	if !c.Feedback.Export.Enabled {
+		return nil
+	}
+	const name = "feedback export directory"
+	dir := c.Feedback.Export.Dir
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return []Diagnostic{{Name: name, OK: false, Detail: "Configured feedback export directory is missing or unreadable."}}
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return []Diagnostic{{Name: name, OK: false, Detail: "Configured feedback export directory must not be a symbolic link."}}
+	}
+	if !info.IsDir() {
+		return []Diagnostic{{Name: name, OK: false, Detail: "Configured feedback export path is not a directory."}}
+	}
+	probe, err := os.CreateTemp(dir, ".doctor-feedback-*")
+	if err != nil {
+		return []Diagnostic{{Name: name, OK: false, Detail: "Configured feedback export directory is not writable."}}
+	}
+	probePath := probe.Name()
+	closeErr := probe.Close()
+	removeErr := os.Remove(probePath)
+	if closeErr != nil || removeErr != nil {
+		return []Diagnostic{{Name: name, OK: false, Detail: "Configured feedback export directory failed its write probe."}}
+	}
+	return []Diagnostic{{Name: name, OK: true, Detail: "Existing writable directory; archive contents are not inspected."}}
+}
+
 type cappedWriter struct {
 	bytes.Buffer
 	limit int
@@ -217,6 +249,7 @@ func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) Doct
 	checks := append(deploymentChecks(c), projectEnvChecks(c)...)
 	checks = append(checks, projectSettingsChecks(c)...)
 	checks = append(checks, approvalPolicyChecks(c)...)
+	checks = append(checks, feedbackExportChecks(c)...)
 	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: checks, Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made.", Native: native.Compatibility("")}
 	add := func(name string, fn func() (string, error)) {
 		if ctx.Err() != nil {

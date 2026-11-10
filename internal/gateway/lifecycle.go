@@ -408,7 +408,8 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 	g.poolMu.Unlock()
 	g.kickWaiting()
 	g.pruneExports(now)
-	report, maintenanceErr := g.store.Maintain(ctx, now, g.config.Limits.BackgroundMS)
+	paused := g.exportFeedback(ctx, now)
+	report, maintenanceErr := g.store.Maintain(ctx, now, g.config.Limits.BackgroundMS, paused...)
 	g.noteMaintenance(report.Deadline, report.Progress)
 	if g.logger != nil {
 		for i := range report.Policies {

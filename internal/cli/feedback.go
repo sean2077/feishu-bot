@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"io"
 	"path/filepath"
@@ -12,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sean2077/feishu-bot/internal/config"
+	"github.com/sean2077/feishu-bot/internal/feedbackexport"
 	"github.com/sean2077/feishu-bot/internal/store"
 )
 
@@ -65,20 +64,6 @@ func parseFeedback(args []string, o Options) (Options, error) {
 	return resolveOptions(&o)
 }
 
-type feedbackExport struct {
-	At              string `json:"at"`
-	Project         string `json:"project"`
-	Room            string `json:"room"`
-	Session         string `json:"session"`
-	NativeSessionID string `json:"nativeSessionId"`
-	Value           string `json:"value"`
-	User            string `json:"user"`
-	Question        string `json:"question"`
-	QuestionMissing bool   `json:"questionMissing,omitempty"`
-	AnswerSummary   string `json:"answerSummary"`
-	MessageID       string `json:"messageId"`
-}
-
 func runFeedbackCommand(ctx context.Context, o Options, out io.Writer) error {
 	if o.Subcommand != "export" {
 		return errors.New("unknown feedback command")
@@ -110,36 +95,18 @@ func runFeedbackCommand(ctx context.Context, o Options, out io.Writer) error {
 	if present == 0 {
 		return nil
 	}
-	q := "SELECT at,project,room,session,native_session,value,user,question,answer_summary,message FROM feedback WHERE at>=?"
-	args := []any{since}
-	if o.FeedbackValue != "all" {
-		q += " AND value=?"
-		args = append(args, o.FeedbackValue)
-	}
-	if o.FeedbackProject != "" {
-		q += " AND project=?"
-		args = append(args, o.FeedbackProject)
-	}
-	q += " ORDER BY at,id"
-	rows, err := st.DB.QueryContext(ctx, q, args...)
+	records, err := feedbackexport.Query(ctx, st.DB, feedbackexport.Filter{Since: since, Value: exportValue(o.FeedbackValue), Project: o.FeedbackProject})
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	encoder := json.NewEncoder(out)
-	for rows.Next() {
-		var at int64
-		var project, room, session, value, user, question, answer, message string
-		var native sql.NullString
-		if err := rows.Scan(&at, &project, &room, &session, &native, &value, &user, &question, &answer, &message); err != nil {
-			return err
-		}
-		record := feedbackExport{At: time.UnixMilli(at).UTC().Format(time.RFC3339Nano), Project: project, Room: room, Session: session, NativeSessionID: native.String, Value: value, User: user, Question: question, QuestionMissing: question == "", AnswerSummary: answer, MessageID: message}
-		if err := encoder.Encode(record); err != nil {
-			return err
-		}
+	return feedbackexport.Encode(out, records)
+}
+
+func exportValue(value string) string {
+	if value == "all" {
+		return ""
 	}
-	return rows.Err()
+	return value
 }
 
 func feedbackSince(value string) (int64, error) {

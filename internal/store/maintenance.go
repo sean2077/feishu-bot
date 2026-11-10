@@ -31,6 +31,7 @@ type MaintenancePolicyReport struct {
 	Candidates int64  `json:"candidates"`
 	Changed    int64  `json:"changed"`
 	Deadline   bool   `json:"deadline,omitempty"`
+	Paused     bool   `json:"paused,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 
@@ -65,6 +66,7 @@ CREATE INDEX IF NOT EXISTS action_runs_room_active ON action_runs(room) WHERE st
 CREATE INDEX IF NOT EXISTS action_runs_room_age ON action_runs(room,at);
 CREATE INDEX IF NOT EXISTS feedback_at ON feedback(at);
 CREATE INDEX IF NOT EXISTS feedback_project_value_at ON feedback(project,value,at);
+CREATE TABLE IF NOT EXISTS feedback_exports(project TEXT PRIMARY KEY,at INTEGER NOT NULL,id TEXT NOT NULL,file TEXT NOT NULL,rows INTEGER NOT NULL,updated INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS outbox_terminal_age ON outbox(at) WHERE state IN ('done','cancelled');
 CREATE INDEX IF NOT EXISTS outbox_session_active ON outbox(session) WHERE state NOT IN ('done','cancelled');
 CREATE INDEX IF NOT EXISTS outbox_room_active ON outbox(room) WHERE state NOT IN ('done','cancelled');
@@ -128,13 +130,19 @@ func maintenancePolicies(now, backgroundMS int64) []maintenancePolicy {
 // Maintain bounds both old candidates and mutations for every policy. Cursors
 // survive restart and advance even across protected rows, so a long-lived
 // uncertain record cannot starve later eligible data. It never prunes usage
-// results: those rows are also native-result deduplication keys.
-func (s *Store) Maintain(ctx context.Context, now, backgroundMS int64) (report MaintenanceReport, err error) {
+// results: those rows are also native-result deduplication keys. Named paused
+// policies are left untouched this sweep; callers use that when a required
+// archive failed so retention cannot delete unexported rows.
+func (s *Store) Maintain(ctx context.Context, now, backgroundMS int64, pausedPolicies ...string) (report MaintenanceReport, err error) {
 	started := time.Now()
 	defer func() { report.DurationMS = time.Since(started).Milliseconds() }()
 	ctx, cancel := context.WithTimeout(ctx, maintenanceTimeout)
 	defer cancel()
 	policies := maintenancePolicies(now, backgroundMS)
+	paused := map[string]bool{}
+	for _, name := range pausedPolicies {
+		paused[name] = true
+	}
 	var next int
 	readErr := s.DB.QueryRowContext(ctx, "SELECT at FROM maintenance_cursors WHERE name='next_policy'").Scan(&next)
 	if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
@@ -151,7 +159,13 @@ func (s *Store) Maintain(ctx context.Context, now, backgroundMS int64) (report M
 	for i := 0; i < len(policies); i++ {
 		index := (next + i) % len(policies)
 		p := policies[index]
-		entry, policyErr := s.maintainPolicy(ctx, p, (index+1)%len(policies))
+		if paused[p.name] {
+			report.Policies = append(report.Policies, MaintenancePolicyReport{Name: p.name, Paused: true})
+			continue
+		}
+		// A pass with a paused policy is intentionally incomplete: do not
+		// advertise a full maintenance circle while retention is behind.
+		entry, policyErr := s.maintainPolicy(ctx, p, (index+1)%len(policies), len(paused) == 0)
 		if policyErr != nil {
 			entry.Error = policyErr.Error()
 			if errors.Is(policyErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -193,7 +207,7 @@ func (s *Store) LastFullMaintenance(ctx context.Context) (int64, bool, error) {
 	return at, err == nil, err
 }
 
-func (s *Store) maintainPolicy(ctx context.Context, p maintenancePolicy, next int) (MaintenancePolicyReport, error) {
+func (s *Store) maintainPolicy(ctx context.Context, p maintenancePolicy, next int, markFull bool) (MaintenancePolicyReport, error) {
 	entry := MaintenancePolicyReport{Name: p.name}
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		at, rowID := int64(-9223372036854775808), int64(0)
@@ -261,7 +275,7 @@ func (s *Store) maintainPolicy(ctx context.Context, p maintenancePolicy, next in
 		// next wraps to the first policy only after the cursor has committed
 		// every policy in order. A failed policy rolls back this transaction,
 		// including the marker, so a non-deadline error cannot fake a full pass.
-		if next == 0 {
+		if next == 0 && markFull {
 			if _, err = tx.ExecContext(ctx, `INSERT INTO maintenance_cursors(name,at,row_id) VALUES('last_full',?,0) ON CONFLICT(name) DO UPDATE SET at=excluded.at,row_id=0`, time.Now().UnixMilli()); err != nil {
 				return err
 			}

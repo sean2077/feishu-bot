@@ -154,6 +154,12 @@ _英文_: reply card
 _英文_: reply feedback
 _避免_: 用“点赞”指代需要导出的反馈
 
+**反馈归档**
+
+开启 `feedback.export` 后，维护清理前按项目和 UTC 日期写出的 JSONL 文件，以及 `feedback_exports` 中记录已归档位置的 `(at,id)` 水位。归档失败会暂停 `feedback` 保留策略，避免先删除后导出；手工 `feedback export` 不改变该水位。
+_英文_: feedback archive
+_避免_: 把手工导出称为“归档”，或把归档水位当作反馈处理进度
+
 **状态卡片**
 
 每个聊天最多一张、由“查看状态”刷新同一消息的可折叠卡片。消息 ID 持久保存在 `status_cards` 表；重复点击原地刷新，只有确定旧消息不可用时才重建。
