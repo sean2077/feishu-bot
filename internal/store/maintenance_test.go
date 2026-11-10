@@ -301,3 +301,31 @@ func TestMaintenanceDeadlineIsResumableAndRecordsFullCompletion(t *testing.T) {
 		t.Fatalf("last full maintenance = %d %t %v", at, ok, err)
 	}
 }
+
+func TestMaintenanceFullPassRecordsLastFullAcrossRounds(t *testing.T) {
+	s := openTest(t)
+	now := time.Now().UnixMilli()
+	policies := maintenancePolicies(now, 1)
+	if len(policies) < 2 {
+		t.Fatal("expected multiple maintenance policies")
+	}
+	for i, policy := range policies {
+		if i == len(policies)-1 {
+			if _, ok, err := s.LastFullMaintenance(context.Background()); err != nil || ok {
+				t.Fatalf("last full recorded before the cursor wrapped: %t %v", ok, err)
+			}
+		}
+		if _, err := s.maintainPolicy(context.Background(), policy, (i+1)%len(policies)); err != nil {
+			t.Fatalf("policy %s: %v", policy.name, err)
+		}
+		if i < len(policies)-1 {
+			if _, ok, err := s.LastFullMaintenance(context.Background()); err != nil || ok {
+				t.Fatalf("last full recorded after incomplete pass at %s: %t %v", policy.name, ok, err)
+			}
+		}
+	}
+	at, ok, err := s.LastFullMaintenance(context.Background())
+	if err != nil || !ok || at <= 0 {
+		t.Fatalf("last full after full pass = %d %t %v", at, ok, err)
+	}
+}
