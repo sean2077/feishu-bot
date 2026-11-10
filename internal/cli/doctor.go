@@ -17,7 +17,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sean2077/feishu-bot/internal/config"
 	"github.com/sean2077/feishu-bot/internal/core"
@@ -199,59 +198,25 @@ func permissionModeChecks(c core.Config) []Diagnostic {
 	return checks
 }
 
-const maxProjectPromptBytes = 16 << 10
-
-func readProjectPromptFile(path string) ([]byte, string) {
-	file, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, "missing"
-		}
-		return nil, "unreadable"
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxProjectPromptBytes+1))
-	if err != nil {
-		return nil, "unreadable"
-	}
-	switch {
-	case len(data) > maxProjectPromptBytes:
-		return nil, "too large"
-	case !utf8.Valid(data):
-		return nil, "not UTF-8"
-	case strings.ContainsRune(string(data), 0):
-		return nil, "contains NUL"
-	}
-	return data, ""
-}
-
 func projectPromptChecks(c core.Config) []Diagnostic {
 	var checks []Diagnostic
 	for _, p := range c.Projects {
 		name := "project " + p.ID + " system prompt"
-		if p.AppendSystemPrompt != "" && p.AppendSystemPromptFile != "" {
-			checks = append(checks, Diagnostic{Name: name, OK: false, Detail: "Both appendSystemPrompt and appendSystemPromptFile are configured; content is not displayed."})
+		if p.AppendSystemPromptFile != "" && core.Inside(filepath.Join(c.DataDir, "rooms"), p.AppendSystemPromptFile) {
+			checks = append(checks, Diagnostic{Name: name, OK: false, Detail: "Configured prompt file is unavailable (path); content is not displayed."})
 			continue
 		}
-		detail := "Not configured."
-		ok := true
+		prompt, reason := config.LoadProjectPrompt(p)
+		if reason != "" {
+			checks = append(checks, Diagnostic{Name: name, OK: false, Detail: "Configured prompt is unavailable (" + reason + "); content is not displayed."})
+			continue
+		}
+		detail, ok := "Not configured.", true
 		switch {
 		case p.AppendSystemPrompt != "":
-			detail = fmt.Sprintf("Configured inline prompt: %d bytes; content is not displayed.", len(p.AppendSystemPrompt))
-			if len(p.AppendSystemPrompt) > maxProjectPromptBytes || !utf8.ValidString(p.AppendSystemPrompt) || strings.ContainsRune(p.AppendSystemPrompt, 0) {
-				ok, detail = false, "Inline prompt is invalid; content is not displayed."
-			}
+			detail = fmt.Sprintf("Configured inline prompt: %d bytes; content is not displayed.", len(prompt))
 		case p.AppendSystemPromptFile != "":
-			if core.Inside(filepath.Join(c.DataDir, "rooms"), p.AppendSystemPromptFile) {
-				ok, detail = false, "Prompt file is inside the dataDir room tree; content is not displayed."
-				break
-			}
-			data, reason := readProjectPromptFile(p.AppendSystemPromptFile)
-			if reason != "" {
-				ok, detail = false, "Prompt file is unavailable ("+reason+"); content is not displayed."
-				break
-			}
-			detail = fmt.Sprintf("Configured file prompt: %d bytes; content is not displayed.", len(data))
+			detail = fmt.Sprintf("Configured file prompt: %d bytes; content is not displayed.", len(prompt))
 		}
 		checks = append(checks, Diagnostic{Name: name, OK: ok, Detail: detail})
 	}

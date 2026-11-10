@@ -40,7 +40,7 @@ func TestProjectPromptDoctorChecks(t *testing.T) {
 	if checks[2].OK || !strings.Contains(checks[2].Detail, "missing") {
 		t.Fatalf("missing check = %+v", checks[2])
 	}
-	if checks[3].OK || !strings.Contains(checks[3].Detail, "room") {
+	if checks[3].OK || !strings.Contains(checks[3].Detail, "path") {
 		t.Fatalf("room check = %+v", checks[3])
 	}
 }

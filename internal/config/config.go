@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -537,11 +536,8 @@ func validate(c *core.Config, base string) error {
 			return errors.New("appendSystemPrompt and appendSystemPromptFile are mutually exclusive")
 		}
 		if p.AppendSystemPrompt != "" {
-			if len(p.AppendSystemPrompt) > 16<<10 {
-				return errors.New("appendSystemPrompt exceeds 16 KiB")
-			}
-			if !utf8.ValidString(p.AppendSystemPrompt) || strings.ContainsRune(p.AppendSystemPrompt, 0) {
-				return errors.New("appendSystemPrompt must be valid UTF-8 without NUL")
+			if reason := projectPromptTextReason(p.AppendSystemPrompt); reason != "" {
+				return errors.New("invalid appendSystemPrompt: " + reason)
 			}
 		}
 		if p.AppendSystemPromptFile != "" && core.Inside(filepath.Join(c.DataDir, "rooms"), p.AppendSystemPromptFile) {
