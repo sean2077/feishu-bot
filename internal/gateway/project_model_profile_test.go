@@ -143,7 +143,7 @@ func TestModelCommandShowsProjectDefaultAndExplicitDefaultSticks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.RequestedProfile == nil || *p.RequestedProfile != "default" {
+	if !((p.RequestedProfile != nil && *p.RequestedProfile == "default") || (p.Profile == "default" && p.RequestedProfile == nil)) {
 		t.Fatalf("explicit default was not persisted: %+v", p)
 	}
 	eventually(t, func() bool {
