@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sean2077/feishu-bot/internal/config"
 	"github.com/sean2077/feishu-bot/internal/core"
 	"github.com/sean2077/feishu-bot/internal/store"
 )
@@ -34,6 +35,10 @@ type sessionListPage struct {
 	Items      []store.SessionEntry `json:"sessions"`
 	NextCursor string               `json:"nextCursor,omitempty"`
 	JSON       bool                 `json:"-"`
+	// Profiles holds the effective profile and its source for each listed
+	// session, including the project default used by sessions without a
+	// session-level selection.
+	Profiles map[string]config.ModelSelection `json:"-"`
 }
 
 func (g *Gateway) signSessionCursor(p sessionCursor) string {
@@ -123,6 +128,11 @@ func (g *Gateway) sessionPage(r core.Room, arg string) (sessionListPage, error) 
 	if err != nil {
 		return p, err
 	}
+	project, _ := g.config.Project(r.ProjectID)
+	p.Profiles = make(map[string]config.ModelSelection, len(items))
+	for _, item := range items {
+		p.Profiles[item.ID] = profileSelection(g.config, project, item.Profile)
+	}
 	if more {
 		last := items[len(items)-1]
 		cursor.At, cursor.ID = last.LastInputAt, last.ID
@@ -135,7 +145,11 @@ func sessionPageText(p sessionListPage, manage bool) string {
 	if p.JSON {
 		items := []core.Args{}
 		for _, s := range p.Items {
-			items = append(items, core.Args{"id": s.ID, "shortId": cut(s.ID, 8), "name": s.Name, "nativeTitle": s.NativeTitle, "displayName": s.DisplayName(), "profile": profileLabel(s.Profile), "state": s.State, "createdAt": s.CreatedAt, "lastInputAt": s.LastInputAt, "current": s.ID == p.Current})
+			selection := p.Profiles[s.ID]
+			if selection.Profile == "" {
+				selection = config.ModelSelection{Profile: profileLabel(s.Profile), Source: "session"}
+			}
+			items = append(items, core.Args{"id": s.ID, "shortId": cut(s.ID, 8), "name": s.Name, "nativeTitle": s.NativeTitle, "displayName": s.DisplayName(), "profile": selection.Profile, "profileSource": selection.Source, "state": s.State, "createdAt": s.CreatedAt, "lastInputAt": s.LastInputAt, "current": s.ID == p.Current})
 		}
 		return jsonPretty(core.Args{"total": p.Total, "pageLimit": 20, "query": p.Query, "current": p.Current, "sessions": items, "nextCursor": p.NextCursor})
 	}
@@ -154,7 +168,15 @@ func sessionPageText(p sessionListPage, manage bool) string {
 		if s.ID == p.Current {
 			label = "当前会话"
 		}
-		lines = append(lines, "", label+" · "+s.DisplayName()+" · "+timeLabel(s.LastInputAt)+"\n`"+s.ID+"`")
+		selection := p.Profiles[s.ID]
+		if selection.Profile == "" {
+			selection = config.ModelSelection{Profile: profileLabel(s.Profile), Source: "session"}
+		}
+		line := label + " · " + s.DisplayName() + " · " + timeLabel(s.LastInputAt) + " · 模型 " + selection.Profile
+		if selection.Source == "project" {
+			line += "（项目默认）"
+		}
+		lines = append(lines, "", line+"\n`"+s.ID+"`")
 	}
 	if p.Current != "" {
 		lines = append(lines, "", "当前会话 ID：`"+p.Current+"`")

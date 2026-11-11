@@ -98,9 +98,21 @@
 
 名称须以小写字母开头，后接小写字母、数字、`_` 或 `-`，最多 32 个字符；最多配置 32 项，`default` 是保留名称。省略 `smallModel` 时使用该配置的 `model`。`model.effort` 可设置部署默认值，命名配置省略 effort 时继承它；显式 `auto` 请求原生默认行为。配置只改变原生模型选择与 effort，不提供聊天内的凭据、服务地址或权限修改。
 
-在当前聊天发送 `/model careful` 选择配置，`/model default` 恢复部署默认值。选择持久化到本会话，其他聊天不受影响；新建会话从 `default` 开始，恢复历史会话使用它保存的选择。切换在当前工作安全结束后生效，下一条输入才启动使用新配置的原生进程；权限、等待边界和配置被移除时的处理见[会话配置与快捷操作](conversation-contract.md#会话配置与快捷操作)。
+项目可用 `projects[].modelProfile` 声明默认命名配置，值是 `modelProfiles` 中的名称或 `default`；引用不存在的名称时配置加载失败。解析顺序是：会话显式选择优先（包括显式选择 `default`）；从未显式选择过的会话使用项目默认；项目未设置时使用部署默认。下面是把项目默认设为 `careful` 的片段：
 
-模型通过原生 `--model` 参数与对应环境变量选择；effort 使用原生 `CLAUDE_CODE_EFFORT_LEVEL`，允许 `auto`、`low`、`medium`、`high`、`xhigh`、`max`。这些是请求值；各模型支持的档位、组织限制和兼容服务的行为由 Claude Code 与服务决定，网关不模拟额外推理循环。原生选项依据 [Claude Code 模型配置](https://code.claude.com/docs/en/model-config)，当前协议回归版本见[验证与验收](validation.md)。`/model --json` 报告配置选择，`/usage` 的模型字段只报告实际收到的原生模型标识。
+```json
+{
+  "projects": [
+    { "id": "assistant", "modelProfile": "careful" }
+  ]
+}
+```
+
+在当前聊天发送 `/model careful` 选择配置，`/model default` 固定使用部署默认值，不再跟随项目默认。选择持久化到本会话，其他聊天不受影响；新建或从未显式选择过的既有会话使用所属项目的默认配置。项目默认改变后，未选中配置的会话在下次原生进程启动或按同一原生 ID 续接时使用新的 `--model`，已有对话历史保留。切换在当前工作安全结束后生效，下一条输入才启动使用新配置的原生进程；权限、等待边界和配置被移除时的处理见[会话配置与快捷操作](conversation-contract.md#会话配置与快捷操作)。
+
+项目默认只改变模型标识和 effort；凭据、`baseUrl`、权限规则和目录仍来自部署配置。`/status` 显示生效的模型配置及来源（会话选择、项目默认或部署默认），`/sessions --json` 的每个会话带 `profile` 和 `profileSource`，`/model` 同时显示项目默认。`doctor` 和 `config explain` 显示项目默认配置名，不显示凭据。
+
+模型通过原生 `--model` 参数与对应环境变量选择；effort 使用原生 `CLAUDE_CODE_EFFORT_LEVEL`，允许 `auto`、`low`、`medium`、`high`、`xhigh`、`max`。这些是请求值；各模型支持的档位、组织限制和兼容服务的行为由 Claude Code 与服务决定，网关不模拟额外推理循环。原生选项依据 [Claude Code 模型配置](https://code.claude.com/docs/en/model-config)，当前协议回归版本见[验证与验收](validation.md)。`/model --json` 报告当前选择、来源、项目默认和可用配置；`/usage` 的模型字段只报告实际收到的原生模型标识。
 
 ## 已完成文件
 

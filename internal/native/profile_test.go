@@ -1,6 +1,7 @@
 package native
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -42,5 +43,34 @@ func TestNamedProfileUsesNativeStartupAndKeepsResume(t *testing.T) {
 	}
 	if _, ok := modelEnvironment(base, "fixture-token", nil, false)["CLAUDE_CODE_EFFORT_LEVEL"]; ok {
 		t.Fatal("profile effort leaked into another worker's defaults")
+	}
+}
+
+func TestProjectDefaultProfileUsesNativeStartupAndKeepsResume(t *testing.T) {
+	base := core.Config{Model: core.ModelConfig{Model: "default-model", SmallModel: "default-small"}, ModelProfiles: map[string]core.ModelProfile{"careful": {Model: "selected-model", SmallModel: "selected-small", Effort: "high"}}, Projects: []core.Project{{ID: "p", ModelProfile: "careful"}}}
+	project := base.Projects[0]
+	selected, selection, err := config.ResolveProjectModel(base, project, "")
+	if err != nil || selection.Profile != "careful" || selection.Source != "project" {
+		t.Fatalf("project default resolution = %+v %v", selection, err)
+	}
+	env := modelEnvironment(selected, "fixture-token", nil, false)
+	if env["ANTHROPIC_MODEL"] != "selected-model" || env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] != "selected-small" || env["CLAUDE_CODE_EFFORT_LEVEL"] != "high" {
+		t.Fatal("project default was not passed through native environment")
+	}
+	args := strings.Join(launchArgs(selected, project, core.Session{CCID: "existing-native-session"}, core.Workspace{}, ""), " ")
+	if !strings.Contains(args, "--model selected-model") || !strings.Contains(args, "--resume existing-native-session") {
+		t.Fatal("project default did not preserve model and resume arguments", args)
+	}
+	explicit, selection, err := config.ResolveProjectModel(base, project, "default")
+	if err != nil || selection.Source != "session" || selection.Profile != "default" {
+		t.Fatalf("explicit default did not override project default: %+v %v", selection, err)
+	}
+	args = strings.Join(launchArgs(explicit, project, core.Session{CCID: "existing-native-session"}, core.Workspace{}, ""), " ")
+	if !strings.Contains(args, "--model default-model") || strings.Contains(args, "--model selected-model") {
+		t.Fatal("explicit default still used the project default", args)
+	}
+	_, err = NewFactory(base, nil)(context.Background(), core.Room{ProjectID: "p"}, core.Session{Profile: "removed"}, core.Workspace{}, func(core.WorkerEvent) {})
+	if err == nil {
+		t.Fatal("removed explicit session profile launched with a substitute model")
 	}
 }

@@ -202,6 +202,7 @@ type Project struct {
 	AppendSystemPromptFile string             `json:"appendSystemPromptFile,omitempty"`
 	PreContext             *ProjectPreContext `json:"preContext,omitempty"`
 	NativeConfig           string             `json:"nativeConfig,omitempty"`
+	ModelProfile           string             `json:"modelProfile,omitempty"`
 	PermissionMode         string             `json:"permissionMode"`
 	AllowedTools           []string           `json:"allowedTools"`
 	Actions                []ActionSpec       `json:"actions"`

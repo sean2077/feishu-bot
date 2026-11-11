@@ -166,7 +166,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 
 `model.baseUrl` 使用 Claude Code 可调用的 Anthropic Messages 兼容地址（对应 `ANTHROPIC_BASE_URL`），`model`／`smallModel` 填实际模型 ID。可直连服务商或兼容网关；不做协议转换，不保证任意兼容模型都具备同样的工具与多模态能力。地址支持路径前缀，末尾 `/v1` 去重，不能包含凭据、查询串或片段。默认要求 HTTPS；`allowHttp` 仅用于明确选择的本地测试。`extraHeaders` 可引用 `env:VARIABLE_NAME`，缺失引用和头注入在运行前拒绝。模型额度与限流由上游控制，`runtime.maxWorkers` 只限制活跃原生进程数。
 
-可选 `model.effort` 指定原生默认 effort；`modelProfiles` 是管理员定义的命名模型配置，只允许 `model`、`smallModel`、`effort`，不能覆盖端点、凭据或工具权限。聊天内 `/model` 查看并选择，`/profile` 同义；选择按会话保存，等待安全轮次边界后生效并保持原生 ID。未配置时使用默认模型。effort 支持由原生 CLI／模型服务决定，不用额外提示词模拟推理控制。[配置与行为](usage.md#会话模型配置)
+可选 `model.effort` 指定原生默认 effort；`modelProfiles` 是管理员定义的命名模型配置，只允许 `model`、`smallModel`、`effort`，不能覆盖端点、凭据或工具权限。`projects[].modelProfile` 可指定该项目未显式选择配置时的默认项，值须引用已声明的配置或 `default`，否则配置加载失败；会话显式选择 `default` 会固定使用部署默认，不跟随项目默认。项目默认改变后，未选中配置的会话在下次原生进程启动或续接时切换模型并保留历史。聊天内 `/model` 查看并选择，`/profile` 同义；选择按会话保存，等待安全轮次边界后生效并保持原生 ID。未配置时使用默认模型。effort 支持由原生 CLI／模型服务决定，不用额外提示词模拟推理控制。[配置与行为](usage.md#会话模型配置)
 
 Go 飞书 HTTP／WebSocket 客户端使用系统证书及 Go 的代理环境规则（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`）；原生 Claude 还接收获准的代理和证书环境。为 Go 服务安装的系统 CA 与 Claude 的 `NODE_EXTRA_CA_CERTS` 等配置需要分别验证，不能以一方连接成功推断另一方成功。不要关闭证书校验。
 
@@ -574,6 +574,6 @@ feishu-bot daemon start
 
 全局服务锁在整个本地交互期间保留，不能同时开启飞书服务。存在该聊天的 queued／sent／consumed 输入、未确认输出、待审批或运行中的操作时拒绝交接；结果未知（uncertain）的旧输入或操作只在启动时提示数量，保留为证据且不重放，不永久阻止交接。启动前检查（终端、凭据、模型配置、可执行文件）失败时不切换该聊天的当前会话；待切换模型配置也须先在飞书处理。直接退出或 Ctrl+C 后，只有进程树清理得到确认才释放锁；未确认时按 stale lock 流程核查，不自动启动替代实例。
 
-原生 TUI 使用保存的 native ID、工作目录、配置模式、已应用模型配置和权限模式。权限提示在终端回答；飞书专用 MCP、固定操作 relay 与飞书输出交付不在本地开启。该期间的原生用量不会写入网关用量记录，覆盖缺口会显示在 `/usage` 中。此入口服务于同一受信任账户下的接续，目录和锁不构成多租户沙箱。
+原生 TUI 使用保存的 native ID、工作目录、配置模式、已应用模型配置（未显式选择时使用项目默认）和权限模式。权限提示在终端回答；飞书专用 MCP、固定操作 relay 与飞书输出交付不在本地开启。该期间的原生用量不会写入网关用量记录，覆盖缺口会显示在 `/usage` 中。此入口服务于同一受信任账户下的接续，目录和锁不构成多租户沙箱。
 
 [场景配置](usage.md) · [对话规则](conversation-contract.md) · [权限与数据边界](../SECURITY.md) · [验收](validation.md)

@@ -127,6 +127,10 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 	}
 	view := core.Args{"project": r.ProjectID, "state": state, "phase": phase, "background": background, "monitorPinned": pinned, "pendingOrUnconfirmed": total, "inputs": inputs, "approvals": approvals, "pendingOutputs": outputs}
 	project, _ := g.config.Project(r.ProjectID)
+	profile, profileSource := "default", "default"
+	if project.ModelProfile != "" {
+		profile, profileSource = project.ModelProfile, "project"
+	}
 	requestedPermissionMode := project.PermissionMode
 	if requestedPermissionMode == "" {
 		requestedPermissionMode = "acceptEdits"
@@ -147,12 +151,17 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 		}
 	}
 	cancelMaintenance()
+	view["profile"] = profile
+	view["profileSource"] = profileSource
 	if saved != nil {
 		view["session"] = saved.ID
 		p, err := g.store.Preferences(r.Key, saved.ID)
 		if err != nil {
 			return nil, err
 		}
+		selection := profileSelection(g.config, project, p.Profile)
+		view["profile"] = selection.Profile
+		view["profileSource"] = selection.Source
 		view["sessionName"] = p.Name
 		if p.Name == "" {
 			view["sessionName"] = p.NativeTitle
@@ -167,7 +176,6 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 			return nil, err
 		}
 		view["titleSync"] = core.Args{"desired": title.Desired, "revision": title.Revision, "confirmed": title.Confirmed, "state": title.State, "updatedAt": title.Updated}
-		view["profile"] = profileLabel(p.Profile)
 		if p.RequestedProfile != nil {
 			view["requestedProfile"] = profileLabel(*p.RequestedProfile)
 		}
@@ -270,7 +278,7 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 			}
 		}
 		if profile := stringArg(v, "profile"); profile != "" {
-			text += "\n模型配置：" + profile
+			text += "\n模型配置：" + profile + "（" + profileSourceLabel(stringArg(v, "profileSource")) + "）"
 		}
 		if profile := stringArg(v, "requestedProfile"); profile != "" {
 			text += "\n待切换配置：" + profile + "（等待安全轮次边界）"
