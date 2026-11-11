@@ -698,13 +698,15 @@ func (w *worker) handleControl(frame args) {
 }
 
 const (
-	autoDeniedPrefix     = "Permission for this action was denied by the Claude Code auto mode classifier."
-	autoUnavailable      = "Auto mode is unavailable:"
-	autoUnevaluable      = "Auto mode could not evaluate this action"
-	autoDeniedDefault    = "Blocked by classifier"
-	autoUnavailableCause = "safety check does not run for this session"
-	autoUnevaluableCause = "could not evaluate this action"
-	autoStage2Prefix     = "Stage 2 classifier error"
+	autoDeniedPrefix        = "Permission for this action was denied by the Claude Code auto mode classifier."
+	autoUnavailable         = "Auto mode is unavailable:"
+	autoUnavailable322      = "so auto mode cannot determine the safety of "
+	autoUnevaluable         = "Auto mode could not evaluate this action"
+	autoDeniedDefault       = "Blocked by classifier"
+	autoUnavailableCause    = "safety check does not run for this session"
+	autoUnavailable322Cause = "auto mode safety check temporarily unavailable"
+	autoUnevaluableCause    = "could not evaluate this action"
+	autoStage2Prefix        = "Stage 2 classifier error"
 )
 
 // autoSafetyResult recognizes the native CLI's auto-mode safety messages. The
@@ -725,6 +727,8 @@ func autoSafetyResult(content any) (phase, reason string, ok bool) {
 		return "classifier", reason, true
 	case strings.HasPrefix(value, autoUnavailable):
 		return "unavailable", autoUnavailableCause, true
+	case strings.Contains(value, autoUnavailable322):
+		return "unavailable", autoUnavailable322Cause, true
 	case strings.HasPrefix(value, autoUnevaluable):
 		return "unevaluable", autoUnevaluableCause, true
 	}
