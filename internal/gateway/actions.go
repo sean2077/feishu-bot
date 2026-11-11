@@ -225,10 +225,18 @@ func runActionCommand(ctx context.Context, executable string, args []string, cwd
 	}
 }
 func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string, p core.Project, id string, input core.Args, w core.Workspace, requestContext *core.RequestContext) (core.Args, error) {
-	return g.executeActionWithPolicy(ctx, r, session, p, id, input, w, requestContext, "")
+	return g.executeActionPolicy(ctx, r, session, p, id, input, w, requestContext, "", false, nil)
 }
 
 func (g *Gateway) executeActionWithPolicy(ctx context.Context, r core.Room, session string, p core.Project, id string, input core.Args, w core.Workspace, requestContext *core.RequestContext, allowLeadingDash string) (core.Args, error) {
+	return g.executeActionPolicy(ctx, r, session, p, id, input, w, requestContext, allowLeadingDash, false, nil)
+}
+
+func (g *Gateway) executeActionTainted(ctx context.Context, r core.Room, session string, p core.Project, id string, input core.Args, w core.Workspace, requestContext *core.RequestContext, tainted bool, targets []string) (core.Args, error) {
+	return g.executeActionPolicy(ctx, r, session, p, id, input, w, requestContext, "", tainted, targets)
+}
+
+func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session string, p core.Project, id string, input core.Args, w core.Workspace, requestContext *core.RequestContext, allowLeadingDash string, tainted bool, taintTargets []string) (core.Args, error) {
 	var spec *core.ActionSpec
 	for _, a := range p.Actions {
 		if a.ID == id {
@@ -288,6 +296,10 @@ func (g *Gateway) executeActionWithPolicy(ctx context.Context, r core.Room, sess
 			summary += "审批人：指定审批人\n"
 		}
 		summary += "操作：" + spec.Description + "\n参数：`" + cut(jsonText(g.redactArgs(input)), 4000) + "`\n文件快照 SHA256：`" + jsonText(digests) + "`\n摘要：`" + digest[:16] + "`"
+		if tainted {
+			policy = taintedApprovalPolicy(policy, r.DMUser, taintTargets)
+			summary = "本轮读取过其他群的内容；非只读操作需要你确认。\n" + summary
+		}
 		decision, e := g.ask(ctx, r, session, id, input, summary, nil, policy)
 		if e != nil {
 			return nil, e

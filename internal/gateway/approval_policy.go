@@ -13,6 +13,22 @@ type approvalPolicy struct {
 	forbidSelfApproval bool
 	designated         bool
 	requestContext     *core.RequestContext
+	tainted            bool
+	taintTargets       []string
+}
+
+// taintedApprovalPolicy makes the DM user the only approver for a write made
+// after reading another group. It does not bypass native permission rules; it
+// only replaces their normal approver set while the turn remains tainted.
+func taintedApprovalPolicy(p approvalPolicy, dm string, targets []string) approvalPolicy {
+	if dm != "" {
+		p.approvers = []string{dm}
+		p.designated = true
+		p.forbidSelfApproval = false
+	}
+	p.tainted = true
+	p.taintTargets = append([]string(nil), targets...)
+	return p
 }
 
 func approvalPolicyForAction(p core.Project, a core.ActionSpec, requestContext *core.RequestContext) approvalPolicy {

@@ -66,6 +66,7 @@ type slot struct {
 	// result does not finalize can never receive its own.
 	turnRenders map[string]bool
 }
+
 // markTainted records a successful cross-chat history read for the current
 // turn. The flag survives the turn while background work started in it is
 // still running; only a later human input can clear it.
@@ -83,6 +84,12 @@ func (s *slot) taintCheck() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.tainted
+}
+
+func (s *slot) taintTargetsSnapshot() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.taintTargets...)
 }
 
 // newHumanInputLocked is called when a trigger is admitted to the native

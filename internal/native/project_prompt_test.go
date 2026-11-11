@@ -99,14 +99,14 @@ func TestLoadProjectPromptFailuresAreClassified(t *testing.T) {
 
 func TestInitializationAppendsProjectPromptAfterBridgeAndActions(t *testing.T) {
 	p := core.Project{ID: "p", Actions: []core.ActionSpec{{ID: "read", Description: "read", ReadOnly: true}}}
-	prompt := text(initialization(p, 300000, "PROJECT_MARKER")["appendSystemPrompt"])
+	prompt := text(initialization(p, 300000, "PROJECT_MARKER", nil)["appendSystemPrompt"])
 	if !strings.Contains(prompt, "Use project_action") || !strings.Contains(prompt, "Project instructions:\nPROJECT_MARKER") {
 		t.Fatalf("initialization prompt = %q", prompt)
 	}
 	if strings.Index(prompt, "Use project_action") > strings.Index(prompt, "Project instructions:") || strings.Index(prompt, "Project instructions:") > strings.Index(prompt, "PROJECT_MARKER") {
 		t.Fatalf("project prompt order = %q", prompt)
 	}
-	if strings.Contains(text(initialization(core.Project{ID: "p"}, 300000)["appendSystemPrompt"]), "Project instructions:") {
+	if strings.Contains(text(initialization(core.Project{ID: "p"}, 300000, "", nil)["appendSystemPrompt"]), "Project instructions:") {
 		t.Fatal("empty project prompt added a heading")
 	}
 }

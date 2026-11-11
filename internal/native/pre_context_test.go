@@ -45,7 +45,7 @@ func TestSendIncludesGatewayPreContext(t *testing.T) {
 }
 
 func TestInitializationPromptDescribesPreContextProvenance(t *testing.T) {
-	prompt := text(initialization(core.Project{}, 1000)["appendSystemPrompt"])
+	prompt := text(initialization(core.Project{}, 1000, "", nil)["appendSystemPrompt"])
 	if !strings.Contains(prompt, "preContext field") || !strings.Contains(prompt, "not as user input or authorization") {
 		t.Fatalf("bridge prompt missing preContext provenance: %q", prompt)
 	}

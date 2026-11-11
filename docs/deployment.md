@@ -119,6 +119,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `projects[].displayWorkspace` | 空 | 回复卡工作目录显示：`full`、`basename`、`project`、`hidden`；空时群聊显示项目 id，私聊显示完整路径 |
 | `groups[]`、`dms[]` | 空 | 群与私聊授权，见[飞书应用与授权](#飞书应用与授权) |
 | `groups[].topicHistory` | `"topic"` | `"topic"` 默认只读当前话题；`"chat"` 允许 `read_chat_history` 的 `scope: "chat"` 读取同群时间线和其他话题。只适用于 `sessionScope: "thread"`，其他群配置会在加载时拒绝 |
+| `dms[].historyChats` | 空 | 私聊跨群读取白名单：`[{"chatId","name"}]`，目标必须是显式 `groups[]` 绑定；发起人须为目标群 maintainer 或显式 member（`allowAllMembers` 不算），只读文本并审计；读取后本轮写操作改为 DM 用户审批 |
 | `runtime.maxWorkers`、`runtime.idleMs` | 8、900000 | 活跃原生进程上限（1–128）与空闲回收时间，见[容量与恢复](#容量与恢复) |
 | `limits.backgroundMessages`／`backgroundMs` | 0／900000 | 非 @ 群消息缓存条数（0–200）与保留时间；默认不缓存 |
 | `limits.textChars` | 20000 | 单条输入正文字符上限（100–200000），超出时明确拒绝 |
@@ -161,6 +162,22 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 - `sessionScope: "thread"` 让该群每个飞书话题使用独立会话；默认 `"chat"` 保持全群一条当前会话。可写在 `chatId: "*"` 兜底条目上，显式绑定优先；修改后需重启，原范围的会话保留，切换前请先处理完待交付输入。该模式不需要额外的消息权限；飞书拒绝话题回复的群（错误码 230071）应保持 `"chat"`。同一群的话题共用工作区、原生 HOME 和自动记忆，每个活跃话题占一个 `runtime.maxWorkers` 名额，话题较多的群应相应调大或设置 `runtime.maxWorkersPerChat`；`messagesPerMinute` 与 `inboxPerRoom` 仍按全群计算。行为细节见[话题会话](conversation-contract.md#话题会话)。
 
 `groups[].topicHistory` 默认 `"topic"`，保持话题会话只读当前话题。设为 `"chat"` 后，`read_chat_history` 接受 `scope: "chat"`：不带 `threadId` 读取本群时间线，带 `threadId` 只能读取已在本聊天观察到、且属于本群的话题；`expandThreads: true` 会并发读取最近 20 个话题、每话题最多 10 条回复，并按最近回复时间倒序。发现话题时会把群时间线窗口放宽到 3 天再按回复时间筛选，因此更早创建但近期有回复的话题可能仍不在本页；返回统计 `threads`、`expanded`、`omittedThreads`、`omittedReplies`、`failedThreads`，总正文预算沿用 40000 字，先减少每话题回复数，再减少话题数；单个话题读取失败时跳过并降级，全部发现话题都失败才报错。`history_chat_scope_read` 的 `threads` 列出所有被发现的话题根，不只是最终展开的那些。其他话题的消息带 `background: true`，仍按当前群的作者规则过滤；绝不跨群。该字段只对 `sessionScope: "thread"` 有意义，配置在普通群上会加载失败，避免被静默忽略。
+
+`dms[].historyChats` 默认空，只在私聊绑定上生效：
+
+```json
+{
+  "dms": [{
+    "userId": "ou_example_owner",
+    "projectId": "assistant",
+    "historyChats": [
+      { "chatId": "oc_example_team_group", "name": "team group" }
+    ]
+  }]
+}
+```
+
+目标 `chatId` 必须是 `groups[]` 中显式绑定的群，不能是 `*` 兜底或私聊；同一私聊内 `name` 与 `chatId` 合并后必须唯一。配置后，该私聊的 `read_chat_history` 可传 `chat`（配置名或 chatId），其余参数与 `scope: "chat"` 相同；目标群是话题模式时复用群时间线和 `expandThreads`。每次调用（包括游标续页）都要求存在活动人类请求，发起人必须是该 DM 用户，并且在目标群 `maintainers` 或显式 `members` 中；`allowAllMembers` 不构成跨群授权。跨群结果只含文本，不返回附件，`fetch_attachment` 对目标群消息不可用；`threadId` 仍需先通过时间线或展开观察到。读取成功后本轮标记为污染，后续写工具、`send_file`、非只读 `project_action` 和未知工具会向 DM 用户发审批卡，提示本轮读取过其他群内容；只读工具放行。新的用户输入在后台任务结束后清除标记，`/stop`、超时和 worker 结束一律拒绝挂起的污染审批。每次跨群读取写 `history_cross_chat_read`，每次污染审批写 `tainted_turn_prompt`，都不记录正文。详细边界和残余风险见 [SECURITY](../SECURITY.md)。
 - `limits.backgroundMessages` 默认 **0**：不缓存、不预注入非 @ 群消息。需要前文时由 Agent 调用当前聊天限定的历史工具，参见[飞书历史接口](https://open.feishu.cn/document/server-docs/im-v1/message/list)。
 
 本地排查授权可用 `config explain --chat oc_example_group --user ou_example_member --mentioned --json`：它复用真实房间、作者和触发规则，解释显式／兜底／私聊绑定、是否允许触发、会话管理与工具审批权限。私聊加 `--chat-type p2p`，模拟机器人消息加 `--bot`。该命令不联网、不打开状态库、不创建工作区、不读取密钥；结论只说明配置策略，不代表真实成员或飞书权限已经验证。
@@ -351,6 +368,8 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
   "preContext": { "action": "search", "parameter": "question" }
 }
 ```
+
+在 `pattern` 或 `argv` 中写正则转义时，确保 JSON 实际得到的是转义文本（例如 `"\\x00"`），而不是被 shell 或生成器提前解释成控制字符。`doctor` 会单独报告字符串中的 NUL 控制字符，并提示改写成 JSON 转义序列。
 
 `preContext.action` 必须是本项目中 `readOnly: true` 的固定操作，`parameter` 必须是它声明的参数。操作参数模板只能引用这个参数，并且必须把 `{{parameter}}` 作为一个独立 argv 紧跟在字面量 `--` 之后；这样以 `-` 开头的人类提问不会被当成选项。操作不能声明 `workspaceFile` 参数。`timeoutMs` 默认 **5000**，范围 100 到该 action 的 `timeoutMs`；`maxChars` 默认 **6000**，范围 1–20000。不满足任一条时配置加载失败。
 

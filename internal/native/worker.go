@@ -426,23 +426,20 @@ func (w *worker) Send(ctx context.Context, d core.Delivery) error {
 			content += " " + d.Command.Instructions
 		}
 	} else {
-		messageContent := func(d core.Delivery) args {
-			return args{"trigger": d.Message, "background": d.Background, "quote": d.Quote, "attachments": d.Attachments}
-		}
-		envelope := args{"timezone": timezone()}
+		envelope := args{"timezone": core.TimezoneName()}
 		if d.PreContext != nil {
 			envelope["preContext"] = d.PreContext
 		}
 		if d.BatchInputs != nil {
 			batch := make([]args, 0, len(d.BatchInputs))
 			for _, input := range d.BatchInputs {
-				item := messageContent(input)
+				item := inputMessageContent(input)
 				item["uuid"] = input.UUID
 				batch = append(batch, item)
 			}
 			envelope["imageBatch"] = batch
 		} else {
-			for key, value := range messageContent(d) {
+			for key, value := range inputMessageContent(d) {
 				envelope[key] = value
 			}
 		}
@@ -475,44 +472,42 @@ func (w *worker) Send(ctx context.Context, d core.Delivery) error {
 	return nil
 }
 
-func timezone() string {
-	if zone := os.Getenv("TZ"); zone != "" {
-		if _, err := time.LoadLocation(zone); err == nil {
-			return zone
-		}
-	}
-	if name := time.Local.String(); name != "Local" && name != "" {
-		return name
-	}
-	if link, err := os.Readlink("/etc/localtime"); err == nil {
-		if _, zone, ok := strings.Cut(link, "zoneinfo/"); ok {
-			return zone
-		}
-	}
-	if data, err := os.ReadFile("/etc/timezone"); err == nil && len(data) < 200 {
-		if zone := strings.TrimSpace(string(data)); zone != "" {
-			return zone
-		}
-	}
-	// Windows (and Linux hosts with a copied /etc/localtime) expose no IANA
-	// name. The local offset is still known; reporting UTC would be wrong.
-	return offsetZone(time.Now())
+func messageLocalTime(m core.Message) core.Message {
+	loc, _ := core.LocalZoneInfo()
+	return messageLocalTimeIn(loc, m)
 }
 
-// offsetZone names the current local offset as UTC±hh:mm. The value is only
-// shown to the model, so it avoids the inverted-sign Etc/GMT form.
-func offsetZone(now time.Time) string {
-	_, offset := now.Zone()
-	if offset == 0 {
-		return "UTC"
-	}
-	sign := '+'
-	if offset < 0 {
-		sign = '-'
-		offset = -offset
-	}
-	return fmt.Sprintf("UTC%c%02d:%02d", sign, offset/3600, offset%3600/60)
+func messageLocalTimeIn(loc *time.Location, m core.Message) core.Message {
+	m.LocalTime = core.LocalTimeIn(loc, m.Time)
+	return m
 }
+
+func inputMessageContent(d core.Delivery) args {
+	loc, _ := core.LocalZoneInfo()
+	quote := (*core.Message)(nil)
+	if d.Quote != nil {
+		q := messageLocalTimeIn(loc, *d.Quote)
+		quote = &q
+	}
+	return args{"trigger": messageLocalTimeIn(loc, d.Message), "background": messagesLocalTimeIn(loc, d.Background), "quote": quote, "attachments": d.Attachments}
+}
+
+func messagesLocalTime(messages []core.Message) []core.Message {
+	loc, _ := core.LocalZoneInfo()
+	return messagesLocalTimeIn(loc, messages)
+}
+
+func messagesLocalTimeIn(loc *time.Location, messages []core.Message) []core.Message {
+	if messages == nil {
+		return nil
+	}
+	out := make([]core.Message, len(messages))
+	for i, m := range messages {
+		out[i] = messageLocalTimeIn(loc, m)
+	}
+	return out
+}
+
 func (w *worker) pumpInputs() {
 	select {
 	case <-w.initialized:

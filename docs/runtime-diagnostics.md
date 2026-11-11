@@ -58,6 +58,8 @@
 - `pre_context_failed`：新一轮预检索超时、非零退出、空输出、参数校验失败或执行错误时写一条，包含 `project`、`action`、固定 `reason`（`timeout`／`exit`／`empty`／`parameter`／`execution`／`configuration`／`cancelled`）和 `durationMs`；不记录提问或输出正文，每次失败都写，不做去重。输入仍照常发送，只是不带预检索字段。
 - `turn_delivery`：每次回复交付尝试一条，按 `output` 关联 outbox，带 `session`、`turn`、`attempt`、`outboxState`（`done`／`pending`／`uncertain`／`blocked`／`cancelled`）和 `deliverMs`。只有 `outboxState=done` 且本轮开始时间仍在本进程内时写 `totalMs`；进程重启后的重试不写 `totalMs`，也可能没有 `turn`，避免用重启时间凑总时长。
 - `history_chat_scope_read`：每次成功的 `scope=chat` 历史读取一条，detail 为 `room`、`session`、去重后的 `threads` 和 `count`，不记录消息内容；`threads` 是发现的所有话题根，不是仅最终展开的话题。`history_backfill_failed` 在回复卡正文回填查询失败时写一条，带脱敏错误；历史仍照常返回。
+- `history_cross_chat_read`：每次成功的私聊跨群历史读取一条，detail 为 `room`（来源私聊房间键）、`target`（目标 chatId）、`session`、`requester`（发起人 open_id）、去重后的 `threads` 和 `count`，不记录消息内容、群名或附件。
+- `tainted_turn_prompt`：跨群读取后因污染状态弹审批卡时写一条，detail 为 `room`、`session`、`tool`、`request`（审批请求 ID）和本轮已读目标 `targets`（chatId 列表），不记录工具参数或跨群正文；可用 `request` 与审批结果关联。
 - `dispatch_failed`：`phase` 为 `launch` 或 `send`，`reason` 为固定分类（`settings_file`、`launch_identity`、`process_start`、`process_unconfirmed`、`timeout`、`model_profile`、`workspace`、`other`）；`error` 仍先脱敏。
 - `worker_failure`：原生初始化／运行错误通知的审计，`phase=initialize`，`reason` 使用同一组固定分类；`error` 脱敏。
 - `output_delivery_failed`：`phase=delivery`，`stage` 为 `card`／`file_prepare`／`file_send`／`card_finalize`，`reason` 为固定分类。
