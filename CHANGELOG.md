@@ -36,6 +36,7 @@
 - 修复 `read_chat_history` 的 `scope` 和 `expandThreads` 被原生层参数校验拒绝（`unknown history argument`）：原生层现在按 schema 校验 `scope` 只能是 `topic`／`chat`、`expandThreads` 只能是布尔值，组合与配置开关继续由网关负责；新增 schema 防漂移测试和真实 CLI 集成覆盖，确认参数能到达网关并写入 `history_chat_scope_read`。
 - 修复 Claude Code 2.1.322 auto 模式文案变化导致 `auto_mode_unavailable` 漏报：新增对 `<model> is temporarily unavailable ... so auto mode cannot determine the safety of ...` 的识别，同时保留 2.1.321 的 `Auto mode is unavailable:` 文本。2.1.322 的 Stage 2 原因尾部增加 `— retrying often succeeds`，既有 `Stage 2 classifier error` 前缀和 `stage2Error` 识别不变；测试夹具补充两个版本的原文。
 - 修复配置字符串含真实 NUL 控制字符时被笼统报告为 `must be a nonempty string` 的问题：现在空字符串保留原错误，含 NUL 的字段单独提示 `contains a NUL control character; write it as an escaped sequence in the JSON string instead of a raw character`；部署文档补充 `pattern`／`argv` 中正则转义应写成 JSON 转义文本（如 `"\\x00"`）的说明。其他校验不变。
+- 历史结果和输入 envelope 增加本地时间：`core.Message` 新增 `localTime`（RFC3339，带数字偏移，如 `2026-11-11T15:05:00+08:00`），覆盖 `read_chat_history` 的 topic、chat 时间线、threadId 和 expandThreads 返回，以及 envelope 的 trigger／background／quote；历史结果顶层增加 `timezone`。时区解析统一到 `core`，与 envelope 的 `timezone` 使用同一来源；`time` 仍为 Unix 毫秒，`localTime` 在时间缺失时为空。
 
 ## 0.5.0 — 2026-11-07
 

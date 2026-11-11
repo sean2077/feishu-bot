@@ -180,6 +180,7 @@ func (g *Gateway) historyChat(ctx context.Context, source core.Room, session str
 		}
 		threads := []string{q.ThreadID}
 		g.auditChatHistory(target, threads, len(messages))
+		stampLocalTimes(messages)
 		return g.historyChatResult(target, q, messages, page.NextPageToken, nil, "scope=chat read one observed topic in this group; only authorized authors and this bot are returned."), nil
 	}
 	if q.ExpandThreads {
@@ -195,6 +196,7 @@ func (g *Gateway) historyChat(ctx context.Context, source core.Room, session str
 	}
 	threads := historyThreadIDs(messages, "")
 	g.auditChatHistory(target, threads, len(messages))
+	stampLocalTimes(messages)
 	return g.historyChatResult(target, q, messages, page.NextPageToken, nil, "scope=chat reads the group timeline; only authorized authors and this bot are returned. This is one API page, not the full history."), nil
 }
 
@@ -421,6 +423,7 @@ func (g *Gateway) expandChatHistory(ctx context.Context, target historyTarget, q
 		threadIDs = append(threadIDs, root.ThreadID)
 	}
 	sort.Strings(threadIDs)
+	stampLocalTimes(messages)
 	g.auditChatHistory(target, threadIDs, len(messages))
 	stats := core.Args{
 		"threads":        totalThreads,
@@ -543,5 +546,5 @@ func (g *Gateway) historyChatResult(target historyTarget, q core.HistoryQuery, m
 	for key, value := range stats {
 		result[key] = value
 	}
-	return result
+	return historyResult(result)
 }

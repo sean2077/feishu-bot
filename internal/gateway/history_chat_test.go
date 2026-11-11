@@ -95,6 +95,7 @@ func TestHistoryChatScopeRejectsDMsWithFallbackGroup(t *testing.T) {
 }
 
 func TestHistoryChatScopeTimelineBackgroundAndBackfill(t *testing.T) {
+	t.Setenv("TZ", "Asia/Singapore")
 	f := topicHistoryFixture(t, nil)
 	source := historyChatSource(t, f)
 	now := time.Now()
@@ -131,6 +132,12 @@ func TestHistoryChatScopeTimelineBackgroundAndBackfill(t *testing.T) {
 	}
 	if len(byID) != 4 || byID["om_stranger"].ID != "" {
 		t.Fatalf("chat scope readable set = %#v", byID)
+	}
+	if page["timezone"] != "Asia/Singapore" {
+		t.Fatalf("history timezone = %#v", page["timezone"])
+	}
+	if got := byID["om_top"].LocalTime; got == "" || got != core.LocalTime(byID["om_top"].Time) {
+		t.Fatalf("chat timeline localTime = %q", got)
 	}
 	if !byID["om_other_root"].Background || !byID["om_top"].Background || !byID["om_card"].Background || byID["om_current"].Background {
 		t.Fatalf("background flags = %+v", byID)
@@ -203,6 +210,7 @@ func TestHistoryChatScopeThreadMustBeObservedAndBackground(t *testing.T) {
 }
 
 func TestHistoryChatScopeExpandsRecentTopicsAndOmitsOldest(t *testing.T) {
+	t.Setenv("TZ", "Asia/Singapore")
 	f := topicHistoryFixture(t, nil)
 	source := historyChatSource(t, f)
 	now := time.Now()
@@ -237,6 +245,14 @@ func TestHistoryChatScopeExpandsRecentTopicsAndOmitsOldest(t *testing.T) {
 	}
 	if seen["om_root_a"] || !seen["om_root_u"] {
 		t.Fatalf("oldest/newest topic selection wrong: %#v", seen)
+	}
+	if page["timezone"] != "Asia/Singapore" {
+		t.Fatalf("expand timezone = %#v", page["timezone"])
+	}
+	for _, m := range messages {
+		if got := m.LocalTime; got == "" || got != core.LocalTime(m.Time) {
+			t.Fatalf("expand localTime = %q for %s", got, m.ID)
+		}
 	}
 }
 

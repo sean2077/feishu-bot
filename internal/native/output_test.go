@@ -239,24 +239,27 @@ func TestTopicAttachmentsStayWithTheirTopic(t *testing.T) {
 	}
 }
 
-func TestOffsetZoneNamesLocalOffsetInsteadOfUTC(t *testing.T) {
-	for _, tc := range []struct {
-		offset int
-		want   string
-	}{
-		{0, "UTC"},
-		{8 * 3600, "UTC+08:00"},
-		{-5 * 3600, "UTC-05:00"},
-		{5*3600 + 1800, "UTC+05:30"},
-		{-(3*3600 + 1800), "UTC-03:30"},
-	} {
-		now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("Local", tc.offset))
-		if got := offsetZone(now); got != tc.want {
-			t.Fatalf("offset %d: %q want %q", tc.offset, got, tc.want)
-		}
+func TestInputMessagesCarryLocalTime(t *testing.T) {
+	t.Setenv("TZ", "Asia/Singapore")
+	instant := time.Date(2026, 11, 11, 7, 5, 0, 0, time.UTC)
+	want := "2026-11-11T15:05:00+08:00"
+	quote := core.Message{Time: instant.UnixMilli()}
+	content := inputMessageContent(core.Delivery{
+		Message:    core.Message{Time: instant.UnixMilli()},
+		Background: []core.Message{{Time: instant.UnixMilli()}},
+		Quote:      &quote,
+	})
+	if got := content["trigger"].(core.Message).LocalTime; got != want {
+		t.Fatalf("trigger localTime = %q", got)
 	}
-	if !strings.HasPrefix(offsetZone(time.Now()), "UTC") {
-		t.Fatal("local offset must be reported in UTC±hh:mm form")
+	if got := content["background"].([]core.Message)[0].LocalTime; got != want {
+		t.Fatalf("background localTime = %q", got)
+	}
+	if got := content["quote"].(*core.Message).LocalTime; got != want {
+		t.Fatalf("quote localTime = %q", got)
+	}
+	if got := messageLocalTime(core.Message{}).LocalTime; got != "" {
+		t.Fatalf("missing trigger time produced %q", got)
 	}
 }
 
@@ -272,7 +275,7 @@ func TestPackageEmbedsTheTimeZoneDatabase(t *testing.T) {
 func TestConfiguredZoneLoadsFromEmbeddedDatabase(t *testing.T) {
 	t.Setenv("ZONEINFO", "")
 	t.Setenv("TZ", "America/New_York")
-	if got := timezone(); got != "America/New_York" {
+	if got := core.TimezoneName(); got != "America/New_York" {
 		t.Fatalf("configured TZ ignored: %q", got)
 	}
 }
