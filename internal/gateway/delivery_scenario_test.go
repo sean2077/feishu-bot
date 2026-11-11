@@ -8,12 +8,13 @@ import (
 	"github.com/sean2077/feishu-bot/internal/core"
 )
 
-// These two scenarios test delivery ownership and dependencies, not a 3-second
-// latency guarantee. Share one bounded budget across their real startup, input,
-// persistence and receipt stages; other fixture waits keep their existing limits.
+// These two scenarios test delivery ownership and dependencies, not a latency
+// guarantee. Share one bounded budget across their real startup, input,
+// persistence and receipt stages, using the same fixture-level ceiling as the
+// other fixture waits.
 func (f *fixture) deliveryScenarioContext() context.Context {
 	f.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fixtureWait)
 	f.t.Cleanup(cancel)
 	return ctx
 }
