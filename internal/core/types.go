@@ -33,6 +33,9 @@ type Message struct {
 	Resources            []Resource `json:"resources"`
 	InputIssue           string     `json:"inputIssue,omitempty"`
 	ImageOnly            bool       `json:"imageOnly,omitempty"`
+	// Background marks history from another topic or the chat timeline. It is
+	// data, not a request or authorization.
+	Background bool `json:"background,omitempty"`
 }
 type Room struct {
 	Key             string   `json:"key"`
@@ -52,6 +55,8 @@ type Room struct {
 	// WorkspaceCWD is an administrator-configured topic directory. It changes
 	// the native working directory, never the room key or native HOME placement.
 	WorkspaceCWD string `json:"workspaceCwd,omitempty"`
+	// TopicHistory is the group setting that permits scope=chat history reads.
+	TopicHistory string `json:"topicHistory,omitempty"`
 }
 type Session struct {
 	ID        string `json:"id"`
@@ -244,6 +249,7 @@ type Group struct {
 	MentionOptional  bool              `json:"mentionOptional"`
 	AllowAllMembers  bool              `json:"allowAllMembers,omitempty"`
 	SessionScope     string            `json:"sessionScope,omitempty"`
+	TopicHistory     string            `json:"topicHistory,omitempty"`
 	ThreadWorkspaces map[string]string `json:"threadWorkspaces,omitempty"`
 }
 type DM struct {
@@ -291,6 +297,9 @@ type HistoryQuery struct {
 	Limit               int
 	StartTime, EndTime  int64
 	PageToken, ThreadID string
+	Scope               string `json:"scope,omitempty"`
+	ExpandThreads       bool   `json:"expandThreads,omitempty"`
+	Chat                string `json:"chat,omitempty"`
 }
 type HistoryPage struct {
 	Messages      []Message

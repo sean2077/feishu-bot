@@ -31,6 +31,11 @@ _英文_: session scope
 _英文_: topic session
 _避免_: 把“线程”泛指为会话
 
+**话题历史范围**
+
+`groups[].topicHistory` 控制 `read_chat_history` 在话题会话中能读什么：默认 `topic` 只读当前话题；`chat` 允许读取本群时间线或其他已观察到的同群话题，仍绝不跨群。群时间线只返回话题根消息和顶层消息，展开其他话题需要逐个读取话题容器；其他话题内容在结果中标为背景。
+_英文_: topic history scope
+
 **原生会话 ID**
 
 Claude Code 持久化的 session 标识，用于停止、空闲回收、服务重启和 compact 后的 resume。只有 `/new` 主动轮换；话题范围群中，新的顶层触发开启另一个话题的新会话，不轮换已有话题。恢复失败不会静默替换。

@@ -693,6 +693,17 @@ func validate(c *core.Config, base string) error {
 		if !core.ValidSessionScope(g.SessionScope) {
 			return errors.New("invalid group sessionScope")
 		}
+		switch g.TopicHistory {
+		case "":
+			g.TopicHistory = "topic"
+		case "topic":
+		case "chat":
+			if g.SessionScope != core.SessionScopeThread {
+				return errors.New("topicHistory chat requires sessionScope thread")
+			}
+		default:
+			return errors.New("topicHistory must be topic or chat")
+		}
 		if len(g.ThreadWorkspaces) > 0 && (g.SessionScope != core.SessionScopeThread || g.ChatID == core.AnyGroupChatID) {
 			return errors.New("threadWorkspaces requires an explicit group with sessionScope thread")
 		}
