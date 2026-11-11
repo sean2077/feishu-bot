@@ -36,6 +36,9 @@ type slot struct {
 	exitInterrupted                     bool
 	exitApprovals                       int
 	background                          int
+	tainted                             bool
+	taintPendingClear                   bool
+	taintTargets                        []string
 	lastActivity                        int64
 	inputsServed                        uint32
 	workspace                           core.Workspace
@@ -63,6 +66,62 @@ type slot struct {
 	// result does not finalize can never receive its own.
 	turnRenders map[string]bool
 }
+
+// markTainted records a successful cross-chat history read for the current
+// turn. The flag survives the turn while background work started in it is
+// still running; only a later human input can clear it.
+func (s *slot) markTainted(access historyAccess) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tainted = true
+	s.taintPendingClear = false
+	if access.Target != "" && !contains(s.taintTargets, access.Target) {
+		s.taintTargets = append(s.taintTargets, access.Target)
+	}
+}
+
+func (s *slot) taintCheck() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tainted
+}
+
+func (s *slot) taintTargetsSnapshot() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.taintTargets...)
+}
+
+// newHumanInputLocked is called when a trigger is admitted to the native
+// worker. The next human input lifts the taint unless background work from the
+// tainted turn is still running; then it stays until that work settles.
+func (s *slot) newHumanInputLocked() {
+	if !s.tainted {
+		return
+	}
+	if s.background == 0 {
+		s.clearTaintLocked()
+		return
+	}
+	s.taintPendingClear = true
+}
+
+// newTurnInputLocked lifts taint only for an input that starts a new turn.
+// Messages inserted into an already-running turn (including supplements) must
+// not clear the protection from the turn that read another group.
+func (s *slot) newTurnInputLocked() {
+	if s.turn != nil || len(s.deliveries) != 0 || s.stopUnconfirmed {
+		return
+	}
+	s.newHumanInputLocked()
+}
+
+func (s *slot) clearTaintLocked() {
+	s.tainted = false
+	s.taintPendingClear = false
+	s.taintTargets = nil
+}
+
 type actionExecution struct {
 	room        string
 	done        chan struct{}
@@ -1025,6 +1084,9 @@ func (g *Gateway) dispatch(r core.Room) (err error) {
 		if provider, ok := worker.(core.RequestContextProvider); ok {
 			provider.SetRequestContext(func() *core.RequestContext { return g.requestContext(s) })
 		}
+		if provider, ok := worker.(core.TaintProvider); ok {
+			provider.SetTaintCheck(s.taintCheck)
+		}
 		s.mu.Lock()
 		s.worker = worker
 		close(s.workerReady)
@@ -1164,6 +1226,16 @@ func (g *Gateway) dispatch(r core.Room) (err error) {
 			g.auditPreContextFailure(r, p, preResult)
 			members[0].PreContext = preResult.value
 			s.mu.Lock()
+			humanInput := true
+			for _, m := range members {
+				if m.Command != nil {
+					humanInput = false
+					break
+				}
+			}
+			if humanInput {
+				s.newTurnInputLocked()
+			}
 			for _, m := range members {
 				s.deliveries[m.UUID] = m
 				s.order = append(s.order, m.UUID)

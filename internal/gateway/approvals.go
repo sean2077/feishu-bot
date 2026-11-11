@@ -140,6 +140,15 @@ func (g *Gateway) ask(ctx context.Context, r core.Room, session, name string, in
 		return nil, e
 	}
 	g.approvals[id] = p
+	if kind == "permission" && policy.tainted {
+		g.audit(r.Key, "tainted_turn_prompt", core.Args{
+			"room":    r.Key,
+			"session": session,
+			"tool":    name,
+			"request": id,
+			"targets": append([]string(nil), policy.taintTargets...),
+		})
+	}
 	p.timer = time.AfterFunc(time.Duration(g.config.Limits.ApprovalMS)*time.Millisecond, func() { g.settleApproval(id, core.Args{"approved": false, "reason": "expired"}, "system") })
 	p.detach = context.AfterFunc(ctx, func() { g.settleApproval(id, core.Args{"approved": false, "reason": "cancelled"}, "system") })
 	card := g.redactArgs(approvalCard(id, p))

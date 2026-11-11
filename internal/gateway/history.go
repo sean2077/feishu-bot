@@ -264,7 +264,7 @@ func (g *Gateway) openHistoryCursor(value, room, session string) (core.HistoryQu
 		return core.HistoryQuery{}, invalid
 	}
 	var c historyCursor
-	if e = json.Unmarshal(b, &c); e != nil || c.Room != room || c.Session != session || c.Expires < time.Now().UnixMilli() || c.Query.Limit < 1 || c.Query.Limit > 50 || (c.Query.Scope != "" && c.Query.Scope != historyScopeTopic && c.Query.Scope != historyScopeChat) || len(c.Query.Chat) > 200 {
+	if e = json.Unmarshal(b, &c); e != nil || c.Room != room || c.Session != session || c.Expires < time.Now().UnixMilli() || c.Query.Limit < 1 || c.Query.Limit > 50 || (c.Query.Scope != "" && c.Query.Scope != historyScopeTopic && c.Query.Scope != historyScopeChat) || len([]rune(c.Query.Chat)) > 200 {
 		return core.HistoryQuery{}, invalid
 	}
 	return c.Query, nil

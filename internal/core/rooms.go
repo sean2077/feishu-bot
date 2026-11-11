@@ -23,6 +23,66 @@ func ValidSessionScope(v string) bool {
 	return v == "" || v == SessionScopeChat || v == SessionScopeThread
 }
 
+// HistoryChats returns the cross-chat history whitelist for one DM binding.
+// The returned slice is a copy so callers cannot mutate the loaded config.
+func (c Config) HistoryChats(dm string) []HistoryChat {
+	for _, b := range c.DMs {
+		if b.UserID == dm {
+			return append([]HistoryChat(nil), b.HistoryChats...)
+		}
+	}
+	return nil
+}
+
+// HistoryChatTarget resolves a configured name or chat ID within one DM.
+// Names and IDs are validated unique together, so the match is unambiguous.
+func (c Config) HistoryChatTarget(dm, key string) (HistoryChat, bool) {
+	if key == "" {
+		return HistoryChat{}, false
+	}
+	for _, h := range c.HistoryChats(dm) {
+		if h.Name == key || h.ChatID == key {
+			return h, true
+		}
+	}
+	return HistoryChat{}, false
+}
+
+// HistoryChatRoom resolves a configured target to its explicitly bound group
+// room. The wildcard group and DMs are never valid targets.
+func (c Config) HistoryChatRoom(dm, key string) (Room, HistoryChat, bool) {
+	h, ok := c.HistoryChatTarget(dm, key)
+	if !ok || h.ChatID == AnyGroupChatID {
+		return Room{}, HistoryChat{}, false
+	}
+	explicit := false
+	for _, g := range c.Groups {
+		if g.ChatID == h.ChatID {
+			explicit = true
+			break
+		}
+	}
+	if !explicit {
+		return Room{}, HistoryChat{}, false
+	}
+	r, ok := c.RoomFor(h.ChatID, "")
+	return r, h, ok && r.DMUser == ""
+}
+
+// Group returns one explicitly bound group entry. The wildcard fallback is not
+// a real chat and is never returned.
+func (c Config) Group(chat string) (Group, bool) {
+	if chat == "" || chat == AnyGroupChatID {
+		return Group{}, false
+	}
+	for _, g := range c.Groups {
+		if g.ChatID == chat {
+			return g, true
+		}
+	}
+	return Group{}, false
+}
+
 // RoomFor resolves a group chat or DM to its chat room. An explicit group
 // binding always wins; the wildcard binding applies only to otherwise unknown
 // groups and never to DMs. The room key excludes member, mention and session

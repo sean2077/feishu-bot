@@ -13,6 +13,23 @@ type approvalPolicy struct {
 	forbidSelfApproval bool
 	designated         bool
 	requestContext     *core.RequestContext
+	tainted            bool
+	taintTargets       []string
+}
+
+// taintedApprovalPolicy builds the additional confirmation shown to the DM
+// user after a cross-chat read. It is not a replacement for an action's normal
+// approval: callers that already have an action approval must keep the original
+// approvers and self-approval rule and ask again after this confirmation.
+func taintedApprovalPolicy(p approvalPolicy, dm string, targets []string) approvalPolicy {
+	if dm != "" {
+		p.approvers = []string{dm}
+		p.designated = true
+		p.forbidSelfApproval = false
+	}
+	p.tainted = true
+	p.taintTargets = append([]string(nil), targets...)
+	return p
 }
 
 func approvalPolicyForAction(p core.Project, a core.ActionSpec, requestContext *core.RequestContext) approvalPolicy {

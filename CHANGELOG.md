@@ -37,6 +37,7 @@
 - 修复 Claude Code 2.1.322 auto 模式文案变化导致 `auto_mode_unavailable` 漏报：新增对 `<model> is temporarily unavailable ... so auto mode cannot determine the safety of ...` 的识别，同时保留 2.1.321 的 `Auto mode is unavailable:` 文本。2.1.322 的 Stage 2 原因尾部增加 `— retrying often succeeds`，既有 `Stage 2 classifier error` 前缀和 `stage2Error` 识别不变；测试夹具补充两个版本的原文。
 - 修复配置字符串含真实 NUL 控制字符时被笼统报告为 `must be a nonempty string` 的问题：现在空字符串保留原错误，含 NUL 的字段单独提示 `contains a NUL control character; write it as an escaped sequence in the JSON string instead of a raw character`；部署文档补充 `pattern`／`argv` 中正则转义应写成 JSON 转义文本（如 `"\\x00"`）的说明。其他校验不变。
 - 历史结果和输入 envelope 增加本地时间：`core.Message` 新增 `localTime`（RFC3339，带数字偏移，如 `2026-11-11T15:05:00+08:00`），覆盖 `read_chat_history` 的 topic、chat 时间线、threadId 和 expandThreads 返回，以及 envelope 的 trigger／background／quote；历史结果顶层增加 `timezone`。时区解析统一到 `core`，与 envelope 的 `timezone` 使用同一来源；`time` 仍为 Unix 毫秒，`localTime` 在时间缺失时为空。
+- 新增默认关闭的私聊跨群历史 `dms[].historyChats`：`read_chat_history` 增加 `chat` 参数（配置名或 chatId），只在私聊白名单中解析显式绑定的目标群，复用 chat 时间线、threadId 和 expandThreads。每次调用（含游标续页）要求活动人类请求，发起人是该 DM 用户且为目标群 maintainer 或显式 member；`allowAllMembers` 不算授权，目标不能是兜底群或私聊。跨群结果只读文本、不返回附件，写 `history_cross_chat_read` 审计且不含正文。读取成功后本轮标记为污染：写工具、`send_file`、非只读 `project_action` 和未知工具需要 DM 用户确认，只读工具放行；非只读 action 先做污染确认，再按原有 approvers 和 `forbidSelfApproval` 审批，污染确认不替换原审批。后台任务仍在运行时标记保持，下一轮人类输入且后台结束后清除，`/stop`、超时和 worker 结束 fail-closed；worker 侧另有 approvalMs+10s 截止，避免 hook 超时放行。污染审批写 `tainted_turn_prompt`，只解除本层拦截，不替代原生 permission 规则。残余风险：跨群正文仍留在原生 transcript，可能影响后续轮次；真实飞书跨群读取尚未验收。
 
 ## 0.5.0 — 2026-11-07
 

@@ -27,7 +27,7 @@ func TestHistoryToolAdvertisesChatScopeAndBackgroundSemantics(t *testing.T) {
 	if _, ok := properties["expandThreads"]; !ok {
 		t.Fatal("history tool does not advertise expandThreads")
 	}
-	prompt := text(initialization(core.Project{}, 1000)["appendSystemPrompt"])
+	prompt := text(initialization(core.Project{}, 1000, "", nil)["appendSystemPrompt"])
 	if !strings.Contains(prompt, "background:true") || !strings.Contains(prompt, "not requests") {
 		t.Fatalf("bridge prompt lacks background semantics: %q", prompt)
 	}

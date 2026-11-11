@@ -30,7 +30,7 @@ func TestIsolatedProjectRegistersReadChatHistory(t *testing.T) {
 	if !found {
 		t.Fatalf("fixed allowed tools do not include read_chat_history: %q", allowed)
 	}
-	servers, _ := initialization(p, 300000)["sdkMcpServers"].([]string)
+	servers, _ := initialization(p, 300000, "", nil)["sdkMcpServers"].([]string)
 	if len(servers) != 1 || servers[0] != "gateway" {
 		t.Fatalf("gateway MCP server is not registered: %v", servers)
 	}
@@ -46,9 +46,10 @@ func TestIsolatedProjectRegistersReadChatHistory(t *testing.T) {
 	}
 }
 
-// The tool has no chat parameter: scope comes from the room bound to the
-// native process. Rejecting unknown arguments keeps a model from asking for a
-// different chat, even if a later gateway check would also refuse it.
+// Arbitrary chat IDs are not accepted; a configured DM target uses the
+// separate `chat` parameter, which only the gateway resolves against the
+// explicit historyChats whitelist. Rejecting unknown arguments keeps a model
+// from asking for a different chat directly.
 func TestReadChatHistoryRejectsCrossChatArguments(t *testing.T) {
 	w := &worker{}
 	response := w.mcp(context.Background(), args{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -122,6 +123,8 @@ func TestValidateHistoryRejectsInvalidScopeAndExpandThreads(t *testing.T) {
 		{"scope": 1},
 		{"expandThreads": "true"},
 		{"expandThreads": 1},
+		{"chat": 1},
+		{"chat": strings.Repeat("x", 201)},
 	} {
 		if err := validateHistory(input); err == nil {
 			t.Fatalf("invalid history input accepted: %+v", input)
@@ -133,6 +136,7 @@ func TestValidateHistoryRejectsInvalidScopeAndExpandThreads(t *testing.T) {
 		{"expandThreads": true},
 		{"expandThreads": false},
 		{"scope": "chat", "expandThreads": true},
+		{"chat": "Target Group"},
 	} {
 		if err := validateHistory(input); err != nil {
 			t.Fatalf("valid history input rejected: %+v: %v", input, err)
