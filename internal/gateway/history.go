@@ -31,11 +31,50 @@ func (g *Gateway) history(ctx context.Context, r core.Room, session string, inpu
 		return nil, errors.New("history scope is no longer available")
 	}
 	for k := range input {
-		if !contains([]string{"limit", "startTime", "endTime", "cursor", "threadId"}, k) {
+		if !contains([]string{"limit", "startTime", "endTime", "cursor", "threadId", "scope", "expandThreads"}, k) {
 			return nil, errors.New("unsupported history parameter")
 		}
 	}
-	q := core.HistoryQuery{Limit: 20}
+	scope := historyScopeTopic
+	if raw, has := input["scope"]; has {
+		value, ok := raw.(string)
+		if !ok || (value != historyScopeTopic && value != historyScopeChat) {
+			return nil, errors.New("scope must be topic or chat")
+		}
+		scope = value
+	}
+	expandThreads := false
+	if raw, has := input["expandThreads"]; has {
+		value, ok := raw.(bool)
+		if !ok {
+			return nil, errors.New("expandThreads must be a boolean")
+		}
+		expandThreads = value
+	}
+	if raw, has := input["cursor"]; has {
+		value, ok := raw.(string)
+		if !ok || len(input) != 1 || len(value) > 16000 {
+			return nil, errors.New("use the returned cursor alone for the next page")
+		}
+		cursorQuery, e := g.openHistoryCursor(value, r.Key, session)
+		if e != nil {
+			return nil, e
+		}
+		if cursorQuery.Scope == historyScopeChat {
+			return g.historyChat(ctx, current, session, cursorQuery)
+		}
+	}
+	if expandThreads && scope == historyScopeTopic {
+		return nil, errors.New("expandThreads requires scope chat")
+	}
+	if scope == historyScopeChat {
+		q, e := g.parseChatHistoryQuery(current, input)
+		if e != nil {
+			return nil, e
+		}
+		return g.historyChat(ctx, current, session, q)
+	}
+	q := core.HistoryQuery{Limit: 20, Scope: historyScopeTopic}
 	if raw, has := input["cursor"]; has {
 		s, ok := raw.(string)
 		if !ok || len(input) != 1 || len(s) > 16000 {
@@ -45,6 +84,9 @@ func (g *Gateway) history(ctx context.Context, r core.Room, session string, inpu
 		q, e = g.openHistoryCursor(s, r.Key, session)
 		if e != nil {
 			return nil, e
+		}
+		if q.Scope == "" {
+			q.Scope = historyScopeTopic
 		}
 	} else {
 		if _, exists := input["limit"]; exists {
@@ -221,7 +263,7 @@ func (g *Gateway) openHistoryCursor(value, room, session string) (core.HistoryQu
 		return core.HistoryQuery{}, invalid
 	}
 	var c historyCursor
-	if e = json.Unmarshal(b, &c); e != nil || c.Room != room || c.Session != session || c.Expires < time.Now().UnixMilli() || c.Query.Limit < 1 || c.Query.Limit > 50 {
+	if e = json.Unmarshal(b, &c); e != nil || c.Room != room || c.Session != session || c.Expires < time.Now().UnixMilli() || c.Query.Limit < 1 || c.Query.Limit > 50 || (c.Query.Scope != "" && c.Query.Scope != historyScopeTopic && c.Query.Scope != historyScopeChat) || len(c.Query.Chat) > 200 {
 		return core.HistoryQuery{}, invalid
 	}
 	return c.Query, nil

@@ -36,6 +36,7 @@ func (c Config) RoomFor(chat, dm string) (Room, bool) {
 	mentionOptional := false
 	allowAllMembers := false
 	scope := ""
+	topicHistory := ""
 	if dm != "" {
 		for _, b := range c.DMs {
 			if b.UserID == dm {
@@ -53,6 +54,7 @@ func (c Config) RoomFor(chat, dm string) (Room, bool) {
 				mentionOptional = g.MentionOptional
 				allowAllMembers = g.AllowAllMembers
 				scope = g.SessionScope
+				topicHistory = g.TopicHistory
 				fallback = nil
 				break
 			}
@@ -66,6 +68,7 @@ func (c Config) RoomFor(chat, dm string) (Room, bool) {
 			mentionOptional = fallback.MentionOptional
 			allowAllMembers = fallback.AllowAllMembers
 			scope = fallback.SessionScope
+			topicHistory = fallback.TopicHistory
 		}
 	}
 	p, ok := c.Project(project)
@@ -83,7 +86,7 @@ func (c Config) RoomFor(chat, dm string) (Room, bool) {
 		scope = SessionScopeChat
 	}
 	key, _ := json.Marshal([]any{c.TenantID, c.AppID, project, kind, chat, user})
-	return Room{Key: string(key), ChatKey: string(key), ChatID: chat, ProjectID: project, DMUser: dm, Maintainers: p.Maintainers, Members: members, MentionOptional: mentionOptional, AllowAllMembers: allowAllMembers, SessionScope: scope}, true
+	return Room{Key: string(key), ChatKey: string(key), ChatID: chat, ProjectID: project, DMUser: dm, Maintainers: p.Maintainers, Members: members, MentionOptional: mentionOptional, AllowAllMembers: allowAllMembers, SessionScope: scope, TopicHistory: topicHistory}, true
 }
 
 // ThreadRoomFor resolves the room of one topic in a thread-scoped group. The

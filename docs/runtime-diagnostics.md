@@ -57,6 +57,7 @@
 - `turn_result`：每次原生结果一条，除 `success`／`compact`／`resultId`／`models`／`usage` 外，包含 `turn`（本轮首个输入 UUID）和 `queueMs`、`startupMs`、`reused`、`sendMs`、`firstMs`、`toolsMs`（毫秒）。`queueMs` 从输入入队到派发；`startupMs` 为新进程启动到 ready（复用进程为 0 且 `reused=true`）；`sendMs` 到原生接受的等待；`firstMs` 到首个 text／thinking 输出；`toolsMs` 为 tool_use 到 tool_result 的累计。项目配置预检索时另带 `preContext`（`used`／`failed`／`skipped`）和 `preContextMs`（检索耗时；跳过为 0）。
 - `pre_context_failed`：新一轮预检索超时、非零退出、空输出、参数校验失败或执行错误时写一条，包含 `project`、`action`、固定 `reason`（`timeout`／`exit`／`empty`／`parameter`／`execution`／`configuration`／`cancelled`）和 `durationMs`；不记录提问或输出正文，每次失败都写，不做去重。输入仍照常发送，只是不带预检索字段。
 - `turn_delivery`：每次回复交付尝试一条，按 `output` 关联 outbox，带 `session`、`turn`、`attempt`、`outboxState`（`done`／`pending`／`uncertain`／`blocked`／`cancelled`）和 `deliverMs`。只有 `outboxState=done` 且本轮开始时间仍在本进程内时写 `totalMs`；进程重启后的重试不写 `totalMs`，也可能没有 `turn`，避免用重启时间凑总时长。
+- `history_chat_scope_read`：每次成功的 `scope=chat` 历史读取一条，detail 为 `room`、`session`、去重后的 `threads` 和 `count`，不记录消息内容。`history_backfill_failed` 在回复卡正文回填查询失败时写一条，带脱敏错误；历史仍照常返回。
 - `dispatch_failed`：`phase` 为 `launch` 或 `send`，`reason` 为固定分类（`settings_file`、`launch_identity`、`process_start`、`process_unconfirmed`、`timeout`、`model_profile`、`workspace`、`other`）；`error` 仍先脱敏。
 - `worker_failure`：原生初始化／运行错误通知的审计，`phase=initialize`，`reason` 使用同一组固定分类；`error` 脱敏。
 - `output_delivery_failed`：`phase=delivery`，`stage` 为 `card`／`file_prepare`／`file_send`／`card_finalize`，`reason` 为固定分类。
