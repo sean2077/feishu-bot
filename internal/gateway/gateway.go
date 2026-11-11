@@ -164,6 +164,7 @@ type Gateway struct {
 	outTargetLocks                                               keyedLocks
 	attachmentLocks                                              keyedLocks
 	statusLocks                                                  keyedLocks
+	feedbackLocks                                                keyedLocks
 	poolMu, sweepMu                                              sync.Mutex
 	maintenanceMu                                                sync.Mutex
 	maintenanceNoProgress                                        int

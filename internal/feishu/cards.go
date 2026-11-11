@@ -292,6 +292,114 @@ func (c *Client) Update(ctx context.Context, id string, card core.Args) (resultE
 	return c.touchCard(ctx, id, streamClosed != 0)
 }
 
+func (c *Client) UpdateElements(ctx context.Context, message string, updates []core.CardElementUpdate) (resultErr error) {
+	defer func() { resultErr = localRejection("card element update", resultErr) }()
+	if _, err := escapeID(message); err != nil {
+		return err
+	}
+	if c.db == nil {
+		return core.ErrCardNotEntity
+	}
+	unlock := c.locks.lock("card:" + message)
+	defer unlock()
+	var cardID, roomKey, previous string
+	err := c.db.QueryRowContext(ctx, "SELECT card,room,snapshot FROM feishu_cards WHERE message=?", message).Scan(&cardID, &roomKey, &previous)
+	if errors.Is(err, sql.ErrNoRows) {
+		return core.ErrCardNotEntity
+	}
+	if err != nil {
+		return &APIError{Operation: "card state lookup", Retryable: true, cause: err}
+	}
+	chat, _, _, ok := core.ParseRoomKey(roomKey)
+	if !ok {
+		return errors.New("feishu: invalid card room")
+	}
+	if _, err = c.validatedRoom(core.Room{Key: roomKey, ChatID: chat}); err != nil {
+		return err
+	}
+	var snapshot core.Args
+	if json.Unmarshal([]byte(previous), &snapshot) != nil {
+		return errors.New("feishu: invalid saved card snapshot")
+	}
+	escaped, err := escapeID(cardID)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	changed := false
+	for _, update := range updates {
+		if update.ElementID == "" || utf8.RuneCountInString(update.ElementID) > cardElementIDLimit || stringValue(update.Element, "element_id") != update.ElementID {
+			errs = append(errs, errors.New("feishu: invalid card element update"))
+			continue
+		}
+		encoded, err := canonicalJSON(update.Element)
+		if err != nil {
+			errs = append(errs, errors.New("feishu: invalid card element"))
+			continue
+		}
+		seq, err := c.nextCardSequence(ctx, message)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		escapedKey, err := escapeID(update.ElementID)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err = c.api(ctx, http.MethodPut, "/cardkit/v1/cards/"+escaped+"/elements/"+escapedKey, nil, core.Args{"element": encoded, "sequence": seq, "uuid": "e_" + cardID + "_" + strconv.FormatInt(seq, 10)}, nil); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if !replaceCardElement(snapshot, update.ElementID, update.Element) {
+			errs = append(errs, errors.New("feishu: card element is missing from the saved snapshot"))
+			continue
+		}
+		changed = true
+	}
+	if changed {
+		encoded, err := canonicalJSON(snapshot)
+		if err != nil {
+			errs = append(errs, errors.New("feishu: invalid card snapshot"))
+		} else if _, err = c.db.ExecContext(ctx, "UPDATE feishu_cards SET snapshot=? WHERE message=?", encoded, message); err != nil {
+			errs = append(errs, &APIError{Operation: "card snapshot persistence", Uncertain: true})
+		} else if err = c.touchCard(ctx, message, false); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// replaceCardElement replaces the component with the matching element_id in
+// place. The saved snapshot must follow successful element updates or a later
+// full-card update would restore stale button text.
+func replaceCardElement(value any, elementID string, replacement core.Args) bool {
+	switch item := value.(type) {
+	case []any:
+		for _, child := range item {
+			if replaceCardElement(child, elementID, replacement) {
+				return true
+			}
+		}
+	case map[string]any:
+		if stringValue(item, "element_id") == elementID {
+			for key := range item {
+				delete(item, key)
+			}
+			for key, child := range replacement {
+				item[key] = child
+			}
+			return true
+		}
+		for _, child := range item {
+			if replaceCardElement(child, elementID, replacement) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (c *Client) putCard(ctx context.Context, message, cardID, escaped, snapshot string) error {
 	seq, err := c.nextCardSequence(ctx, message)
 	if err != nil {

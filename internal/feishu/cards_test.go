@@ -3,6 +3,7 @@ package feishu
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -73,6 +74,160 @@ func TestNativeCardRetainsIdentityAndSequenceAcrossRestart(t *testing.T) {
 		t.Fatal("final snapshot not durable")
 	}
 }
+func feedbackCardFixture(useful, useless string) core.Args {
+	card := replyFixture("answer", true)
+	card["body"] = core.Args{"elements": []any{
+		core.Args{"tag": "markdown", "element_id": "reply_answer", "content": "answer"},
+		core.Args{"tag": "markdown", "element_id": "reply_status", "content": "状态"},
+		core.Args{"tag": "column_set", "element_id": "gateway_quick_fb", "columns": []any{
+			core.Args{"tag": "column", "elements": []any{core.Args{"tag": "button", "element_id": "gateway_quick_fb_yes", "text": core.Args{"tag": "plain_text", "content": useful}, "behaviors": []any{core.Args{"type": "callback", "value": core.Args{"quick_control": "yes"}}}}}},
+			core.Args{"tag": "column", "elements": []any{core.Args{"tag": "button", "element_id": "gateway_quick_fb_no", "text": core.Args{"tag": "plain_text", "content": useless}, "behaviors": []any{core.Args{"type": "callback", "value": core.Args{"quick_control": "no"}}}}}},
+		}},
+	}}
+	return card
+}
+
+func TestUpdateElementsRejectsNonCardKitMessage(t *testing.T) {
+	db := fixtureDB(t)
+	c, _ := fixtureClient(t, db, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("non-CardKit message reached the API: %s %s", r.Method, r.URL.Path)
+	})
+	err := c.UpdateElements(context.Background(), "om_old_message", []core.CardElementUpdate{{ElementID: "gateway_quick_fb_yes", Element: core.Args{"tag": "button", "element_id": "gateway_quick_fb_yes"}}})
+	if !errors.Is(err, core.ErrCardNotEntity) {
+		t.Fatalf("non-CardKit error = %v", err)
+	}
+}
+
+func TestUpdateElementsSequenceAndPartialSnapshot(t *testing.T) {
+	db := fixtureDB(t)
+	var mu sync.Mutex
+	var writes []observedWrite
+	c, _ := fixtureClient(t, db, func(w http.ResponseWriter, r *http.Request) {
+		body := decodedBody(t, r)
+		mu.Lock()
+		writes = append(writes, observedWrite{r.Method, r.URL.Path, body})
+		mu.Unlock()
+		if r.Method == "POST" && r.URL.Path == "/open-apis/cardkit/v1/cards" {
+			apiResponse(w, map[string]string{"card_id": "card_feedback"})
+			return
+		}
+		if r.Method == "POST" && r.URL.Path == "/open-apis/im/v1/messages" {
+			apiResponse(w, map[string]string{"message_id": "om_feedback"})
+			return
+		}
+		if strings.Contains(r.URL.Path, "gateway_quick_fb_no") {
+			jsonResponse(w, 503, map[string]any{"code": 1})
+			return
+		}
+		apiResponse(w, map[string]any{})
+	})
+	id, err := c.Card(context.Background(), fixtureRoom(t, c), feedbackCardFixture("有用", "无用"), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	yes := core.Args{"tag": "button", "element_id": "gateway_quick_fb_yes", "text": core.Args{"tag": "plain_text", "content": "有用 · 1"}}
+	no := core.Args{"tag": "button", "element_id": "gateway_quick_fb_no", "text": core.Args{"tag": "plain_text", "content": "无用 · 1"}}
+	if err = c.UpdateElements(context.Background(), id, []core.CardElementUpdate{{ElementID: "gateway_quick_fb_yes", Element: yes}, {ElementID: "gateway_quick_fb_no", Element: no}}); err == nil {
+		t.Fatal("partial element failure was not reported")
+	}
+	mu.Lock()
+	elementWrites := append([]observedWrite(nil), writes...)
+	mu.Unlock()
+	if len(elementWrites) != 4 {
+		t.Fatalf("element writes = %+v", elementWrites)
+	}
+	if elementWrites[2].body["sequence"] != float64(1) || elementWrites[3].body["sequence"] != float64(2) {
+		t.Fatalf("element sequences = %+v", elementWrites)
+	}
+	var snapshot string
+	var seq int
+	if err = db.QueryRow("SELECT sequence,snapshot FROM feishu_cards WHERE message=?", id).Scan(&seq, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 2 || !strings.Contains(snapshot, "有用 · 1") || strings.Contains(snapshot, "无用 · 1") {
+		t.Fatalf("partial snapshot = seq %d %s", seq, snapshot)
+	}
+	if err = c.Update(context.Background(), id, feedbackCardFixture("有用 · 1", "无用")); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	last := writes[len(writes)-1]
+	mu.Unlock()
+	if last.body["sequence"] != float64(3) || last.path != "/open-apis/cardkit/v1/cards/card_feedback" {
+		t.Fatalf("full refresh after element update = %+v", last)
+	}
+}
+
+func TestElementAndFullUpdateShareIncreasingSequence(t *testing.T) {
+	db := fixtureDB(t)
+	var mu sync.Mutex
+	var writes []observedWrite
+	c, _ := fixtureClient(t, db, func(w http.ResponseWriter, r *http.Request) {
+		body := decodedBody(t, r)
+		mu.Lock()
+		writes = append(writes, observedWrite{r.Method, r.URL.Path, body})
+		mu.Unlock()
+		if r.Method == "POST" && r.URL.Path == "/open-apis/cardkit/v1/cards" {
+			apiResponse(w, map[string]string{"card_id": "card_feedback"})
+			return
+		}
+		if r.Method == "POST" && r.URL.Path == "/open-apis/im/v1/messages" {
+			apiResponse(w, map[string]string{"message_id": "om_feedback"})
+			return
+		}
+		apiResponse(w, map[string]any{})
+	})
+	id, err := c.Card(context.Background(), fixtureRoom(t, c), feedbackCardFixture("有用", "无用"), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	yes := core.Args{"tag": "button", "element_id": "gateway_quick_fb_yes", "text": core.Args{"tag": "plain_text", "content": "有用 · 1"}}
+	no := core.Args{"tag": "button", "element_id": "gateway_quick_fb_no", "text": core.Args{"tag": "plain_text", "content": "无用"}}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := c.UpdateElements(context.Background(), id, []core.CardElementUpdate{{ElementID: "gateway_quick_fb_yes", Element: yes}, {ElementID: "gateway_quick_fb_no", Element: no}}); err != nil {
+			t.Errorf("element update: %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := c.Update(context.Background(), id, feedbackCardFixture("有用 · 1", "无用")); err != nil {
+			t.Errorf("full update: %v", err)
+		}
+	}()
+	wg.Wait()
+	mu.Lock()
+	observed := append([]observedWrite(nil), writes...)
+	mu.Unlock()
+	var sequences []float64
+	for _, write := range observed {
+		if write.method == http.MethodPut {
+			seq, ok := write.body["sequence"].(float64)
+			if !ok {
+				t.Fatalf("write without sequence: %+v", write)
+			}
+			sequences = append(sequences, seq)
+		}
+	}
+	if len(sequences) != 3 {
+		t.Fatalf("sequences = %v writes=%+v", sequences, observed)
+	}
+	for i := 1; i < len(sequences); i++ {
+		if sequences[i] <= sequences[i-1] {
+			t.Fatalf("sequence not strictly increasing: %v", sequences)
+		}
+	}
+	var snapshot string
+	if err = db.QueryRow("SELECT snapshot FROM feishu_cards WHERE message=?", id).Scan(&snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(snapshot, "有用 · 1") {
+		t.Fatalf("final snapshot lost refreshed feedback counts: %s", snapshot)
+	}
+}
+
 func TestCardUpdateLostAcknowledgementBurnsSequenceAndDoesNotFallback(t *testing.T) {
 	db := fixtureDB(t)
 	var writes []observedWrite

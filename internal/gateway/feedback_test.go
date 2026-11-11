@@ -3,7 +3,9 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -167,11 +169,11 @@ func TestFeedbackClickAuthorizationBindingAndRate(t *testing.T) {
 	if value, user, question, answer, _, count := x.feedback(t); count != 1 || value != "useful" || user != "member" || question != "question text" || answer != "answer text" {
 		t.Fatalf("stored feedback = %q %q %q %q %d", value, user, question, answer, count)
 	}
-	if got := x.click(t, "member", "feedback_useless"); got != "已记录：无用" {
-		t.Fatalf("changed vote toast = %q", got)
+	if got := x.click(t, "member", "feedback_useless"); got != "你已反馈过：有用（每人只能反馈一次）" {
+		t.Fatalf("duplicate vote toast = %q", got)
 	}
-	if value, _, _, _, _, count := x.feedback(t); count != 1 || value != "useless" {
-		t.Fatalf("changed vote = %q %d", value, count)
+	if value, _, _, _, _, count := x.feedback(t); count != 1 || value != "useful" {
+		t.Fatalf("duplicate vote changed feedback = %q %d", value, count)
 	}
 	if got := x.click(t, "second", "feedback_useful"); got != "已记录：有用" {
 		t.Fatalf("second user toast = %q", got)
@@ -240,6 +242,133 @@ func TestFeedbackSnapshotTruncatesRedactsAndRecordsNativeSession(t *testing.T) {
 	}
 	if nativeSession != "native-session-1" {
 		t.Fatalf("native session = %q", nativeSession)
+	}
+}
+
+func feedbackElementLabel(update core.CardElementUpdate) string {
+	text, _ := update.Element["text"].(map[string]any)
+	value, _ := text["content"].(string)
+	return value
+}
+
+func feedbackUpdates(t *testing.T, f *fixture) []core.CardElementUpdate {
+	t.Helper()
+	f.tr.mu.Lock()
+	defer f.tr.mu.Unlock()
+	return append([]core.CardElementUpdate(nil), f.tr.elementUpdates...)
+}
+
+func TestFeedbackCountsRefreshPerCard(t *testing.T) {
+	x := newFeedbackFixture(t, true, 100)
+	if text := jsonText(x.card); !strings.Contains(text, "有用") || strings.Contains(text, "有用 · ") {
+		t.Fatalf("initial feedback labels = %s", text)
+	}
+	if got := x.click(t, "member", "feedback_useful"); got != "已记录：有用" {
+		t.Fatalf("first toast = %q", got)
+	}
+	eventually(t, func() bool { return len(feedbackUpdates(t, x.f)) >= 2 })
+	updates := feedbackUpdates(t, x.f)
+	if labels := []string{feedbackElementLabel(updates[len(updates)-2]), feedbackElementLabel(updates[len(updates)-1])}; labels[0] != "有用 · 1" || labels[1] != "无用" {
+		t.Fatalf("first refresh labels = %#v", labels)
+	}
+	if got := x.click(t, "member", "feedback_useless"); got != "你已反馈过：有用（每人只能反馈一次）" {
+		t.Fatalf("duplicate toast = %q", got)
+	}
+	if value, _, _, _, _, count := x.feedback(t); count != 1 || value != "useful" {
+		t.Fatalf("duplicate changed feedback = %q %d", value, count)
+	}
+	before := len(feedbackUpdates(t, x.f))
+	if got := x.click(t, "second", "feedback_useful"); got != "已记录：有用" {
+		t.Fatalf("second user toast = %q", got)
+	}
+	eventually(t, func() bool { return len(feedbackUpdates(t, x.f)) > before })
+	updates = feedbackUpdates(t, x.f)
+	if got := feedbackElementLabel(updates[len(updates)-2]); got != "有用 · 2" {
+		t.Fatalf("second refresh label = %q", got)
+	}
+	o, err := x.f.g.output(x.output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final := jsonText(x.f.g.deliveredOutputCard(o, x.room)); !strings.Contains(final, "有用 · 2") || strings.Contains(final, "有用 · 1") {
+		t.Fatalf("final full card does not match feedback counts: %s", final)
+	}
+}
+
+func TestFeedbackCountRefreshFailureDoesNotLoseRecord(t *testing.T) {
+	x := newFeedbackFixture(t, true, 100)
+	x.f.tr.elementUpdateHook = func(context.Context, string, []core.CardElementUpdate) error {
+		return errors.New("card update unavailable")
+	}
+	if got := x.click(t, "member", "feedback_useful"); got != "已记录：有用" {
+		t.Fatalf("toast = %q", got)
+	}
+	eventually(t, func() bool {
+		var n int
+		_ = x.f.s.DB.QueryRow("SELECT count(*) FROM audit WHERE event='feedback_count_refresh_failed'").Scan(&n)
+		return n == 1
+	})
+	if _, _, _, _, _, count := x.feedback(t); count != 1 {
+		t.Fatal("refresh failure lost the feedback record")
+	}
+}
+
+func TestFeedbackCountRefreshSkipsNonCardKitMessage(t *testing.T) {
+	x := newFeedbackFixture(t, true, 100)
+	x.f.tr.elementUpdateHook = func(context.Context, string, []core.CardElementUpdate) error {
+		return core.ErrCardNotEntity
+	}
+	if got := x.click(t, "member", "feedback_useful"); got != "已记录：有用" {
+		t.Fatalf("toast = %q", got)
+	}
+	eventually(t, func() bool {
+		var n int
+		_ = x.f.s.DB.QueryRow("SELECT count(*) FROM audit WHERE event='feedback_count_refresh_skipped'").Scan(&n)
+		return n == 1
+	})
+	var detail string
+	if err := x.f.s.DB.QueryRow("SELECT detail FROM audit WHERE event='feedback_count_refresh_skipped'").Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	_ = json.Unmarshal([]byte(detail), &fields)
+	if fields["reason"] != "not_cardkit" {
+		t.Fatalf("skip audit = %#v", fields)
+	}
+}
+
+func TestFeedbackConcurrentUsersConvergeCount(t *testing.T) {
+	x := newFeedbackFixture(t, true, 100)
+	users := []string{"member", "second", "u3", "u4", "u5", "u6"}
+	x.f.g.config.Groups[0].Members = append(x.f.g.config.Groups[0].Members, "u3", "u4", "u5", "u6")
+	revision := x.f.g.quickRevision(x.room, x.session, "", "", "")
+	var wg sync.WaitGroup
+	for _, user := range users {
+		user := user
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			token := x.f.g.signQuick(quickControl{Room: x.room.Key, Session: x.session, Output: x.output, Revision: revision, Action: "feedback_useful"})
+			if _, err := x.f.g.Action(context.Background(), core.CardAction{UserID: user, ChatID: x.room.ChatID, MessageID: "feedback-card", Value: core.Args{"quick_control": token}}); err != nil {
+				t.Errorf("feedback click for %s: %v", user, err)
+			}
+		}()
+	}
+	wg.Wait()
+	if _, _, _, _, _, count := x.feedback(t); count != len(users) {
+		t.Fatalf("concurrent feedback count = %d", count)
+	}
+	eventually(t, func() bool { return len(feedbackUpdates(t, x.f)) >= 2*len(users) })
+	updates := feedbackUpdates(t, x.f)
+	if got := feedbackElementLabel(updates[len(updates)-2]); got != "有用 · 6" {
+		t.Fatalf("concurrent final label = %q", got)
+	}
+	o, err := x.f.g.output(x.output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final := jsonText(x.f.g.deliveredOutputCard(o, x.room)); !strings.Contains(final, "有用 · 6") {
+		t.Fatalf("full card after concurrent feedback = %s", final)
 	}
 }
 

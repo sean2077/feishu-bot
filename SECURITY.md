@@ -49,7 +49,7 @@ CC 直连配置的模型服务，模型凭据进入该进程环境。飞书和�
 
 `projects[].settingsFile` 是管理员信任的输入，不是聊天可以控制的配置。网关只校验 JSON 结构、允许的字段、变量名、大小和与项目环境的冲突，不判断 allow／ask／deny 规则的语义完整性或安全性；管理员必须审核规则及规则来源仓库的 project settings。isolated 模式仍加载 cwd 下的 `.claude/settings.json`，其 hooks、allow 等可能放宽或附加原生行为。合并后的 0600 临时设置文件可能含模型凭据（inherit）或 settings env，进程结束后删除；运行中的进程环境和同账户可读文件仍可能被同账户代码访问，不是安全沙箱。
 
-开启 `projects[].feedback.enabled` 后，`feedback` 表保存用户问题原文（最多 4000 字符）、回复摘要（最多 2000 字符）、room、project、gateway session、原生 session（有则记录）、outbox／卡片消息 ID、open_id、投票时间和值；入库前使用现有 secrets 脱敏。问题来源已被保留期清理时留空，导出以 `questionMissing` 标记；记录本身仍保留。反馈保留 90 天。`feedback export` 只读打开状态库，输出包含用户问答和 open_id，应按敏感数据保护，不要提交或公开。反馈按钮只在 Done 后出现，点击不重写卡片。
+开启 `projects[].feedback.enabled` 后，`feedback` 表保存用户问题原文（最多 4000 字符）、回复摘要（最多 2000 字符）、room、project、gateway session、原生 session（有则记录）、outbox／卡片消息 ID、open_id、投票时间和值；入库前使用现有 secrets 脱敏。问题来源已被保留期清理时留空，导出以 `questionMissing` 标记；记录本身仍保留。反馈保留 90 天。`feedback export` 只读打开状态库，输出包含用户问答和 open_id，应按敏感数据保护，不要提交或公开。反馈按钮只在 Done 后出现，每人每回复只能一票；点击不重写整张卡片，只按元素更新两个按钮文字。
 
 固定操作和只读 context 端点会携带请求上下文：发送者 open_id、事件中的显示名、chat／thread／消息 ID 和当前 senders／messageIds。这些信息会进入固定操作子进程环境和 `action_runs`（`requester`、`request_context`），保留期沿用 `action_runs` 的 90 天；`action_started` 审计只含 open_id 和消息 ID，不含显示名。每个原生进程的 loopback 中继使用独立 token，始终启动（即使没有配置 `actions`），只返回该 worker 所在 slot 的上下文，action 调用仍按原策略审批或拒绝；同账户代码仍可读取环境变量并调用该端点，不是额外隔离边界。
 
