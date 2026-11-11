@@ -7,43 +7,49 @@ import (
 	"time"
 )
 
-// LocalZone resolves the human-facing time zone used by both the native input
-// envelope and history results. TZ wins when it names a loadable zone; other
-// platforms expose the local zone through time.Local, /etc/localtime or
-// /etc/timezone. A fixed offset is the final fallback, so hosts without an IANA
-// name still avoid reporting UTC incorrectly.
-func LocalZone() *time.Location {
+// LocalZoneInfo resolves both the location used for formatting and the name
+// shown in the input envelope and history results. TZ wins when it names a
+// loadable zone; time.Local (including Windows' full zone rules under the name
+// "Local"), /etc/localtime and /etc/timezone are tried next. The final fallback
+// keeps time.Local for formatting, including its historical DST rules, while
+// the display name is the current numeric offset.
+func LocalZoneInfo() (*time.Location, string) {
 	if zone := os.Getenv("TZ"); zone != "" {
 		if loc, err := time.LoadLocation(zone); err == nil {
-			return loc
+			return loc, zone
 		}
 	}
 	if name := time.Local.String(); name != "Local" && name != "" {
-		return time.Local
+		return time.Local, name
 	}
 	if link, err := os.Readlink("/etc/localtime"); err == nil {
 		if _, zone, ok := strings.Cut(link, "zoneinfo/"); ok {
 			if loc, err := time.LoadLocation(zone); err == nil {
-				return loc
+				return loc, zone
 			}
 		}
 	}
 	if data, err := os.ReadFile("/etc/timezone"); err == nil && len(data) < 200 {
 		if zone := strings.TrimSpace(string(data)); zone != "" {
 			if loc, err := time.LoadLocation(zone); err == nil {
-				return loc
+				return loc, zone
 			}
 		}
 	}
-	now := time.Now()
-	_, offset := now.Zone()
-	return time.FixedZone(offsetZoneName(now), offset)
+	return time.Local, offsetZoneName(time.Now())
 }
 
-// TimezoneName is the name reported in envelopes and history results. It
-// matches the zone used by LocalTime.
+// LocalZone returns the location used for formatting. It may be time.Local
+// without an IANA name; callers should use TimezoneName for display.
+func LocalZone() *time.Location {
+	loc, _ := LocalZoneInfo()
+	return loc
+}
+
+// TimezoneName is the name reported in envelopes and history results.
 func TimezoneName() string {
-	return LocalZone().String()
+	_, name := LocalZoneInfo()
+	return name
 }
 
 // LocalTime formats a Unix-millisecond timestamp as RFC3339 with a numeric
@@ -52,7 +58,20 @@ func LocalTime(milliseconds int64) string {
 	if milliseconds <= 0 {
 		return ""
 	}
-	return time.UnixMilli(milliseconds).In(LocalZone()).Format(time.RFC3339)
+	loc, _ := LocalZoneInfo()
+	return LocalTimeIn(loc, milliseconds)
+}
+
+// LocalTimeIn formats with an already resolved location. Batch callers should
+// resolve LocalZoneInfo once and reuse it for every message.
+func LocalTimeIn(loc *time.Location, milliseconds int64) string {
+	if milliseconds <= 0 {
+		return ""
+	}
+	if loc == nil {
+		loc = time.Local
+	}
+	return time.UnixMilli(milliseconds).In(loc).Format(time.RFC3339)
 }
 
 // offsetZoneName names the current local offset as UTC±hh:mm. The value is only

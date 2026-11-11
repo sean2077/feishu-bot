@@ -22,6 +22,21 @@ func TestLocalTimeUsesConfiguredZone(t *testing.T) {
 	}
 }
 
+func TestLocalTimeInUsesLocationHistory(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	winter := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	summer := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	if got := LocalTimeIn(loc, winter.UnixMilli()); got != "2026-01-15T07:00:00-05:00" {
+		t.Fatalf("winter localTime = %q", got)
+	}
+	if got := LocalTimeIn(loc, summer.UnixMilli()); got != "2026-07-15T08:00:00-04:00" {
+		t.Fatalf("summer localTime = %q", got)
+	}
+}
+
 func TestOffsetZoneNamesLocalOffsetInsteadOfUTC(t *testing.T) {
 	for _, tc := range []struct {
 		offset int

@@ -442,26 +442,37 @@ func (w *worker) Send(ctx context.Context, d core.Delivery) error {
 }
 
 func messageLocalTime(m core.Message) core.Message {
-	m.LocalTime = core.LocalTime(m.Time)
+	loc, _ := core.LocalZoneInfo()
+	return messageLocalTimeIn(loc, m)
+}
+
+func messageLocalTimeIn(loc *time.Location, m core.Message) core.Message {
+	m.LocalTime = core.LocalTimeIn(loc, m.Time)
 	return m
 }
 
 func inputMessageContent(d core.Delivery) args {
+	loc, _ := core.LocalZoneInfo()
 	quote := (*core.Message)(nil)
 	if d.Quote != nil {
-		q := messageLocalTime(*d.Quote)
+		q := messageLocalTimeIn(loc, *d.Quote)
 		quote = &q
 	}
-	return args{"trigger": messageLocalTime(d.Message), "background": messagesLocalTime(d.Background), "quote": quote, "attachments": d.Attachments}
+	return args{"trigger": messageLocalTimeIn(loc, d.Message), "background": messagesLocalTimeIn(loc, d.Background), "quote": quote, "attachments": d.Attachments}
 }
 
 func messagesLocalTime(messages []core.Message) []core.Message {
+	loc, _ := core.LocalZoneInfo()
+	return messagesLocalTimeIn(loc, messages)
+}
+
+func messagesLocalTimeIn(loc *time.Location, messages []core.Message) []core.Message {
 	if messages == nil {
 		return nil
 	}
 	out := make([]core.Message, len(messages))
 	for i, m := range messages {
-		out[i] = messageLocalTime(m)
+		out[i] = messageLocalTimeIn(loc, m)
 	}
 	return out
 }

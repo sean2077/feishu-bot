@@ -6,8 +6,9 @@ import "github.com/sean2077/feishu-bot/internal/core"
 // time. Both fields are derived from the same timestamp; callers must not let a
 // model treat time as a local wall clock.
 func stampLocalTimes(messages []core.Message) {
+	loc, _ := core.LocalZoneInfo()
 	for i := range messages {
-		messages[i].LocalTime = core.LocalTime(messages[i].Time)
+		messages[i].LocalTime = core.LocalTimeIn(loc, messages[i].Time)
 	}
 }
 
