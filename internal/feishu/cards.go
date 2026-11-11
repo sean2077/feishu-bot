@@ -342,7 +342,11 @@ func (c *Client) UpdateElements(ctx context.Context, message string, updates []c
 			errs = append(errs, err)
 			continue
 		}
-		escapedKey, _ := escapeID(update.ElementID)
+		escapedKey, err := escapeID(update.ElementID)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
 		if err = c.api(ctx, http.MethodPut, "/cardkit/v1/cards/"+escaped+"/elements/"+escapedKey, nil, core.Args{"element": encoded, "sequence": seq, "uuid": "e_" + cardID + "_" + strconv.FormatInt(seq, 10)}, nil); err != nil {
 			errs = append(errs, err)
 			continue
