@@ -302,7 +302,7 @@ func (g *Gateway) expandChatHistory(ctx context.Context, target historyTarget, q
 			}
 			defer func() { <-sem }()
 			query := core.HistoryQuery{Limit: maxHistoryThreadReplies + 1, ThreadID: root.ThreadID, Scope: historyScopeChat, Chat: target.chatID}
-			page, err := g.transport.History(ctx, target.room, query)
+			page, err := provider(ctx, func() (core.HistoryPage, error) { return g.transport.History(ctx, target.room, query) })
 			if err != nil {
 				threads[i] = fetchedHistoryThread{root: root, err: err}
 				return
@@ -334,15 +334,23 @@ func (g *Gateway) expandChatHistory(ctx context.Context, target historyTarget, q
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+	failedThreads := 0
+	var firstThreadErr error
 	for _, thread := range threads {
 		if thread.err != nil {
-			return nil, thread.err
+			failedThreads++
+			if firstThreadErr == nil {
+				firstThreadErr = thread.err
+			}
 		}
 	}
+	if len(roots) > 0 && failedThreads == len(roots) {
+		return nil, firstThreadErr
+	}
 
-	candidates := make([]fetchedHistoryThread, 0, len(threads))
+	candidates := make([]fetchedHistoryThread, 0, len(threads)-failedThreads)
 	for _, thread := range threads {
-		if historyInRange(thread.latest, q.StartTime, q.EndTime) {
+		if thread.err == nil && historyInRange(thread.latest, q.StartTime, q.EndTime) {
 			candidates = append(candidates, thread)
 		}
 	}
@@ -352,8 +360,8 @@ func (g *Gateway) expandChatHistory(ctx context.Context, target historyTarget, q
 		}
 		return candidates[a].latest > candidates[b].latest
 	})
-	totalThreads := len(candidates)
-	threadCount := min(maxHistoryExpandedThreads, totalThreads)
+	totalThreads := len(roots)
+	threadCount := min(maxHistoryExpandedThreads, len(candidates))
 	replyLimit := maxHistoryThreadReplies
 
 	if err := g.backfillHistoryTexts(ctx, target, base); err != nil {
@@ -419,8 +427,9 @@ func (g *Gateway) expandChatHistory(ctx context.Context, target historyTarget, q
 		"expanded":       includedThreads,
 		"omittedThreads": omittedThreads,
 		"omittedReplies": omittedReplies,
+		"failedThreads":  failedThreads,
 	}
-	note := fmt.Sprintf("Expanded %d of %d recent topics in the requested range; %d replies were omitted. Only these topics were read; state this scope when summarizing.", includedThreads, totalThreads, omittedReplies)
+	note := fmt.Sprintf("Expanded %d of %d discovered topics; %d threads failed and were skipped; %d replies were omitted. Only these topics were read; state this scope when summarizing.", includedThreads, totalThreads, failedThreads, omittedReplies)
 	return g.historyChatResult(target, q, messages, token, stats, note), nil
 }
 
@@ -500,7 +509,7 @@ func (g *Gateway) backfillHistoryTexts(ctx context.Context, target historyTarget
 	if len(ids) == 0 {
 		return nil
 	}
-	texts, err := g.store.HistoryReplyTextsChat(ctx, target.chatID, ids)
+	texts, err := g.store.HistoryReplyTextsChat(ctx, g.config.TenantID, g.config.AppID, target.chatID, ids)
 	if err != nil {
 		g.audit(target.source.Key, "history_backfill_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
 		return nil

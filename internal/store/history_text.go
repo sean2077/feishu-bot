@@ -13,13 +13,14 @@ func (s *Store) HistoryReplyTexts(ctx context.Context, room string, ids []string
 }
 
 // HistoryReplyTextsChat is the same lookup across every topic room of one
-// group chat. Room keys carry the chat ID at index 4; organization, project and
-// DM identity remain fixed in the key, so another chat cannot match.
-func (s *Store) HistoryReplyTextsChat(ctx context.Context, chat string, ids []string) (map[string]string, error) {
-	if chat == "" {
+// group chat. Room keys carry tenant, app, kind and chat at fixed indexes, so a
+// matching chat ID from another organization, app or non-group room cannot
+// contribute a reply body.
+func (s *Store) HistoryReplyTextsChat(ctx context.Context, tenant, app, chat string, ids []string) (map[string]string, error) {
+	if tenant == "" || app == "" || chat == "" {
 		return map[string]string{}, nil
 	}
-	return s.historyReplyTexts(ctx, "json_extract(room,'$[4]')=?", []any{chat}, ids)
+	return s.historyReplyTexts(ctx, "json_extract(room,'$[0]')=? AND json_extract(room,'$[1]')=? AND json_extract(room,'$[3]')='group' AND json_extract(room,'$[4]')=?", []any{tenant, app, chat}, ids)
 }
 
 func (s *Store) historyReplyTexts(ctx context.Context, scope string, scopeArgs []any, ids []string) (map[string]string, error) {

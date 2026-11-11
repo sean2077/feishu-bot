@@ -333,6 +333,10 @@ func TestHistoryChatScopeBackfillDoesNotCrossChat(t *testing.T) {
 	otherChat, _ := RoomFor(f.c, "other", "")
 	historyOutputRow(t, f, "out-same", otherTopic.Key, "om_card", "same chat", "reply", "done")
 	historyOutputRow(t, f, "out-other", otherChat.Key, "om_card", "other chat", "reply", "done")
+	wrongApp, _ := json.Marshal([]any{f.c.TenantID, "other-app", "project", "group", "group", nil})
+	wrongKind, _ := json.Marshal([]any{f.c.TenantID, f.c.AppID, "project", "p2p", "group", "member"})
+	historyOutputRow(t, f, "out-wrong-app", string(wrongApp), "om_card", "wrong app", "reply", "done")
+	historyOutputRow(t, f, "out-wrong-kind", string(wrongKind), "om_card", "wrong kind", "reply", "done")
 	card := historyTestMessage("om_card", "bot", core.HistoryCardPlaceholder, now, "omt_other", "om_other_root")
 	card.SenderIsBot, card.SenderIsSelf = true, true
 	f.tr.historyHook = func(_ context.Context, _ core.Room, _ core.HistoryQuery) (core.HistoryPage, error) {
@@ -454,5 +458,38 @@ func TestHistoryChatScopeRejectsThreadFromAnotherGroup(t *testing.T) {
 	}
 	if _, err := f.g.history(context.Background(), source, "session-a", core.Args{"scope": "chat", "threadId": "omt_foreign"}); err == nil || !strings.Contains(err.Error(), "belong") {
 		t.Fatalf("foreign group thread accepted: %v", err)
+	}
+}
+
+func TestHistoryChatScopeExpandSkipsFailedThreads(t *testing.T) {
+	f := topicHistoryFixture(t, nil)
+	source := historyChatSource(t, f)
+	now := time.Now()
+	first := historyTestMessage("om_root_a", "member", "A", now.Add(-time.Hour), "omt_a", "om_root_a")
+	second := historyTestMessage("om_root_b", "member", "B", now.Add(-2*time.Hour), "omt_b", "om_root_b")
+	f.tr.historyHook = func(_ context.Context, _ core.Room, q core.HistoryQuery) (core.HistoryPage, error) {
+		if q.ThreadID == "" {
+			return core.HistoryPage{Messages: []core.Message{first, second}}, nil
+		}
+		if q.ThreadID == "omt_a" {
+			return core.HistoryPage{}, context.DeadlineExceeded
+		}
+		return core.HistoryPage{Messages: []core.Message{historyTestMessage("om_reply_b", "member", "B_REPLY", now, "omt_b", "om_root_b")}}, nil
+	}
+	page, err := f.g.history(context.Background(), source, "session-a", core.Args{"scope": "chat", "expandThreads": true, "startTime": now.Add(-3 * time.Hour).Unix(), "endTime": now.Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page["threads"].(int) != 2 || page["expanded"].(int) != 1 || page["omittedThreads"].(int) != 1 || page["failedThreads"].(int) != 1 {
+		t.Fatalf("failed thread stats = %#v", page)
+	}
+	messages := page["messages"].([]core.Message)
+	if len(messages) != 2 {
+		t.Fatalf("failed thread did not degrade atomically: %+v", messages)
+	}
+	for _, message := range messages {
+		if message.ThreadID != "omt_b" {
+			t.Fatalf("failed thread leaked into results: %+v", messages)
+		}
 	}
 }
