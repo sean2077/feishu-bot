@@ -80,7 +80,15 @@ func TestTrendObservationsAreWrittenBeforeSamplerStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	var observed maintenanceObservations
-	sampler := startTrendSampler("", dbPath, 10*time.Millisecond, 15*time.Millisecond, func() int64 { return 1 }, func() int64 { return 0 }, &observed, func(ctx context.Context, now int64) {
+	var captures atomic.Int64
+	captured := make(chan struct{})
+	swept := make(chan struct{}, 1)
+	sampler := startTrendSampler("", dbPath, 10*time.Millisecond, 15*time.Millisecond, func() int64 {
+		if captures.Add(1) == 4 {
+			close(captured)
+		}
+		return 1
+	}, func() int64 { return 0 }, &observed, func(ctx context.Context, now int64) {
 		r, e := st.Maintain(ctx, now, 1000)
 		a := core.Args{"durationMs": r.DurationMS, "candidates": r.Candidates, "changed": r.Changed}
 		if e != nil {
@@ -88,6 +96,10 @@ func TestTrendObservationsAreWrittenBeforeSamplerStops(t *testing.T) {
 		}
 		observed.record("store_maintenance", a)
 		log.record("maintenance", a)
+		select {
+		case swept <- struct{}{}:
+		default:
+		}
 	}, log)
 	stopped := false
 	t.Cleanup(func() {
@@ -96,21 +108,28 @@ func TestTrendObservationsAreWrittenBeforeSamplerStops(t *testing.T) {
 		}
 		log.close()
 	})
-	deadline := time.Now().Add(3 * time.Second)
-	live := false
-	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(filepath.Join(dir, "observations.jsonl"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Count(string(data), `"kind":"trend"`) >= 3 && strings.Contains(string(data), `"kind":"maintenance"`) {
-			live = true
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	// Each capture is sequential in the sampler goroutine and records its
+	// trend before the next workers() call. Four started captures therefore
+	// prove three trend lines were written while the sampler was live; the
+	// sweep signal proves the maintenance line is present too. Do not poll the
+	// file on a fixed wall-clock window: one process-memory capture can be slow
+	// on race-enabled hosted runners.
+	select {
+	case <-captured:
+	case <-time.After(10 * time.Second):
+		t.Fatal("sampler did not complete four live captures")
 	}
-	if !live {
-		t.Fatal("observations only became available after the workload ended")
+	select {
+	case <-swept:
+	case <-time.After(10 * time.Second):
+		t.Fatal("sampler did not record maintenance while live")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "observations.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), `"kind":"trend"`) < 3 || !strings.Contains(string(data), `"kind":"maintenance"`) {
+		t.Fatalf("live observations missing from progress log: %s", data)
 	}
 	series := sampler.stop()
 	stopped = true
