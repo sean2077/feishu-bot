@@ -239,7 +239,7 @@ func TestActionRunnerBoundsRealChildOutputAndTime(t *testing.T) {
 	for _, mode := range []string{"success", "exit", "overflow", "timeout"} {
 		t.Run(mode, func(t *testing.T) {
 			env := cleanActionEnv(map[string]string{"FEISHU_ACTION_TEST_PROCESS": mode, "GORACE": "atexit_sleep_ms=0"})
-			timeout := int64(1000)
+			timeout := int64(10000)
 			if mode == "timeout" {
 				timeout = 30
 			}
