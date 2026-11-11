@@ -24,6 +24,8 @@ type turnTiming struct {
 	firstAt      time.Time
 	startupMs    int64
 	reused       bool
+	preContext   string
+	preContextMs int64
 	tools        time.Duration
 	toolStarts   map[string]time.Time
 	toolNames    map[string]string
@@ -58,6 +60,7 @@ func newTurnTiming(s *slot, d core.Delivery) *turnTiming {
 		queuedAt:     deliveryQueuedAt(d),
 		dispatchedAt: time.Now(),
 		reused:       s.inputsServed > 0,
+		preContext:   preContextSkipped,
 		toolStarts:   map[string]time.Time{},
 		toolNames:    map[string]string{},
 	}
@@ -76,13 +79,15 @@ func turnResultTiming(t *turnTiming) core.Args {
 		firstBase = t.dispatchedAt
 	}
 	return core.Args{
-		"turn":      t.turn,
-		"queueMs":   msBetween(t.queuedAt, t.dispatchedAt),
-		"startupMs": t.startupMs,
-		"reused":    t.reused,
-		"sendMs":    msBetween(t.dispatchedAt, t.acceptedAt),
-		"firstMs":   msBetween(firstBase, t.firstAt),
-		"toolsMs":   t.tools.Milliseconds(),
+		"turn":         t.turn,
+		"queueMs":      msBetween(t.queuedAt, t.dispatchedAt),
+		"startupMs":    t.startupMs,
+		"reused":       t.reused,
+		"preContext":   t.preContext,
+		"preContextMs": t.preContextMs,
+		"sendMs":       msBetween(t.dispatchedAt, t.acceptedAt),
+		"firstMs":      msBetween(firstBase, t.firstAt),
+		"toolsMs":      t.tools.Milliseconds(),
 	}
 }
 

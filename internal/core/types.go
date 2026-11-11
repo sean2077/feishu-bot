@@ -89,6 +89,9 @@ type Delivery struct {
 	ImageBatch   *ImageBatch  `json:"imageBatch,omitempty"`
 	BatchInputs  []Delivery   `json:"batchInputs,omitempty"`
 	Attachments  []Attachment `json:"attachments"`
+	// PreContext is populated by the gateway only for the input that starts a
+	// new turn. It is never user input or authorization.
+	PreContext *PreContext `json:"preContext,omitempty"`
 }
 
 // RequestContext describes the human inputs active in a room when a request
@@ -165,24 +168,43 @@ type ProjectBash struct {
 	RejectCwdPrefix bool `json:"rejectCwdPrefix,omitempty"`
 }
 
+// ProjectPreContext configures one administrator-approved read-only action
+// that the gateway runs before a new human turn. Its output is injected as
+// untrusted background context, not as user input or authorization.
+type ProjectPreContext struct {
+	Action    string `json:"action"`
+	Parameter string `json:"parameter"`
+	TimeoutMS int64  `json:"timeoutMs,omitempty"`
+	MaxChars  int    `json:"maxChars,omitempty"`
+}
+
+// PreContext is the gateway-produced retrieval result attached to one native
+// input. Source identifies the configured action; the text is untrusted.
+type PreContext struct {
+	Source    string `json:"source"`
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated"`
+}
+
 type Project struct {
-	ID                     string           `json:"id"`
-	Maintainers            []string         `json:"maintainers"`
-	Owners                 []string         `json:"owners,omitempty"`
-	Approvals              ProjectApprovals `json:"approvals,omitempty"`
-	Bash                   ProjectBash      `json:"bash,omitempty"`
-	Feedback               FeedbackConfig   `json:"feedback,omitempty"`
-	DisplayWorkspace       string           `json:"displayWorkspace,omitempty"`
-	SeedDir                string           `json:"seedDir,omitempty"`
-	TrustedConfigDir       string           `json:"trustedConfigDir,omitempty"`
-	CWD                    string           `json:"cwd,omitempty"`
-	SettingsFile           string           `json:"settingsFile,omitempty"`
-	AppendSystemPrompt     string           `json:"appendSystemPrompt,omitempty"`
-	AppendSystemPromptFile string           `json:"appendSystemPromptFile,omitempty"`
-	NativeConfig           string           `json:"nativeConfig,omitempty"`
-	PermissionMode         string           `json:"permissionMode"`
-	AllowedTools           []string         `json:"allowedTools"`
-	Actions                []ActionSpec     `json:"actions"`
+	ID                     string             `json:"id"`
+	Maintainers            []string           `json:"maintainers"`
+	Owners                 []string           `json:"owners,omitempty"`
+	Approvals              ProjectApprovals   `json:"approvals,omitempty"`
+	Bash                   ProjectBash        `json:"bash,omitempty"`
+	Feedback               FeedbackConfig     `json:"feedback,omitempty"`
+	DisplayWorkspace       string             `json:"displayWorkspace,omitempty"`
+	SeedDir                string             `json:"seedDir,omitempty"`
+	TrustedConfigDir       string             `json:"trustedConfigDir,omitempty"`
+	CWD                    string             `json:"cwd,omitempty"`
+	SettingsFile           string             `json:"settingsFile,omitempty"`
+	AppendSystemPrompt     string             `json:"appendSystemPrompt,omitempty"`
+	AppendSystemPromptFile string             `json:"appendSystemPromptFile,omitempty"`
+	PreContext             *ProjectPreContext `json:"preContext,omitempty"`
+	NativeConfig           string             `json:"nativeConfig,omitempty"`
+	PermissionMode         string             `json:"permissionMode"`
+	AllowedTools           []string           `json:"allowedTools"`
+	Actions                []ActionSpec       `json:"actions"`
 	// Env holds non-secret literal values for the native process and its
 	// descendants. EnvPassthrough names variables copied from the service
 	// environment; absent or empty values are not injected.

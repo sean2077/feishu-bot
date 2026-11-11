@@ -373,6 +373,8 @@ func exactFields(raw json.RawMessage, typ reflect.Type, at string) error {
 				return err
 			}
 		}
+	case reflect.Ptr:
+		return exactFields(raw, typ.Elem(), at)
 	case reflect.Map:
 		var values map[string]json.RawMessage
 		if json.Unmarshal(raw, &values) != nil {
@@ -610,6 +612,69 @@ func validate(c *core.Config, base string) error {
 						return errors.New("undefined action parameter")
 					}
 				}
+			}
+		}
+		if p.PreContext != nil {
+			pc := p.PreContext
+			if pc.Action == "" || pc.Parameter == "" {
+				return errors.New("preContext requires action and parameter")
+			}
+			var spec *core.ActionSpec
+			for i := range p.Actions {
+				if p.Actions[i].ID == pc.Action {
+					spec = &p.Actions[i]
+					break
+				}
+			}
+			if spec == nil {
+				return errors.New("preContext action is not configured in this project")
+			}
+			if !spec.ReadOnly {
+				return errors.New("preContext action must be readOnly")
+			}
+			param, ok := spec.Parameters[pc.Parameter]
+			if !ok {
+				return errors.New("preContext parameter is not declared by the action")
+			}
+			if param.WorkspaceFile {
+				return errors.New("preContext parameter cannot be a workspace file")
+			}
+			for _, declared := range spec.Parameters {
+				if declared.WorkspaceFile {
+					return errors.New("preContext action cannot declare workspace file parameters")
+				}
+			}
+			if pc.TimeoutMS == 0 {
+				pc.TimeoutMS = 5000
+			}
+			if pc.TimeoutMS < 100 || pc.TimeoutMS > spec.TimeoutMS {
+				return errors.New("preContext timeoutMs must be within the action timeoutMs")
+			}
+			if pc.MaxChars == 0 {
+				pc.MaxChars = 6000
+			}
+			if pc.MaxChars < 1 || pc.MaxChars > 20000 {
+				return errors.New("preContext maxChars must be 1..20000")
+			}
+			for _, arg := range spec.Args {
+				for _, m := range parameterPattern.FindAllStringSubmatch(arg, -1) {
+					if m[1] != pc.Parameter {
+						return errors.New("preContext action may only template its configured parameter")
+					}
+				}
+			}
+			templated := false
+			for i, arg := range spec.Args {
+				if arg != "{{"+pc.Parameter+"}}" {
+					continue
+				}
+				if i == 0 || spec.Args[i-1] != "--" {
+					return errors.New("preContext parameter must follow a literal -- argument")
+				}
+				templated = true
+			}
+			if !templated {
+				return errors.New("preContext action must pass its parameter as one argv after --")
 			}
 		}
 	}

@@ -28,6 +28,13 @@ var fileParameterName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$`)
 // ActionArguments performs value substitution only after policy validation; it
 // never passes user-controlled shell syntax to an interpreter.
 func ActionArguments(spec core.ActionSpec, input core.Args, snapshots map[string]string) ([]string, error) {
+	return actionArguments(spec, input, snapshots, "")
+}
+
+// actionArguments is the same policy check with one explicit exemption for the
+// preContext parameter. The action template must place that parameter after a
+// literal "--"; this exemption does not relax any other parameter.
+func actionArguments(spec core.ActionSpec, input core.Args, snapshots map[string]string, allowLeadingDash string) ([]string, error) {
 	for name := range input {
 		if _, ok := spec.Parameters[name]; !ok {
 			return nil, fmt.Errorf("unknown parameter: %s", name)
@@ -36,7 +43,7 @@ func ActionArguments(spec core.ActionSpec, input core.Args, snapshots map[string
 	values := map[string]string{}
 	for name, p := range spec.Parameters {
 		value, ok := input[name].(string)
-		if !ok || len([]rune(value)) > p.MaxLength || strings.ContainsAny(value, "\x00\r\n") || strings.HasPrefix(value, "-") {
+		if !ok || len([]rune(value)) > p.MaxLength || strings.ContainsAny(value, "\x00\r\n") || (strings.HasPrefix(value, "-") && name != allowLeadingDash) {
 			return nil, fmt.Errorf("invalid parameter: %s", name)
 		}
 		if len(p.Enum) > 0 && !contains(p.Enum, value) {
@@ -218,6 +225,10 @@ func runActionCommand(ctx context.Context, executable string, args []string, cwd
 	}
 }
 func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string, p core.Project, id string, input core.Args, w core.Workspace, requestContext *core.RequestContext) (core.Args, error) {
+	return g.executeActionWithPolicy(ctx, r, session, p, id, input, w, requestContext, "")
+}
+
+func (g *Gateway) executeActionWithPolicy(ctx context.Context, r core.Room, session string, p core.Project, id string, input core.Args, w core.Workspace, requestContext *core.RequestContext, allowLeadingDash string) (core.Args, error) {
 	var spec *core.ActionSpec
 	for _, a := range p.Actions {
 		if a.ID == id {
@@ -229,7 +240,7 @@ func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string
 	if spec == nil {
 		return nil, errors.New("action not allowed in this project")
 	}
-	if _, e := ActionArguments(*spec, input, nil); e != nil {
+	if _, e := actionArguments(*spec, input, nil, allowLeadingDash); e != nil {
 		return nil, e
 	}
 	run := core.NewID()
@@ -265,7 +276,7 @@ func (g *Gateway) executeAction(ctx context.Context, r core.Room, session string
 		snapshots[name] = target
 		digests[name] = hex.EncodeToString(digest.Sum(nil))
 	}
-	args, e := ActionArguments(*spec, input, snapshots)
+	args, e := actionArguments(*spec, input, snapshots, allowLeadingDash)
 	if e != nil {
 		return nil, e
 	}

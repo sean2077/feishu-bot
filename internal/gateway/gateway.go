@@ -913,8 +913,15 @@ func (g *Gateway) dispatch(r core.Room) (err error) {
 	if unconfirmed {
 		return nil
 	}
+	p, _ := g.config.Project(r.ProjectID)
+	var preRun *preContextRun
+	if len(pending) > 0 && preContextEligible(s, p, pending[0]) {
+		preRun = g.startPreContext(s.ctx, r, p, pending[0])
+	}
+	if preRun != nil {
+		defer preRun.stop()
+	}
 	if worker == nil {
-		p, _ := g.config.Project(r.ProjectID)
 		w, err := workspace.PrepareContext(s.ctx, g.config, r, s.session, p)
 		if err == nil {
 			err = g.store.BindLaunchIdentity(s.session, w, r.WorkingDirectory(p) != "")
@@ -1140,6 +1147,22 @@ func (g *Gateway) dispatch(r core.Room) (err error) {
 			})
 		}
 		if err == nil && g.active(s) {
+			preResult := preContextResult{status: preContextSkipped}
+			s.mu.Lock()
+			turnStart := s.turn == nil && len(s.deliveries) == 0 && !s.stopUnconfirmed
+			s.mu.Unlock()
+			if preRun != nil && preRun.delivery == d.UUID && turnStart {
+				preResult = preRun.wait()
+				preRun = nil
+			} else {
+				if preRun != nil {
+					preRun.stop()
+					preRun = nil
+				}
+				preResult = g.preContextForTurnStart(s, r, p, members[0])
+			}
+			g.auditPreContextFailure(r, p, preResult)
+			members[0].PreContext = preResult.value
 			s.mu.Lock()
 			for _, m := range members {
 				s.deliveries[m.UUID] = m
@@ -1170,6 +1193,8 @@ func (g *Gateway) dispatch(r core.Room) (err error) {
 			}
 			if s.turn == nil {
 				s.turn = newTurnTiming(s, d)
+				s.turn.preContext = preResult.status
+				s.turn.preContextMs = preResult.ms
 			}
 			if d.Command != nil {
 				s.compacting = d.UUID
@@ -1193,6 +1218,10 @@ func (g *Gateway) dispatch(r core.Room) (err error) {
 			if err == nil {
 				g.recordWorkerInput(s)
 			}
+		}
+		if preRun != nil {
+			preRun.stop()
+			preRun = nil
 		}
 		if err != nil {
 			if !g.active(s) || g.isClosing() {
