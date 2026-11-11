@@ -16,6 +16,12 @@ import (
 	"time"
 )
 
+// fixtureWait bounds fixture-level event waits. It is a ceiling, not a delay:
+// a normal run returns as soon as the event arrives. Race-enabled CI runners
+// under load can take well over three seconds to start a worker or deliver the
+// first input, so keep one generous budget instead of per-test values.
+const fixtureWait = 20 * time.Second
+
 type sentCard struct {
 	id            string
 	room          core.Room
@@ -289,7 +295,7 @@ func newFixture(t *testing.T, mutate func(*core.Config), loggers ...core.Logger)
 		return worker, nil
 	}, logger)
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), fixtureWait)
 		defer cancel()
 		if e := f.g.Close(ctx); e != nil {
 			t.Errorf("close: %v", e)
@@ -314,7 +320,7 @@ func (f *fixture) worker() *fakeWorker {
 	select {
 	case w := <-f.started:
 		return w
-	case <-time.After(3 * time.Second):
+	case <-time.After(fixtureWait):
 		f.t.Fatal("worker not started")
 		return nil
 	}
@@ -324,7 +330,7 @@ func (f *fixture) title(w *fakeWorker) string {
 	select {
 	case title := <-w.renames:
 		return title
-	case <-time.After(3 * time.Second):
+	case <-time.After(fixtureWait):
 		f.t.Fatal("native title not sent")
 		return ""
 	}
@@ -334,7 +340,7 @@ func (f *fixture) delivery(w *fakeWorker) core.Delivery {
 	select {
 	case d := <-w.sent:
 		return d
-	case <-time.After(3 * time.Second):
+	case <-time.After(fixtureWait):
 		f.t.Fatal("input not delivered")
 		return core.Delivery{}
 	}
@@ -343,7 +349,7 @@ func eventually(t *testing.T, fn func() bool) {
 	t.Helper()
 	// Generous for race-enabled Windows/macOS CI runners; it only delays a
 	// genuine failure and never changes what a passing condition proves.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(fixtureWait)
 	for time.Now().Before(deadline) {
 		if fn() {
 			return

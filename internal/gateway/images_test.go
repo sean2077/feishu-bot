@@ -76,8 +76,9 @@ func TestImageBatchKeepsEveryOriginalAndCompletesTogether(t *testing.T) {
 		}
 		batchID = input.ImageBatch.ID
 	}
-	// Keep the original 3s cold-start check. Only the later filesystem/provider
-	// phase gets a separate watchdog; it performs two durable file publications.
+	// Keep the cold start bounded by the fixture wait. Only the later
+	// filesystem/provider phase gets a separate watchdog; it performs two
+	// durable file publications.
 	w := f.worker()
 	timer := time.NewTimer(10 * time.Second)
 	defer timer.Stop()
@@ -142,8 +143,9 @@ func imageBatchDiagnostics(t *testing.T, f *fixture) {
 }
 func TestImageBatchOversizeRejectsAllBeforeNativeHandoff(t *testing.T) {
 	f := newFixture(t, func(c *core.Config) {
-		// Keep the deadline beyond the fixture's 3s wait: the second image must close the batch.
-		c.Limits.ImageBatchMS = 5000
+		// Keep the batch deadline beyond the fixture wait: the second image must
+		// close the batch rather than a timeout starting the worker first.
+		c.Limits.ImageBatchMS = int64((fixtureWait + 5*time.Second) / time.Millisecond)
 		c.Limits.ImageBatchMaxImages = 2
 		c.Limits.ImageBatchBytes = 15
 	})
