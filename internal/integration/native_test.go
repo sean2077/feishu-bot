@@ -35,13 +35,15 @@ type deliveredFile struct {
 }
 
 type localFeishu struct {
-	mu          sync.Mutex
-	cards       map[string]observedCard
-	done        map[string]bool
-	fileCalls   int
-	fileReady   chan deliveredFile
-	fileRelease chan struct{}
-	releaseOnce sync.Once
+	mu             sync.Mutex
+	cards          map[string]observedCard
+	done           map[string]bool
+	fileCalls      int
+	fileReady      chan deliveredFile
+	fileRelease    chan struct{}
+	releaseOnce    sync.Once
+	historyQueries []core.HistoryQuery
+	historyPage    core.HistoryPage
 }
 
 func newLocalFeishu() *localFeishu {
@@ -87,8 +89,11 @@ func (*localFeishu) Download(context.Context, string, core.Resource, string, int
 func (*localFeishu) Fetch(context.Context, string, core.Room) (*core.Message, error) {
 	return nil, nil
 }
-func (*localFeishu) History(context.Context, core.Room, core.HistoryQuery) (core.HistoryPage, error) {
-	return core.HistoryPage{Messages: []core.Message{}}, nil
+func (f *localFeishu) History(_ context.Context, _ core.Room, q core.HistoryQuery) (core.HistoryPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.historyQueries = append(f.historyQueries, q)
+	return f.historyPage, nil
 }
 func (f *localFeishu) Receipt(ctx context.Context, id, state, _ string) error {
 	if ctx.Err() != nil {
@@ -125,6 +130,12 @@ func (f *localFeishu) isDone(id string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.done[id]
+}
+
+func (f *localFeishu) history() []core.HistoryQuery {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]core.HistoryQuery(nil), f.historyQueries...)
 }
 func (f *localFeishu) withButton(label string) (observedCard, core.Args, bool) {
 	f.mu.Lock()
@@ -534,6 +545,117 @@ func TestRealNativeGatewayApprovalDeliveryAndRestart(t *testing.T) {
 		t.Fatalf("unexpected model retries or replayed tools: %d calls", modelCalls.Load())
 	}
 	t.Log("real CLI + Gateway + SQLite: maintainer-approved Write, custom/multi-select question form, full-file-before-Done, one reply card, idle reclamation, /stop and durable same-ID restart passed against local fixtures")
+}
+
+// TestRealNativeReadChatHistoryScopeArguments covers the native MCP argument
+// boundary: scope/expandThreads must survive validateHistory, reach the
+// gateway, select chat history and produce the existing audit event.
+func TestRealNativeReadChatHistoryScopeArguments(t *testing.T) {
+	executable := os.Getenv("CLAUDE_NATIVE_PATH")
+	if executable == "" {
+		t.Skip("set CLAUDE_NATIVE_PATH for the real gateway/native integration contract")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	root := t.TempDir()
+	work := filepath.Join(root, "project")
+	if err := os.Mkdir(work, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FEISHU_INTEGRATION_MODEL_TOKEN", "integration-fixture-token")
+	var modelCalls atomic.Int32
+	var toolResult atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || (r.URL.Path != "/v1/messages" && r.URL.Path != "/v1/messages/count_tokens") || r.Header.Get("Authorization") != "Bearer integration-fixture-token" {
+			t.Errorf("native model request escaped local contract: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		data, err := io.ReadAll(io.LimitReader(r.Body, (4<<20)+1))
+		var body core.Args
+		if err != nil || len(data) > 4<<20 || json.Unmarshal(data, &body) != nil || body["model"] != "fixture-model" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path == "/v1/messages/count_tokens" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"input_tokens":6000}`)
+			return
+		}
+		n := modelCalls.Add(1)
+		var content []core.Args
+		switch n {
+		case 1:
+			content = []core.Args{{"type": "tool_use", "id": "history_scope", "name": "mcp__gateway__read_chat_history", "input": core.Args{"scope": "chat", "expandThreads": true}}}
+		default:
+			if strings.Contains(string(data), `\"expanded\":1`) && strings.Contains(string(data), "thread-1") {
+				toolResult.Store(true)
+			}
+			content = []core.Args{{"type": "text", "text": "HISTORY_SCOPE_OK"}}
+		}
+		writeModel(w, body, fmt.Sprintf("history-model-%d", n), content)
+	}))
+	t.Cleanup(server.Close)
+
+	c := config.Defaults()
+	c.TenantID, c.AppID, c.AppSecretEnv = "fixture-tenant", "fixture-app", "FEISHU_INTEGRATION_UNUSED_SECRET"
+	c.DataDir = filepath.Join(root, "state")
+	c.Runtime.ClaudeExecutable = executable
+	c.Runtime.MaxWorkers, c.Runtime.IdleMS = 1, 60000
+	c.Model.BaseURL, c.Model.AllowHTTP = server.URL, true
+	c.Model.TokenEnv = "FEISHU_INTEGRATION_MODEL_TOKEN"
+	c.Model.Model, c.Model.SmallModel = "fixture-model", "fixture-model"
+	c.Projects = []core.Project{{ID: "fixture", CWD: work, NativeConfig: "isolated", PermissionMode: "default", Maintainers: []string{"owner"}}}
+	c.Groups = []core.Group{{ChatID: "fixture-chat", ProjectID: "fixture", Members: []string{"member"}, SessionScope: core.SessionScopeThread, TopicHistory: "chat"}}
+	c.Limits.UpdateMS, c.Limits.ApprovalMS = 50, 45000
+	tr := newLocalFeishu()
+	tr.historyPage = core.HistoryPage{Messages: []core.Message{{
+		ID: "root-1", ChatID: "fixture-chat", ChatType: "group", SenderID: "member",
+		Text: "history root", ThreadID: "thread-1", RootID: "root-1", Time: time.Now().UnixMilli(),
+	}}}
+	st, err := store.Open(filepath.Join(c.DataDir, "gateway.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := gateway.New(c, st, tr, native.NewFactory(c, func(string, core.Args) {}), func(string, core.Args) {})
+	if err = g.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer closeCancel()
+		if err := g.Close(closeCtx); err != nil {
+			t.Errorf("gateway/native cleanup was not confirmed: %v", err)
+		}
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	first := core.Message{ID: "history-input", ChatID: "fixture-chat", ChatType: "group", SenderID: "member", Text: "Summarize this group.", Mentioned: true, Time: time.Now().UnixMilli()}
+	if err := g.Message(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	await(t, ctx, "history scope reply delivery", func() bool { return tr.isDone(first.ID) })
+	if !toolResult.Load() {
+		t.Fatal("native tool result did not contain the expanded history statistics")
+	}
+	queries := tr.history()
+	var discovery, thread bool
+	for _, q := range queries {
+		if q.Scope == "chat" && q.Chat == "fixture-chat" && q.ThreadID == "" && q.Limit == 50 {
+			discovery = true
+		}
+		if q.Scope == "chat" && q.Chat == "fixture-chat" && q.ThreadID == "thread-1" {
+			thread = true
+		}
+	}
+	if !discovery || !thread {
+		t.Fatalf("history queries did not carry scope=chat/expandThreads: %+v", queries)
+	}
+	var audit int
+	if err = st.DB.QueryRow("SELECT count(*) FROM audit WHERE event='history_chat_scope_read'").Scan(&audit); err != nil || audit != 1 {
+		t.Fatalf("history_chat_scope_read audit = %d, %v", audit, err)
+	}
 }
 
 func writeModel(w http.ResponseWriter, request core.Args, id string, content []core.Args) {
