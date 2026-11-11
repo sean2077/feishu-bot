@@ -352,6 +352,8 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 }
 ```
 
+在 `pattern` 或 `argv` 中写正则转义时，确保 JSON 实际得到的是转义文本（例如 `"\\x00"`），而不是被 shell 或生成器提前解释成控制字符。`doctor` 会单独报告字符串中的 NUL 控制字符，并提示改写成 JSON 转义序列。
+
 `preContext.action` 必须是本项目中 `readOnly: true` 的固定操作，`parameter` 必须是它声明的参数。操作参数模板只能引用这个参数，并且必须把 `{{parameter}}` 作为一个独立 argv 紧跟在字面量 `--` 之后；这样以 `-` 开头的人类提问不会被当成选项。操作不能声明 `workspaceFile` 参数。`timeoutMs` 默认 **5000**，范围 100 到该 action 的 `timeoutMs`；`maxChars` 默认 **6000**，范围 1–20000。不满足任一条时配置加载失败。
 
 网关通过固定操作路径执行：绝对 executable、固定 argv、参数的 pattern 和 maxLength、`env`／`vars` 白名单、输出脱敏、`action_runs` 与 `action_started`／`action_finished` 审计、`FEISHU_REQUEST_*` 请求上下文；不经过 shell。参数值是触发消息的用户可见文本（机器人 mention 已由输入归一化移除）；网关先将空白和控制字符连续段折叠为一个空格并去掉首尾空白，再按参数 `maxLength` 截断。参数校验不通过时 fail-open，原因记为 `parameter`。
