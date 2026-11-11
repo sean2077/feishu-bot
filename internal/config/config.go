@@ -412,7 +412,13 @@ func nonemptyFields(m map[string]json.RawMessage, keys ...string) error {
 	for _, key := range keys {
 		if raw, ok := m[key]; ok {
 			var value string
-			if json.Unmarshal(raw, &value) != nil || !nonempty(value) {
+			if json.Unmarshal(raw, &value) != nil {
+				return fmt.Errorf("%s must be a nonempty string", key)
+			}
+			if strings.ContainsRune(value, 0) {
+				return fmt.Errorf("%s contains a NUL control character; write it as an escaped sequence in the JSON string instead of a raw character", key)
+			}
+			if !nonempty(value) {
 				return fmt.Errorf("%s must be a nonempty string", key)
 			}
 		}
