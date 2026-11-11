@@ -15,6 +15,13 @@ func (g *Gateway) historyRequest(ctx context.Context, r core.Room, session strin
 	if !ok || ctx.Err() != nil {
 		return nil, historyAccess{}, errors.New("history scope is no longer available")
 	}
+	if _, has := input["chat"]; has {
+		for key := range input {
+			if !contains([]string{"chat", "limit", "startTime", "endTime", "threadId", "scope", "expandThreads"}, key) {
+				return nil, historyAccess{}, errors.New("unsupported history parameter")
+			}
+		}
+	}
 	if raw, has := input["chat"]; has {
 		value, ok := raw.(string)
 		if !ok || len(value) > 200 {
