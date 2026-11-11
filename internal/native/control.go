@@ -554,6 +554,15 @@ func validateHistory(input args) error {
 			if !ok || len([]rune(s)) > max {
 				return fmt.Errorf("invalid history %s", key)
 			}
+		case "scope":
+			s, ok := value.(string)
+			if !ok || s != "topic" && s != "chat" {
+				return fmt.Errorf("invalid history scope")
+			}
+		case "expandThreads":
+			if _, ok := value.(bool); !ok {
+				return fmt.Errorf("invalid history expandThreads")
+			}
 		default:
 			return fmt.Errorf("unknown history argument: %s", key)
 		}
