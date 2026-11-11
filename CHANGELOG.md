@@ -31,6 +31,7 @@
 - 稳定 Windows 偶发测试（仅测试工具，不改变生产行为）：进程树 RSS 采样在短暂不完整快照时重试；benchmark 趋势采样改为等待捕获和维护事件后再读取进度文件；快捷回调测试显式同步启动 worker；升级回滚测试只在已确认回滚后重试 Windows 文件共享冲突；artifact TLS fixture 对 PowerShell 超时重试，并在证书导入超时后按指纹清理可能已半导入的证书再重试，清理失败时保留恢复记录。
 - 新增 `projects[].modelProfile`：值须引用已声明的 `modelProfiles` 或 `default`，否则配置加载失败。解析顺序为会话显式选择（包括显式 `default`）优先，其次项目默认，最后部署默认；项目默认只影响从未显式选择的会话，`/model default` 固定使用部署默认。改变项目默认后，会话在下次原生进程启动或按同一原生 ID 续接时使用新的 `--model`，保留已有历史；凭据、`baseUrl` 和权限仍来自部署配置。`/status` 显示生效配置及来源（`session`／`project`／`default`），`/sessions --json` 按会话显示 `profile` 和 `profileSource`，`/model --json` 增加 `currentSource` 和 `projectDefault`；doctor 与 config explain 显示项目默认配置名，不显示凭据。
 - 新增默认关闭的项目预检索 `projects[].preContext`：引用本项目中 `readOnly: true` 的固定操作，仅在新一轮人类输入前执行；参数为触发文本折叠空白/控制字符并按 `maxLength` 截断后，作为字面量 `--` 后的单个 argv 传入，不经过 shell；`timeoutMs` 默认 5000 且不超过 action 上限，`maxChars` 默认 6000。检索与工作区准备、原生进程启动并行，结果以带 `source`/`text`/`truncated` 的独立字段注入本轮输入，作为不可信背景材料，不规划步骤、替代工具或门控输入。超时、非零退出、空输出或参数失败时照常发送并写 `pre_context_failed`（project、action、reason、durationMs），`turn_result` 增加 `preContext`（used/failed/skipped）和 `preContextMs`。该 action 仍会通过 `project_action` 暴露给模型；AGENTS 契约同步澄清只读预检索不构成第二套规划器。
+- 修复 Claude Code 2.1.322 auto 模式文案变化导致 `auto_mode_unavailable` 漏报：新增对 `<model> is temporarily unavailable ... so auto mode cannot determine the safety of ...` 的识别，同时保留 2.1.321 的 `Auto mode is unavailable:` 文本。2.1.322 的 Stage 2 原因尾部增加 `— retrying often succeeds`，既有 `Stage 2 classifier error` 前缀和 `stage2Error` 识别不变；测试夹具补充两个版本的原文。
 
 ## 0.5.0 — 2026-11-07
 
