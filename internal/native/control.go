@@ -68,6 +68,24 @@ func denyHook(reason string) args {
 	return args{"hookSpecificOutput": args{"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}
 }
 
+// taintedReadOnly lists tools that may run without owner approval after the
+// turn read another group's content. Gateway MCP tools are handled by the
+// gateway request path instead (send_file and non-read-only project_action
+// approve there), so the hook passes them through rather than asking twice.
+// Agent/Task is allowed because subagent tool calls traverse this same hook
+// with the same live taint state. Everything else, including unknown tools,
+// requires approval.
+func taintedReadOnly(name string) bool {
+	switch name {
+	case "Read", "Grep", "Glob", "TodoWrite", "ToolSearch",
+		"TaskOutput", "TaskList", "TaskGet", "Agent", "Task", "AskUserQuestion",
+		"mcp__gateway__read_chat_history", "mcp__gateway__fetch_attachment",
+		"mcp__gateway__send_file", "mcp__gateway__project_action":
+		return true
+	}
+	return false
+}
+
 type nativeFileScope struct {
 	work, home, inbound, rooms string
 	// File identities of the same directories, and of every ancestor of the
@@ -382,6 +400,12 @@ func (w *worker) hook(ctx context.Context, id string, input args) (args, error) 
 			inHome := core.Inside(scope.home, physical) || insideByIdentity(chain, scope.homeID)
 			if otherAttachment || w.workspace.NativeConfig != "inherit" && !inWork && !inHome && !attachment || attachment && name != "Read" && name != "Grep" && name != "Glob" {
 				return denyHook("Outside conversation file scope or attempting to edit an incoming attachment"), nil
+			}
+		}
+		if w.tainted() && !taintedReadOnly(name) {
+			answer := w.askEvent(ctx, "permission", name, toolInput, true)
+			if !truth(answer["approved"]) {
+				return denyHook("This turn read another group's content; the write requires approval from the DM owner."), nil
 			}
 		}
 		return args{}, nil

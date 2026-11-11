@@ -206,6 +206,9 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		}
 		if ev.Background != nil {
 			s.background = *ev.Background
+			if s.background == 0 && s.taintPendingClear {
+				s.clearTaintLocked()
+			}
 		}
 		if ev.Pinned != nil {
 			s.pinned = *ev.Pinned

@@ -45,6 +45,7 @@ type worker struct {
 	secrets                []string
 	contextMu              sync.RWMutex
 	contextFn              func() *core.RequestContext
+	taintFn                func() bool
 	ctx                    context.Context
 	cancel                 context.CancelFunc
 	cmd                    *exec.Cmd
@@ -306,7 +307,7 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 			}
 		}()
 		go func() { <-workerCtx.Done(); w.beginStop() }()
-		if err = w.write(args{"type": "control_request", "request_id": w.initID, "request": initialization(project, c.Limits.ApprovalMS, w.projectPrompt)}); err != nil {
+		if err = w.write(args{"type": "control_request", "request_id": w.initID, "request": initialization(project, c.Limits.ApprovalMS, w.projectPrompt, w.historyChatNames())}); err != nil {
 			w.fail("Claude initialization write failed", err)
 			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer stopCancel()
@@ -333,6 +334,36 @@ func (w *worker) SetRequestContext(fn func() *core.RequestContext) {
 	w.contextMu.Lock()
 	w.contextFn = fn
 	w.contextMu.Unlock()
+}
+
+// SetTaintCheck installs the gateway's live turn-taint query. The callback is
+// read for every PreToolUse, including tools started by background work after
+// the turn that read another conversation has ended.
+func (w *worker) SetTaintCheck(fn func() bool) {
+	w.contextMu.Lock()
+	w.taintFn = fn
+	w.contextMu.Unlock()
+}
+
+func (w *worker) tainted() bool {
+	w.contextMu.RLock()
+	fn := w.taintFn
+	w.contextMu.RUnlock()
+	return fn != nil && fn()
+}
+
+// historyChatNames lists only the configured DM names. Chat IDs stay in tool
+// results and are never added to the system prompt.
+func (w *worker) historyChatNames() []string {
+	if w.room.DMUser == "" {
+		return nil
+	}
+	chats := w.config.HistoryChats(w.room.DMUser)
+	names := make([]string, 0, len(chats))
+	for _, h := range chats {
+		names = append(names, h.Name)
+	}
+	return names
 }
 
 func (w *worker) requestContext() *core.RequestContext {
@@ -519,6 +550,13 @@ func (w *worker) Respond(ctx context.Context, id string, value core.Args) error 
 	return nil
 }
 func (w *worker) ask(ctx context.Context, kind, name string, input args) args {
+	return w.askEvent(ctx, kind, name, input, false)
+}
+
+// askEvent also marks requests that exist only because the current turn read
+// another conversation. The gateway uses the flag to show an explicit owner
+// approval card instead of the ordinary tool policy.
+func (w *worker) askEvent(ctx context.Context, kind, name string, input args, tainted bool) args {
 	if ctx.Err() != nil || w.ctx.Err() != nil {
 		return args{"approved": false, "error": "cancelled"}
 	}
@@ -532,7 +570,7 @@ func (w *worker) ask(ctx context.Context, kind, name string, input args) args {
 	w.requests[id] = ch
 	w.mu.Unlock()
 	defer func() { w.mu.Lock(); delete(w.requests, id); w.mu.Unlock() }()
-	w.emit(core.WorkerEvent{Type: "request", ID: id, Kind: kind, Name: name, Input: input})
+	w.emit(core.WorkerEvent{Type: "request", ID: id, Kind: kind, Name: name, Input: input, Tainted: tainted})
 	select {
 	case answer := <-ch:
 		return answer

@@ -252,9 +252,15 @@ type Group struct {
 	TopicHistory     string            `json:"topicHistory,omitempty"`
 	ThreadWorkspaces map[string]string `json:"threadWorkspaces,omitempty"`
 }
+type HistoryChat struct {
+	ChatID string `json:"chatId"`
+	Name   string `json:"name"`
+}
+
 type DM struct {
-	UserID    string `json:"userId"`
-	ProjectID string `json:"projectId"`
+	UserID       string        `json:"userId"`
+	ProjectID    string        `json:"projectId"`
+	HistoryChats []HistoryChat `json:"historyChats,omitempty"`
 }
 type Limits struct {
 	BackgroundMessages  int   `json:"backgroundMessages"`
@@ -360,6 +366,7 @@ type WorkerEvent struct {
 	Kind             string   `json:"kind,omitempty"`
 	Name             string   `json:"name,omitempty"`
 	Input            Args     `json:"input,omitempty"`
+	Tainted          bool     `json:"tainted,omitempty"`
 	Message          string   `json:"message,omitempty"`
 	Code             *int     `json:"code,omitempty"`
 	CleanupConfirmed *bool    `json:"cleanupConfirmed,omitempty"`
@@ -375,6 +382,14 @@ type Worker interface {
 // gateway's live request context to its loopback context endpoint.
 type RequestContextProvider interface {
 	SetRequestContext(func() *RequestContext)
+}
+
+// TaintProvider is implemented by a native worker that checks whether the
+// current conversation turn has read another conversation's content. The
+// callback is read from the PreToolUse hook, including calls made by background
+// tasks and subagents that outlive the turn.
+type TaintProvider interface {
+	SetTaintCheck(func() bool)
 }
 
 // WorkerEvents separates process termination from completion of its final

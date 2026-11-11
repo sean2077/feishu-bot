@@ -16,7 +16,14 @@ func (g *Gateway) request(s *slot, ev core.WorkerEvent) (core.Args, error) {
 	project, _ := g.config.Project(current.ProjectID)
 	switch ev.Kind {
 	case "history":
-		return g.history(s.ctx, current, s.session.ID, ev.Input)
+		result, access, e := g.historyRequest(s.ctx, current, s.session.ID, ev.Input, g.requestContext(s))
+		if e != nil {
+			return nil, e
+		}
+		if access.CrossChat {
+			s.markTainted(access)
+		}
+		return result, nil
 	case "action":
 		return g.executeAction(s.ctx, current, s.session.ID, project, ev.Name, ev.Input, s.workspace, g.requestContext(s))
 	case "attachment":

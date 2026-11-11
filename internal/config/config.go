@@ -725,6 +725,31 @@ func validate(c *core.Config, base string) error {
 			return errors.New("invalid DM binding")
 		}
 		seen[dm.UserID] = true
+		if len(dm.HistoryChats) > 32 {
+			return errors.New("too many DM historyChats entries")
+		}
+		names := map[string]bool{}
+		for _, h := range dm.HistoryChats {
+			if h.ChatID == core.AnyGroupChatID || !idPattern.MatchString(h.ChatID) {
+				return errors.New("invalid DM historyChats target")
+			}
+			if _, ok := c.Group(h.ChatID); !ok {
+				return errors.New("DM historyChats target must be an explicit group binding")
+			}
+			if h.Name == "" || len([]rune(h.Name)) > 80 || strings.TrimSpace(h.Name) != h.Name {
+				return errors.New("invalid DM historyChats name")
+			}
+			for _, r := range h.Name {
+				if r < 0x20 || r == 0x7f {
+					return errors.New("invalid DM historyChats name")
+				}
+			}
+			if names[h.ChatID] || names[h.Name] {
+				return errors.New("duplicate DM historyChats target or name")
+			}
+			names[h.ChatID] = true
+			names[h.Name] = true
+		}
 	}
 	checks := []struct {
 		name        string
