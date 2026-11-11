@@ -30,25 +30,27 @@ type sentCard struct {
 }
 type receiptCall struct{ id, desired, applied string }
 type fakeTransport struct {
-	mu           sync.Mutex
-	next         int
-	cards        []sentCard
-	updates      []sentCard
-	notices      []string
-	receipts     []receiptCall
-	files        []string
-	downloads    int
-	fetches      int
-	messages     map[string]core.Message
-	historyPage  core.HistoryPage
-	historyHook  func(context.Context, core.Room, core.HistoryQuery) (core.HistoryPage, error)
-	histories    []core.HistoryQuery
-	cardHook     func(context.Context, core.Room, core.Args) (string, error)
-	updateHook   func(context.Context, string, core.Args) error
-	downloadHook func(context.Context, string, core.Resource, string, int64) error
-	fetchHook    func(context.Context, string, core.Room) (*core.Message, error)
-	fileHook     func(context.Context, string) (string, error)
-	receiptHook  func(context.Context, string, string, string) error
+	mu                sync.Mutex
+	next              int
+	cards             []sentCard
+	updates           []sentCard
+	notices           []string
+	receipts          []receiptCall
+	files             []string
+	downloads         int
+	fetches           int
+	messages          map[string]core.Message
+	historyPage       core.HistoryPage
+	historyHook       func(context.Context, core.Room, core.HistoryQuery) (core.HistoryPage, error)
+	histories         []core.HistoryQuery
+	cardHook          func(context.Context, core.Room, core.Args) (string, error)
+	updateHook        func(context.Context, string, core.Args) error
+	elementUpdates    []core.CardElementUpdate
+	elementUpdateHook func(context.Context, string, []core.CardElementUpdate) error
+	downloadHook      func(context.Context, string, core.Resource, string, int64) error
+	fetchHook         func(context.Context, string, core.Room) (*core.Message, error)
+	fileHook          func(context.Context, string) (string, error)
+	receiptHook       func(context.Context, string, string, string) error
 }
 
 func (t *fakeTransport) Send(_ context.Context, _ core.Room, text, _, _ string) (string, error) {
@@ -77,6 +79,16 @@ func (t *fakeTransport) Update(ctx context.Context, id string, card core.Args) e
 	t.mu.Unlock()
 	if hook != nil {
 		return hook(ctx, id, card)
+	}
+	return nil
+}
+func (t *fakeTransport) UpdateElements(ctx context.Context, id string, elements []core.CardElementUpdate) error {
+	t.mu.Lock()
+	t.elementUpdates = append(t.elementUpdates, elements...)
+	hook := t.elementUpdateHook
+	t.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, id, elements)
 	}
 	return nil
 }

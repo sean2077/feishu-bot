@@ -178,6 +178,9 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 ```
 
 目标 `chatId` 必须是 `groups[]` 中显式绑定的群，不能是 `*` 兜底或私聊；同一私聊内 `name` 与 `chatId` 合并后必须唯一。配置后，该私聊的 `read_chat_history` 可传 `chat`（配置名或 chatId），其余参数与 `scope: "chat"` 相同；目标群是话题模式时复用群时间线和 `expandThreads`。每次调用（包括游标续页）都要求存在活动人类请求，发起人必须是该 DM 用户，并且在目标群 `maintainers` 或显式 `members` 中；`allowAllMembers` 不构成跨群授权。跨群结果只含文本，不返回附件，`fetch_attachment` 对目标群消息不可用；`threadId` 仍需先通过时间线或展开观察到。读取成功后本轮标记为污染：写工具、`send_file`、非只读 `project_action` 和未知工具需要 DM 用户确认，只读工具放行；非只读 action 先由 DM 用户确认污染，再按原有 approvers／`forbidSelfApproval` 审批，污染确认不能替换原审批。新的用户输入且后台任务结束后清除标记，`/stop`、超时和 worker 结束一律拒绝挂起的污染审批。每次跨群读取写 `history_cross_chat_read`，每次污染审批写 `tainted_turn_prompt`，都不记录正文。详细边界和残余风险见 [SECURITY](../SECURITY.md)。
+
+污染下非只读 `project_action` 需要污染确认和原审批两张卡，最长约 `2 × approvalMs`。如果管理员把 `MCP_TOOL_TIMEOUT` 或该 MCP server 的 `timeout` 设得比这更短，模型会收到工具超时报错（`mcp_call_unanswered`）；但审批完成后操作仍可能在后台执行，调用方必须按结果未知处理，不能重放。
+
 - `limits.backgroundMessages` 默认 **0**：不缓存、不预注入非 @ 群消息。需要前文时由 Agent 调用当前聊天限定的历史工具，参见[飞书历史接口](https://open.feishu.cn/document/server-docs/im-v1/message/list)。
 
 本地排查授权可用 `config explain --chat oc_example_group --user ou_example_member --mentioned --json`：它复用真实房间、作者和触发规则，解释显式／兜底／私聊绑定、是否允许触发、会话管理与工具审批权限。私聊加 `--chat-type p2p`，模拟机器人消息加 `--bot`。该命令不联网、不打开状态库、不创建工作区、不读取密钥；结论只说明配置策略，不代表真实成员或飞书权限已经验证。
@@ -419,7 +422,7 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 
 `projects[].feedback.enabled` 按项目开启回复卡反馈，默认 `false`；关闭时回复卡与之前完全一致。
 
-开启后，只在最终成功交付并标记 Done 的回复卡底部出现「有用」「无用」按钮；未完整送达、已放弃、已取消、文件待送达和中间流式卡片不加。一轮回复拆成多张卡时只在最后一张添加。按钮复用快捷操作的 24 小时卡片绑定与会话检查；会话切换、卡片过期或非授权作者点击会按快捷操作提示失效。任何获准作者（私聊为私聊用户）每人每张回复保留一票，最后一次为准，可以改票；点击只返回「已记录：有用／无用」提示，不重写卡片。频率限制与普通消息共用。
+开启后，只在最终成功交付并标记 Done 的回复卡底部出现「有用」「无用」按钮；未完整送达、已放弃、已取消、文件待送达和中间流式卡片不加。一轮回复拆成多张卡时只在最后一张添加。按钮复用快捷操作的 24 小时卡片绑定与会话检查；会话切换、卡片过期或非授权作者点击会按快捷操作提示失效。任何获准作者（私聊为私聊用户）每人每张回复只能投一次，不能改票；重复点击只提示「你已反馈过：有用／无用（每人只能反馈一次）」，不修改已有记录。按钮文字显示实时计数“有用 · N”／“无用 · M”（N 或 M 为 0 时只显示“有用”／“无用”）；点击成功后只按元素更新两个按钮，不重写整张卡片，多人并发时按卡片串行刷新并在发送前重新读取计数。刷新失败不影响已记录的反馈，写 `feedback_count_refresh_failed` 审计且不重试；旧消息卡没有 CardKit 实体时写 `feedback_count_refresh_skipped` 并保留原按钮。频率限制与普通消息共用。
 
 点击时在 `feedback` 表保存快照：问题取自 outbox origins 对应的 inbox 消息，找不到或已被清理时留空；回复正文取自 outbox。两者分别截断为 4000／2000 字符，并使用现有 secrets 脱敏；同时记录 room、project、gateway session、原生 session（有则记录）、outbox ID、卡片消息 ID、open_id、value 和时间。`feedback` 保留 90 天，维护者应定期导出。
 
