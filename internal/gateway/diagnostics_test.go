@@ -46,7 +46,7 @@ func TestTurnResultTimingDiagnostics(t *testing.T) {
 	if detail["turn"] != d.UUID {
 		t.Fatalf("turn = %v, want %s", detail["turn"], d.UUID)
 	}
-	for _, key := range []string{"queueMs", "startupMs", "sendMs", "firstMs", "toolsMs"} {
+	for _, key := range []string{"queueMs", "startupMs", "sendMs", "firstMs", "toolsMs", "preContext", "preContextMs"} {
 		if _, ok := detail[key]; !ok {
 			t.Fatalf("turn_result missing %s: %#v", key, detail)
 		}

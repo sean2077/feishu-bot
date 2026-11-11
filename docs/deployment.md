@@ -110,6 +110,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `projects[].env`、`projects[].envPassthrough` | 空 | 项目级原生进程环境变量；`env` 为非敏感字面值，`envPassthrough` 从服务环境复制凭据，见[项目环境变量](#项目环境变量) |
 | `projects[].settingsFile` | 空 | 管理员维护的原生 settings 快照；只允许 `env`、`permissions.allow/ask/deny` 和 `autoMode`，见[项目设置文件](#项目设置文件) |
 | `projects[].appendSystemPrompt`、`appendSystemPromptFile` | 空 | 二选一的项目系统提示词；只作为模型指引，不改变授权/权限，见[项目系统提示词](#项目系统提示词) |
+| `projects[].preContext` | 空 | 新一轮人类输入前执行一个只读固定操作并注入带出处的背景材料；默认关闭，见[预检索上下文](#预检索上下文) |
 | `projects[].owners` | 空 | maintainers 子集；仅用于 `forbidSelfApproval` 时的 owner 例外，不增加其他权限 |
 | `projects[].approvals.forbidSelfApproval` | `false` | 开启后发起人不能批准自己的请求，owner 例外；见[审批资格与自批](#审批资格与自批) |
 | `actions[].approvers` | 空 | 该操作的指定审批人；配置后替代 maintainers，不隐式加入 maintainers 或 owners |
@@ -321,6 +322,42 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 ```
 
 写全 runner 前缀（`Bash(uv run --no-sync example-tool sub:*)`）可让该子命令直接放行；不要用 `Bash(uv:*)` 等过宽前缀。需要在执行前确认的命令用 `ask` 和中间通配（`Bash(uv run --no-sync example-tool doc *--input*)`），不要用 allow 加提示词。deny 用于硬边界（如 `Bash(curl:*)`、`Read(./.secrets/**)`）；原生 deny 优先于 allow，但同账户代码仍可能通过其他工具或路径访问数据，不是安全沙箱。
+
+## 预检索上下文
+
+`projects[].preContext` 让网关在把新一轮人类输入交给原生进程前，执行一个管理员配置的只读固定操作，并把输出作为带出处的背景材料一并注入，让模型的第一跳不必先调用工具。默认关闭。它复用既有固定操作执行路径，不是第二套调度器或规划器，也不替代原生工具。
+
+```json
+{
+  "actions": [{
+    "id": "search",
+    "description": "read-only fixture search",
+    "executable": "/opt/example/bin/search",
+    "args": ["search", "--limit", "5", "--format", "context", "--", "{{question}}"],
+    "readOnly": true,
+    "timeoutMs": 10000,
+    "parameters": {
+      "question": {
+        "description": "one user question",
+        "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+        "maxLength": 500
+      }
+    },
+    "vars": { "EXAMPLE_PROFILE": "demo" }
+  }],
+  "preContext": { "action": "search", "parameter": "question" }
+}
+```
+
+`preContext.action` 必须是本项目中 `readOnly: true` 的固定操作，`parameter` 必须是它声明的参数。操作参数模板只能引用这个参数，并且必须把 `{{parameter}}` 作为一个独立 argv 紧跟在字面量 `--` 之后；这样以 `-` 开头的人类提问不会被当成选项。操作不能声明 `workspaceFile` 参数。`timeoutMs` 默认 **5000**，范围 100 到该 action 的 `timeoutMs`；`maxChars` 默认 **6000**，范围 1–20000。不满足任一条时配置加载失败。
+
+网关通过固定操作路径执行：绝对 executable、固定 argv、参数的 pattern 和 maxLength、`env`／`vars` 白名单、输出脱敏、`action_runs` 与 `action_started`／`action_finished` 审计、`FEISHU_REQUEST_*` 请求上下文；不经过 shell。参数值是触发消息的用户可见文本（机器人 mention 已由输入归一化移除）；网关先将空白和控制字符连续段折叠为一个空格并去掉首尾空白，再按参数 `maxLength` 截断。参数校验不通过时 fail-open，原因记为 `parameter`。
+
+只对新一轮人类输入执行：`/compact`、管理命令、轮次进行中的补充或普通输入、以及没有用户文本的纯图片批次都不执行；图片批次使用第一条消息的文本，渲染出的图片占位符不算用户文本。检索与工作区准备、原生进程启动并行；两者都完成后再发送输入，发送最多等待 `timeoutMs`。超时、非零退出、空输出或执行错误时照常发送不带 `preContext` 的输入，并写 `pre_context_failed` 审计（project、action、固定原因分类、durationMs），不记录提问或输出正文。
+
+注入使用输入 JSON 的独立字段 `preContext: {"source": "<action id>", "text": "...", "truncated": bool}`。它是网关执行的只读检索结果，属于不可信的背景材料，不是用户输入、授权或指令；模型可以直接引用，不够时仍应调用原生工具。输出超出 `maxChars` 时从尾部截断，保留开头，按 UTF-8 字符边界切分并标记 `truncated: true`。`turn_result` 增加 `preContext`（`used`／`failed`／`skipped`）和 `preContextMs`，用于比较预检索与原生首跳的耗时。
+
+这个 action 仍会通过 `project_action` 暴露给模型（`readOnly` 自动执行），这是允许的行为；管理员应按 executor 的实际权限审核它，不能把 `readOnly` 当作自动安全证明。executor 会收到用户提问原文以及配置的凭据和请求上下文，部署方需按数据范围保护。
 
 ## 审批资格与自批
 

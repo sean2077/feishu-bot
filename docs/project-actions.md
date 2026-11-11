@@ -4,6 +4,8 @@
 
 未配置 `actions` 时不注册空操作目录；原生中继仍会启动，用于只读的请求上下文查询，但不接受任何 action 调用。所有示例默认未启用，不是本项目的安装依赖。
 
+`projects[].preContext` 可以复用其中一个 `readOnly: true` 的操作，在新一轮人类输入前执行检索并注入带出处的背景材料。它沿用相同的可信 executable、固定 argv、参数 pattern／maxLength、env／vars 和审计；参数必须作为独立 argv 放在字面量 `--` 之后。该操作仍会通过 `project_action` 暴露给模型，配置和边界见[预检索上下文](deployment.md#预检索上下文)。
+
 ## 示例与配置
 
 [project-actions.json](../examples/project-actions.json) 是可合入 `projects[].actions` 的配置数组。替换执行器绝对路径、虚构资源 ID 和环境变量引用后再使用。

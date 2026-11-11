@@ -1,6 +1,6 @@
 # feishu-bot
 
-- Feishu + Claude Code. Preserve native streaming input, compaction and background work; do not add a second planner or business scheduler.
+- Feishu + Claude Code. Preserve native streaming input, compaction and background work; do not add a second planner or business scheduler. Administrator-configured read-only `projects[].preContext` only injects sourced context; it does not plan steps, replace native tools, or gate input.
 - Linux, macOS and Windows use the same native service; built-in daemon management is Linux/Windows only. Start sessions on demand and reuse warm processes; reclaim only confirmed idle processes without discarding history.
 - Group triggers require an allowed chat, allowed author and explicit bot mention. A single `groups[]` binding with `chatId: "*"` covers otherwise unlisted groups; explicit bindings win. `members` adds authors, `allowAllMembers` admits any user in that chat, and project maintainers are always allowed. A group may opt out of only the mention requirement with `groups[].mentionOptional`; chat and author authorization still apply. DMs require an allowed user. Reject silently before context, downloads or reactions.
 - Background pre-injection defaults to zero. History, quotes, pagination and attachments must enforce current chat and author scope; never turn history access into a cross-chat tool.

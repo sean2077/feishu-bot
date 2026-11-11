@@ -137,6 +137,11 @@ _英文_: question
 _英文_: project action
 _同义_: 项目操作（如[可选项目操作](project-actions.md)的标题）
 
+**预检索上下文**
+
+网关在新一轮人类输入交给原生进程前，按项目 `preContext` 配置执行一次只读固定操作，并把带 `source`、`text`、`truncated` 的结果注入该轮输入。它是不可信的背景材料，不是用户输入、授权、规划步骤或原生工具的替代。
+_英文_: pre-context retrieval
+
 **请求上下文**
 
 网关在请求到达时从当前 slot 的 deliveries 和 anchor 得到的发起信息：chat、thread、消息、anchor 发送者 open_id 与显示名、去重后的 senders 和 messageIds。由网关根据飞书事件给出，不是模型报告；没有进行中的输入时视为无上下文。用于固定操作环境、审计和只读 context 端点。

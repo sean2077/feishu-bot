@@ -399,6 +399,9 @@ func (w *worker) Send(ctx context.Context, d core.Delivery) error {
 			return args{"trigger": d.Message, "background": d.Background, "quote": d.Quote, "attachments": d.Attachments}
 		}
 		envelope := args{"timezone": timezone()}
+		if d.PreContext != nil {
+			envelope["preContext"] = d.PreContext
+		}
 		if d.BatchInputs != nil {
 			batch := make([]args, 0, len(d.BatchInputs))
 			for _, input := range d.BatchInputs {
