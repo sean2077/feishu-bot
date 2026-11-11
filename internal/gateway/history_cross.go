@@ -24,7 +24,7 @@ func (g *Gateway) historyRequest(ctx context.Context, r core.Room, session strin
 	}
 	if raw, has := input["chat"]; has {
 		value, ok := raw.(string)
-		if !ok || len(value) > 200 {
+		if !ok || len([]rune(value)) > 200 {
 			return nil, historyAccess{}, errors.New("invalid chat")
 		}
 		if _, hasCursor := input["cursor"]; hasCursor {

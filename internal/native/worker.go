@@ -566,6 +566,14 @@ func (w *worker) askEvent(ctx context.Context, kind, name string, input args, ta
 	w.mu.Unlock()
 	defer func() { w.mu.Lock(); delete(w.requests, id); w.mu.Unlock() }()
 	w.emit(core.WorkerEvent{Type: "request", ID: id, Kind: kind, Name: name, Input: input, Tainted: tainted})
+	var expiry <-chan time.Time
+	if tainted {
+		// The CLI treats a hook timeout as non-blocking. Deny from the worker
+		// before that deadline even if the gateway's approval timer is delayed.
+		timer := time.NewTimer(time.Duration(w.config.Limits.ApprovalMS+10000) * time.Millisecond)
+		defer timer.Stop()
+		expiry = timer.C
+	}
 	select {
 	case answer := <-ch:
 		return answer
@@ -573,6 +581,8 @@ func (w *worker) askEvent(ctx context.Context, kind, name string, input args, ta
 		return args{"approved": false, "error": "cancelled"}
 	case <-w.ctx.Done():
 		return args{"approved": false, "error": "stopped"}
+	case <-expiry:
+		return args{"approved": false, "error": "expired"}
 	}
 }
 func (w *worker) readFrames() {

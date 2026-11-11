@@ -106,6 +106,16 @@ func (s *slot) newHumanInputLocked() {
 	s.taintPendingClear = true
 }
 
+// newTurnInputLocked lifts taint only for an input that starts a new turn.
+// Messages inserted into an already-running turn (including supplements) must
+// not clear the protection from the turn that read another group.
+func (s *slot) newTurnInputLocked() {
+	if s.turn != nil || len(s.deliveries) != 0 || s.stopUnconfirmed {
+		return
+	}
+	s.newHumanInputLocked()
+}
+
 func (s *slot) clearTaintLocked() {
 	s.tainted = false
 	s.taintPendingClear = false
@@ -1216,7 +1226,16 @@ func (g *Gateway) dispatch(r core.Room) (err error) {
 			g.auditPreContextFailure(r, p, preResult)
 			members[0].PreContext = preResult.value
 			s.mu.Lock()
-			s.newHumanInputLocked()
+			humanInput := true
+			for _, m := range members {
+				if m.Command != nil {
+					humanInput = false
+					break
+				}
+			}
+			if humanInput {
+				s.newTurnInputLocked()
+			}
 			for _, m := range members {
 				s.deliveries[m.UUID] = m
 				s.order = append(s.order, m.UUID)

@@ -177,7 +177,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 }
 ```
 
-目标 `chatId` 必须是 `groups[]` 中显式绑定的群，不能是 `*` 兜底或私聊；同一私聊内 `name` 与 `chatId` 合并后必须唯一。配置后，该私聊的 `read_chat_history` 可传 `chat`（配置名或 chatId），其余参数与 `scope: "chat"` 相同；目标群是话题模式时复用群时间线和 `expandThreads`。每次调用（包括游标续页）都要求存在活动人类请求，发起人必须是该 DM 用户，并且在目标群 `maintainers` 或显式 `members` 中；`allowAllMembers` 不构成跨群授权。跨群结果只含文本，不返回附件，`fetch_attachment` 对目标群消息不可用；`threadId` 仍需先通过时间线或展开观察到。读取成功后本轮标记为污染，后续写工具、`send_file`、非只读 `project_action` 和未知工具会向 DM 用户发审批卡，提示本轮读取过其他群内容；只读工具放行。新的用户输入在后台任务结束后清除标记，`/stop`、超时和 worker 结束一律拒绝挂起的污染审批。每次跨群读取写 `history_cross_chat_read`，每次污染审批写 `tainted_turn_prompt`，都不记录正文。详细边界和残余风险见 [SECURITY](../SECURITY.md)。
+目标 `chatId` 必须是 `groups[]` 中显式绑定的群，不能是 `*` 兜底或私聊；同一私聊内 `name` 与 `chatId` 合并后必须唯一。配置后，该私聊的 `read_chat_history` 可传 `chat`（配置名或 chatId），其余参数与 `scope: "chat"` 相同；目标群是话题模式时复用群时间线和 `expandThreads`。每次调用（包括游标续页）都要求存在活动人类请求，发起人必须是该 DM 用户，并且在目标群 `maintainers` 或显式 `members` 中；`allowAllMembers` 不构成跨群授权。跨群结果只含文本，不返回附件，`fetch_attachment` 对目标群消息不可用；`threadId` 仍需先通过时间线或展开观察到。读取成功后本轮标记为污染：写工具、`send_file`、非只读 `project_action` 和未知工具需要 DM 用户确认，只读工具放行；非只读 action 先由 DM 用户确认污染，再按原有 approvers／`forbidSelfApproval` 审批，污染确认不能替换原审批。新的用户输入且后台任务结束后清除标记，`/stop`、超时和 worker 结束一律拒绝挂起的污染审批。每次跨群读取写 `history_cross_chat_read`，每次污染审批写 `tainted_turn_prompt`，都不记录正文。详细边界和残余风险见 [SECURITY](../SECURITY.md)。
 - `limits.backgroundMessages` 默认 **0**：不缓存、不预注入非 @ 群消息。需要前文时由 Agent 调用当前聊天限定的历史工具，参见[飞书历史接口](https://open.feishu.cn/document/server-docs/im-v1/message/list)。
 
 本地排查授权可用 `config explain --chat oc_example_group --user ou_example_member --mentioned --json`：它复用真实房间、作者和触发规则，解释显式／兜底／私聊绑定、是否允许触发、会话管理与工具审批权限。私聊加 `--chat-type p2p`，模拟机器人消息加 `--bot`。该命令不联网、不打开状态库、不创建工作区、不读取密钥；结论只说明配置策略，不代表真实成员或飞书权限已经验证。

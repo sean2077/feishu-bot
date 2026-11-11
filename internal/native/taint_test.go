@@ -129,6 +129,26 @@ func TestTaintedHookFailsClosedWhenWorkerStops(t *testing.T) {
 	}
 }
 
+func TestTaintedHookDeniesWhenWorkerApprovalDeadlineExpires(t *testing.T) {
+	_, w := taintedWorker(t)
+	// The production margin is approvalMs+10s; use a tiny positive deadline
+	// here so the test exercises the same timer without waiting ten seconds.
+	w.config.Limits.ApprovalMS = -9990
+	done := make(chan args, 1)
+	go func() {
+		result, _ := w.hook(context.Background(), "tool", args{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": args{"command": "echo fixture"}})
+		done <- result
+	}()
+	select {
+	case result := <-done:
+		if !taintDenied(result) {
+			t.Fatalf("expired tainted approval was allowed: %#v", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("tainted approval did not expire in the worker")
+	}
+}
+
 func TestTaintedHookAllowsAgentButChildWriteStillPrompts(t *testing.T) {
 	f, w := taintedWorker(t)
 	if result := hookResult(t, w, "Agent", args{}); taintDenied(result) {

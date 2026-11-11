@@ -297,8 +297,18 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 		}
 		summary += "操作：" + spec.Description + "\n参数：`" + cut(jsonText(g.redactArgs(input)), 4000) + "`\n文件快照 SHA256：`" + jsonText(digests) + "`\n摘要：`" + digest[:16] + "`"
 		if tainted {
-			policy = taintedApprovalPolicy(policy, r.DMUser, taintTargets)
-			summary = "本轮读取过其他群的内容；非只读操作需要你确认。\n" + summary
+			// Reading another group adds a confirmation step for the requester.
+			// It must not replace or weaken the action's original approvers or
+			// self-approval rule.
+			confirm := taintedApprovalPolicy(approvalPolicyForTool(p, requestContext), r.DMUser, taintTargets)
+			confirmSummary := "本轮读取过其他群的内容；该操作还需要原审批人批准。\n" + requesterLine(requestContext)
+			decision, e := g.ask(ctx, r, session, id, input, confirmSummary, nil, confirm)
+			if e != nil {
+				return nil, e
+			}
+			if !boolArg(decision, "approved") {
+				return core.Args{"ok": false, "error": stringArg(decision, "reason")}, nil
+			}
 		}
 		decision, e := g.ask(ctx, r, session, id, input, summary, nil, policy)
 		if e != nil {

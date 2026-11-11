@@ -43,6 +43,126 @@ func TestTaintSurvivesBackgroundAndClearsOnNextInput(t *testing.T) {
 	}
 }
 
+func TestTaintNotClearedByInputInsertedIntoRunningTurn(t *testing.T) {
+	s := &slot{deliveries: map[string]core.Delivery{}}
+	s.markTainted(historyAccess{Target: "target"})
+	s.mu.Lock()
+	s.turn = &turnTiming{turn: "active"}
+	s.deliveries["delivery"] = core.Delivery{}
+	s.newTurnInputLocked()
+	s.mu.Unlock()
+	if !s.taintCheck() {
+		t.Fatal("an input inserted into the running turn cleared taint")
+	}
+	s.mu.Lock()
+	s.turn = nil
+	delete(s.deliveries, "delivery")
+	s.newTurnInputLocked()
+	s.mu.Unlock()
+	if s.taintCheck() {
+		t.Fatal("the next turn did not clear taint")
+	}
+}
+
+func TestTaintedActionKeepsOriginalApprovers(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "publish", Description: "Publish", Executable: "fixture", Approvers: []string{"owner"}}}
+	})
+	fakeActionSuccess(f)
+	room, ok := f.c.RoomFor("p2p_member", "member")
+	if !ok {
+		t.Fatal("missing member DM")
+	}
+	session, err := f.s.NewSession(room.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, _ := f.c.Project("project")
+	requester := &core.RequestContext{ChatID: room.ChatID, ChatType: "p2p", SenderOpenID: "member", Senders: []string{"member"}, MessageIDs: []string{"m"}}
+	done := make(chan core.Args, 1)
+	go func() {
+		result, _ := f.g.executeActionTainted(context.Background(), room, session.ID, project, "publish", core.Args{}, core.Workspace{}, requester, true, []string{"target"})
+		done <- result
+	}()
+	eventually(t, func() bool { return f.tr.cardCount() > 0 })
+	confirm := f.tr.cardLast()
+	if confirm.room.DMUser != "member" {
+		t.Fatalf("taint confirmation went to %#v", confirm.room)
+	}
+	value := cardValue(confirm.card, "批准一次")
+	waitApprovalBinding(t, f, confirm, stringArg(value, "request"))
+	if got := clickApproval(t, f, confirm, value, "member"); got != "已批准一次" {
+		t.Fatalf("taint confirmation = %q", got)
+	}
+	eventually(t, func() bool { return f.tr.cardCount() > 1 })
+	approval := f.tr.cardLast()
+	if approval.room.DMUser != "owner" {
+		t.Fatalf("original approval went to %#v instead of the owner", approval.room)
+	}
+	approve := cardValue(approval.card, "批准一次")
+	waitApprovalBinding(t, f, approval, stringArg(approve, "request"))
+	if got := clickApproval(t, f, approval, approve, "member"); got == "已批准一次" {
+		t.Fatal("DM user self-approved the action after only the taint confirmation")
+	}
+	if got := clickApproval(t, f, approval, approve, "owner"); got != "已批准一次" {
+		t.Fatalf("owner action approval = %q", got)
+	}
+	select {
+	case result := <-done:
+		if !boolArg(result, "ok") {
+			t.Fatalf("tainted action result = %#v", result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("tainted action did not finish")
+	}
+}
+
+func TestTaintedActionKeepsForbidSelfApproval(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Owners = []string{"owner"}
+		c.Projects[0].Approvals.ForbidSelfApproval = true
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "publish", Description: "Publish", Executable: "fixture", Approvers: []string{"member"}}}
+	})
+	fakeActionSuccess(f)
+	room, ok := f.c.RoomFor("p2p_member", "member")
+	if !ok {
+		t.Fatal("missing member DM")
+	}
+	session, err := f.s.NewSession(room.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, _ := f.c.Project("project")
+	requester := &core.RequestContext{ChatID: room.ChatID, ChatType: "p2p", SenderOpenID: "member", Senders: []string{"member"}, MessageIDs: []string{"m"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan core.Args, 1)
+	go func() {
+		result, _ := f.g.executeActionTainted(ctx, room, session.ID, project, "publish", core.Args{}, core.Workspace{}, requester, true, []string{"target"})
+		done <- result
+	}()
+	eventually(t, func() bool { return f.tr.cardCount() > 0 })
+	confirm := f.tr.cardLast()
+	value := cardValue(confirm.card, "批准一次")
+	waitApprovalBinding(t, f, confirm, stringArg(value, "request"))
+	if got := clickApproval(t, f, confirm, value, "member"); got != "已批准一次" {
+		t.Fatalf("taint confirmation = %q", got)
+	}
+	eventually(t, func() bool { return f.tr.cardCount() > 1 })
+	approval := f.tr.cardLast()
+	approve := cardValue(approval.card, "批准一次")
+	waitApprovalBinding(t, f, approval, stringArg(approve, "request"))
+	if got := clickApproval(t, f, approval, approve, "member"); got != selfApprovalToast {
+		t.Fatalf("self approval after taint = %q", got)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tainted self-approval test did not settle")
+	}
+}
+
 func TestTaintedSendFileRequiresApproval(t *testing.T) {
 	f := newFixture(t, nil)
 	f.send(f.message("one", "work", "member"))
