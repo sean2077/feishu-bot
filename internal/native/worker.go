@@ -565,7 +565,6 @@ func (w *worker) askEvent(ctx context.Context, kind, name string, input args, ta
 	w.requests[id] = ch
 	w.mu.Unlock()
 	defer func() { w.mu.Lock(); delete(w.requests, id); w.mu.Unlock() }()
-	w.emit(core.WorkerEvent{Type: "request", ID: id, Kind: kind, Name: name, Input: input, Tainted: tainted})
 	var expiry <-chan time.Time
 	if tainted {
 		// The CLI treats a hook timeout as non-blocking. Deny from the worker
@@ -574,6 +573,7 @@ func (w *worker) askEvent(ctx context.Context, kind, name string, input args, ta
 		defer timer.Stop()
 		expiry = timer.C
 	}
+	w.emit(core.WorkerEvent{Type: "request", ID: id, Kind: kind, Name: name, Input: input, Tainted: tainted})
 	select {
 	case answer := <-ch:
 		return answer
