@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +89,9 @@ func TestTaintedActionKeepsOriginalApprovers(t *testing.T) {
 	confirm := f.tr.cardLast()
 	if confirm.room.DMUser != "member" {
 		t.Fatalf("taint confirmation went to %#v", confirm.room)
+	}
+	if !strings.Contains(jsonText(confirm.card), "操作：Publish") {
+		t.Fatalf("taint confirmation omitted the action description: %s", jsonText(confirm.card))
 	}
 	value := cardValue(confirm.card, "批准一次")
 	waitApprovalBinding(t, f, confirm, stringArg(value, "request"))

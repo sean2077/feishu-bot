@@ -301,7 +301,7 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 			// It must not replace or weaken the action's original approvers or
 			// self-approval rule.
 			confirm := taintedApprovalPolicy(approvalPolicyForTool(p, requestContext), r.DMUser, taintTargets)
-			confirmSummary := "本轮读取过其他群的内容；该操作还需要原审批人批准。\n" + requesterLine(requestContext)
+			confirmSummary := "本轮读取过其他群的内容；该操作还需要原审批人批准。\n" + summary
 			decision, e := g.ask(ctx, r, session, id, input, confirmSummary, nil, confirm)
 			if e != nil {
 				return nil, e
