@@ -25,6 +25,7 @@ type Message struct {
 	SenderIsSelf         bool       `json:"senderIsSelf,omitempty"`
 	Text                 string     `json:"text"`
 	Time                 int64      `json:"time"`
+	LocalTime            string     `json:"localTime,omitempty"`
 	Mentioned            bool       `json:"mentioned"`
 	ReplyTo              string     `json:"replyTo,omitempty"`
 	InteractionMessageID string     `json:"interactionMessageId,omitempty"`

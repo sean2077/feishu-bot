@@ -163,6 +163,7 @@ func TestFirstMentionInHumanTopicCarriesRootOnce(t *testing.T) {
 }
 
 func TestTopicHistoryReadsOnlyItsOwnTopicWithoutTimeRange(t *testing.T) {
+	t.Setenv("TZ", "Asia/Singapore")
 	f := topicFixture(t)
 	f.send(f.message("t1", "first", "member"))
 	w := f.worker()
@@ -176,8 +177,17 @@ func TestTopicHistoryReadsOnlyItsOwnTopicWithoutTimeRange(t *testing.T) {
 	}
 	f.send(inTopic(f.message("f1", "follow", "member"), "t1", "omt_1"))
 	f.delivery(w)
-	if _, e = f.g.history(ctx, topic, session, core.Args{"limit": 5}); e != nil {
+	f.tr.historyPage = core.HistoryPage{Messages: []core.Message{historyTestMessage("om_hist", "member", "history", time.Now().Add(-time.Minute), "omt_1", "t1")}}
+	page, e = f.g.history(ctx, topic, session, core.Args{"limit": 5})
+	if e != nil {
 		t.Fatal(e)
+	}
+	histories := page["messages"].([]core.Message)
+	if len(histories) != 1 || histories[0].LocalTime == "" || histories[0].LocalTime != core.LocalTime(histories[0].Time) {
+		t.Fatalf("topic history localTime = %+v", histories)
+	}
+	if page["timezone"] != "Asia/Singapore" {
+		t.Fatalf("topic history timezone = %#v", page["timezone"])
 	}
 	if len(f.tr.histories) != 1 || f.tr.histories[0].ThreadID != "omt_1" || f.tr.histories[0].StartTime != 0 || f.tr.histories[0].EndTime != 0 {
 		t.Fatalf("topic history query: %+v", f.tr.histories)

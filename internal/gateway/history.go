@@ -127,7 +127,7 @@ func (g *Gateway) history(ctx context.Context, r core.Room, session string, inpu
 				return nil, errors.New("this topic session can read only its own topic")
 			}
 			if topic == "" {
-				return core.Args{"messages": []core.Message{}, "nextCursor": nil, "hasMore": false, "note": "This topic has no earlier Feishu messages yet. Only the current topic is readable in this session."}, nil
+				return historyResult(core.Args{"messages": []core.Message{}, "nextCursor": nil, "hasMore": false, "note": "This topic has no earlier Feishu messages yet. Only the current topic is readable in this session."}), nil
 			}
 			q.ThreadID = topic
 		}
@@ -205,7 +205,8 @@ func (g *Gateway) history(ctx context.Context, r core.Room, session string, inpu
 		q.PageToken = page.NextPageToken
 		cursor = g.sealHistoryCursor(r.Key, session, q)
 	}
-	return core.Args{"messages": messages, "nextCursor": nullString(cursor), "hasMore": cursor != "", "note": "Only authorized authors and this bot are returned. This is one API page, not the full history. Times are milliseconds in messages; query times use seconds."}, nil
+	stampLocalTimes(messages)
+	return historyResult(core.Args{"messages": messages, "nextCursor": nullString(cursor), "hasMore": cursor != "", "note": "Only authorized authors and this bot are returned. This is one API page, not the full history. Times are milliseconds in messages; query times use seconds. Use localTime for human-readable times."}), nil
 }
 
 // topicThread finds the Feishu thread ID of a topic room. Messages inside the
