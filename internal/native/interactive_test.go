@@ -42,3 +42,25 @@ func TestInteractiveLaunchKeepsIdentityProfileAndTerminalBoundary(t *testing.T) 
 		t.Fatal("interactive launch silently created a new session")
 	}
 }
+
+func TestInteractiveLaunchUsesProjectDefaultWithoutSessionSelection(t *testing.T) {
+	f := newFixture(t)
+	f.config.ModelProfiles = map[string]core.ModelProfile{"local": {Model: "project-default-model", Effort: "medium"}}
+	f.config.Projects[0].ModelProfile = "local"
+	s := f.session
+	s.CCID = core.NewID()
+	s.RoomKey = "room"
+	r := core.Room{Key: "room", ProjectID: "p"}
+	cmd, cleanup, err := interactiveCommand(f.config, r, s, f.workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "--model project-default-model") || !strings.Contains(args, "--resume "+s.CCID) {
+		t.Fatal("interactive launch did not use the project default", args)
+	}
+	if env := strings.Join(cmd.Env, "\n"); !strings.Contains(env, "CLAUDE_CODE_EFFORT_LEVEL=medium") {
+		t.Fatal("project default effort missing from interactive launch")
+	}
+}

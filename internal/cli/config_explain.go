@@ -95,6 +95,7 @@ func explainRoute(c core.Config, o Options) core.Args {
 		}
 		if p, ok := c.Project(r.ProjectID); ok {
 			view["permissionMode"] = p.PermissionMode
+			view["modelProfile"] = p.ModelProfile
 			promptView := core.Args{"configured": false}
 			if p.AppendSystemPrompt != "" || p.AppendSystemPromptFile != "" {
 				source := "inline"
@@ -205,6 +206,10 @@ func runConfigExplain(ctx context.Context, o Options, out io.Writer) error {
 			envDetail += "Settings file: " + settings + "\n"
 		}
 	}
-	_, err = fmt.Fprintf(out, "Configuration policy (offline)\nBinding: %v\nProject: %v\nAuthor authorized: %v\nEvent admitted: %v\nTriggers native input: %v\nManage session: %v\nApprove tools: %v\nOwners: %v\nForbid self approval: %v\nUser is owner: %v\nReason: %v\n%sThis evaluates configured policy only; it does not verify live membership, credentials or Feishu delivery.\n", view["binding"], view["project"], view["authorAuthorized"], view["eventAdmitted"], view["triggersNative"], view["canManageSession"], view["canApproveTools"], view["ownerCount"], view["forbidSelfApproval"], view["isOwner"], view["reason"], envDetail)
+	modelProfile := "(none; deployment default)"
+	if profile, ok := view["modelProfile"].(string); ok && profile != "" {
+		modelProfile = profile
+	}
+	_, err = fmt.Fprintf(out, "Configuration policy (offline)\nBinding: %v\nProject: %v\nProject model profile: %v\nAuthor authorized: %v\nEvent admitted: %v\nTriggers native input: %v\nManage session: %v\nApprove tools: %v\nOwners: %v\nForbid self approval: %v\nUser is owner: %v\nReason: %v\n%sThis evaluates configured policy only; it does not verify live membership, credentials or Feishu delivery.\n", view["binding"], view["project"], modelProfile, view["authorAuthorized"], view["eventAdmitted"], view["triggersNative"], view["canManageSession"], view["canApproveTools"], view["ownerCount"], view["forbidSelfApproval"], view["isOwner"], view["reason"], envDetail)
 	return err
 }

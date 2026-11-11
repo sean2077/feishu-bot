@@ -48,6 +48,35 @@ func validateProfiles(c *core.Config) error {
 // profile is no longer declared. Callers must not silently switch models.
 var ErrModelProfileUnavailable = errors.New("selected model profile is unavailable; select a configured profile or default")
 
+// ModelSelection reports the effective named model profile and where it came
+// from. "default" is the deployment model; an explicitly selected "default"
+// remains distinct from a session that has never selected a profile.
+type ModelSelection struct {
+	Profile string
+	Source  string
+}
+
+// ResolveProjectModel returns the effective model config for one native
+// process. An explicit session profile, including an explicit "default", wins;
+// an empty session profile falls back to the project default, then to the
+// deployment model. The returned config is a value copy.
+func ResolveProjectModel(c core.Config, project core.Project, sessionProfile string) (core.Config, ModelSelection, error) {
+	name, source := "", "default"
+	if sessionProfile != "" {
+		name, source = sessionProfile, "session"
+	} else if project.ModelProfile != "" {
+		name, source = project.ModelProfile, "project"
+	}
+	selected, err := ResolveSessionModel(c, name)
+	if err != nil {
+		return c, ModelSelection{}, err
+	}
+	if name == "" {
+		name = "default"
+	}
+	return selected, ModelSelection{Profile: name, Source: source}, nil
+}
+
 // ResolveSessionModel returns a value copy. A worker must never mutate the
 // factory's shared config when another conversation selects a profile.
 func ResolveSessionModel(c core.Config, name string) (core.Config, error) {

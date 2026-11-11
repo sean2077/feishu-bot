@@ -32,13 +32,13 @@ func interactiveCommand(c core.Config, r core.Room, s core.Session, w core.Works
 	if s.CCID == "" || s.RoomKey != r.Key {
 		return nil, nil, errors.New("local session requires an existing native identity in the selected room")
 	}
-	c, err := config.ResolveSessionModel(c, s.Profile)
-	if err != nil {
-		return nil, nil, err
-	}
 	p, ok := c.Project(r.ProjectID)
 	if !ok {
 		return nil, nil, errors.New("unknown conversation project")
+	}
+	c, _, err := config.ResolveProjectModel(c, p, s.Profile)
+	if err != nil {
+		return nil, nil, err
 	}
 	token := os.Getenv(c.Model.TokenEnv)
 	if token == "" || c.Model.BaseURL == "" {
