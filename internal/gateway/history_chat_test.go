@@ -69,6 +69,31 @@ func TestHistoryChatScopeRequiresExplicitConfiguration(t *testing.T) {
 	}
 }
 
+func TestHistoryChatScopeRejectsDMsWithFallbackGroup(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Groups = append(c.Groups, core.Group{ChatID: core.AnyGroupChatID, ProjectID: "project", SessionScope: core.SessionScopeThread, TopicHistory: "chat"})
+	})
+	var calls atomic.Int64
+	f.tr.historyHook = func(context.Context, core.Room, core.HistoryQuery) (core.HistoryPage, error) {
+		calls.Add(1)
+		return core.HistoryPage{}, nil
+	}
+	source, ok := f.c.RoomFor("oc_p2p_example", "member")
+	if !ok || source.DMUser != "member" {
+		t.Fatalf("dm room = %+v", source)
+	}
+	if _, err := f.g.history(context.Background(), source, "session-a", core.Args{"scope": "chat"}); err == nil || !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("dm chat scope accepted: %v", err)
+	}
+	cursor := f.g.sealHistoryCursor(source.Key, "session-a", core.HistoryQuery{Limit: 20, Scope: historyScopeChat, Chat: source.ChatID})
+	if _, err := f.g.history(context.Background(), source, "session-a", core.Args{"cursor": cursor}); err == nil || !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("dm chat cursor accepted: %v", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("dm chat scope reached transport %d times", calls.Load())
+	}
+}
+
 func TestHistoryChatScopeTimelineBackgroundAndBackfill(t *testing.T) {
 	f := topicHistoryFixture(t, nil)
 	source := historyChatSource(t, f)

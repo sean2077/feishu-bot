@@ -40,6 +40,9 @@ type fetchedHistoryThread struct {
 }
 
 func (g *Gateway) validateChatHistoryScope(source core.Room) (core.Room, error) {
+	if source.DMUser != "" {
+		return core.Room{}, errors.New("chat history scope is not enabled for this group")
+	}
 	base, ok := g.config.RoomFor(source.ChatID, "")
 	if !ok || base.SessionScope != core.SessionScopeThread || base.TopicHistory != "chat" {
 		return core.Room{}, errors.New("chat history scope is not enabled for this group")
@@ -175,10 +178,7 @@ func (g *Gateway) historyChat(ctx context.Context, source core.Room, session str
 		if err != nil {
 			return nil, err
 		}
-		threads := []string{}
-		if q.ThreadID != "" {
-			threads = append(threads, q.ThreadID)
-		}
+		threads := []string{q.ThreadID}
 		g.auditChatHistory(target, threads, len(messages))
 		return g.historyChatResult(target, q, messages, page.NextPageToken, nil, "scope=chat read one observed topic in this group; only authorized authors and this bot are returned."), nil
 	}
