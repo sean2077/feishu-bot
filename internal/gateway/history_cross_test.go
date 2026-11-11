@@ -171,6 +171,28 @@ func TestHistoryCrossChatCursorBindsTarget(t *testing.T) {
 	}
 }
 
+func TestHistoryCrossChatCursorRevalidatesConfiguration(t *testing.T) {
+	f := crossChatFixture(t, nil)
+	source, requester := crossChatSource(t, f, "owner")
+	f.tr.historyPage = core.HistoryPage{Messages: []core.Message{{ID: "one", ChatID: "target", ChatType: "group", SenderID: "member", Text: "one", Time: time.Now().UnixMilli()}}, NextPageToken: "next-page"}
+	result, _, err := f.g.historyRequest(context.Background(), source, "session-a", core.Args{"chat": "target", "limit": 1}, requester)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, _ := result["nextCursor"].(string)
+	if cursor == "" {
+		t.Fatal("cross-chat cursor missing")
+	}
+	for i := range f.g.config.DMs {
+		if f.g.config.DMs[i].UserID == "owner" {
+			f.g.config.DMs[i].HistoryChats = nil
+		}
+	}
+	if _, _, err = f.g.historyRequest(context.Background(), source, "session-a", core.Args{"cursor": cursor}, requester); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("cursor after config removal = %v", err)
+	}
+}
+
 func TestHistoryCrossChatExpandStripsAttachments(t *testing.T) {
 	f := crossChatFixture(t, nil)
 	source, requester := crossChatSource(t, f, "owner")
