@@ -737,7 +737,7 @@ func (g *Gateway) deliveredOutputCard(o outgoing, r core.Room) core.Args {
 	if o.Kind == "reply" && o.Success && g.feedbackEnabled(r) && replyCardDone(card) {
 		revision := g.quickRevision(r, o.Session, "", "", "")
 		if o.Text != "" {
-			revision = g.quickRevision(r, o.Session, "", o.ID, "copy")
+			revision = g.quickRevision(r, o.Session, "", o.ID, "final")
 		}
 		controls = append(controls, g.feedbackControls(r, o.Session, o.ID, revision)...)
 	}

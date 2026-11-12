@@ -543,14 +543,14 @@ func TestStopControlRequesterComesFromAnchor(t *testing.T) {
 	}
 }
 
-func TestFinalReplyCopySendsStoredText(t *testing.T) {
+func TestFinalReplyCardKeepsStatusControlOnly(t *testing.T) {
 	f := newFixture(t, nil)
 	r := f.room()
 	s, err := f.s.Session(r.Key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := f.g.saveOutput(f.s.DB, r, s.ID, "full answer text\nsecond line", true, "copy-card", "", "", DisplayCard("回复", "full answer text"), nil, "", "", "reply", "done")
+	id, err := f.g.saveOutput(f.s.DB, r, s.ID, "full answer text\nsecond line", true, "final-card", "", "", DisplayCard("回复", "full answer text"), nil, "", "", "reply", "done")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,35 +559,58 @@ func TestFinalReplyCopySendsStoredText(t *testing.T) {
 		t.Fatal(err)
 	}
 	card := f.g.deliveredOutputCard(o, r)
-	if err := f.g.bindQuickControls("copy-card", card); err != nil {
+	if err := f.g.bindQuickControls("final-card", card); err != nil {
 		t.Fatal(err)
 	}
-	value := testQuickValue(t, f.g, card, "copy")
-	action := core.CardAction{ChatID: r.ChatID, UserID: "member", MessageID: "copy-card", Value: value}
-	if text, err := f.g.Action(context.Background(), action); err != nil || !strings.Contains(text, "复制") {
-		t.Fatalf("copy toast = %q %v", text, err)
+	if text := jsonText(card); strings.Contains(text, "gateway_quick_copy") {
+		t.Fatalf("final card still renders a copy control: %s", text)
 	}
-	eventually(t, func() bool {
-		f.tr.mu.Lock()
-		defer f.tr.mu.Unlock()
-		for _, post := range f.tr.posts {
-			if strings.Contains(jsonText(post.card), "second line") {
-				return true
-			}
+	elements, _ := argsOf(card["body"])["elements"].([]any)
+	var row, overflow core.Args
+	for _, raw := range elements {
+		element := argsOf(raw)
+		switch stringArg(element, "element_id") {
+		case "gateway_quick_row":
+			row = element
+		case "gateway_quick_more":
+			overflow = element
 		}
-		return false
-	})
+	}
+	columns, _ := row["columns"].([]any)
+	if len(columns) != 1 {
+		t.Fatalf("final button row has %d columns, want status only", len(columns))
+	}
+	children, _ := argsOf(columns[0])["elements"].([]any)
+	if len(children) != 1 {
+		t.Fatalf("final status column has %d elements", len(children))
+	}
+	if label := stringArg(argsOf(argsOf(children[0])["text"]), "content"); label != "查看状态" {
+		t.Fatalf("final button label = %q, want 查看状态", label)
+	}
+	options, _ := overflow["options"].([]any)
+	if len(options) != 1 || stringArg(argsOf(options[0]), "value") != "answer" {
+		t.Fatalf("final overflow options = %#v, want answer only", options)
+	}
+}
+
+func TestRetiredCopyControlShowsToast(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	s, err := f.s.Session(r.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := f.g.signQuick(quickControl{Room: r.Key, Session: s.ID, Revision: "retired", Output: "out", Action: "copy"})
+	action := core.CardAction{ChatID: r.ChatID, UserID: "member", MessageID: "old-card", Value: core.Args{"quick_control": token}}
+	text, err := f.g.Action(context.Background(), action)
+	if err != nil || text != "复制功能已下线。" {
+		t.Fatalf("retired copy toast = %q %v", text, err)
+	}
 	f.tr.mu.Lock()
-	var rows []any
-	for _, post := range f.tr.posts {
-		if zh := argsOf(post.card["zh_cn"]); zh != nil {
-			rows, _ = zh["content"].([]any)
-			break
-		}
-	}
+	posts := len(f.tr.posts)
 	f.tr.mu.Unlock()
-	if len(rows) != 2 {
-		t.Fatalf("copy post has %d content rows, want one per line", len(rows))
+	if posts != 0 {
+		t.Fatalf("retired copy control sent %d posts", posts)
 	}
 }
 
@@ -609,25 +632,17 @@ func TestOverflowOptionSelectsSignedAction(t *testing.T) {
 	}
 }
 
-func TestCopyCommandSendsLatestReply(t *testing.T) {
+func TestCopyCommandRetired(t *testing.T) {
 	f := newFixture(t, nil)
 	r := f.room()
-	s, err := f.s.Session(r.Key)
-	if err != nil {
-		t.Fatal(err)
+	if _, handled, err := f.g.management("/copy", "", r, "owner"); handled || err != nil {
+		t.Fatalf("/copy still handled: handled=%t err=%v", handled, err)
 	}
-	if _, err = f.g.saveOutput(f.s.DB, r, s.ID, "latest answer", true, "done-card", "", "", DisplayCard("回复", "latest answer"), nil, "", "", "reply", "done"); err != nil {
-		t.Fatal(err)
+	help, handled, err := f.g.management("/help", "", r, "owner")
+	if err != nil || !handled {
+		t.Fatalf("help = %t %v", handled, err)
 	}
-	f.send(f.message("copy-command", "/copy", "owner"))
-	eventually(t, func() bool {
-		f.tr.mu.Lock()
-		defer f.tr.mu.Unlock()
-		for _, post := range f.tr.posts {
-			if strings.Contains(jsonText(post.card), "latest answer") {
-				return true
-			}
-		}
-		return false
-	})
+	if strings.Contains(help, "/copy") {
+		t.Fatalf("help still documents /copy: %s", help)
+	}
 }
