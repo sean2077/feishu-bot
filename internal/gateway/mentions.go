@@ -26,7 +26,7 @@ func requestNamesBot(text string, bot core.OtherBot) bool {
 	if strings.Contains(text, strings.ToLower(bot.AppID)) || strings.Contains(text, strings.ToLower(bot.Name)) {
 		return true
 	}
-	// Users often shorten a bot name ("Gosu" for "Gosu CLI").
+	// Users often shorten a bot name ("Helper" for "Helper CLI").
 	if fields := strings.Fields(bot.Name); len(fields) > 0 && len([]rune(fields[0])) >= 2 {
 		return strings.Contains(text, strings.ToLower(fields[0]))
 	}
