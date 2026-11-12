@@ -12,6 +12,10 @@ import (
 
 const resumeInterruptedPrompt = "上次回答被中断，请基于已有上下文继续完成刚才的问题。中断前的写操作未重放，请先核实。"
 
+func (g *Gateway) resumeHint() string {
+	return "点击卡片上的「继续」，或在**本话题 @" + escapeCardTitle(g.cardTitle()) + "**发送任意内容；直接回复不带 @ 不会触发。"
+}
+
 func (g *Gateway) uncertainInput(room, session string) (core.Message, bool) {
 	var raw string
 	err := g.store.DB.QueryRow("SELECT message FROM inbox WHERE room=? AND session=? AND status='uncertain' ORDER BY at DESC,id DESC LIMIT 1", room, session).Scan(&raw)
