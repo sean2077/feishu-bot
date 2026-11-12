@@ -75,32 +75,32 @@ func (g *Gateway) readQuick(token string) (quickControl, bool) {
 // Identical render context produces identical JSON. In particular, wall time
 // must not invalidate streaming snapshot deduplication or a frozen create body.
 func (g *Gateway) quickControls(r core.Room, session, turn, output string) []any {
-	return g.quickControlSet(r, session, turn, output, "", "", false, false)
+	return g.quickControlSet(r, session, turn, output, "", "", false)
 }
 
 // quickTurnControls carries the requester of the turn in the signed payload.
 // The requester is taken from the native anchor, never from a card callback.
 func (g *Gateway) quickTurnControls(r core.Room, session, turn, output, requester string) []any {
-	return g.quickControlSet(r, session, turn, output, "", requester, false, false)
+	return g.quickControlSet(r, session, turn, output, "", requester, false)
 }
 
 // A later failed delivery attempt gets new controls, while duplicate clicks on
 // the same visible attempt remain one-shot. The outbox ID itself stays stable.
 func (g *Gateway) quickOutputControls(r core.Room, session, output string, attempt int) []any {
-	return g.quickControlSet(r, session, "", output, "retry:"+strconv.Itoa(attempt), "", true, false)
+	return g.quickControlSet(r, session, "", output, "retry:"+strconv.Itoa(attempt), "", true)
 }
 
-// quickFinalControls is the compact terminal card: copy and status stay
-// visible; session/answer actions are folded into the overflow menu.
+// quickFinalControls is the compact terminal card: only status stays visible;
+// session/answer actions are folded into the overflow menu.
 func (g *Gateway) quickFinalControls(r core.Room, session, output string) []any {
-	return g.quickControlSet(r, session, "", output, "copy", "", false, true)
+	return g.quickControlSet(r, session, "", output, "final", "", false)
 }
 
 func (g *Gateway) quickRevision(r core.Room, session, turn, output, salt string) string {
 	return core.Hash(jsonText([]string{r.Key, session, turn, output, salt}))[:32]
 }
 
-func (g *Gateway) quickControlSet(r core.Room, session, turn, output, salt, requester string, retry, copyButton bool) []any {
+func (g *Gateway) quickControlSet(r core.Room, session, turn, output, salt, requester string, retry bool) []any {
 	if session == "" {
 		return nil
 	}
@@ -119,11 +119,7 @@ func (g *Gateway) quickControlSet(r core.Room, session, turn, output, salt, requ
 		b["behaviors"] = []any{core.Args{"type": "callback", "value": core.Args{"quick_control": g.signQuick(q)}}}
 		return b
 	}
-	visible := []any{}
-	if copyButton {
-		visible = append(visible, makeButton("copy", "复制", "default"))
-	}
-	visible = append(visible, makeButton("status", "查看状态", "default"))
+	visible := []any{makeButton("status", "查看状态", "default")}
 	columns := []any{}
 	for _, b := range visible {
 		columns = append(columns, core.Args{"tag": "column", "width": "auto", "elements": []any{b}})
@@ -327,6 +323,12 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 	if !allowed || a.ChatID != r.ChatID || a.MessageID == "" || !AuthorizedAuthor(r, a.UserID) {
 		return "", true, nil
 	}
+	// Cards delivered before the feature was retired still carry a signed copy
+	// control. Acknowledge the click even when the binding has expired or the
+	// session has moved on; do not resend text.
+	if p.Action == "copy" {
+		return "复制功能已下线。", true, nil
+	}
 	if !g.quickBound(ctx, a, p) {
 		if err := ctx.Err(); err != nil {
 			return "", true, err
@@ -354,8 +356,6 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 	case "status":
 		g.task(func() { g.refreshStatusCard(r, a.UserID) })
 		return "正在刷新状态卡片。", true, nil
-	case "copy":
-		return g.copyOutput(ctx, r, p)
 	case "resume_interrupted":
 		return g.resumeInterrupted(ctx, r, a, p)
 	case "answer":
