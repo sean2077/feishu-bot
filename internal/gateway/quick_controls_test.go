@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -130,7 +131,7 @@ func TestQuickSupplementDeduplicatesAndOldStopCannotStopLaterTurn(t *testing.T) 
 	}
 	stop := a
 	stop.Value = testQuickValue(t, f.g, card, "stop")
-	if text, err := f.g.Action(context.Background(), stop); err != nil || !strings.Contains(text, "维护者") {
+	if text, err := f.g.Action(context.Background(), stop); err != nil || !strings.Contains(text, "提问人或管理员") {
 		t.Fatal("ordinary group member could stop shared task", text, err)
 	}
 	w.emit(core.WorkerEvent{Type: "result", UUID: d.UUID, UUIDs: []string{d.UUID, extra.UUID}, ResultID: core.NewID(), Text: "done", Success: true, Source: "foreground"})
@@ -390,5 +391,130 @@ func TestQuickControlsUseCompactLayoutAndTwoLineSupplement(t *testing.T) {
 	}
 	if jsonText(empty) != jsonText(DisplayCard("fixture", "reply")) {
 		t.Fatalf("remaining quick controls were not removed: %s", jsonText(empty))
+	}
+}
+
+func TestQuickStopAllowsRequester(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("original", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	r := f.room()
+	card := DisplayCard("fixture", "reply", f.g.quickTurnControls(r, d.SessionID, d.UUID, "", "member")...)
+	if err := f.g.bindQuickControls("bound-card", card); err != nil {
+		t.Fatal(err)
+	}
+	a := core.CardAction{ChatID: r.ChatID, UserID: "member", MessageID: "bound-card", Value: testQuickValue(t, f.g, card, "stop")}
+	if text, err := f.g.Action(context.Background(), a); err != nil || strings.Contains(text, "提问人或管理员") {
+		t.Fatalf("requester could not stop own turn: %q %v", text, err)
+	}
+	eventually(t, func() bool { return f.g.getSlot(r.Key) == nil })
+	if w.stops.Load() != 1 {
+		t.Fatalf("stops = %d", w.stops.Load())
+	}
+}
+
+func TestQuickStopRejectsOtherMemberAndAllowsAdmin(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("original", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	r := f.room()
+	card := DisplayCard("fixture", "reply", f.g.quickTurnControls(r, d.SessionID, d.UUID, "", "member")...)
+	if err := f.g.bindQuickControls("bound-card", card); err != nil {
+		t.Fatal(err)
+	}
+	value := testQuickValue(t, f.g, card, "stop")
+	other := core.CardAction{ChatID: r.ChatID, UserID: "second", MessageID: "bound-card", Value: value}
+	if text, err := f.g.Action(context.Background(), other); err != nil || !strings.Contains(text, "只有提问人或管理员") {
+		t.Fatalf("other member stop = %q %v", text, err)
+	}
+	if w.stops.Load() != 0 || f.g.getSlot(r.Key) == nil {
+		t.Fatal("other member stopped the turn")
+	}
+	admin := other
+	admin.UserID = "owner"
+	if text, err := f.g.Action(context.Background(), admin); err != nil || strings.Contains(text, "只有提问人或管理员") {
+		t.Fatalf("admin stop = %q %v", text, err)
+	}
+	eventually(t, func() bool { return f.g.getSlot(r.Key) == nil })
+	if w.stops.Load() != 1 {
+		t.Fatalf("stops = %d", w.stops.Load())
+	}
+}
+
+func TestQuickStopWithoutRequesterRequiresAdmin(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("original", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	r := f.room()
+	card := DisplayCard("fixture", "reply", f.g.quickControls(r, d.SessionID, d.UUID, "")...)
+	if err := f.g.bindQuickControls("bound-card", card); err != nil {
+		t.Fatal(err)
+	}
+	value := testQuickValue(t, f.g, card, "stop")
+	action := core.CardAction{ChatID: r.ChatID, UserID: "member", MessageID: "bound-card", Value: value}
+	if text, err := f.g.Action(context.Background(), action); err != nil || !strings.Contains(text, "只有提问人或管理员") {
+		t.Fatalf("member stop without requester = %q %v", text, err)
+	}
+	action.UserID = "owner"
+	if text, err := f.g.Action(context.Background(), action); err != nil || strings.Contains(text, "只有提问人或管理员") {
+		t.Fatalf("admin stop without requester = %q %v", text, err)
+	}
+	eventually(t, func() bool { return f.g.getSlot(r.Key) == nil })
+	if w.stops.Load() != 1 {
+		t.Fatalf("stops = %d", w.stops.Load())
+	}
+}
+
+func TestQuickStopRejectsTamperedRequester(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("original", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	r := f.room()
+	card := DisplayCard("fixture", "reply", f.g.quickTurnControls(r, d.SessionID, d.UUID, "", "member")...)
+	value := testQuickValue(t, f.g, card, "stop")
+	token := stringArg(value, "quick_control")
+	payload, signature, ok := strings.Cut(token, ".")
+	if !ok {
+		t.Fatal("malformed test token")
+	}
+	data, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p quickControl
+	if err := json.Unmarshal(data, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Requester = "second"
+	data, _ = json.Marshal(p)
+	tampered := base64.RawURLEncoding.EncodeToString(data) + "." + signature
+	a := core.CardAction{ChatID: r.ChatID, UserID: "second", MessageID: "bound-card", Value: core.Args{"quick_control": tampered}}
+	if text, err := f.g.Action(context.Background(), a); err != nil || !strings.Contains(text, "已失效") {
+		t.Fatalf("tampered stop = %q %v", text, err)
+	}
+	if w.stops.Load() != 0 {
+		t.Fatal("tampered control stopped the turn")
+	}
+}
+
+func TestStopControlRequesterComesFromAnchor(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("original", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	r := f.room()
+	s := f.g.getSlot(r.Key)
+	render := newRender(f.g, s, &d)
+	render.mu.Lock()
+	card := render.cardLocked("处理中", "", false, false)
+	render.mu.Unlock()
+	value := testQuickValue(t, f.g, card, "stop")
+	p, valid := f.g.readQuick(stringArg(value, "quick_control"))
+	if !valid || p.Requester != "member" || p.Turn != d.UUID {
+		t.Fatalf("stop control provenance = %+v %t", p, valid)
 	}
 }

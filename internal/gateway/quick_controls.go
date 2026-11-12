@@ -23,6 +23,7 @@ type quickControl struct {
 	Revision      string `json:"revision"`
 	Turn          string `json:"turn,omitempty"`
 	Output        string `json:"output,omitempty"`
+	Requester     string `json:"requester,omitempty"`
 	TargetSession string `json:"targetSession,omitempty"`
 	Query         string `json:"query,omitempty"`
 	Cursor        string `json:"cursor,omitempty"`
@@ -73,24 +74,30 @@ func (g *Gateway) readQuick(token string) (quickControl, bool) {
 // Identical render context produces identical JSON. In particular, wall time
 // must not invalidate streaming snapshot deduplication or a frozen create body.
 func (g *Gateway) quickControls(r core.Room, session, turn, output string) []any {
-	return g.quickControlsRevision(r, session, turn, output, "")
+	return g.quickControlsRevision(r, session, turn, output, "", "")
+}
+
+// quickTurnControls carries the requester of the turn in the signed payload.
+// The requester is taken from the native anchor, never from a card callback.
+func (g *Gateway) quickTurnControls(r core.Room, session, turn, output, requester string) []any {
+	return g.quickControlsRevision(r, session, turn, output, "", requester)
 }
 
 // A later failed delivery attempt gets new controls, while duplicate clicks on
 // the same visible attempt remain one-shot. The outbox ID itself stays stable.
 func (g *Gateway) quickOutputControls(r core.Room, session, output string, attempt int) []any {
-	return g.quickControlsRevision(r, session, "", output, "retry:"+strconv.Itoa(attempt))
+	return g.quickControlsRevision(r, session, "", output, "retry:"+strconv.Itoa(attempt), "")
 }
 
 func (g *Gateway) quickRevision(r core.Room, session, turn, output, salt string) string {
 	return core.Hash(jsonText([]string{r.Key, session, turn, output, salt}))[:32]
 }
 
-func (g *Gateway) quickControlsRevision(r core.Room, session, turn, output, salt string) []any {
+func (g *Gateway) quickControlsRevision(r core.Room, session, turn, output, salt, requester string) []any {
 	if session == "" {
 		return nil
 	}
-	p := quickControl{Room: r.Key, Session: session, Turn: turn, Output: output}
+	p := quickControl{Room: r.Key, Session: session, Turn: turn, Output: output, Requester: requester}
 	p.Revision = g.quickRevision(r, session, turn, output, salt)
 	makeButton := func(action, label, style string) core.Args {
 		q := p
@@ -280,7 +287,11 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 		}
 		return "卡片已刷新、过期或会话已切换，请使用最新卡片。", true, nil
 	}
-	if (p.Action == "stop" || p.Action == "retry" || p.Action == "resume") && !canManage(r, a.UserID) {
+	if p.Action == "stop" {
+		if !canManage(r, a.UserID) && (p.Requester == "" || a.UserID != p.Requester) {
+			return "只有提问人或管理员可以停止本轮。", true, nil
+		}
+	} else if (p.Action == "retry" || p.Action == "resume") && !canManage(r, a.UserID) {
 		return "此操作需要本聊天维护者。", true, nil
 	}
 	if p.Action != "stop" && !g.quickRate(ctx, r, a.UserID) {
