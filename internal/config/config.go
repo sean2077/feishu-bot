@@ -249,6 +249,7 @@ func Parse(data []byte, baseDir string) (core.Config, error) {
 				return core.Config{}, err
 			}
 			setDefault(a, "timeoutMs", 60000)
+			setDefault(a, "approval", "card")
 			var params map[string]map[string]json.RawMessage
 			if v, ok := a["parameters"]; ok {
 				if json.Unmarshal(v, &params) != nil || string(v) == "null" {
@@ -598,6 +599,9 @@ func validate(c *core.Config, base string) error {
 			}
 			if a.TimeoutMS < 100 || a.TimeoutMS > 600000 {
 				return errors.New("invalid action timeoutMs")
+			}
+			if a.Approval != "card" && a.Approval != "none" {
+				return errors.New("invalid action approval")
 			}
 			if a.CWD != "" {
 				// Legacy action cwd was relative to the service process, unlike

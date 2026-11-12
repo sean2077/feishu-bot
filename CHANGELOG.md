@@ -2,6 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
+- 新增 `actions[].approval`（默认 `"card"`）：`"none"` 的非只读固定操作在本轮请求上下文 active 且全部 senders 都是项目 maintainers 时直接执行，不弹审批卡；否则返回 `{"ok":false,"error":"需要管理员发起"}`，不回退。直接执行仍注入 `FEISHU_REQUEST_*`，不设置审批人环境变量；`action_runs.approval` 区分 `card`、`none` 和 `readonly`。污染轮次维持直接执行，`action_started` 审计记 `tainted=true`。`readOnly` 与 `approval: "none"` 同时配置时 doctor 给 warning；项目配置 `approval: "none"` 而 maintainers 为空时 doctor 失败，非法取值在配置加载时拒绝。
 - 回复卡按钮行只保留「查看状态」，「待回答」「重试交付」「停止本轮」收进「更多」overflow；重试需 30 秒内连续选择两次确认，避免误触补发可能重复的输出。旧卡片上的「复制」按钮已下线，点击只提示，不再发送纯文本；`/copy` 命令同步移除。
 - 新增逐群 `groups[].allowOtherBots`（默认 `false`，仅显式群可用）：开启后其他机器人的消息可以入站、进入背景和 `read_chat_history`，内容一律视为不可信输入。其他机器人只有明确 @ 本机器人才触发，`mentionOptional` 不适用；同一话题、同一机器人连续触发最多 2 轮，超过后保存为背景并提示，人类消息打破计数。新增 `mention_bot` 工具：只有本轮所有 senders 都是项目 maintainer 且请求文本点名目标时可用，目标必须在 `groups[].otherBots` 名单中并配置 `openId`（飞书 open_bot_id；post at 元素不接受 appId），每轮最多一个，正文可选、截断到 2000 字但不改写；发送一条结构化 post 后本轮结束，不等待或汇总结果。对方回复该消息或同话题后续消息只进历史，不触发新一轮。每次调用写脱敏审计；不影响 actions、审批或维护者身份。
 - 回复卡「停止本轮」改为本轮提问人或本聊天 maintainer 可点，其他成员收到「只有提问人或管理员可以停止本轮。」提示且轮次继续。提问人 open_id 来自原生轮次 anchor，写入 HMAC 签名的 quick control payload；客户端不能伪造。拿不到提问人时退化为仅 maintainer 可停止；retry 和会话 resume 仍只限 maintainer。

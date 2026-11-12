@@ -141,6 +141,7 @@ type ActionSpec struct {
 	Env         map[string]string    `json:"env"`
 	Vars        map[string]string    `json:"vars"`
 	ReadOnly    bool                 `json:"readOnly"`
+	Approval    string               `json:"approval"`
 	TimeoutMS   int64                `json:"timeoutMs"`
 	Parameters  map[string]Parameter `json:"parameters"`
 	Approvers   []string             `json:"approvers,omitempty"`
