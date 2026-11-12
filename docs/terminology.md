@@ -163,6 +163,12 @@ _英文_: pre-context retrieval
 _英文_: request context
 _避免_: 用“发起人”指代整个上下文（发起人只是 anchor 发送者）
 
+**本轮提问人**
+
+启动当前轮次的原生 anchor 消息的发送者。回复卡上的「停止本轮」允许该用户或本聊天 maintainer 点击；supplement 或恢复轮次可能让 anchor 继承原请求人，后台/无 anchor 轮次没有提问人时退化为仅 maintainer。提问人写入 HMAC 签名的 quick control，不能由客户端指定。
+_英文_: turn requester
+_避免_: 把 anchor 发送者当成永久会话所有者
+
 **交付**
 
 把最终回复、卡片更新和必要附件完整送达并确认的过程。本轮成功且全部交付后才标记 Done。

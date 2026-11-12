@@ -500,3 +500,21 @@ func TestQuickStopRejectsTamperedRequester(t *testing.T) {
 		t.Fatal("tampered control stopped the turn")
 	}
 }
+
+func TestStopControlRequesterComesFromAnchor(t *testing.T) {
+	f := newFixture(t, nil)
+	f.send(f.message("original", "work", "member"))
+	w := f.worker()
+	d := f.delivery(w)
+	r := f.room()
+	s := f.g.getSlot(r.Key)
+	render := newRender(f.g, s, &d)
+	render.mu.Lock()
+	card := render.cardLocked("处理中", "", false, false)
+	render.mu.Unlock()
+	value := testQuickValue(t, f.g, card, "stop")
+	p, valid := f.g.readQuick(stringArg(value, "quick_control"))
+	if !valid || p.Requester != "member" || p.Turn != d.UUID {
+		t.Fatalf("stop control provenance = %+v %t", p, valid)
+	}
+}
