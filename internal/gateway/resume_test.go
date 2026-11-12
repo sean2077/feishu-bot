@@ -102,7 +102,7 @@ func TestResumeStatusCardUsesInterruptedRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UnixMilli()
-	old := core.Message{ID: "old-uncertain", ChatID: r.ChatID, ChatType: "group", SenderID: "member", Text: "不能录啊", Time: now + 1000}
+	old := core.Message{ID: "old-uncertain", ChatID: r.ChatID, ChatType: "group", SenderID: "member", Text: "一个更早的无关请求", Time: now + 1000}
 	if _, err = f.s.DB.Exec("INSERT INTO inbox(room,id,message,status,at,session) VALUES(?,?,?,'uncertain',?,?)", r.Key, old.ID, jsonText(old), old.Time, session.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestResumeStatusCardUsesInterruptedRequest(t *testing.T) {
 			found = true
 			got = message
 		}
-		if strings.Contains(message.Text, "不能录啊") {
+		if strings.Contains(message.Text, "一个更早的无关请求") {
 			t.Fatalf("resume used an unrelated uncertain request: %q", message.Text)
 		}
 	}
