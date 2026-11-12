@@ -178,7 +178,8 @@ func (s *Store) initialize() error {
 		// or scanning every outstanding output for each card.
 		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS outbox_target_state ON outbox(target,state);
 CREATE INDEX IF NOT EXISTS outbox_file_target_state ON outbox(file_target,state);
-CREATE INDEX IF NOT EXISTS outbox_delivery_key_state ON outbox(delivery_key,state);`); err != nil {
+CREATE INDEX IF NOT EXISTS outbox_delivery_key_state ON outbox(delivery_key,state);
+CREATE INDEX IF NOT EXISTS outbox_kind_at ON outbox(kind,at);`); err != nil {
 			return err
 		}
 		if err := initializeMaintenance(tx); err != nil {

@@ -206,7 +206,7 @@ func (g *Gateway) history(ctx context.Context, r core.Room, session string, inpu
 		cursor = g.sealHistoryCursor(r.Key, session, q)
 	}
 	stampLocalTimes(messages)
-	return historyResult(core.Args{"messages": messages, "nextCursor": nullString(cursor), "hasMore": cursor != "", "note": "Only authorized authors and this bot are returned. This is one API page, not the full history. Times are milliseconds in messages; query times use seconds. Use localTime for human-readable times."}), nil
+	return historyResult(core.Args{"messages": messages, "nextCursor": nullString(cursor), "hasMore": cursor != "", "note": "Only authorized authors, this bot, and explicitly allowed other bots are returned. This is one API page, not the full history. Times are milliseconds in messages; query times use seconds. Use localTime for human-readable times."}), nil
 }
 
 // topicThread finds the Feishu thread ID of a topic room. Messages inside the

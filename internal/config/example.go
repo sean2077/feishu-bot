@@ -24,7 +24,9 @@ const Example = `{
     "chatId": "oc_example_group",
     "projectId": "assistant",
     "members": ["ou_example_member"],
-    "mentionOptional": false
+    "mentionOptional": false,
+    "allowOtherBots": false,
+    "otherBots": []
   }],
   "dms": [{ "userId": "ou_example_owner", "projectId": "assistant" }],
   "feedback": {

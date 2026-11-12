@@ -86,10 +86,16 @@ func apiCode(err error) int {
 	return 0
 }
 func (c *Client) Send(ctx context.Context, room core.Room, text, replyTo, threadID string) (messageID string, resultErr error) {
-	defer func() { resultErr = localRejection("message request validation", resultErr) }()
 	// Feishu post markdown retains multiline content without placing user text in
 	// the card schema, and does not introduce a new application-level planner.
-	return c.sendContent(ctx, room, "post", core.Args{"zh_cn": core.Args{"content": []any{[]any{core.Args{"tag": "md", "text": text}}}}}, replyTo, threadID)
+	return c.SendPost(ctx, room, core.Args{"zh_cn": core.Args{"content": []any{[]any{core.Args{"tag": "md", "text": text}}}}}, replyTo, threadID)
+}
+
+// SendPost sends a structured Feishu post. Callers must build at elements with
+// the target's open_id; app IDs are not resolved by the at tag.
+func (c *Client) SendPost(ctx context.Context, room core.Room, content core.Args, replyTo, threadID string) (messageID string, resultErr error) {
+	defer func() { resultErr = localRejection("message request validation", resultErr) }()
+	return c.sendContent(ctx, room, "post", content, replyTo, threadID)
 }
 func (c *Client) plainCard(ctx context.Context, room core.Room, card core.Args, replyTo, threadID string) (string, error) {
 	return c.sendContent(ctx, room, "interactive", card, replyTo, threadID)
@@ -140,7 +146,7 @@ func (c *Client) historyMessage(item historyItem, room core.Room) *core.Message 
 	bot := item.Sender.Type != "user"
 	botID := c.botOpenID()
 	self := bot && (item.Sender.ID == c.config.AppID || (botID != "" && (item.Sender.ID == botID || item.Sender.OpenBotID == botID)))
-	if bot && !self || !bot && !authorizedAuthor(room, item.Sender.ID) {
+	if (bot && !self && !room.AllowOtherBots) || (!bot && !authorizedAuthor(room, item.Sender.ID)) {
 		return nil
 	}
 	event := messageEvent{}

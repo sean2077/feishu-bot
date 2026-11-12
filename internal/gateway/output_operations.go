@@ -102,7 +102,7 @@ func (g *Gateway) discardOutput(ctx context.Context, r core.Room, id, actor stri
 	}
 	err := g.store.Transaction(ctx, func(tx *sql.Tx) error {
 		var session, state string
-		if err := tx.QueryRowContext(ctx, "SELECT session,state FROM outbox WHERE room=? AND id=?", r.Key, id).Scan(&session, &state); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT session,state FROM outbox WHERE room=? AND id=? AND kind!='mention'", r.Key, id).Scan(&session, &state); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return errOutputNotFound
 			}
@@ -111,7 +111,7 @@ func (g *Gateway) discardOutput(ctx context.Context, r core.Room, id, actor stri
 		if state == "done" || state == "cancelled" {
 			return errOutputNotFound
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT id,kind,state,COALESCE(target,''),origins FROM outbox WHERE room=? AND session=? AND state NOT IN ('done','cancelled') ORDER BY at,id LIMIT 201`, r.Key, session)
+		rows, err := tx.QueryContext(ctx, `SELECT id,kind,state,COALESCE(target,''),origins FROM outbox WHERE room=? AND session=? AND state NOT IN ('done','cancelled') AND kind!='mention' ORDER BY at,id LIMIT 201`, r.Key, session)
 		if err != nil {
 			return err
 		}

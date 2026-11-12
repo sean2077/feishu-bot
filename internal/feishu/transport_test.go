@@ -284,3 +284,20 @@ func TestDownloadPreservesJSONFileAndExistingDestination(t *testing.T) {
 		t.Fatal("existing file was modified")
 	}
 }
+
+func TestHistoryAllowsOtherBotsWhenEnabled(t *testing.T) {
+	c, _ := fixtureClient(t, nil, func(w http.ResponseWriter, r *http.Request) {})
+	room := fixtureRoom(t, c)
+	room.AllowOtherBots = true
+	item := historyItem{ID: "om_bot", ChatID: "oc_allowed", Type: "text"}
+	item.Sender.ID = "ou_other_bot"
+	item.Sender.Type = "app"
+	item.Body.Content = `{"text":"other bot"}`
+	if m := c.historyMessage(item, room); m == nil || !m.SenderIsBot || m.SenderIsSelf {
+		t.Fatalf("other bot history was dropped: %+v", m)
+	}
+	room.AllowOtherBots = false
+	if m := c.historyMessage(item, room); m != nil {
+		t.Fatalf("other bot history was admitted without allowOtherBots: %+v", m)
+	}
+}

@@ -34,6 +34,7 @@ type fakeTransport struct {
 	next              int
 	cards             []sentCard
 	updates           []sentCard
+	posts             []sentCard
 	notices           []string
 	receipts          []receiptCall
 	files             []string
@@ -59,6 +60,14 @@ func (t *fakeTransport) Send(_ context.Context, _ core.Room, text, _, _ string) 
 	t.next++
 	t.notices = append(t.notices, text)
 	return fmt.Sprintf("notice-%d", t.next), nil
+}
+func (t *fakeTransport) SendPost(_ context.Context, r core.Room, content core.Args, reply, thread string) (string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.next++
+	id := fmt.Sprintf("post-%d", t.next)
+	t.posts = append(t.posts, sentCard{id, r, argsOfCopy(content), reply, thread})
+	return id, nil
 }
 func (t *fakeTransport) Card(ctx context.Context, r core.Room, card core.Args, reply, thread string) (string, error) {
 	t.mu.Lock()
