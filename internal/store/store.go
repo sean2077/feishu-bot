@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS status_cards(room TEXT PRIMARY KEY, message TEXT NOT 
 CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, room TEXT NOT NULL, event TEXT NOT NULL, detail TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, kind TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, expires INTEGER NOT NULL, actor TEXT);
 CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, text TEXT NOT NULL, target TEXT, reply_to TEXT, thread_id TEXT, success INTEGER NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS action_runs(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, action TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS action_runs(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, action TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL, approval TEXT);
 CREATE TABLE IF NOT EXISTS feedback(id TEXT PRIMARY KEY, room TEXT NOT NULL, project TEXT NOT NULL, session TEXT NOT NULL, native_session TEXT, output TEXT NOT NULL, message TEXT NOT NULL, user TEXT NOT NULL, value TEXT NOT NULL, question TEXT NOT NULL, answer_summary TEXT NOT NULL, at INTEGER NOT NULL, UNIQUE(output,user));
 CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, desired TEXT NOT NULL, applied TEXT, at INTEGER NOT NULL, sender TEXT);
 CREATE TABLE IF NOT EXISTS context_refs(room TEXT NOT NULL, id TEXT NOT NULL, message TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(room,id));
@@ -142,7 +142,7 @@ func (s *Store) initialize() error {
 			{"outbox", "file_target", "TEXT"}, {"outbox", "file_state", "TEXT NOT NULL DEFAULT 'none'"}, {"outbox", "delivery_error", "TEXT"}, {"outbox", "kind", "TEXT NOT NULL DEFAULT 'reply'"},
 			{"session_preferences", "native_title", "TEXT NOT NULL DEFAULT ''"},
 			{"action_runs", "requester", "TEXT"}, {"action_runs", "request_context", "TEXT"},
-			{"action_runs", "request", "TEXT"}, {"action_runs", "approver", "TEXT"}, {"action_runs", "taint_request", "TEXT"},
+			{"action_runs", "request", "TEXT"}, {"action_runs", "approver", "TEXT"}, {"action_runs", "taint_request", "TEXT"}, {"action_runs", "approval", "TEXT"},
 			{"requests", "requester", "TEXT"}, {"requests", "request_context", "TEXT"},
 		} {
 			rows, err := tx.Query("PRAGMA table_info(" + col.table + ")")

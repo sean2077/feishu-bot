@@ -34,6 +34,37 @@ func TestApprovalPolicyChecksWarnWithoutOwners(t *testing.T) {
 	}
 }
 
+func TestActionApprovalChecks(t *testing.T) {
+	c := config.Defaults()
+	c.Projects = []core.Project{
+		{ID: "team-tools", Maintainers: []string{"ou_owner"}, Actions: []core.ActionSpec{
+			{ID: "build", Approval: "none"},
+			{ID: "read", Approval: "none", ReadOnly: true},
+		}},
+		{ID: "no-owner", Actions: []core.ActionSpec{{ID: "deploy", Approval: "none"}}},
+		{ID: "bad", Maintainers: []string{"ou_owner"}, Actions: []core.ActionSpec{{ID: "other", Approval: "sometimes"}}},
+	}
+	checks := actionApprovalChecks(c)
+	byName := map[string]Diagnostic{}
+	for _, check := range checks {
+		byName[check.Name] = check
+	}
+	if check, ok := byName["project team-tools action read approval"]; !ok || !check.OK || !strings.Contains(check.Detail, "redundant") {
+		t.Fatalf("readOnly warning = %#v", check)
+	}
+	if check, ok := byName["project no-owner approval:none maintainers"]; !ok || check.OK {
+		t.Fatalf("missing maintainer check = %#v", check)
+	}
+	if check, ok := byName["project bad action other approval"]; !ok || check.OK || !strings.Contains(check.Detail, "card or none") {
+		t.Fatalf("invalid approval check = %#v", check)
+	}
+	for name := range byName {
+		if name == "project team-tools action build approval" {
+			t.Fatalf("valid direct action produced a diagnostic: %#v", byName[name])
+		}
+	}
+}
+
 func TestDeploymentChecksRejectPlaceholderApprovers(t *testing.T) {
 	base := config.Defaults()
 	base.TenantID, base.AppID = "tenant_local", "cli_local"

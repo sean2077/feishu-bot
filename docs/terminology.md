@@ -55,7 +55,7 @@ _避免_: 把 `mention_bot` 当作通用机器人编排或审批通道
 
 **轮次污染标记**
 
-跨群历史读取成功后附加在当前轮次上的写操作限制。写工具、`send_file`、非只读 action 和未知工具需要 DM 用户确认，只读工具放行；非只读 action 的污染确认之后仍按原有 approvers 和禁止自批规则审批。新的人类输入在后台任务结束后清除标记，`/stop`、超时或 worker 结束会拒绝挂起的污染审批。它只解除本层拦截，不替代原生权限规则。
+跨群历史读取成功后附加在当前轮次上的写操作限制。写工具、`send_file`、非只读 action 和未知工具需要 DM 用户确认，只读工具放行；非只读 action 的污染确认之后仍按原有 approvers 和禁止自批规则审批；`approval: "none"` 的非只读 action 例外，维持直接执行，`action_started` 审计记 `tainted=true`。新的人类输入在后台任务结束后清除标记，`/stop`、超时或 worker 结束会拒绝挂起的污染审批。它只解除本层拦截，不替代原生权限规则。
 _英文_: tainted turn
 
 **原生会话 ID**
@@ -160,9 +160,14 @@ _英文_: question
 
 **固定操作**
 
-配置中声明的受控外部执行器及其资源、argv 范围。`readOnly: true` 是管理员对可信执行器的声明，不是自动安全证明。
+配置中声明的受控外部执行器及其资源、argv 范围。`readOnly: true` 是管理员对可信执行器的声明，不是自动安全证明；`approval: "card"`（默认）逐次审批，`approval: "none"` 仅在本轮 senders 全为项目 maintainers 时直接执行。
 _英文_: project action
 _同义_: 项目操作（如[可选项目操作](project-actions.md)的标题）
+
+**直接执行审批**
+
+`actions[].approval: "none"` 的非只读固定操作模式：只有请求上下文 active 且本轮 senders 全部是项目 maintainers 时才执行，否则返回「需要管理员发起」，不弹审批卡。污染轮次维持直接执行，`action_started` 审计记 `tainted=true`。它不是权限提升，也不替代原生权限规则。
+_英文_: direct action approval
 
 **预检索上下文**
 
@@ -254,7 +259,7 @@ _英文_: project owner
 
 **指定审批人**
 
-`actions[].approvers` 中为该固定操作指定的审批人集合。配置后替代项目 maintainers，不隐式加入 maintainers 或 owners；群内点击者还必须是该群授权作者。
+`actions[].approvers` 中为该固定操作指定的审批人集合。配置后替代项目 maintainers，不隐式加入 maintainers 或 owners；群内点击者还必须是该群授权作者。`approval: "none"` 的 action 不使用这个集合。
 _英文_: designated approver
 _避免_: 把指定审批人等同于 maintainer
 

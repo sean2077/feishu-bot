@@ -102,16 +102,16 @@ func TestActionApproverEnvironmentAndRunMetadata(t *testing.T) {
 	if _, ok := env["FEISHU_ACTION_TAINT_CONFIRMER_OPEN_ID"]; ok {
 		t.Fatalf("non-tainted action carried taint confirmer: %#v", env)
 	}
-	var runRequest, runApprover string
-	if err := f.s.DB.QueryRow("SELECT request,approver FROM action_runs").Scan(&runRequest, &runApprover); err != nil {
+	var runRequest, runApprover, approval string
+	if err := f.s.DB.QueryRow("SELECT request,approver,approval FROM action_runs").Scan(&runRequest, &runApprover, &approval); err != nil {
 		t.Fatal(err)
 	}
 	var actor string
 	if err := f.s.DB.QueryRow("SELECT actor FROM requests WHERE id=?", requestID).Scan(&actor); err != nil {
 		t.Fatal(err)
 	}
-	if runRequest != requestID || runApprover != "owner" || actor != "owner" {
-		t.Fatalf("run metadata = %q %q actor=%q", runRequest, runApprover, actor)
+	if runRequest != requestID || runApprover != "owner" || actor != "owner" || approval != "card" {
+		t.Fatalf("run metadata = %q %q actor=%q approval=%q", runRequest, runApprover, actor, approval)
 	}
 }
 
@@ -137,11 +137,126 @@ func TestReadOnlyActionOmitsApproverEnvironment(t *testing.T) {
 		}
 	}
 	var request, approver, taintRequest any
-	if err := f.s.DB.QueryRow("SELECT request,approver,taint_request FROM action_runs").Scan(&request, &approver, &taintRequest); err != nil {
+	var approval string
+	if err := f.s.DB.QueryRow("SELECT request,approver,taint_request,approval FROM action_runs").Scan(&request, &approver, &taintRequest, &approval); err != nil {
 		t.Fatal(err)
 	}
-	if request != nil || approver != nil || taintRequest != nil {
-		t.Fatalf("readOnly action metadata = %#v %#v %#v", request, approver, taintRequest)
+	if request != nil || approver != nil || taintRequest != nil || approval != "none" {
+		t.Fatalf("readOnly action metadata = %#v %#v %#v %q", request, approver, taintRequest, approval)
+	}
+}
+
+func TestActionApprovalNoneRunsForMaintainersWithoutCard(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "build", Description: "Build", Executable: "fixture", Approval: "none"}}
+	})
+	var env map[string]string
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, got map[string]string, _ int64) (int, string, error) {
+		env = got
+		return 0, "built", nil
+	}
+	requestContext := &core.RequestContext{ChatID: "group", ChatType: "group", MessageID: "one", SenderOpenID: "owner", SenderName: "Owner", Senders: []string{"owner"}}
+	result, err := f.g.executeAction(context.Background(), f.room(), "session", f.c.Projects[0], "build", core.Args{}, core.Workspace{}, requestContext)
+	if err != nil || !boolArg(result, "ok") {
+		t.Fatalf("direct action = %#v %v", result, err)
+	}
+	if f.tr.cardCount() != 0 {
+		t.Fatal("direct action created an approval card")
+	}
+	if env["FEISHU_REQUEST_SENDERS"] != "owner" || env["FEISHU_REQUEST_MESSAGE_ID"] != "one" || env["FEISHU_REQUEST_SENDER_OPEN_ID"] != "owner" {
+		t.Fatalf("request env = %#v", env)
+	}
+	for _, key := range []string{"FEISHU_ACTION_REQUEST_ID", "FEISHU_ACTION_APPROVER_OPEN_ID", "FEISHU_ACTION_APPROVED_AT", "FEISHU_ACTION_TAINT_CONFIRMER_OPEN_ID"} {
+		if _, ok := env[key]; ok {
+			t.Fatalf("direct action received %s", key)
+		}
+	}
+	var approval string
+	var request, approver, taint any
+	if err := f.s.DB.QueryRow("SELECT approval,request,approver,taint_request FROM action_runs WHERE action='build'").Scan(&approval, &request, &approver, &taint); err != nil {
+		t.Fatal(err)
+	}
+	if approval != "none" || request != nil || approver != nil || taint != nil {
+		t.Fatalf("run metadata = %q %#v %#v %#v", approval, request, approver, taint)
+	}
+	detail := auditDetail(t, f, "action_started")
+	if stringArg(detail, "approval") != "none" || detail["tainted"] != false {
+		t.Fatalf("action_started detail = %#v", detail)
+	}
+}
+
+func TestActionApprovalNoneRejectsNonMaintainerAndInactiveRequests(t *testing.T) {
+	cases := []struct {
+		name    string
+		context *core.RequestContext
+		reason  string
+	}{
+		{name: "inactive", context: nil, reason: "inactive"},
+		{name: "member", context: &core.RequestContext{Senders: []string{"member"}}, reason: "non_maintainer"},
+		{name: "mixed", context: &core.RequestContext{Senders: []string{"owner", "member"}}, reason: "non_maintainer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, func(c *core.Config) {
+				c.Projects[0].Actions = []core.ActionSpec{{ID: "build", Description: "Build", Executable: "fixture", Approval: "none"}}
+			})
+			called := false
+			f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, _ map[string]string, _ int64) (int, string, error) {
+				called = true
+				return 0, "", nil
+			}
+			result, err := f.g.executeAction(context.Background(), f.room(), "session", f.c.Projects[0], "build", core.Args{}, core.Workspace{}, tc.context)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if boolArg(result, "ok") || stringArg(result, "error") != "需要管理员发起" {
+				t.Fatalf("rejection = %#v", result)
+			}
+			if called {
+				t.Fatal("rejected direct action executed")
+			}
+			if f.tr.cardCount() != 0 {
+				t.Fatal("rejected direct action created an approval card")
+			}
+			var runs int
+			if err := f.s.DB.QueryRow("SELECT count(*) FROM action_runs").Scan(&runs); err != nil || runs != 0 {
+				t.Fatalf("rejected action wrote %d runs: %v", runs, err)
+			}
+			detail := auditDetail(t, f, "action_direct_rejected")
+			if stringArg(detail, "reason") != tc.reason || stringArg(detail, "action") != "build" {
+				t.Fatalf("rejection audit = %#v", detail)
+			}
+		})
+	}
+}
+
+func TestActionApprovalNoneStaysDirectOnTaintedTurn(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "build", Description: "Build", Executable: "fixture", Approval: "none"}}
+	})
+	var env map[string]string
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, got map[string]string, _ int64) (int, string, error) {
+		env = got
+		return 0, "built", nil
+	}
+	requestContext := &core.RequestContext{ChatID: "group", ChatType: "group", MessageID: "one", SenderOpenID: "owner", Senders: []string{"owner"}}
+	result, err := f.g.executeActionTainted(context.Background(), f.room(), "session", f.c.Projects[0], "build", core.Args{}, core.Workspace{}, requestContext, true, []string{"other"})
+	if err != nil || !boolArg(result, "ok") {
+		t.Fatalf("tainted direct action = %#v %v", result, err)
+	}
+	if f.tr.cardCount() != 0 {
+		t.Fatal("tainted direct action created an approval card")
+	}
+	if _, ok := env["FEISHU_ACTION_TAINT_CONFIRMER_OPEN_ID"]; ok {
+		t.Fatalf("direct action received a taint confirmer: %#v", env)
+	}
+	detail := auditDetail(t, f, "action_started")
+	if detail["tainted"] != true || stringArg(detail, "approval") != "none" {
+		t.Fatalf("tainted action_started detail = %#v", detail)
+	}
+	var approval string
+	if err := f.s.DB.QueryRow("SELECT approval FROM action_runs WHERE action='build'").Scan(&approval); err != nil || approval != "none" {
+		t.Fatalf("tainted run approval = %q %v", approval, err)
 	}
 }
 

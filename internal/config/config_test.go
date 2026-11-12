@@ -320,7 +320,21 @@ func TestLegacyActionWorkingDirectoryRemainsProcessRelative(t *testing.T) {
 		t.Fatal(err)
 	}
 	action := c.Projects[0].Actions[0]
-	if action.CWD != filepath.Join(processCWD, "operations") || action.TimeoutMS != 60000 {
+	if action.CWD != filepath.Join(processCWD, "operations") || action.TimeoutMS != 60000 || action.Approval != "card" {
 		t.Fatalf("action cwd/defaults changed: %+v", action)
+	}
+}
+
+func TestActionApprovalRejectsUnknownModes(t *testing.T) {
+	v := fixture(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := v["projects"].([]any)[0].(map[string]any)
+	p["actions"] = []any{map[string]any{"id": "build", "description": "Build", "executable": exe, "approval": "sometimes"}}
+	data, _ := json.Marshal(v)
+	if _, err = Parse(data, t.TempDir()); err == nil {
+		t.Fatal("unknown action approval was accepted")
 	}
 }

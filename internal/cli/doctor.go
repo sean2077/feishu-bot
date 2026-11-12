@@ -189,6 +189,34 @@ func approvalPolicyChecks(c core.Config) []Diagnostic {
 	return checks
 }
 
+func actionApprovalChecks(c core.Config) []Diagnostic {
+	var checks []Diagnostic
+	for _, p := range c.Projects {
+		direct := false
+		for _, a := range p.Actions {
+			mode := a.Approval
+			if mode == "" {
+				mode = "card"
+			}
+			name := "project " + p.ID + " action " + a.ID + " approval"
+			switch mode {
+			case "card":
+			case "none":
+				direct = true
+				if a.ReadOnly {
+					checks = append(checks, Diagnostic{Name: name, OK: true, Detail: "Warning: approval:none is redundant for a readOnly action; readOnly actions never ask for approval."})
+				}
+			default:
+				checks = append(checks, Diagnostic{Name: name, OK: false, Detail: "approval must be card or none."})
+			}
+		}
+		if direct && len(p.Maintainers) == 0 {
+			checks = append(checks, Diagnostic{Name: "project " + p.ID + " approval:none maintainers", OK: false, Detail: "approval:none requires at least one project maintainer; otherwise every call is rejected."})
+		}
+	}
+	return checks
+}
+
 func permissionModeChecks(c core.Config) []Diagnostic {
 	var checks []Diagnostic
 	for _, p := range c.Projects {
@@ -311,6 +339,7 @@ func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) Doct
 	checks := append(deploymentChecks(c), projectEnvChecks(c)...)
 	checks = append(checks, projectSettingsChecks(c)...)
 	checks = append(checks, approvalPolicyChecks(c)...)
+	checks = append(checks, actionApprovalChecks(c)...)
 	checks = append(checks, permissionModeChecks(c)...)
 	checks = append(checks, projectModelProfileChecks(c)...)
 	checks = append(checks, projectPromptChecks(c)...)

@@ -77,6 +77,27 @@ func actionArguments(spec core.ActionSpec, input core.Args, snapshots map[string
 	}
 	return args, nil
 }
+
+const directApprovalError = "需要管理员发起"
+
+// directApprovalRejection reports why an approval:none action may not run. The
+// action executes only when the request is active and every sender in this
+// turn is a project maintainer.
+func directApprovalRejection(requestContext *core.RequestContext, maintainers []string) string {
+	if requestContext == nil || len(requestContext.Senders) == 0 {
+		return "inactive"
+	}
+	if len(maintainers) == 0 {
+		return "no_maintainers"
+	}
+	for _, sender := range requestContext.Senders {
+		if !contains(maintainers, sender) {
+			return "non_maintainer"
+		}
+	}
+	return ""
+}
+
 func cleanActionEnv(extra map[string]string) map[string]string {
 	env := map[string]string{}
 	for _, key := range []string{"PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "TZ", "TEMP", "TMP"} {
@@ -251,7 +272,18 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 	if _, e := actionArguments(*spec, input, nil, allowLeadingDash); e != nil {
 		return nil, e
 	}
+	approvalMode := "card"
+	if spec.ReadOnly || spec.Approval == "none" {
+		approvalMode = "none"
+	}
+	direct := !spec.ReadOnly && approvalMode == "none"
 	run := core.NewID()
+	if direct {
+		if reason := directApprovalRejection(requestContext, p.Maintainers); reason != "" {
+			g.audit(r.Key, "action_direct_rejected", core.Args{"run": run, "action": id, "reason": reason})
+			return core.Args{"ok": false, "error": directApprovalError}, nil
+		}
+	}
 	staging := filepath.Join(g.config.DataDir, "action-inputs", run)
 	defer os.RemoveAll(staging)
 	snapshots := map[string]string{}
@@ -289,10 +321,10 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 		return nil, e
 	}
 	digest := core.Hash(jsonText(core.Args{"id": id, "input": input, "fileDigests": digests}))
-	policy := approvalPolicyForAction(p, *spec, requestContext)
 	var approvalRequest, approver, taintRequest, taintApprover string
 	var approvedAt int64
-	if !spec.ReadOnly {
+	if approvalMode == "card" {
+		policy := approvalPolicyForAction(p, *spec, requestContext)
 		summary := "项目：" + p.ID + "\n" + requesterLine(requestContext) + "\n"
 		if len(spec.Approvers) > 0 {
 			summary += "审批人：指定审批人\n"
@@ -339,7 +371,7 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 		}
 	}
 	addRequestContextEnvironment(env, requestContext)
-	if !spec.ReadOnly {
+	if approvalMode == "card" {
 		set := func(key, value string) {
 			if value != "" {
 				env[key] = value
@@ -369,10 +401,13 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 			contextJSON = string(data)
 		}
 	}
-	if _, e = g.store.DB.Exec("INSERT INTO action_runs(id,room,session,action,digest,state,at,requester,request_context,request,approver,taint_request) VALUES(?,?,?,?,?,'running',?,?,?,?,?,?)", run, r.Key, session, id, digest, time.Now().UnixMilli(), requester, contextJSON, nullString(approvalRequest), nullString(approver), nullString(taintRequest)); e != nil {
+	if _, e = g.store.DB.Exec("INSERT INTO action_runs(id,room,session,action,digest,state,at,requester,request_context,request,approver,taint_request,approval) VALUES(?,?,?,?,?,'running',?,?,?,?,?,?,?)", run, r.Key, session, id, digest, time.Now().UnixMilli(), requester, contextJSON, nullString(approvalRequest), nullString(approver), nullString(taintRequest), approvalMode); e != nil {
 		return nil, e
 	}
-	detail := core.Args{"run": run, "action": id, "digest": digest, "readOnly": spec.ReadOnly}
+	detail := core.Args{"run": run, "action": id, "digest": digest, "readOnly": spec.ReadOnly, "approval": approvalMode}
+	if direct {
+		detail["tainted"] = tainted
+	}
 	if requestContext != nil {
 		if requestContext.SenderOpenID != "" {
 			detail["requester"] = requestContext.SenderOpenID
