@@ -17,7 +17,7 @@
 | feishu-doc-read / feishu-doc-append | 固定文档读取或追加 | 读取自动，追加逐次 |
 | feishu-table-list / feishu-table-update | 固定表和允许字段 | 读取自动，更新逐次 |
 
-`vars` 是固定非敏感设置，`env` 引用服务进程环境变量，`parameters` 约束 agent 提供的字符串。`readOnly: true` 的操作自动执行，其余逐次由维护者审批；`readOnly` 是管理员对可信执行器的声明，不是自动安全证明，不能把写操作标为只读以绕过审批。`actions[].env` 引用的源变量名同时是项目环境变量的保留名，不能通过 `projects[].env` 或 `envPassthrough` 注入原生进程；固定操作的凭据只在操作子进程中提供。
+`vars` 是固定非敏感设置，`env` 引用服务进程环境变量，`parameters` 约束 agent 提供的字符串。固定操作只继承少量基础环境变量：`PATH`、`SystemRoot`、`WINDIR`、`COMSPEC`、`PATHEXT`、`LANG`、`LC_ALL`、`TZ`、`TEMP`、`TMP`，以及 Windows 上常用的 `LOCALAPPDATA`、`APPDATA`、`USERPROFILE`、`SystemDrive`、`ProgramData`、`ALLUSERSPROFILE`；其他服务环境变量不会自动继承，`vars` 显式配置的同名值覆盖这些继承值。`readOnly: true` 的操作自动执行，其余逐次由维护者审批；`readOnly` 是管理员对可信执行器的声明，不是自动安全证明，不能把写操作标为只读以绕过审批。`actions[].env` 引用的源变量名同时是项目环境变量的保留名，不能通过 `projects[].env` 或 `envPassthrough` 注入原生进程；固定操作的凭据只在操作子进程中提供。
 
 `actions[].approval` 可选，默认 `"card"`；非只读操作逐次弹审批卡。设为 `"none"` 时改为直接执行，但仅当本轮请求上下文 active 且 `senders` 全部是该项目 `maintainers`；否则返回 `{"ok":false,"error":"需要管理员发起"}`，不回退到审批卡。`senders` 只包含请求到达时仍在活动的 deliveries；缓存背景、引用内容以及跨轮次后台进程的延迟调用不参与判定。直接执行仍注入 `FEISHU_REQUEST_*`，不设置审批人环境变量；`action_runs.approval` 记为 `none`。污染轮次（读过其他群）仍是直接执行，但 `action_started` 审计记 `tainted=true`。`approval: "none"` 不使用 `approvers`，也不适用自批规则。`readOnly: true` 与 `approval: "none"` 同时配置是多余的，`doctor` 给出 warning。管理员应只对可回滚、范围受限的操作使用该模式。
 
