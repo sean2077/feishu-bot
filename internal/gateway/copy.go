@@ -30,8 +30,8 @@ func (g *Gateway) latestReplyText(room core.Room) (string, bool) {
 
 func (g *Gateway) sendCopyText(room core.Room, text string) {
 	text = core.Redact(text, g.secrets)
-	if len([]rune(text)) > copyTextLimit {
-		text = cut(text, copyTextLimit) + "\n\n（复制内容已截断）"
+	if len(text) > copyTextLimit {
+		text = bytePrefix(text, copyTextLimit) + "\n\n（复制内容已截断）"
 	}
 	if err := g.notice(g.ctx, room, text, nil); err != nil {
 		g.audit(room.Key, "copy_delivery_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
