@@ -17,7 +17,7 @@ func TestResumeInterruptedRecoveryCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := core.Message{ID: "uncertain-1", ChatID: r.ChatID, ChatType: "group", SenderID: "member", Text: "original question", Time: time.Now().UnixMilli()}
+	original := core.Message{ID: "card:abc", ChatID: r.ChatID, ChatType: "group", SenderID: "member", Text: "original question", Time: time.Now().UnixMilli(), InteractionMessageID: "om_card"}
 	if _, err = f.s.DB.Exec("INSERT INTO inbox(room,id,message,status,at,session) VALUES(?,?,?,'uncertain',?,?)", r.Key, original.ID, jsonText(original), original.Time, session.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestResumeInterruptedRecoveryCard(t *testing.T) {
 	if !strings.Contains(jsonText(card), "gateway_quick_resume") {
 		t.Fatalf("recovery card lacks resume button: %s", jsonText(card))
 	}
-	statusCard := f.g.deliveredOutputCard(outgoing{Kind: "status", ID: "status-out", Session: session.ID, State: "done", Text: "已停止"}, r)
+	statusCard := f.g.outputCard(outgoing{Kind: "status", ID: "status-out", Session: session.ID, State: "done", Text: "已停止"}, r, false)
 	if !strings.Contains(jsonText(statusCard), "gateway_quick_resume") {
 		t.Fatalf("status card lacks resume button: %s", jsonText(statusCard))
 	}
@@ -48,7 +48,7 @@ func TestResumeInterruptedRecoveryCard(t *testing.T) {
 	if text, err = f.g.Action(context.Background(), action); err != nil || !strings.Contains(text, "已继续或卡片已失效") {
 		t.Fatalf("duplicate resume = %q %v", text, err)
 	}
-	var messages []string
+	var messages []core.Message
 	rows, err := f.s.DB.Query("SELECT message FROM inbox WHERE room=? AND status!='uncertain'", r.Key)
 	if err != nil {
 		t.Fatal(err)
@@ -63,12 +63,15 @@ func TestResumeInterruptedRecoveryCard(t *testing.T) {
 		if json.Unmarshal([]byte(raw), &m) != nil {
 			t.Fatal(err)
 		}
-		messages = append(messages, m.Text)
+		messages = append(messages, m)
 	}
 	found := false
-	for _, text := range messages {
-		if text == resumeInterruptedPrompt {
+	for _, message := range messages {
+		if message.Text == resumeInterruptedPrompt {
 			found = true
+			if message.InteractionMessageID != "om_card" {
+				t.Fatalf("resume reply target = %q", message.InteractionMessageID)
+			}
 		}
 	}
 	if !found {

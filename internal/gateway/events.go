@@ -684,7 +684,10 @@ func (g *Gateway) persistExited(ctx context.Context, s *slot, cleanupFailed, int
 			return e
 		}
 		if cleanupFailed || interrupted || approvals > 0 || n > 0 {
-			text := "原生工作进程意外退出。当前审批／追问已取消；未确认的输入与外部操作不会自动重放。请先核实结果。会话记录仍保留，可以继续原会话。 " + g.resumeHint()
+			text := "原生工作进程意外退出。当前审批／追问已取消；未确认的输入与外部操作不会自动重放。请先核实结果。会话记录仍保留，可以继续原会话。"
+			if hint := g.resumeHint(n > 0 && !cleanupFailed && !g.resumeBlocked(s.room, s), s.room); hint != "" {
+				text += " " + hint
+			}
 			if cleanupFailed {
 				text = "原生进程异常退出，但后代清理未确认。本聊天已暂停；不会启动替代进程或重放未确认操作。请维护者核实进程状态。"
 			}
