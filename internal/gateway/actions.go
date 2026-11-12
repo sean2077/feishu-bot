@@ -290,6 +290,8 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 	}
 	digest := core.Hash(jsonText(core.Args{"id": id, "input": input, "fileDigests": digests}))
 	policy := approvalPolicyForAction(p, *spec, requestContext)
+	var approvalRequest, approver, taintRequest, taintApprover string
+	var approvedAt int64
 	if !spec.ReadOnly {
 		summary := "项目：" + p.ID + "\n" + requesterLine(requestContext) + "\n"
 		if len(spec.Approvers) > 0 {
@@ -309,6 +311,7 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 			if !boolArg(decision, "approved") {
 				return core.Args{"ok": false, "error": stringArg(decision, "reason")}, nil
 			}
+			taintRequest, taintApprover = stringArg(decision, "request"), stringArg(decision, "actor")
 		}
 		decision, e := g.ask(ctx, r, session, id, input, summary, nil, policy)
 		if e != nil {
@@ -317,6 +320,8 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 		if !boolArg(decision, "approved") {
 			return core.Args{"ok": false, "error": stringArg(decision, "reason")}, nil
 		}
+		approvalRequest, approver = stringArg(decision, "request"), stringArg(decision, "actor")
+		approvedAt, _ = numberArg(decision, "settledAt")
 	}
 	if ctx.Err() != nil {
 		return core.Args{"ok": false, "error": "cancelled"}, nil
@@ -334,6 +339,21 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 		}
 	}
 	addRequestContextEnvironment(env, requestContext)
+	if !spec.ReadOnly {
+		set := func(key, value string) {
+			if value != "" {
+				env[key] = value
+			}
+		}
+		set("FEISHU_ACTION_REQUEST_ID", approvalRequest)
+		set("FEISHU_ACTION_APPROVER_OPEN_ID", approver)
+		if approvedAt > 0 {
+			env["FEISHU_ACTION_APPROVED_AT"] = time.UnixMilli(approvedAt).UTC().Format(time.RFC3339)
+		}
+		if tainted {
+			set("FEISHU_ACTION_TAINT_CONFIRMER_OPEN_ID", taintApprover)
+		}
+	}
 	execution, e := g.beginAction(ctx, r.Key, run)
 	if e != nil {
 		return nil, e
@@ -349,7 +369,7 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 			contextJSON = string(data)
 		}
 	}
-	if _, e = g.store.DB.Exec("INSERT INTO action_runs(id,room,session,action,digest,state,at,requester,request_context) VALUES(?,?,?,?,?,'running',?,?,?)", run, r.Key, session, id, digest, time.Now().UnixMilli(), requester, contextJSON); e != nil {
+	if _, e = g.store.DB.Exec("INSERT INTO action_runs(id,room,session,action,digest,state,at,requester,request_context,request,approver,taint_request) VALUES(?,?,?,?,?,'running',?,?,?,?,?,?)", run, r.Key, session, id, digest, time.Now().UnixMilli(), requester, contextJSON, nullString(approvalRequest), nullString(approver), nullString(taintRequest)); e != nil {
 		return nil, e
 	}
 	detail := core.Args{"run": run, "action": id, "digest": digest, "readOnly": spec.ReadOnly}

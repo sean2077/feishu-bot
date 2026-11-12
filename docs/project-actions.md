@@ -53,11 +53,22 @@
 
 没有进行中的 delivery 时（例如轮次已结束、后台任务、定时任务）视为无上下文：不设置这些变量，审计为空，审批卡不显示发起人。网关不会退回到最近一条消息，也不猜测发起人。上下文在 action 请求到达时取得，审批等待期间 deliveries 变化不会改变本次记录。
 
-`actions[].env` 和 `actions[].vars` 的目标键不能以 `FEISHU_REQUEST_` 开头；项目环境变量和 settings 文件也保留该前缀。
+非只读操作审批通过后，子进程另获得以下审计变量（只读操作不设置）：
+
+| 变量 | 内容 |
+|---|---|
+| `FEISHU_ACTION_REQUEST_ID` | 最终批准该操作的审批请求 ID，与 `requests.id` 一致 |
+| `FEISHU_ACTION_APPROVER_OPEN_ID` | 最终点击批准的审批人 open_id；系统拒绝/超时不会执行操作 |
+| `FEISHU_ACTION_APPROVED_AT` | 最终批准时间的 RFC3339 UTC |
+| `FEISHU_ACTION_TAINT_CONFIRMER_OPEN_ID` | 污染轮次中先完成私聊确认的 open_id；非污染轮次没有该变量 |
+
+这些变量由网关在清理后的环境上设置，不能由 `actions[].env`／`vars` 或项目环境伪造。
+
+`actions[].env` 和 `actions[].vars` 的目标键不能以 `FEISHU_REQUEST_` 或 `FEISHU_ACTION_` 开头；项目环境变量和 settings 文件也保留这两个前缀。
 
 审计与状态：
 
-- `action_runs.requester` 保存 anchor 发送者 open_id，`action_runs.request_context` 保存上下文 JSON；两列可空，旧库升级时自动追加。保留期沿用 `action_runs` 的 90 天。
+- `action_runs.requester` 保存 anchor 发送者 open_id，`action_runs.request_context` 保存上下文 JSON；两列可空，旧库升级时自动追加。`action_runs.request` 和 `action_runs.approver` 保存最终审批请求 ID 和审批人 open_id，`taint_request` 保存污染轮次的私聊确认请求 ID；均可空。保留期沿用 `action_runs` 的 90 天。
 - `action_started` 审计事件包含 `requester` 和 `messageId`，不写显示名。
 - 非只读操作的审批卡摘要增加一行「发起人：<转义后的显示名>（`open_id`）」；没有显示名时只显示 open_id。显示名来自事件，经过控制字符和空白清理以及 markdown 转义，不额外调用通讯录 API。
 

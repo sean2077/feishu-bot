@@ -295,12 +295,12 @@ func feishu(ctx context.Context, operation string, args []string) (any, error) {
 	default:
 		return nil, errors.New("unknown configured operation")
 	}
-	v, e := required("FEISHU_ACTION_APP_ID", "FEISHU_ACTION_APP_SECRET")
+	v, e := required("EXAMPLE_ACTION_APP_ID", "EXAMPLE_ACTION_APP_SECRET")
 	if e != nil {
 		return nil, e
 	}
 	base := "https://open.feishu.cn/open-apis"
-	auth, e := request(ctx, "POST", base+"/auth/v3/tenant_access_token/internal", nil, core.Args{"app_id": v["FEISHU_ACTION_APP_ID"], "app_secret": v["FEISHU_ACTION_APP_SECRET"]})
+	auth, e := request(ctx, "POST", base+"/auth/v3/tenant_access_token/internal", nil, core.Args{"app_id": v["EXAMPLE_ACTION_APP_ID"], "app_secret": v["EXAMPLE_ACTION_APP_SECRET"]})
 	if e != nil {
 		return nil, e
 	}

@@ -185,7 +185,11 @@ func TestActionEnvironmentRejectsRequestContextKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"FEISHU_REQUEST_CHAT_ID", "feishu_request_sender_name"} {
+	for _, key := range []string{"FEISHU_REQUEST_CHAT_ID", "feishu_request_sender_name", "FEISHU_ACTION_REQUEST_ID", "feishu_action_approver_open_id"} {
+		want := "FEISHU_REQUEST_"
+		if strings.HasPrefix(strings.ToUpper(key), "FEISHU_ACTION_") {
+			want = "FEISHU_ACTION_"
+		}
 		for _, field := range []string{"env", "vars"} {
 			v := fixture(t)
 			p := projectConfig(v)
@@ -193,10 +197,37 @@ func TestActionEnvironmentRejectsRequestContextKeys(t *testing.T) {
 			p["actions"].([]any)[0].(map[string]any)[field] = map[string]any{key: "value"}
 			data, _ := json.Marshal(v)
 			_, err := Parse(data, t.TempDir())
-			if err == nil || !strings.Contains(err.Error(), "FEISHU_REQUEST_") {
+			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("%s accepted %q: %v", field, key, err)
 			}
 		}
+	}
+}
+
+func TestProjectActionsExampleLoads(t *testing.T) {
+	data, err := os.ReadFile("../../examples/project-actions.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actions []any
+	if err = json.Unmarshal(data, &actions); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range actions {
+		raw.(map[string]any)["executable"] = exe
+	}
+	v := fixture(t)
+	projectConfig(v)["actions"] = actions
+	data, err = json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Parse(data, t.TempDir()); err != nil {
+		t.Fatalf("example actions do not load: %v", err)
 	}
 }
 

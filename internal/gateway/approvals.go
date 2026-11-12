@@ -486,6 +486,9 @@ func (g *Gateway) settleApprovalContext(ctx context.Context, id string, value co
 	for id := range p.cards {
 		cards = append(cards, id)
 	}
+	value["actor"] = actor
+	value["request"] = id
+	value["settledAt"] = time.Now().UnixMilli()
 	p.outcome <- value
 	g.approvalMu.Unlock()
 	if fallback != "" {

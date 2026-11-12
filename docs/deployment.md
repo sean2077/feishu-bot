@@ -377,7 +377,7 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 
 `preContext.action` 必须是本项目中 `readOnly: true` 的固定操作，`parameter` 必须是它声明的参数。操作参数模板只能引用这个参数，并且必须把 `{{parameter}}` 作为一个独立 argv 紧跟在字面量 `--` 之后；这样以 `-` 开头的人类提问不会被当成选项。操作不能声明 `workspaceFile` 参数。`timeoutMs` 默认 **5000**，范围 100 到该 action 的 `timeoutMs`；`maxChars` 默认 **6000**，范围 1–20000。不满足任一条时配置加载失败。
 
-网关通过固定操作路径执行：绝对 executable、固定 argv、参数的 pattern 和 maxLength、`env`／`vars` 白名单、输出脱敏、`action_runs` 与 `action_started`／`action_finished` 审计、`FEISHU_REQUEST_*` 请求上下文；不经过 shell。参数值是触发消息的用户可见文本（机器人 mention 已由输入归一化移除）；网关先将空白和控制字符连续段折叠为一个空格并去掉首尾空白，再按参数 `maxLength` 截断。参数校验不通过时 fail-open，原因记为 `parameter`。
+网关通过固定操作路径执行：绝对 executable、固定 argv、参数的 pattern 和 maxLength、`env`／`vars` 白名单、输出脱敏、`action_runs` 与 `action_started`／`action_finished` 审计、`FEISHU_REQUEST_*` 请求上下文；非只读操作通过审批后另注入 `FEISHU_ACTION_REQUEST_ID`／`APPROVER_OPEN_ID`／`APPROVED_AT`（污染轮次还有 `TAINT_CONFIRMER_OPEN_ID`）；不经过 shell。参数值是触发消息的用户可见文本（机器人 mention 已由输入归一化移除）；网关先将空白和控制字符连续段折叠为一个空格并去掉首尾空白，再按参数 `maxLength` 截断。参数校验不通过时 fail-open，原因记为 `parameter`。
 
 只对新一轮人类输入执行：`/compact`、管理命令、轮次进行中的补充或普通输入、以及没有用户文本的纯图片批次都不执行；图片批次使用第一条消息的文本，渲染出的图片占位符不算用户文本。检索与工作区准备、原生进程启动并行；两者都完成后再发送输入，发送最多等待 `timeoutMs`。超时、非零退出、空输出或执行错误时照常发送不带 `preContext` 的输入，并写 `pre_context_failed` 审计（project、action、固定原因分类、durationMs），不记录提问或输出正文。
 

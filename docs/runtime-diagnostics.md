@@ -60,6 +60,7 @@
 - `history_chat_scope_read`：每次成功的 `scope=chat` 历史读取一条，detail 为 `room`、`session`、去重后的 `threads` 和 `count`，不记录消息内容；`threads` 是发现的所有话题根，不是仅最终展开的话题。`history_backfill_failed` 在回复卡正文回填查询失败时写一条，带脱敏错误；历史仍照常返回。
 - `history_cross_chat_read`：每次成功的私聊跨群历史读取一条，detail 为 `room`（来源私聊房间键）、`target`（目标 chatId）、`session`、`requester`（发起人 open_id）、去重后的 `threads` 和 `count`，不记录消息内容、群名或附件。
 - `tainted_turn_prompt`：跨群读取后因污染状态弹审批卡时写一条，detail 为 `room`、`session`、`tool`、`request`（审批请求 ID）和本轮已读目标 `targets`（chatId 列表），不记录工具参数或跨群正文；可用 `request` 与审批结果关联。
+- `action_runs`：固定操作的持久记录。`requester` 和 `request_context` 保存发起上下文；非只读操作通过审批后，`request` 和 `approver` 保存最终审批请求 ID 与审批人 open_id，`taint_request` 保存污染轮次的私聊确认请求 ID；五列均可空，旧库升级时自动追加，保留期沿用 90 天。
 - `dispatch_failed`：`phase` 为 `launch` 或 `send`，`reason` 为固定分类（`settings_file`、`launch_identity`、`process_start`、`process_unconfirmed`、`timeout`、`model_profile`、`workspace`、`other`）；`error` 仍先脱敏。
 - `worker_failure`：原生初始化／运行错误通知的审计，`phase=initialize`，`reason` 使用同一组固定分类；`error` 脱敏。
 - `output_delivery_failed`：`phase=delivery`，`stage` 为 `card`／`file_prepare`／`file_send`／`card_finalize`，`reason` 为固定分类。
