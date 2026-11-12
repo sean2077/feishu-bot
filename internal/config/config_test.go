@@ -42,6 +42,53 @@ func TestExistingConfigurationDefaults(t *testing.T) {
 	if c.Groups[0].AllowAllMembers {
 		t.Fatal("allowAllMembers must default to false")
 	}
+	if c.Groups[0].AllowOtherBots {
+		t.Fatal("allowOtherBots must default to false")
+	}
+}
+func TestAllowOtherBotsGroupConfig(t *testing.T) {
+	v := fixture(t)
+	v["groups"].([]any)[0].(map[string]any)["allowOtherBots"] = true
+	data, _ := json.Marshal(v)
+	c, err := Parse(data, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Groups[0].AllowOtherBots {
+		t.Fatal("allowOtherBots was not applied")
+	}
+	if r, ok := c.RoomFor("oc_example_group", ""); !ok || !r.AllowOtherBots {
+		t.Fatalf("explicit room does not carry allowOtherBots: %+v", r)
+	}
+	group := v["groups"].([]any)[0].(map[string]any)
+	group["otherBots"] = []any{map[string]any{"appId": "cli_helper", "name": "Helper", "openId": "ou_helper"}}
+	data, _ = json.Marshal(v)
+	c, err = Parse(data, t.TempDir())
+	if err != nil || len(c.Groups[0].OtherBots) != 1 || c.Groups[0].OtherBots[0].OpenID != "ou_helper" {
+		t.Fatalf("otherBots = %+v %v", c.Groups[0].OtherBots, err)
+	}
+	group["allowOtherBots"] = false
+	data, _ = json.Marshal(v)
+	if _, err = Parse(data, t.TempDir()); err == nil || !strings.Contains(err.Error(), "otherBots") {
+		t.Fatalf("otherBots without allowOtherBots should fail: %v", err)
+	}
+	group["allowOtherBots"] = true
+	group["otherBots"] = []any{map[string]any{"appId": "wrong", "name": "Helper"}}
+	data, _ = json.Marshal(v)
+	if _, err = Parse(data, t.TempDir()); err == nil || !strings.Contains(err.Error(), "appId") {
+		t.Fatalf("invalid other bot appId should fail: %v", err)
+	}
+	group["otherBots"] = []any{map[string]any{"appId": "cli_helper", "name": "Helper", "openId": "wrong"}}
+	data, _ = json.Marshal(v)
+	if _, err = Parse(data, t.TempDir()); err == nil || !strings.Contains(err.Error(), "openId") {
+		t.Fatalf("invalid other bot openId should fail: %v", err)
+	}
+	group["otherBots"] = []any{map[string]any{"appId": "cli_helper", "name": "Helper"}}
+	v["groups"].([]any)[0].(map[string]any)["chatId"] = core.AnyGroupChatID
+	data, _ = json.Marshal(v)
+	if _, err = Parse(data, t.TempDir()); err == nil || !strings.Contains(err.Error(), "allowOtherBots") {
+		t.Fatalf("wildcard allowOtherBots should fail: %v", err)
+	}
 }
 func TestDefaultGroupBindingConfig(t *testing.T) {
 	v := fixture(t)

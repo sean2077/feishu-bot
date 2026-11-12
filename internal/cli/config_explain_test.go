@@ -35,6 +35,15 @@ func TestConfigExplainUsesRuntimeBindingAndRolePolicy(t *testing.T) {
 	}
 }
 
+func TestConfigExplainShowsAllowOtherBots(t *testing.T) {
+	c := core.Config{TenantID: "tenant", AppID: "app", Projects: []core.Project{{ID: "explicit", Maintainers: []string{"owner"}}}, Groups: []core.Group{{ChatID: "group", ProjectID: "explicit", AllowOtherBots: true, OtherBots: []core.OtherBot{{AppID: "cli_helper", Name: "Helper", OpenID: "ou_helper"}}}}}
+	v := explainRoute(c, Options{ExplainChat: "group", ExplainUser: "cli_other", ChatType: "group", Mentioned: true, SenderBot: true})
+	bots, _ := json.Marshal(v["otherBots"])
+	if v["reason"] != "admitted" || v["allowOtherBots"] != true || !strings.Contains(string(bots), "Helper") {
+		t.Fatalf("other bot explanation = %+v", v)
+	}
+}
+
 func TestConfigExplainIsOfflineAndReadOnly(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

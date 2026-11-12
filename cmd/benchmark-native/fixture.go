@@ -40,6 +40,9 @@ func (t *transport) snapshot() transportStats {
 func (*transport) Send(context.Context, core.Room, string, string, string) (string, error) {
 	return core.NewID(), nil
 }
+func (*transport) SendPost(context.Context, core.Room, core.Args, string, string) (string, error) {
+	return core.NewID(), nil
+}
 func (t *transport) card(ctx context.Context, body core.Args) error {
 	data, err := json.Marshal(body)
 	if err != nil {

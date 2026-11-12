@@ -35,7 +35,7 @@ flowchart TD
 
 [房间键](terminology.md)由 tenant、app、project、聊天类型、chat ID 和私聊用户 ID 组成，整群范围不包含线程；`sessionScope: "thread"` 的群在同样字段后追加话题根消息 ID，每个话题独立排队、执行和恢复，默认共用该群的工作目录。`threadWorkspaces` 只覆盖指定话题的原生 cwd，房间键、聊天级状态和原生 HOME 的布局不变，附件仍按话题分开；网关启动与本地终端交接均核对已有 `session_launch_identity`，不会把历史会话悄悄搬到新目录（见[话题会话](conversation-contract.md#话题会话)）。项目是资源／权限配置单元，不必是代码仓库。首次任务准备工作区并启动 Claude，热进程在后续消息中复用；没有每会话一个的 Node 宿主。
 
-授权在保存正文、下载、回执和模型调用之前完成，规则见[授权与触发](conversation-contract.md#授权与触发)。同一授权检查复用于恢复、历史、引用、附件、审批和输出重试。
+授权在保存正文、下载、回执和模型调用之前完成，规则见[授权与触发](conversation-contract.md#授权与触发)。同一授权检查复用于恢复、历史、引用、附件、审批和输出重试。其他机器人的入站只由显式群 `allowOtherBots` 开启，仍要求明确 @，并受同一话题连续轮数限制；它们的内容是不可信输入，不能借 `mention_bot` 获得 action、审批或维护者身份。
 
 每条输入保留独立 UUID、消息 ID、作者和线程信息。状态从 queued 到 sent、consumed、done，另有 cancelled 和 uncertain；管道写入不等于模型已读。原生消费和结果归属决定哪些输入可以完成，后台结果不默认挂到最新提问。SQLite 插入顺序保护 compact 控制边界。待交付额度的计数与入队在同一事务中完成，话题范围的群按整群合计，消息与卡片补充并发到达也不会突破上限。
 

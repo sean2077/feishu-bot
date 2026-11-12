@@ -20,7 +20,7 @@
 
 可以发送附件，或将获准使用的文档目录设为 `seedDir`。首次建立工作区时复制资料并创建本地 Git baseline 记录修改，后续不自动覆盖；源目录更新也不会同步到已有会话。资料不必是代码，但这不是知识库检索服务；远端资料通过获准的工具或固定操作访问。
 
-群聊配置见 [config.example.json](../examples/config.example.json)。群和作者都须获准，且默认必须明确 @；只回复机器人而没有 @ 不触发。只有你和机器人的小群可设置 `mentionOptional: true` 免除 @，群和作者授权仍生效。`members` 留空仅允许维护者。完整规则见[授权与触发](conversation-contract.md#授权与触发)。
+群聊配置见 [config.example.json](../examples/config.example.json)。群和作者都须获准，且默认必须明确 @；只回复机器人而没有 @ 不触发。只有你和机器人的小群可设置 `mentionOptional: true` 免除 @，群和作者授权仍生效。`members` 留空仅允许维护者。显式群可设置 `allowOtherBots: true` 读取其他机器人消息；只有明确 @ 才触发，同一话题同一机器人最多连续 2 轮。`mention_bot` 只对 maintainer 开放，并只接受 `otherBots` 名单中配置了 `openId` 的目标。完整规则见[授权与触发](conversation-contract.md#授权与触发)。
 
 默认不缓存或预注入非 @ 群消息。需要前文时，Agent 使用当前聊天限定的 `read_chat_history` 按需获取；这需要飞书消息读取权限，结果仍排除未授权作者。主动启用非零 `backgroundMessages` 属于可选行为，应事先告知参与者。
 

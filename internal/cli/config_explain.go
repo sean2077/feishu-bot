@@ -75,11 +75,11 @@ func explainRoute(c core.Config, o Options) core.Args {
 	manager := admitted && (maintainer || r.DMUser == m.SenderID)
 	reason := "admitted"
 	switch {
-	case m.SenderIsBot:
-		reason = "bot_sender"
 	case !bound:
 		reason = "no_binding"
-	case !authorized:
+	case m.SenderIsBot && !admitted:
+		reason = "bot_sender"
+	case !m.SenderIsBot && !authorized:
 		reason = "author_not_allowed"
 	case !trigger:
 		reason = "mention_required"
@@ -90,6 +90,14 @@ func explainRoute(c core.Config, o Options) core.Args {
 		view["roomKey"] = r.Key
 		view["allowAllMembers"] = r.AllowAllMembers
 		view["mentionOptional"] = r.MentionOptional
+		view["allowOtherBots"] = r.AllowOtherBots
+		if len(r.OtherBots) > 0 {
+			bots := make([]string, 0, len(r.OtherBots))
+			for _, b := range r.OtherBots {
+				bots = append(bots, b.Name+" ("+b.AppID+")")
+			}
+			view["otherBots"] = bots
+		}
 		if r.DMUser == "" {
 			view["sessionScope"] = r.SessionScope
 		}

@@ -39,14 +39,16 @@ type Message struct {
 	Background bool `json:"background,omitempty"`
 }
 type Room struct {
-	Key             string   `json:"key"`
-	ChatID          string   `json:"chatId"`
-	ProjectID       string   `json:"projectId"`
-	DMUser          string   `json:"dmUser,omitempty"`
-	Maintainers     []string `json:"maintainers"`
-	Members         []string `json:"members,omitempty"`
-	MentionOptional bool     `json:"mentionOptional"`
-	AllowAllMembers bool     `json:"allowAllMembers,omitempty"`
+	Key             string     `json:"key"`
+	ChatID          string     `json:"chatId"`
+	ProjectID       string     `json:"projectId"`
+	DMUser          string     `json:"dmUser,omitempty"`
+	Maintainers     []string   `json:"maintainers"`
+	Members         []string   `json:"members,omitempty"`
+	MentionOptional bool       `json:"mentionOptional"`
+	AllowAllMembers bool       `json:"allowAllMembers,omitempty"`
+	AllowOtherBots  bool       `json:"allowOtherBots,omitempty"`
+	OtherBots       []OtherBot `json:"otherBots,omitempty"`
 	// SessionScope is the configured group scope. Thread is the topic root
 	// message of a thread-scoped room; ChatKey is the chat room key shared by
 	// every topic of that chat for workspace and native HOME placement.
@@ -243,12 +245,20 @@ type ModelProfile struct {
 	SmallModel string `json:"smallModel,omitempty"`
 	Effort     string `json:"effort,omitempty"`
 }
+type OtherBot struct {
+	AppID  string `json:"appId"`
+	Name   string `json:"name"`
+	OpenID string `json:"openId,omitempty"`
+}
+
 type Group struct {
 	ChatID           string            `json:"chatId"`
 	ProjectID        string            `json:"projectId"`
 	Members          []string          `json:"members,omitempty"`
 	MentionOptional  bool              `json:"mentionOptional"`
 	AllowAllMembers  bool              `json:"allowAllMembers,omitempty"`
+	AllowOtherBots   bool              `json:"allowOtherBots,omitempty"`
+	OtherBots        []OtherBot        `json:"otherBots,omitempty"`
 	SessionScope     string            `json:"sessionScope,omitempty"`
 	TopicHistory     string            `json:"topicHistory,omitempty"`
 	ThreadWorkspaces map[string]string `json:"threadWorkspaces,omitempty"`
@@ -319,6 +329,7 @@ type Origin struct {
 }
 type Transport interface {
 	Send(context.Context, Room, string, string, string) (string, error)
+	SendPost(context.Context, Room, Args, string, string) (string, error)
 	Card(context.Context, Room, Args, string, string) (string, error)
 	Update(context.Context, string, Args) error
 	Download(context.Context, string, Resource, string, int64) error

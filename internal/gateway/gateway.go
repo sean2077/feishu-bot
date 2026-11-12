@@ -64,7 +64,9 @@ type slot struct {
 	// turnRenders names the renders that received output since the last
 	// native result. One result ends one native turn, so any of them that
 	// result does not finalize can never receive its own.
-	turnRenders map[string]bool
+	turnRenders   map[string]bool
+	mentionAnchor string
+	mentionUsed   bool
 }
 
 // markTainted records a successful cross-chat history read for the current
@@ -185,6 +187,8 @@ type Gateway struct {
 	approvalMu                                                   sync.Mutex
 	approvals                                                    map[string]*approval
 	historyKey                                                   [32]byte
+	otherBotMu                                                   sync.Mutex
+	otherBotRounds                                               map[string]otherBotRound
 	secrets                                                      []string
 }
 
@@ -192,7 +196,7 @@ type Gateway struct {
 func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerFactory, log core.Logger) *Gateway {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{config: c, store: st, transport: tr, factory: factory, logger: log, ctx: ctx, cancel: cancel,
-		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, launchFailure: map[string]map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}, exportFailures: map[string]string{}}
+		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, launchFailure: map[string]map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}, otherBotRounds: map[string]otherBotRound{}, exportFailures: map[string]string{}}
 	if _, err := rand.Read(g.historyKey[:]); err != nil {
 		panic("cannot initialize history cursor authentication")
 	}
@@ -379,7 +383,13 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	}
 	defer g.wg.Done()
 	room, ok := Route(g.config, original)
-	if !ok || (!Triggers(room, original) && g.config.Limits.BackgroundMessages == 0) {
+	if !ok {
+		return nil
+	}
+	if !otherBot(original) {
+		g.resetOtherBotRounds(room, original)
+	}
+	if !Triggers(room, original) && g.config.Limits.BackgroundMessages == 0 {
 		return nil
 	}
 	if room.Thread != "" && original.ThreadID == "" && !Triggers(room, original) {
@@ -401,6 +411,17 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	if len(m.Resources) > 12 {
 		m.Resources = m.Resources[:12]
 	}
+	if otherBot(m) && g.mentionReply(room, m) {
+		// A bot replying to a message this gateway sent is a result, not a new
+		// request. Keep it available to history/background without triggering.
+		if g.config.Limits.BackgroundMessages > 0 && m.InputIssue == "" {
+			if _, err = g.store.Insert(room.Key, m, "background"); err != nil {
+				return err
+			}
+			_, err = g.store.DB.Exec("DELETE FROM inbox WHERE room=? AND status='background' AND id NOT IN (SELECT id FROM inbox WHERE room=? AND status='background' ORDER BY at DESC,id DESC LIMIT ?)", room.Key, room.Key, g.config.Limits.BackgroundMessages)
+		}
+		return err
+	}
 	if !Triggers(room, m) {
 		if g.config.Limits.BackgroundMessages > 0 && m.InputIssue == "" {
 			if _, err = g.store.Insert(room.Key, m, "background"); err != nil {
@@ -409,6 +430,22 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 			_, err = g.store.DB.Exec("DELETE FROM inbox WHERE room=? AND status='background' AND id NOT IN (SELECT id FROM inbox WHERE room=? AND status='background' ORDER BY at DESC,id DESC LIMIT ?)", room.Key, room.Key, g.config.Limits.BackgroundMessages)
 		}
 		return err
+	}
+	if otherBot(m) {
+		allowed, warn := g.otherBotTrigger(room, m)
+		if !allowed {
+			status := "done"
+			if g.config.Limits.BackgroundMessages > 0 {
+				status = "background"
+			}
+			if _, err = g.store.Insert(room.Key, m, status); err != nil {
+				return err
+			}
+			if warn {
+				g.notify(room, otherBotLimitNotice, nil)
+			}
+			return nil
+		}
 	}
 	if !imageEligible(m) {
 		if err = g.sealImages(room.Key); err != nil {

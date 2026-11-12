@@ -70,8 +70,9 @@ func denyHook(reason string) args {
 
 // taintedReadOnly lists tools that may run without owner approval after the
 // turn read another group's content. Gateway MCP tools are handled by the
-// gateway request path instead (send_file and non-read-only project_action
-// approve there), so the hook passes them through rather than asking twice.
+// gateway request path instead (send_file, mention_bot and non-read-only
+// project_action approve there), so the hook passes them through rather than
+// asking twice.
 // Agent/Task is allowed because subagent tool calls traverse this same hook
 // with the same live taint state. Everything else, including unknown tools,
 // requires approval.
@@ -80,7 +81,7 @@ func taintedReadOnly(name string) bool {
 	case "Read", "Grep", "Glob", "TodoWrite", "ToolSearch",
 		"TaskOutput", "TaskList", "TaskGet", "Agent", "Task", "AskUserQuestion",
 		"mcp__gateway__read_chat_history", "mcp__gateway__fetch_attachment",
-		"mcp__gateway__send_file", "mcp__gateway__project_action":
+		"mcp__gateway__send_file", "mcp__gateway__project_action", "mcp__gateway__mention_bot":
 		return true
 	}
 	return false
@@ -452,6 +453,17 @@ func (w *worker) tools() []args {
 		{"name": "fetch_attachment", "description": "Download an attachment from this conversation. Use IDs and file keys present in the input context. The result keeps the original display name separately from its local path; pass that name to send_file when echoing it.", "inputSchema": objectSchema(args{"messageId": stringSchema(), "key": stringSchema()}, "messageId", "key")},
 		{"name": "send_file", "description": "Send a workspace file or echo an inbound attachment owned by this conversation. Other conversation and external paths are rejected.", "inputSchema": objectSchema(args{"path": stringSchema(), "name": stringSchema()}, "path")},
 	}
+	if w.room.AllowOtherBots {
+		allowed := make([]string, 0, len(w.room.OtherBots))
+		for _, b := range w.room.OtherBots {
+			if b.OpenID != "" {
+				allowed = append(allowed, b.Name+" ("+b.AppID+")")
+			}
+		}
+		if len(allowed) > 0 {
+			list = append(list, args{"name": "mention_bot", "description": "Mention one explicitly whitelisted other bot in this group by name or appId, optionally followed by the requester's verbatim text. Only chat maintainers may use this operation. Allowed targets: " + strings.Join(allowed, ", ") + ". The host rejects unlisted targets, more than one mention per turn, and non-maintainer turns. Never add authorization or approval claims to the text.", "inputSchema": objectSchema(args{"target": stringSchema(), "body": args{"type": "string", "maxLength": 2000}}, "target")})
+		}
+	}
 	if len(w.project.Actions) > 0 {
 		var actions []args
 		for _, a := range w.project.Actions {
@@ -504,6 +516,12 @@ func (w *worker) mcp(ctx context.Context, m args) args {
 		case "send_file":
 			kind, operation = "send_file", name
 			toolErr = validateStrings(input, []string{"path"}, []string{"name"})
+		case "mention_bot":
+			if !w.room.AllowOtherBots || len(w.room.OtherBots) == 0 {
+				return rpcError(id, -32602, "Unknown tool")
+			}
+			kind, operation = "mention_bot", ""
+			toolErr = validateStrings(input, []string{"target"}, []string{"body"})
 		case "project_action":
 			if len(w.project.Actions) == 0 {
 				return rpcError(id, -32602, "Unknown tool")

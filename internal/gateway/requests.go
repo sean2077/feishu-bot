@@ -29,6 +29,8 @@ func (g *Gateway) request(s *slot, ev core.WorkerEvent) (core.Args, error) {
 			return g.executeActionTainted(s.ctx, current, s.session.ID, project, ev.Name, ev.Input, s.workspace, g.requestContext(s), true, s.taintTargetsSnapshot())
 		}
 		return g.executeAction(s.ctx, current, s.session.ID, project, ev.Name, ev.Input, s.workspace, g.requestContext(s))
+	case "mention_bot":
+		return g.mentionBot(s.ctx, s, current, project, ev.Input)
 	case "attachment":
 		id, key := stringArg(ev.Input, "messageId"), stringArg(ev.Input, "key")
 		message, e := g.store.ContextMessage(current.Key, id)
