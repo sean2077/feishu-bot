@@ -277,3 +277,19 @@ func TestOtherBotEventHeaderAdmission(t *testing.T) {
 		t.Fatal("other bot event was admitted without allowOtherBots")
 	}
 }
+
+func TestOverflowOptionIsParsedFromCardCallback(t *testing.T) {
+	c, _ := fixtureClient(t, nil, func(w http.ResponseWriter, r *http.Request) {})
+	payload := []byte(`{"schema":"2.0","header":{"event_type":"card.action.trigger"},"event":{"operator":{"open_id":"ou_owner"},"context":{"open_chat_id":"oc_allowed","open_message_id":"om_overflow"},"action":{"tag":"overflow","option":"answer","value":{"quick_controls":{"answer":"signed-token"}}}}}`)
+	event, err := c.prepareEvent(payload)
+	if err != nil || event.action == nil {
+		t.Fatalf("overflow callback = %+v %v", event, err)
+	}
+	if event.action.Option != "answer" {
+		t.Fatalf("option = %q %+v", event.action.Option, event.action.Value)
+	}
+	controls, _ := event.action.Value["quick_controls"].(map[string]any)
+	if controls["answer"] != "signed-token" {
+		t.Fatalf("controls = %+v", controls)
+	}
+}
