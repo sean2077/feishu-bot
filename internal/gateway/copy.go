@@ -33,7 +33,8 @@ func (g *Gateway) sendCopyText(room core.Room, text string) {
 	if len(text) > copyTextLimit {
 		text = bytePrefix(text, copyTextLimit) + "\n\n（复制内容已截断）"
 	}
-	if err := g.notice(g.ctx, room, text, nil); err != nil {
+	content := core.Args{"zh_cn": core.Args{"content": []any{[]any{core.Args{"tag": "text", "text": text}}}}}
+	if _, err := g.transport.SendPost(g.ctx, room, content, "", ""); err != nil {
 		g.audit(room.Key, "copy_delivery_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
 	}
 }

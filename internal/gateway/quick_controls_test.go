@@ -570,8 +570,8 @@ func TestFinalReplyCopySendsStoredText(t *testing.T) {
 	eventually(t, func() bool {
 		f.tr.mu.Lock()
 		defer f.tr.mu.Unlock()
-		for _, notice := range f.tr.notices {
-			if notice == "full answer text" {
+		for _, post := range f.tr.posts {
+			if strings.Contains(jsonText(post.card), "full answer text") {
 				return true
 			}
 		}
@@ -611,8 +611,8 @@ func TestCopyCommandSendsLatestReply(t *testing.T) {
 	eventually(t, func() bool {
 		f.tr.mu.Lock()
 		defer f.tr.mu.Unlock()
-		for _, notice := range f.tr.notices {
-			if notice == "latest answer" {
+		for _, post := range f.tr.posts {
+			if strings.Contains(jsonText(post.card), "latest answer") {
 				return true
 			}
 		}
