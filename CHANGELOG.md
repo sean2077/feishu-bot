@@ -40,6 +40,7 @@
 - 新增默认关闭的私聊跨群历史 `dms[].historyChats`：`read_chat_history` 增加 `chat` 参数（配置名或 chatId），只在私聊白名单中解析显式绑定的目标群，复用 chat 时间线、threadId 和 expandThreads。每次调用（含游标续页）要求活动人类请求，发起人是该 DM 用户且为目标群 maintainer 或显式 member；`allowAllMembers` 不算授权，目标不能是兜底群或私聊。跨群结果只读文本、不返回附件，写 `history_cross_chat_read` 审计且不含正文。读取成功后本轮标记为污染：写工具、`send_file`、非只读 `project_action` 和未知工具需要 DM 用户确认，只读工具放行；非只读 action 先做污染确认，再按原有 approvers 和 `forbidSelfApproval` 审批，污染确认不替换原审批。后台任务仍在运行时标记保持，下一轮人类输入且后台结束后清除，`/stop`、超时和 worker 结束 fail-closed；worker 侧另有 approvalMs+10s 截止，避免 hook 超时放行。污染审批写 `tainted_turn_prompt`，只解除本层拦截，不替代原生 permission 规则。残余风险：跨群正文仍留在原生 transcript，可能影响后续轮次；真实飞书跨群读取尚未验收。
 - 回复反馈改为每人每张回复只能反馈一次：`feedback` 以 `(output,user)` 去重，重复点击不覆盖并提示已有选择；按钮文字显示实时计数“有用 · N”／“无用 · M”，每次点击后按 CardKit 元素接口只更新两个按钮，复用 `nextCardSequence` 的严格递增序号和 `feishu_cards.snapshot` 同步；同一张卡串行刷新并在发送前重新读计数，多人并发时最终显示收敛。刷新失败不影响反馈记录，写 `feedback_count_refresh_failed`；旧消息卡没有 CardKit 实体时写 `feedback_count_refresh_skipped`。反馈导出格式不变。
 - 新增顶层 `cardTitle` 配置，默认 `飞书助手`；trim 后须为 1–40 字符且不含控制字符。回复卡状态行使用该名称并对 markdown 特殊字符转义；旧版无 `element_id` 的状态行仍按旧标题识别，只在状态行被重写时替换为新标题，不批量回填旧卡。
+- 固定操作审批通过后向子进程注入 `FEISHU_ACTION_REQUEST_ID`、`FEISHU_ACTION_APPROVER_OPEN_ID`、`FEISHU_ACTION_APPROVED_AT`，污染轮次另注入 `FEISHU_ACTION_TAINT_CONFIRMER_OPEN_ID`；只读操作不注入。`action_runs` 追加可空 `request`、`approver`、`taint_request` 列，分别记录最终审批请求/审批人和污染确认请求；`actions[].env`／`vars` 新增拒绝 `FEISHU_ACTION_` 前缀。审批标识是审计数据，不是授权。
 
 ## 0.5.0 — 2026-11-07
 

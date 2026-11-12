@@ -612,6 +612,9 @@ func validate(c *core.Config, base string) error {
 					if strings.HasPrefix(strings.ToUpper(k), "FEISHU_REQUEST_") {
 						return errors.New("action environment cannot set FEISHU_REQUEST_*")
 					}
+					if strings.HasPrefix(strings.ToUpper(k), "FEISHU_ACTION_") {
+						return errors.New("action environment cannot set FEISHU_ACTION_*")
+					}
 				}
 			}
 			for name, p := range a.Parameters {

@@ -67,6 +67,103 @@ func TestActionApprovalExecutesTheApprovedFileSnapshot(t *testing.T) {
 		t.Fatal("action result not committed", state, e)
 	}
 }
+func TestActionApproverEnvironmentAndRunMetadata(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "publish", Description: "Publish", Executable: "fixture"}}
+	})
+	envs := make(chan map[string]string, 1)
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, env map[string]string, _ int64) (int, string, error) {
+		copy := make(map[string]string, len(env))
+		for key, value := range env {
+			copy[key] = value
+		}
+		envs <- copy
+		return 0, "", nil
+	}
+	f.send(f.message("one", "work", "member"))
+	w := f.worker()
+	_ = f.delivery(w)
+	w.emit(core.WorkerEvent{Type: "request", ID: "publish-request", Kind: "action", Name: "publish", Input: core.Args{}})
+	card, value := approvalCardFor(t, f)
+	if got := clickApproval(t, f, card, value, "owner"); got != "已批准一次" {
+		t.Fatalf("approval toast = %q", got)
+	}
+	if result := response(t, w); !boolArg(result, "ok") {
+		t.Fatalf("action result = %#v", result)
+	}
+	env := <-envs
+	requestID := stringArg(value, "request")
+	if env["FEISHU_ACTION_REQUEST_ID"] != requestID || env["FEISHU_ACTION_APPROVER_OPEN_ID"] != "owner" {
+		t.Fatalf("action approval env = %#v", env)
+	}
+	if _, err := time.Parse(time.RFC3339, env["FEISHU_ACTION_APPROVED_AT"]); err != nil {
+		t.Fatalf("approvedAt = %q: %v", env["FEISHU_ACTION_APPROVED_AT"], err)
+	}
+	if _, ok := env["FEISHU_ACTION_TAINT_CONFIRMER_OPEN_ID"]; ok {
+		t.Fatalf("non-tainted action carried taint confirmer: %#v", env)
+	}
+	var runRequest, runApprover string
+	if err := f.s.DB.QueryRow("SELECT request,approver FROM action_runs").Scan(&runRequest, &runApprover); err != nil {
+		t.Fatal(err)
+	}
+	var actor string
+	if err := f.s.DB.QueryRow("SELECT actor FROM requests WHERE id=?", requestID).Scan(&actor); err != nil {
+		t.Fatal(err)
+	}
+	if runRequest != requestID || runApprover != "owner" || actor != "owner" {
+		t.Fatalf("run metadata = %q %q actor=%q", runRequest, runApprover, actor)
+	}
+}
+
+func TestReadOnlyActionOmitsApproverEnvironment(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "check", Description: "Check", Executable: "fixture", ReadOnly: true}}
+	})
+	envs := make(chan map[string]string, 1)
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, env map[string]string, _ int64) (int, string, error) {
+		envs <- env
+		return 0, "", nil
+	}
+	f.send(f.message("one", "work", "member"))
+	w := f.worker()
+	_ = f.delivery(w)
+	w.emit(core.WorkerEvent{Type: "request", ID: "check-request", Kind: "action", Name: "check", Input: core.Args{}})
+	if result := response(t, w); !boolArg(result, "ok") {
+		t.Fatalf("readonly action = %#v", result)
+	}
+	for key := range <-envs {
+		if strings.HasPrefix(key, "FEISHU_ACTION_") {
+			t.Fatalf("readOnly action received %s", key)
+		}
+	}
+}
+
+func TestForbidSelfApprovalStillRecordsApprover(t *testing.T) {
+	f := actionApprovalFixture(t, []string{"owner", "member"}, []string{"owner"}, true)
+	envs := make(chan map[string]string, 1)
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, env map[string]string, _ int64) (int, string, error) {
+		envs <- env
+		return 0, "", nil
+	}
+	f.send(f.message("message-member", "work", "member"))
+	w := f.worker()
+	_ = f.delivery(w)
+	w.emit(core.WorkerEvent{Type: "request", ID: "publish-request", Kind: "action", Name: "publish", Input: core.Args{}})
+	card, value := approvalCardFor(t, f)
+	if got := clickApproval(t, f, card, value, "member"); got != selfApprovalToast {
+		t.Fatalf("self approval toast = %q", got)
+	}
+	if got := clickApproval(t, f, card, value, "owner"); got != "已批准一次" {
+		t.Fatalf("owner approval toast = %q", got)
+	}
+	if result := response(t, w); !boolArg(result, "ok") {
+		t.Fatalf("action result = %#v", result)
+	}
+	if env := <-envs; env["FEISHU_ACTION_APPROVER_OPEN_ID"] != "owner" {
+		t.Fatalf("forbid-self action env = %#v", env)
+	}
+}
+
 func TestUnconfirmedActionCleanupBlocksNewSessionAndClose(t *testing.T) {
 	f := newFixture(t, func(c *core.Config) {
 		c.Runtime.MaxWorkers = 1

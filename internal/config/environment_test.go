@@ -185,7 +185,11 @@ func TestActionEnvironmentRejectsRequestContextKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"FEISHU_REQUEST_CHAT_ID", "feishu_request_sender_name"} {
+	for _, key := range []string{"FEISHU_REQUEST_CHAT_ID", "feishu_request_sender_name", "FEISHU_ACTION_REQUEST_ID", "feishu_action_approver_open_id"} {
+		want := "FEISHU_REQUEST_"
+		if strings.HasPrefix(strings.ToUpper(key), "FEISHU_ACTION_") {
+			want = "FEISHU_ACTION_"
+		}
 		for _, field := range []string{"env", "vars"} {
 			v := fixture(t)
 			p := projectConfig(v)
@@ -193,7 +197,7 @@ func TestActionEnvironmentRejectsRequestContextKeys(t *testing.T) {
 			p["actions"].([]any)[0].(map[string]any)[field] = map[string]any{key: "value"}
 			data, _ := json.Marshal(v)
 			_, err := Parse(data, t.TempDir())
-			if err == nil || !strings.Contains(err.Error(), "FEISHU_REQUEST_") {
+			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("%s accepted %q: %v", field, key, err)
 			}
 		}

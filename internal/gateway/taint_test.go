@@ -69,7 +69,11 @@ func TestTaintedActionKeepsOriginalApprovers(t *testing.T) {
 	f := newFixture(t, func(c *core.Config) {
 		c.Projects[0].Actions = []core.ActionSpec{{ID: "publish", Description: "Publish", Executable: "fixture", Approvers: []string{"owner"}}}
 	})
-	fakeActionSuccess(f)
+	envs := make(chan map[string]string, 1)
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, env map[string]string, _ int64) (int, string, error) {
+		envs <- env
+		return 0, "", nil
+	}
 	room, ok := f.c.RoomFor("p2p_member", "member")
 	if !ok {
 		t.Fatal("missing member DM")
@@ -118,6 +122,17 @@ func TestTaintedActionKeepsOriginalApprovers(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("tainted action did not finish")
+	}
+	env := <-envs
+	if env["FEISHU_ACTION_APPROVER_OPEN_ID"] != "owner" || env["FEISHU_ACTION_TAINT_CONFIRMER_OPEN_ID"] != "member" {
+		t.Fatalf("tainted action env = %#v", env)
+	}
+	var runRequest, runApprover, taintRequest string
+	if err := f.s.DB.QueryRow("SELECT request,approver,taint_request FROM action_runs").Scan(&runRequest, &runApprover, &taintRequest); err != nil {
+		t.Fatal(err)
+	}
+	if runRequest != stringArg(approve, "request") || runApprover != "owner" || taintRequest != stringArg(value, "request") {
+		t.Fatalf("tainted action run metadata = %q %q %q", runRequest, runApprover, taintRequest)
 	}
 }
 

@@ -43,7 +43,7 @@ PRAGMA user_version=5;`); err != nil {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"requester", "request_context"} {
+	for _, name := range []string{"requester", "request_context", "request", "approver", "taint_request"} {
 		if !columns[name] {
 			t.Fatalf("action_runs migration omitted %s: %#v", name, columns)
 		}
