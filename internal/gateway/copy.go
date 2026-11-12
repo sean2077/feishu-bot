@@ -1,0 +1,76 @@
+package gateway
+
+import (
+	"context"
+	"strings"
+	"time"
+
+	"github.com/sean2077/feishu-bot/internal/core"
+)
+
+const copyTextLimit = 30000
+
+func (g *Gateway) copyOutput(ctx context.Context, room core.Room, p quickControl) (string, bool, error) {
+	o, err := g.outputContext(ctx, p.Output)
+	if err != nil || p.Output == "" || o.Room != room.Key || o.Session != p.Session || o.Kind != "reply" || o.State != "done" || !o.Success || strings.TrimSpace(o.Text) == "" {
+		return "没有可复制的完整回复。", true, nil
+	}
+	g.task(func() {
+		if err := g.sendCopyText(room, o.Text); err != nil {
+			g.notify(room, "复制文本发送失败，请稍后重试。", nil)
+		}
+	})
+	return "正在发送可复制的纯文本。", true, nil
+}
+
+func (g *Gateway) latestReplyText(room core.Room) (string, bool) {
+	session, err := g.store.Session(room.Key)
+	if err != nil {
+		return "", false
+	}
+	var text string
+	err = g.store.DB.QueryRow(`SELECT text FROM outbox WHERE room=? AND session=? AND kind='reply' AND state='done' AND success=1 AND text!='' ORDER BY at DESC,id DESC LIMIT 1`, room.Key, session.ID).Scan(&text)
+	return text, err == nil && strings.TrimSpace(text) != ""
+}
+
+func (g *Gateway) sendCopyText(room core.Room, text string) error {
+	text = core.Redact(text, g.secrets)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	if len(text) > copyTextLimit {
+		text = bytePrefix(text, copyTextLimit) + "\n\n（复制内容已截断）"
+	}
+	lines := strings.Split(text, "\n")
+	rows := make([]any, 0, len(lines))
+	for _, line := range lines {
+		rows = append(rows, []any{core.Args{"tag": "text", "text": line}})
+	}
+	content := core.Args{"zh_cn": core.Args{"content": rows}}
+	_, err := g.transport.SendPost(g.ctx, room, content, "", "")
+	if err != nil {
+		g.audit(room.Key, "copy_delivery_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+	}
+	return err
+}
+
+const retryConfirmWindow = 30 * time.Second
+
+// retryConfirmed implements the overflow retry confirmation: because Feishu
+// overflow options cannot carry a per-option confirm dialog, the first
+// selection only arms a short-lived marker and the second confirms it.
+func (g *Gateway) retryConfirmed(a core.CardAction, p quickControl) bool {
+	now := time.Now()
+	key := a.MessageID + "\x00" + p.Output + "\x00" + a.UserID
+	g.retryConfirmMu.Lock()
+	defer g.retryConfirmMu.Unlock()
+	for k, expiry := range g.retryConfirm {
+		if expiry < now.UnixMilli() {
+			delete(g.retryConfirm, k)
+		}
+	}
+	if expiry, ok := g.retryConfirm[key]; ok && expiry >= now.UnixMilli() {
+		delete(g.retryConfirm, key)
+		return true
+	}
+	g.retryConfirm[key] = now.Add(retryConfirmWindow).UnixMilli()
+	return false
+}

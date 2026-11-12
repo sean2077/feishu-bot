@@ -343,6 +343,7 @@ type CardAction struct {
 	UserID    string
 	ChatID    string
 	MessageID string
+	Option    string
 	Value     Args
 	FormValue Args
 }

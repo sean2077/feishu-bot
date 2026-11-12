@@ -189,6 +189,8 @@ type Gateway struct {
 	historyKey                                                   [32]byte
 	otherBotMu                                                   sync.Mutex
 	otherBotRounds                                               map[string]otherBotRound
+	retryConfirmMu                                               sync.Mutex
+	retryConfirm                                                 map[string]int64
 	secrets                                                      []string
 }
 
@@ -196,7 +198,7 @@ type Gateway struct {
 func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerFactory, log core.Logger) *Gateway {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{config: c, store: st, transport: tr, factory: factory, logger: log, ctx: ctx, cancel: cancel,
-		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, launchFailure: map[string]map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}, otherBotRounds: map[string]otherBotRound{}, exportFailures: map[string]string{}}
+		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, launchFailure: map[string]map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}, otherBotRounds: map[string]otherBotRound{}, retryConfirm: map[string]int64{}, exportFailures: map[string]string{}}
 	if _, err := rand.Read(g.historyKey[:]); err != nil {
 		panic("cannot initialize history cursor authentication")
 	}
@@ -489,11 +491,11 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		}
 		return nil
 	}
-	if contains([]string{"/help", "/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/model", "/profile", "/rename", "/artifacts", "/inputs", "/cancel-input", "/discard-output"}, cmd) {
+	if contains([]string{"/help", "/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/copy", "/model", "/profile", "/rename", "/artifacts", "/inputs", "/cancel-input", "/discard-output"}, cmd) {
 		if _, err = g.store.Insert(room.Key, m, "done"); err != nil {
 			return err
 		}
-		if contains([]string{"/help", "/status", "/sessions", "/outputs", "/usage", "/retry-output", "/artifacts", "/inputs", "/cancel-input", "/discard-output"}, cmd) {
+		if contains([]string{"/help", "/status", "/sessions", "/outputs", "/usage", "/copy", "/retry-output", "/artifacts", "/inputs", "/cancel-input", "/discard-output"}, cmd) {
 			g.task(func() {
 				if e := g.command(g.ctx, room, m); e != nil {
 					g.audit(room.Key, "management_failed", core.Args{"error": core.Redact(e.Error(), g.secrets)})
@@ -656,7 +658,7 @@ func (g *Gateway) refusalRoom(room core.Room, m core.Message) core.Room {
 
 // topicCommands act on one session. In a thread-scoped group they are
 // accepted only inside the topic that owns that session.
-var topicCommands = []string{"/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/model", "/profile", "/rename", "/artifacts", "/inputs", "/cancel-input", "/discard-output", "/compact", "/btw", "/ps"}
+var topicCommands = []string{"/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/copy", "/model", "/profile", "/rename", "/artifacts", "/inputs", "/cancel-input", "/discard-output", "/compact", "/btw", "/ps"}
 
 func (g *Gateway) foregroundTarget(r core.Room) *core.Delivery {
 	s := g.getSlot(r.Key)

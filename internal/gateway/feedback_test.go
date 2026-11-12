@@ -55,7 +55,7 @@ func newFeedbackFixture(t *testing.T, enabled bool, perMinute int) *feedbackFixt
 
 func (x *feedbackFixture) token(t *testing.T, action string) string {
 	t.Helper()
-	revision := x.f.g.quickRevision(x.room, x.session, "", "", "")
+	revision := x.f.g.quickRevision(x.room, x.session, "", x.output, "copy")
 	return x.f.g.signQuick(quickControl{Room: x.room.Key, Session: x.session, Output: x.output, Revision: revision, Action: action})
 }
 
@@ -341,7 +341,7 @@ func TestFeedbackConcurrentUsersConvergeCount(t *testing.T) {
 	x := newFeedbackFixture(t, true, 100)
 	users := []string{"member", "second", "u3", "u4", "u5", "u6"}
 	x.f.g.config.Groups[0].Members = append(x.f.g.config.Groups[0].Members, "u3", "u4", "u5", "u6")
-	revision := x.f.g.quickRevision(x.room, x.session, "", "", "")
+	revision := x.f.g.quickRevision(x.room, x.session, "", x.output, "copy")
 	var wg sync.WaitGroup
 	for _, user := range users {
 		user := user

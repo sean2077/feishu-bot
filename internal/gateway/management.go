@@ -186,7 +186,7 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 	return view, nil
 }
 func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string, bool, error) {
-	if !contains([]string{"/help", "/status", "/sessions", "/outputs", "/usage"}, cmd) {
+	if !contains([]string{"/help", "/status", "/sessions", "/outputs", "/usage", "/copy"}, cmd) {
 		return "", false, nil
 	}
 	if cmd != "/sessions" && arg != "" && (arg != "--json" || cmd == "/help") {
@@ -198,7 +198,7 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 	}
 	manage := canManage(r, actor)
 	if cmd == "/help" {
-		text := "**日常对话**\n群里请明确 @ 机器人；私聊直接发送。忙时普通消息仍交给原生会话处理。\n/btw 正文、/ps 正文：仅补充当前前台任务，不新建任务，不代替审批回答；接收确认不代表模型已读取。\n\n**查看与回答**\n/status 当前工作、待回答事项及交付情况\n/sessions [关键词] 搜索本聊天历史会话并翻页\n/inputs 每条待处理输入、等待原因和可申请取消范围\n/outputs 尚未完整送达的回复和文件\n/usage 当前选中会话的 SDK 用量，不估造费用或上下文占用\n/answer 请求ID 回答（多题也可使用卡片）\n\n**会话管理**\n/stop 停止运行，保留上下文；下条消息继续\n/compact [说明] 在轮次边界执行原生压缩\n/new 明确新建会话\n/resume 会话ID 选择本聊天历史\n/cancel-input 输入ID 取消经核实尚未交给原生进程的输入\n/discard-output 输出ID 放弃同轮依赖交付，原生任务继续、不标 Done\n/retry-output 输出ID 明确补发；结果未知时可能重复\n"
+		text := "**日常对话**\n群里请明确 @ 机器人；私聊直接发送。忙时普通消息仍交给原生会话处理。\n/btw 正文、/ps 正文：仅补充当前前台任务，不新建任务，不代替审批回答；接收确认不代表模型已读取。\n\n**查看与回答**\n/status 当前工作、待回答事项及交付情况\n/sessions [关键词] 搜索本聊天历史会话并翻页\n/copy 把最近一条完整回复作为纯文本发到当前聊天，便于复制\n/inputs 每条待处理输入、等待原因和可申请取消范围\n/outputs 尚未完整送达的回复和文件\n/usage 当前选中会话的 SDK 用量，不估造费用或上下文占用\n/answer 请求ID 回答（多题也可使用卡片）\n\n**会话管理**\n/stop 停止运行，保留上下文；下条消息继续\n/compact [说明] 在轮次边界执行原生压缩\n/new 明确新建会话\n/resume 会话ID 选择本聊天历史\n/cancel-input 输入ID 取消经核实尚未交给原生进程的输入\n/discard-output 输出ID 放弃同轮依赖交付，原生任务继续、不标 Done\n/retry-output 输出ID 明确补发；结果未知时可能重复\n"
 		if manage {
 			text += "你可以管理本聊天会话。工具审批仍限项目维护者。"
 		} else {
@@ -206,6 +206,17 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 		}
 		text += "\n/model [配置名] 查看或选择管理员定义的模型 / effort 配置（/profile 同义）\n/rename 名称 命名当前会话；/rename - 清除\n/resume 名称或唯一短ID 恢复本聊天的会话\n/artifacts [文件ID] 查看或重新取得已完成的文件，不启动模型\n"
 		return text + "\n\n排障需要机器数据时，可用 /status --json、/sessions --json、/outputs --json、/inputs --json、/usage --json、/model --json、/artifacts --json。", true, nil
+	}
+	if cmd == "/copy" {
+		text, ok := g.latestReplyText(r)
+		if !ok {
+			return "没有可复制的完整回复。", true, nil
+		}
+		if err := g.sendCopyText(r, text); err != nil {
+			g.notify(r, "复制文本发送失败，请稍后重试。", nil)
+			return "", true, err
+		}
+		return "已发送可复制的纯文本。", true, nil
 	}
 	if cmd == "/usage" {
 		text, e := g.usageReply(r, arg)
