@@ -431,22 +431,6 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		}
 		return err
 	}
-	if otherBot(m) {
-		allowed, warn := g.otherBotTrigger(room, m)
-		if !allowed {
-			status := "done"
-			if g.config.Limits.BackgroundMessages > 0 {
-				status = "background"
-			}
-			if _, err = g.store.Insert(room.Key, m, status); err != nil {
-				return err
-			}
-			if warn {
-				g.notify(room, otherBotLimitNotice, nil)
-			}
-			return nil
-		}
-	}
 	if !imageEligible(m) {
 		if err = g.sealImages(room.Key); err != nil {
 			return err
@@ -528,6 +512,22 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		}
 		supplementTo = target.UUID
 		m.Text = arg
+	}
+	if otherBot(m) && supplementTo == "" {
+		allowed, warn := g.otherBotTrigger(room, m)
+		if !allowed {
+			status := "done"
+			if g.config.Limits.BackgroundMessages > 0 {
+				status = "background"
+			}
+			if _, err = g.store.Insert(room.Key, m, status); err != nil {
+				return err
+			}
+			if warn {
+				g.notify(room, otherBotLimitNotice, nil)
+			}
+			return nil
+		}
 	}
 	count, err := g.store.CountPending(room.Key)
 	if err != nil {
