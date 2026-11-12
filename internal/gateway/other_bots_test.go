@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -284,5 +285,21 @@ func TestMentionSuppressesThreadRepliesAndDirectTarget(t *testing.T) {
 	}
 	if !f.g.mentionReply(other, core.Message{ID: "rooted", ChatID: "group", ChatType: "group", SenderID: "other", SenderIsBot: true, RootID: "human"}) {
 		t.Fatal("rooted reply in a new topic was not suppressed")
+	}
+}
+
+func TestMentionRowsAreNotGenericOutputs(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	session, err := f.s.Session(r.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := f.g.saveOutput(f.s.DB, r, session.ID, "@Helper", true, "", "human", "", nil, nil, "", "", "mention", "uncertain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := f.g.deliverOutput(context.Background(), id, r, true); err != nil || ok {
+		t.Fatalf("mention row was delivered as a generic output: %t %v", ok, err)
 	}
 }

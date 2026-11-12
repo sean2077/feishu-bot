@@ -213,7 +213,7 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 	if err != nil {
 		return false, err
 	}
-	if o.Room != r.Key || o.State == "done" || o.State == "cancelled" || !g.permittedOutput(o, r) {
+	if o.Room != r.Key || o.State == "done" || o.State == "cancelled" || o.Kind == "mention" || !g.permittedOutput(o, r) {
 		return false, nil
 	}
 	if (o.State != "pending" && o.State != "uncertain" && o.State != "blocked") || ((o.State == "uncertain" || o.State == "blocked") && !explicit) || (o.FileState == "uncertain" && !explicit) {
