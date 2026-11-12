@@ -273,14 +273,25 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 		return nil, e
 	}
 	approvalMode := "card"
-	if spec.ReadOnly || spec.Approval == "none" {
+	if spec.ReadOnly {
+		approvalMode = "readonly"
+	} else if spec.Approval == "none" {
 		approvalMode = "none"
 	}
 	direct := !spec.ReadOnly && approvalMode == "none"
 	run := core.NewID()
 	if direct {
 		if reason := directApprovalRejection(requestContext, p.Maintainers); reason != "" {
-			g.audit(r.Key, "action_direct_rejected", core.Args{"run": run, "action": id, "reason": reason})
+			detail := core.Args{"run": run, "action": id, "reason": reason}
+			if requestContext != nil {
+				if requestContext.SenderOpenID != "" {
+					detail["requester"] = requestContext.SenderOpenID
+				}
+				if requestContext.MessageID != "" {
+					detail["messageId"] = requestContext.MessageID
+				}
+			}
+			g.audit(r.Key, "action_direct_rejected", detail)
 			return core.Args{"ok": false, "error": directApprovalError}, nil
 		}
 	}

@@ -334,7 +334,8 @@ func TestActionApprovalRejectsUnknownModes(t *testing.T) {
 	p := v["projects"].([]any)[0].(map[string]any)
 	p["actions"] = []any{map[string]any{"id": "build", "description": "Build", "executable": exe, "approval": "sometimes"}}
 	data, _ := json.Marshal(v)
-	if _, err = Parse(data, t.TempDir()); err == nil {
-		t.Fatal("unknown action approval was accepted")
+	_, err = Parse(data, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "invalid action approval") {
+		t.Fatalf("unknown action approval error = %v", err)
 	}
 }

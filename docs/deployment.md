@@ -395,7 +395,7 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 
 - 原生工具 ask 和未配置 `approvers` 的固定操作使用项目 maintainers 作为审批人。
 - 固定操作可以配置 `actions[].approvers`；配置后该操作只认这个列表，不再认 maintainers，也不会隐式加入 maintainers 或 owners。空列表按未配置处理，沿用 maintainers。approvers 不要求是 maintainers，但群内审批卡还要求点击者是该群授权作者；否则点击被拒绝并只能等待超时。`doctor` 无法验证群成员关系。
-- 固定操作可以配置 `actions[].approval: "none"` 跳过审批卡：仅当请求上下文 active 且本轮 `senders` 全部在项目 `maintainers` 中时执行；否则返回 `{"ok":false,"error":"需要管理员发起"}`，不回退到审批卡。污染轮次仍直接执行，`action_started` 审计记 `tainted=true`。执行时注入 `FEISHU_REQUEST_*`，不设置 `FEISHU_ACTION_REQUEST_ID`／`APPROVER_OPEN_ID`／`APPROVED_AT`／`TAINT_CONFIRMER_OPEN_ID`；`action_runs.approval` 为 `none`。该模式不使用 `approvers` 或自批规则。
+- 固定操作可以配置 `actions[].approval: "none"` 跳过审批卡：仅当请求上下文 active 且本轮 `senders` 全部在项目 `maintainers` 中时执行；否则返回 `{"ok":false,"error":"需要管理员发起"}`，不回退到审批卡。`senders` 只包含请求到达时仍在活动的 deliveries，缓存背景、引用内容和跨轮次后台进程的延迟调用不参与判定。污染轮次仍直接执行，`action_started` 审计记 `tainted=true`。执行时注入 `FEISHU_REQUEST_*`，不设置 `FEISHU_ACTION_REQUEST_ID`／`APPROVER_OPEN_ID`／`APPROVED_AT`／`TAINT_CONFIRMER_OPEN_ID`；`action_runs.approval` 为 `none`。该模式不使用 `approvers` 或自批规则，只应对可回滚、范围受限的操作启用。
 - `AskUserQuestion` 不使用审批人列表，也不受自批规则限制，保持现有行为。
 - `forbidSelfApproval: true` 时，请求到达时上下文中的 `senders` 包含点击者、且点击者不是 owner 的批准请求会被拒绝，审批保持待处理，其他审批人仍可批准；拒绝（deny）不受自批限制，但点击者仍必须是审批人。
 - 请求上下文为空（后台任务、没有进行中的输入）时无法确定发起人；此时只有 owner 可以批准，其他审批人批准会被拒绝。拒绝仍允许审批人执行。

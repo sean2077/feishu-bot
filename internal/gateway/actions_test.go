@@ -141,7 +141,7 @@ func TestReadOnlyActionOmitsApproverEnvironment(t *testing.T) {
 	if err := f.s.DB.QueryRow("SELECT request,approver,taint_request,approval FROM action_runs").Scan(&request, &approver, &taintRequest, &approval); err != nil {
 		t.Fatal(err)
 	}
-	if request != nil || approver != nil || taintRequest != nil || approval != "none" {
+	if request != nil || approver != nil || taintRequest != nil || approval != "readonly" {
 		t.Fatalf("readOnly action metadata = %#v %#v %#v %q", request, approver, taintRequest, approval)
 	}
 }
@@ -192,8 +192,10 @@ func TestActionApprovalNoneRejectsNonMaintainerAndInactiveRequests(t *testing.T)
 		reason  string
 	}{
 		{name: "inactive", context: nil, reason: "inactive"},
-		{name: "member", context: &core.RequestContext{Senders: []string{"member"}}, reason: "non_maintainer"},
+		{name: "empty", context: &core.RequestContext{ChatID: "group", MessageID: "empty"}, reason: "inactive"},
+		{name: "member", context: &core.RequestContext{Senders: []string{"member"}, SenderOpenID: "member", MessageID: "member-message"}, reason: "non_maintainer"},
 		{name: "mixed", context: &core.RequestContext{Senders: []string{"owner", "member"}}, reason: "non_maintainer"},
+		{name: "other-bot", context: &core.RequestContext{Senders: []string{"owner", "cli_other"}}, reason: "non_maintainer"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -222,9 +224,19 @@ func TestActionApprovalNoneRejectsNonMaintainerAndInactiveRequests(t *testing.T)
 			if err := f.s.DB.QueryRow("SELECT count(*) FROM action_runs").Scan(&runs); err != nil || runs != 0 {
 				t.Fatalf("rejected action wrote %d runs: %v", runs, err)
 			}
+			var requests int
+			if err := f.s.DB.QueryRow("SELECT count(*) FROM requests").Scan(&requests); err != nil || requests != 0 {
+				t.Fatalf("rejected action wrote %d approval requests: %v", requests, err)
+			}
 			detail := auditDetail(t, f, "action_direct_rejected")
 			if stringArg(detail, "reason") != tc.reason || stringArg(detail, "action") != "build" {
 				t.Fatalf("rejection audit = %#v", detail)
+			}
+			if tc.context != nil && tc.context.SenderOpenID != "" && stringArg(detail, "requester") != tc.context.SenderOpenID {
+				t.Fatalf("rejection audit lost requester = %#v", detail)
+			}
+			if tc.context != nil && tc.context.MessageID != "" && stringArg(detail, "messageId") != tc.context.MessageID {
+				t.Fatalf("rejection audit lost message ID = %#v", detail)
 			}
 		})
 	}
@@ -257,6 +269,83 @@ func TestActionApprovalNoneStaysDirectOnTaintedTurn(t *testing.T) {
 	var approval string
 	if err := f.s.DB.QueryRow("SELECT approval FROM action_runs WHERE action='build'").Scan(&approval); err != nil || approval != "none" {
 		t.Fatalf("tainted run approval = %q %v", approval, err)
+	}
+}
+
+func TestActionApprovalNoneTaintedTurnStillRejectsNonMaintainer(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "build", Description: "Build", Executable: "fixture", Approval: "none"}}
+	})
+	called := false
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, _ map[string]string, _ int64) (int, string, error) {
+		called = true
+		return 0, "", nil
+	}
+	requestContext := &core.RequestContext{ChatID: "group", MessageID: "member-message", SenderOpenID: "member", Senders: []string{"member"}}
+	result, err := f.g.executeActionTainted(context.Background(), f.room(), "session", f.c.Projects[0], "build", core.Args{}, core.Workspace{}, requestContext, true, []string{"other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if boolArg(result, "ok") || stringArg(result, "error") != "需要管理员发起" || called {
+		t.Fatalf("tainted non-maintainer result = %#v executed=%t", result, called)
+	}
+	if f.tr.cardCount() != 0 {
+		t.Fatal("tainted rejection created an approval card")
+	}
+}
+
+func TestActionApprovalNoneIgnoresApproversAndSelfApproval(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Owners = []string{"owner"}
+		c.Projects[0].Approvals.ForbidSelfApproval = true
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "build", Description: "Build", Executable: "fixture", Approval: "none", Approvers: []string{"other"}}}
+	})
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, _ map[string]string, _ int64) (int, string, error) {
+		return 0, "built", nil
+	}
+	requestContext := &core.RequestContext{ChatID: "group", MessageID: "one", SenderOpenID: "owner", Senders: []string{"owner"}}
+	result, err := f.g.executeAction(context.Background(), f.room(), "session", f.c.Projects[0], "build", core.Args{}, core.Workspace{}, requestContext)
+	if err != nil || !boolArg(result, "ok") {
+		t.Fatalf("direct action with approvers = %#v %v", result, err)
+	}
+	if f.tr.cardCount() != 0 {
+		t.Fatal("approval:none asked the configured approvers")
+	}
+}
+
+func TestActionApprovalNoneDoesNotAffectReadOnly(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "check", Description: "Check", Executable: "fixture", ReadOnly: true, Approval: "none"}}
+	})
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, _ map[string]string, _ int64) (int, string, error) {
+		return 0, "checked", nil
+	}
+	result, err := f.g.executeAction(context.Background(), f.room(), "session", f.c.Projects[0], "check", core.Args{}, core.Workspace{}, nil)
+	if err != nil || !boolArg(result, "ok") {
+		t.Fatalf("readOnly action with approval:none = %#v %v", result, err)
+	}
+	var approval string
+	if err := f.s.DB.QueryRow("SELECT approval FROM action_runs WHERE action='check'").Scan(&approval); err != nil || approval != "readonly" {
+		t.Fatalf("readOnly run approval = %q %v", approval, err)
+	}
+}
+
+func TestDirectApprovalRejectionReasons(t *testing.T) {
+	maintainers := []string{"owner"}
+	if reason := directApprovalRejection(nil, maintainers); reason != "inactive" {
+		t.Fatalf("inactive reason = %q", reason)
+	}
+	if reason := directApprovalRejection(&core.RequestContext{Senders: []string{}}, maintainers); reason != "inactive" {
+		t.Fatalf("empty senders reason = %q", reason)
+	}
+	if reason := directApprovalRejection(&core.RequestContext{Senders: []string{"member"}}, maintainers); reason != "non_maintainer" {
+		t.Fatalf("member reason = %q", reason)
+	}
+	if reason := directApprovalRejection(&core.RequestContext{Senders: []string{"owner"}}, nil); reason != "no_maintainers" {
+		t.Fatalf("missing maintainers reason = %q", reason)
+	}
+	if reason := directApprovalRejection(&core.RequestContext{Senders: []string{"owner"}}, maintainers); reason != "" {
+		t.Fatalf("maintainer reason = %q", reason)
 	}
 }
 

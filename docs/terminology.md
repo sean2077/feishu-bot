@@ -166,7 +166,7 @@ _同义_: 项目操作（如[可选项目操作](project-actions.md)的标题）
 
 **直接执行审批**
 
-`actions[].approval: "none"` 的非只读固定操作模式：只有请求上下文 active 且本轮 senders 全部是项目 maintainers 时才执行，否则返回「需要管理员发起」，不弹审批卡。污染轮次维持直接执行，`action_started` 审计记 `tainted=true`。它不是权限提升，也不替代原生权限规则。
+`actions[].approval: "none"` 的非只读固定操作模式：只有请求上下文 active 且本轮 senders 全部是项目 maintainers 时才执行，否则返回「需要管理员发起」，不弹审批卡。senders 只包含请求到达时活动 deliveries 的发送者，不包含缓存背景、引用内容或跨轮次后台进程的延迟调用。污染轮次维持直接执行，`action_started` 审计记 `tainted=true`。它不是权限提升，也不替代原生权限规则。
 _英文_: direct action approval
 
 **预检索上下文**
