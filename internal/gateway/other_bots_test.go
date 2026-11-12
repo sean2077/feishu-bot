@@ -282,4 +282,7 @@ func TestMentionSuppressesThreadRepliesAndDirectTarget(t *testing.T) {
 	if !f.g.mentionReply(other, core.Message{ID: "direct", ChatID: "group", ChatType: "group", SenderID: "other", SenderIsBot: true, ReplyTo: "post-id"}) {
 		t.Fatal("direct reply in a new topic was not suppressed")
 	}
+	if !f.g.mentionReply(other, core.Message{ID: "rooted", ChatID: "group", ChatType: "group", SenderID: "other", SenderIsBot: true, RootID: "human"}) {
+		t.Fatal("rooted reply in a new topic was not suppressed")
+	}
 }

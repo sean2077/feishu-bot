@@ -82,7 +82,7 @@ func (g *Gateway) mentionReply(room core.Room, m core.Message) bool {
 	// A direct reply/root is globally unique; this also covers a top-level
 	// reply that Feishu maps to a new topic room.
 	if m.ReplyTo != "" || m.RootID != "" {
-		err := g.store.DB.QueryRow(`SELECT count(*) FROM outbox WHERE kind='mention' AND state IN ('done','pending','sending','uncertain') AND (target=? OR (?<>'' AND target=?))`, m.ReplyTo, m.RootID, m.RootID).Scan(&n)
+		err := g.store.DB.QueryRow(`SELECT count(*) FROM outbox WHERE kind='mention' AND state IN ('done','pending','sending','uncertain') AND (target=? OR (?<>'' AND target=?) OR (?<>'' AND reply_to=?))`, m.ReplyTo, m.RootID, m.RootID, m.RootID, m.RootID).Scan(&n)
 		if err == nil && n > 0 {
 			return true
 		}
