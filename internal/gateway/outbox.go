@@ -116,6 +116,14 @@ func (g *Gateway) outputAllowedContext(ctx context.Context, o outgoing, r core.R
 	}
 	if len(o.Origins) > 0 {
 		for _, v := range o.Origins {
+			if v.SenderIsBot {
+				// A bot-triggered turn is legitimate only while the group still
+				// opts into other-bot input. It never grants author rights.
+				if current.DMUser == "" && current.AllowOtherBots {
+					continue
+				}
+				return false
+			}
 			if !AuthorizedAuthor(current, v.SenderID) {
 				return false
 			}

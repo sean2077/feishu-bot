@@ -729,7 +729,7 @@ func validate(c *core.Config, base string) error {
 				return fmt.Errorf("groups[%d].otherBots[%d] has an invalid or duplicate appId", i, j)
 			}
 			name := strings.TrimSpace(b.Name)
-			if name == "" || len([]rune(name)) > 80 || strings.ContainsRune(name, 0) || botNames[strings.ToLower(name)] {
+			if name == "" || len([]rune(name)) > 80 || strings.IndexFunc(name, unicode.IsControl) >= 0 || botNames[strings.ToLower(name)] {
 				return fmt.Errorf("groups[%d].otherBots[%d] has an invalid or duplicate name", i, j)
 			}
 			if b.OpenID != "" && (!strings.HasPrefix(b.OpenID, "ou_") || !idPattern.MatchString(b.OpenID)) {

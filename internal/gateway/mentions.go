@@ -88,18 +88,27 @@ func (g *Gateway) mentionBot(ctx context.Context, s *slot, room core.Room, p cor
 	if request != nil {
 		thread = request.ThreadID
 	}
-	messageID, err := g.transport.SendPost(ctx, room, content, reply, thread)
-	if err != nil {
-		g.auditMention(room, request, bot.AppID, body, "failed")
-		return nil, err
-	}
 	text := "@" + bot.Name
 	if body != "" {
 		text += " " + body
 	}
-	if _, err = g.saveOutput(g.store.DB, room, s.session.ID, text, true, messageID, reply, thread, nil, nil, "", "", "mention", "done"); err != nil {
+	// Persist the echo-suppression record before the external write. A direct
+	// reply target is added after Feishu returns the message ID, but the
+	// thread/reply metadata already suppresses replies if the process stops
+	// in between.
+	recordID, err := g.saveOutput(g.store.DB, room, s.session.ID, text, true, "", reply, thread, nil, nil, "", "", "mention", "pending")
+	if err != nil {
+		return nil, err
+	}
+	messageID, err := g.transport.SendPost(ctx, room, content, reply, thread)
+	if err != nil {
+		_, _ = g.store.DB.Exec("UPDATE outbox SET state='uncertain',delivery_error=? WHERE id=? AND state='pending'", core.Redact(err.Error(), g.secrets), recordID)
+		g.auditMention(room, request, bot.AppID, body, "failed")
+		return nil, err
+	}
+	if _, err = g.store.DB.Exec("UPDATE outbox SET target=?,state='done',delivery_error=NULL WHERE id=? AND state='pending'", messageID, recordID); err != nil {
 		g.audit(room.Key, "mention_bot_record_failed", core.Args{"target": bot.AppID, "error": core.Redact(err.Error(), g.secrets)})
-		return core.Args{"ok": true, "target": bot.Name, "messageId": messageID, "warning": "message sent but not recorded; do not retry"}, nil
+		return core.Args{"ok": true, "target": bot.Name, "messageId": messageID, "warning": "message sent but target record update failed; do not retry"}, nil
 	}
 	g.auditMention(room, request, bot.AppID, body, "sent")
 	return core.Args{"ok": true, "target": bot.Name, "messageId": messageID, "hasBody": body != ""}, nil

@@ -324,8 +324,9 @@ type HistoryPage struct {
 	NextPageToken string
 }
 type Origin struct {
-	ID       string `json:"id"`
-	SenderID string `json:"senderId"`
+	ID          string `json:"id"`
+	SenderID    string `json:"senderId"`
+	SenderIsBot bool   `json:"senderIsBot,omitempty"`
 }
 type Transport interface {
 	Send(context.Context, Room, string, string, string) (string, error)

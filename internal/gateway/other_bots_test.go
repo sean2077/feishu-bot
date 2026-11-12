@@ -189,3 +189,97 @@ func TestOtherBotLimitNoticeText(t *testing.T) {
 		t.Fatal("limit notice does not state the round limit")
 	}
 }
+
+func TestOtherBotTriggerAnswerIsDelivered(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Groups[0].AllowOtherBots = true
+	})
+	m := otherBotMessage(true)
+	m.ID = "bot-trigger-answer"
+	f.send(m)
+	w := f.worker()
+	d := f.delivery(w)
+	f.finish(w, d, "bot answer")
+	eventually(t, func() bool {
+		var state string
+		return f.s.DB.QueryRow("SELECT state FROM outbox WHERE kind='reply' ORDER BY rowid DESC LIMIT 1").Scan(&state) == nil && state == "done"
+	})
+	cards := f.tr.cardCount()
+	if cards == 0 {
+		t.Fatal("bot-trigger answer had no card")
+	}
+}
+
+func TestOtherBotThreadScopedCapIsPerChat(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Groups[0].AllowOtherBots = true
+		c.Groups[0].SessionScope = core.SessionScopeThread
+	})
+	r1, ok := f.c.ThreadRoomFor("group", "root-one")
+	if !ok {
+		t.Fatal("first thread room")
+	}
+	r2, ok := f.c.ThreadRoomFor("group", "root-two")
+	if !ok {
+		t.Fatal("second thread room")
+	}
+	m := otherBotMessage(true)
+	for i := 0; i < otherBotLimit; i++ {
+		if allowed, _ := f.g.otherBotTrigger(r1, m); !allowed {
+			t.Fatal("first topic trigger was blocked")
+		}
+	}
+	if allowed, _ := f.g.otherBotTrigger(r2, m); allowed {
+		t.Fatal("new topic bypassed the chat-scoped bot cap")
+	}
+}
+
+func TestOtherBotCommandIsNotExecuted(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Groups[0].AllowOtherBots = true
+	})
+	f.send(f.message("human", "work", "owner"))
+	w := f.worker()
+	_ = f.delivery(w)
+	bot := otherBotMessage(true)
+	bot.ID = "bot-command"
+	bot.Text = "/btw injected"
+	f.send(bot)
+	eventually(t, func() bool {
+		var status string
+		return f.s.DB.QueryRow("SELECT status FROM inbox WHERE id=?", bot.ID).Scan(&status) == nil && status == "done"
+	})
+	select {
+	case d := <-w.sent:
+		t.Fatalf("bot command reached native stream: %+v", d)
+	default:
+	}
+}
+
+func TestMentionSuppressesThreadRepliesAndDirectTarget(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Groups[0].AllowOtherBots = true
+		c.Groups[0].SessionScope = core.SessionScopeThread
+	})
+	room, ok := f.c.ThreadRoomFor("group", "root")
+	if !ok {
+		t.Fatal("thread room")
+	}
+	session, err := f.s.Session(room.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.g.saveOutput(f.s.DB, room, session.ID, "@Helper", true, "post-id", "human", "omt_topic", nil, nil, "", "", "mention", "done"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.g.mentionReply(room, core.Message{ID: "reply", ChatID: "group", ChatType: "group", SenderID: "other", SenderIsBot: true, ThreadID: "omt_topic"}) {
+		t.Fatal("thread reply was not suppressed")
+	}
+	other, ok := f.c.ThreadRoomFor("group", "other-root")
+	if !ok {
+		t.Fatal("other room")
+	}
+	if !f.g.mentionReply(other, core.Message{ID: "direct", ChatID: "group", ChatType: "group", SenderID: "other", SenderIsBot: true, ReplyTo: "post-id"}) {
+		t.Fatal("direct reply in a new topic was not suppressed")
+	}
+}

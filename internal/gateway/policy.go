@@ -178,11 +178,13 @@ func argsOf(v any) core.Args {
 func origins(ds []core.Delivery) []core.Origin {
 	o := make([]core.Origin, 0, len(ds))
 	for _, d := range ds {
-		o = append(o, core.Origin{ID: d.Message.ID, SenderID: d.Message.SenderID})
+		o = append(o, core.Origin{ID: d.Message.ID, SenderID: d.Message.SenderID, SenderIsBot: d.Message.SenderIsBot})
 	}
 	return o
 }
-func origin(m core.Message) []core.Origin { return []core.Origin{{ID: m.ID, SenderID: m.SenderID}} }
+func origin(m core.Message) []core.Origin {
+	return []core.Origin{{ID: m.ID, SenderID: m.SenderID, SenderIsBot: m.SenderIsBot}}
+}
 func splitCommand(text string) (string, string) {
 	s := strings.TrimSpace(text)
 	i := strings.IndexAny(s, " \t\r\n")

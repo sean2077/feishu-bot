@@ -431,6 +431,12 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		}
 		return err
 	}
+	if otherBot(m) && strings.HasPrefix(strings.TrimSpace(m.Text), "/") {
+		// Commands from another bot are untrusted text, never gateway controls
+		// and never supplements to a human turn.
+		_, err = g.store.Insert(room.Key, m, "done")
+		return err
+	}
 	if !imageEligible(m) {
 		if err = g.sealImages(room.Key); err != nil {
 			return err

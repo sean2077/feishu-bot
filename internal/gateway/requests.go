@@ -94,7 +94,7 @@ func (g *Gateway) request(s *slot, ev core.WorkerEvent) (core.Args, error) {
 		s.mu.Lock()
 		who := []core.Origin{}
 		for _, d := range s.deliveries {
-			who = append(who, core.Origin{ID: d.Message.ID, SenderID: d.Message.SenderID})
+			who = append(who, core.Origin{ID: d.Message.ID, SenderID: d.Message.SenderID, SenderIsBot: d.Message.SenderIsBot})
 		}
 		reply := ""
 		if d, ok := s.deliveries[s.anchor]; ok {

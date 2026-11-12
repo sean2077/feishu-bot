@@ -636,7 +636,7 @@ func (g *Gateway) reconcileOrphanedInputs(ctx context.Context) {
 			}
 			var m core.Message
 			_ = json.Unmarshal([]byte(raw), &m)
-			candidates = append(candidates, orphan{uuid, core.Origin{ID: m.ID, SenderID: m.SenderID}})
+			candidates = append(candidates, orphan{uuid, core.Origin{ID: m.ID, SenderID: m.SenderID, SenderIsBot: m.SenderIsBot}})
 		}
 		rows.Close()
 		s.mu.Lock()

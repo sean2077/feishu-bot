@@ -16,14 +16,16 @@ type otherBotRound struct {
 }
 
 func otherBotRoundKey(room core.Room, m core.Message) string {
-	return room.Key + "\x00" + m.ThreadID + "\x00" + m.SenderID
+	// Use the chat workspace key, not the topic room key, so a thread-scoped
+	// group cannot reset the cap by starting a new topic for every message.
+	return room.WorkspaceKey() + "\x00" + m.ThreadID + "\x00" + m.SenderID
 }
 
 // resetOtherBotRounds breaks the bot-to-bot streak when a human speaks in the
 // same topic. Counters are in memory; a service restart is an explicit
 // operator action and starts a new conversation window.
 func (g *Gateway) resetOtherBotRounds(room core.Room, m core.Message) {
-	prefix := room.Key + "\x00" + m.ThreadID + "\x00"
+	prefix := room.WorkspaceKey() + "\x00" + m.ThreadID + "\x00"
 	g.otherBotMu.Lock()
 	defer g.otherBotMu.Unlock()
 	for key := range g.otherBotRounds {
@@ -73,10 +75,26 @@ func (s *slot) claimMention() bool {
 // mentionReply reports whether m is an other-bot reply to a mention this
 // gateway sent. The outbox record makes the suppression survive restarts.
 func (g *Gateway) mentionReply(room core.Room, m core.Message) bool {
-	if !otherBot(m) || (m.ReplyTo == "" && m.ThreadID == "" && m.RootID == "") {
+	if !otherBot(m) {
 		return false
 	}
 	var n int
-	err := g.store.DB.QueryRow(`SELECT count(*) FROM outbox WHERE room=? AND kind='mention' AND state IN ('done','pending','sending') AND (target=? OR (?<>'' AND thread_id=?) OR (?<>'' AND target=?))`, room.Key, m.ReplyTo, m.ThreadID, m.ThreadID, m.RootID, m.RootID).Scan(&n)
+	// A direct reply/root is globally unique; this also covers a top-level
+	// reply that Feishu maps to a new topic room.
+	if m.ReplyTo != "" || m.RootID != "" {
+		err := g.store.DB.QueryRow(`SELECT count(*) FROM outbox WHERE kind='mention' AND state IN ('done','pending','sending','uncertain') AND (target=? OR (?<>'' AND target=?))`, m.ReplyTo, m.RootID, m.RootID).Scan(&n)
+		if err == nil && n > 0 {
+			return true
+		}
+	}
+	// A thread-scoped room is the topic: once this bot has sent a mention in
+	// it, later bot messages there are results, not new requests.
+	if room.Thread != "" {
+		err := g.store.DB.QueryRow(`SELECT count(*) FROM outbox WHERE room=? AND kind='mention' AND state IN ('done','pending','sending','uncertain')`, room.Key).Scan(&n)
+		return err == nil && n > 0
+	}
+	// Chat-scope groups use the reply target, thread, or the original message
+	// this gateway replied to when the mention was sent.
+	err := g.store.DB.QueryRow(`SELECT count(*) FROM outbox WHERE room=? AND kind='mention' AND state IN ('done','pending','sending','uncertain') AND ((?<>'' AND thread_id=?) OR (?<>'' AND reply_to=?))`, room.Key, m.ThreadID, m.ThreadID, m.RootID, m.RootID).Scan(&n)
 	return err == nil && n > 0
 }

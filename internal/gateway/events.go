@@ -426,7 +426,7 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 	who := []core.Origin{}
 	for _, id := range finished {
 		d := s.deliveries[id]
-		who = append(who, core.Origin{ID: d.Message.ID, SenderID: d.Message.SenderID})
+		who = append(who, core.Origin{ID: d.Message.ID, SenderID: d.Message.SenderID, SenderIsBot: d.Message.SenderIsBot})
 	}
 	if len(who) == 0 && anchor != nil && ownsReceipt {
 		who = origin(anchor.Message)
