@@ -35,6 +35,7 @@ func (g *Gateway) latestReplyText(room core.Room) (string, bool) {
 
 func (g *Gateway) sendCopyText(room core.Room, text string) error {
 	text = core.Redact(text, g.secrets)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
 	if len(text) > copyTextLimit {
 		text = bytePrefix(text, copyTextLimit) + "\n\n（复制内容已截断）"
 	}

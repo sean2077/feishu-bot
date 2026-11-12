@@ -213,6 +213,7 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 			return "没有可复制的完整回复。", true, nil
 		}
 		if err := g.sendCopyText(r, text); err != nil {
+			g.notify(r, "复制文本发送失败，请稍后重试。", nil)
 			return "", true, err
 		}
 		return "已发送可复制的纯文本。", true, nil
