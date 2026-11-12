@@ -204,6 +204,33 @@ func TestActionEnvironmentRejectsRequestContextKeys(t *testing.T) {
 	}
 }
 
+func TestProjectActionsExampleLoads(t *testing.T) {
+	data, err := os.ReadFile("../../examples/project-actions.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actions []any
+	if err = json.Unmarshal(data, &actions); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range actions {
+		raw.(map[string]any)["executable"] = exe
+	}
+	v := fixture(t)
+	projectConfig(v)["actions"] = actions
+	data, err = json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Parse(data, t.TempDir()); err != nil {
+		t.Fatalf("example actions do not load: %v", err)
+	}
+}
+
 func TestProjectEnvironmentRejectsNullContainers(t *testing.T) {
 	for _, field := range []string{"env", "envPassthrough"} {
 		v := fixture(t)

@@ -136,6 +136,13 @@ func TestReadOnlyActionOmitsApproverEnvironment(t *testing.T) {
 			t.Fatalf("readOnly action received %s", key)
 		}
 	}
+	var request, approver, taintRequest any
+	if err := f.s.DB.QueryRow("SELECT request,approver,taint_request FROM action_runs").Scan(&request, &approver, &taintRequest); err != nil {
+		t.Fatal(err)
+	}
+	if request != nil || approver != nil || taintRequest != nil {
+		t.Fatalf("readOnly action metadata = %#v %#v %#v", request, approver, taintRequest)
+	}
 }
 
 func TestForbidSelfApprovalStillRecordsApprover(t *testing.T) {

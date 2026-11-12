@@ -124,8 +124,11 @@ func TestTaintedActionKeepsOriginalApprovers(t *testing.T) {
 		t.Fatal("tainted action did not finish")
 	}
 	env := <-envs
-	if env["FEISHU_ACTION_APPROVER_OPEN_ID"] != "owner" || env["FEISHU_ACTION_TAINT_CONFIRMER_OPEN_ID"] != "member" {
+	if env["FEISHU_ACTION_APPROVER_OPEN_ID"] != "owner" || env["FEISHU_ACTION_TAINT_CONFIRMER_OPEN_ID"] != "member" || env["FEISHU_ACTION_REQUEST_ID"] != stringArg(approve, "request") {
 		t.Fatalf("tainted action env = %#v", env)
+	}
+	if _, err := time.Parse(time.RFC3339, env["FEISHU_ACTION_APPROVED_AT"]); err != nil {
+		t.Fatalf("tainted approvedAt = %q: %v", env["FEISHU_ACTION_APPROVED_AT"], err)
 	}
 	var runRequest, runApprover, taintRequest string
 	if err := f.s.DB.QueryRow("SELECT request,approver,taint_request FROM action_runs").Scan(&runRequest, &runApprover, &taintRequest); err != nil {

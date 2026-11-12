@@ -79,10 +79,10 @@
       "feishu-doc-read"
     ],
     "env": {
-      "FEISHU_ACTION_APP_SECRET": "BOT_FEISHU_ACTION_SECRET"
+      "EXAMPLE_ACTION_APP_SECRET": "BOT_FEISHU_ACTION_SECRET"
     },
     "vars": {
-      "FEISHU_ACTION_APP_ID": "cli_project_actions",
+      "EXAMPLE_ACTION_APP_ID": "cli_project_actions",
       "FEISHU_DOCUMENT_ID": "doc_example",
       "FEISHU_DOCUMENT_ROOT_BLOCK": "doc_example"
     },
@@ -99,10 +99,10 @@
       "{{text}}"
     ],
     "env": {
-      "FEISHU_ACTION_APP_SECRET": "BOT_FEISHU_ACTION_SECRET"
+      "EXAMPLE_ACTION_APP_SECRET": "BOT_FEISHU_ACTION_SECRET"
     },
     "vars": {
-      "FEISHU_ACTION_APP_ID": "cli_project_actions",
+      "EXAMPLE_ACTION_APP_ID": "cli_project_actions",
       "FEISHU_DOCUMENT_ID": "doc_example",
       "FEISHU_DOCUMENT_ROOT_BLOCK": "doc_example"
     },
@@ -122,10 +122,10 @@
       "feishu-table-list"
     ],
     "env": {
-      "FEISHU_ACTION_APP_SECRET": "BOT_FEISHU_ACTION_SECRET"
+      "EXAMPLE_ACTION_APP_SECRET": "BOT_FEISHU_ACTION_SECRET"
     },
     "vars": {
-      "FEISHU_ACTION_APP_ID": "cli_project_actions",
+      "EXAMPLE_ACTION_APP_ID": "cli_project_actions",
       "FEISHU_BASE_TOKEN": "base_example",
       "FEISHU_TABLE_ID": "tbl_example",
       "FEISHU_WRITABLE_FIELDS": "状态,备注"
@@ -144,10 +144,10 @@
       "{{fields}}"
     ],
     "env": {
-      "FEISHU_ACTION_APP_SECRET": "BOT_FEISHU_ACTION_SECRET"
+      "EXAMPLE_ACTION_APP_SECRET": "BOT_FEISHU_ACTION_SECRET"
     },
     "vars": {
-      "FEISHU_ACTION_APP_ID": "cli_project_actions",
+      "EXAMPLE_ACTION_APP_ID": "cli_project_actions",
       "FEISHU_BASE_TOKEN": "base_example",
       "FEISHU_TABLE_ID": "tbl_example",
       "FEISHU_WRITABLE_FIELDS": "状态,备注"

@@ -119,8 +119,8 @@ type fixtureRoundTripper func(*http.Request) (*http.Response, error)
 func (f fixtureRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestFeishuExecutorBindsDocumentTableAndWritableFields(t *testing.T) {
-	t.Setenv("FEISHU_ACTION_APP_ID", "cli_fixture")
-	t.Setenv("FEISHU_ACTION_APP_SECRET", "fixture-action-secret")
+	t.Setenv("EXAMPLE_ACTION_APP_ID", "cli_fixture")
+	t.Setenv("EXAMPLE_ACTION_APP_SECRET", "fixture-action-secret")
 	t.Setenv("FEISHU_DOCUMENT_ID", "doc_configured")
 	t.Setenv("FEISHU_DOCUMENT_ROOT_BLOCK", "block_configured")
 	t.Setenv("FEISHU_BASE_TOKEN", "base_configured")
