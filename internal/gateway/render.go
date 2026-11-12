@@ -191,7 +191,7 @@ func (r *render) cardFitLocked(title, answer string, final, success bool) (core.
 	d := r.details
 	d.Model = core.Redact(d.Model, r.g.secrets)
 	d.ProjectPath = core.Redact(d.ProjectPath, r.g.secrets)
-	card, needsFile := boundedReplyCard(title, answer, r.thinkingLocked(), r.thinkingCount, final, d, time.Duration(max(int64(0), time.Now().UnixMilli()-r.started))*time.Millisecond, success, r.g.quickControls(r.room, r.session, r.turn, r.finalID))
+	card, needsFile := boundedReplyCardTitle(r.g.cardTitle(), title, answer, r.thinkingLocked(), r.thinkingCount, final, d, time.Duration(max(int64(0), time.Now().UnixMilli()-r.started))*time.Millisecond, success, r.g.quickControls(r.room, r.session, r.turn, r.finalID))
 	if r.notice != "" {
 		card = fitCardBudget(appendReplyNotice(card, r.notice), core.CardPayloadLimit, "…")
 	}

@@ -66,7 +66,7 @@ func (g *Gateway) cancelPendingOutputs(room core.Room, session string) error {
 					continue
 				}
 			}
-			card = cancelledOutputCard(card, output.text)
+			card = cancelledOutputCardTitle(g.cardTitle(), card, output.text)
 			id, err := g.saveOutput(tx, room, session, output.text, false, output.target, output.reply.String, output.thread.String, card, who, "", "", "status", "pending")
 			if err != nil {
 				return err
@@ -88,13 +88,17 @@ func (g *Gateway) cancelPendingOutputs(room core.Room, session string) error {
 }
 
 func cancelledOutputCard(card core.Args, text string) core.Args {
+	return cancelledOutputCardTitle(defaultCardTitle, card, text)
+}
+
+func cancelledOutputCardTitle(cardTitle string, card core.Args, text string) core.Args {
 	const title = "已停止 · 交付取消"
 	const notice = "停止后不再安排交付；此前已发出的请求仍可能到达。"
 	if card == nil {
 		card = DisplayCard(title, text)
 	}
 	card = replaceQuickControls(card, nil)
-	card = setReplyCardStatus(card, title, "grey")
+	card = setReplyCardStatus(card, cardTitle, title, "grey")
 	config := argsOf(card["config"])
 	if config == nil {
 		config = core.Args{}
@@ -125,7 +129,7 @@ func cancelledOutputCard(card core.Args, text string) core.Args {
 		// An oversized legacy/custom template may have large non-answer fields.
 		// Use a bounded cancellation preview, never schedule a new export file.
 		card = DisplayCard(title, text)
-		card = setReplyCardStatus(card, title, "grey")
+		card = setReplyCardStatus(card, cardTitle, title, "grey")
 		card["config"] = core.Args{"streaming_mode": false, "summary": core.Args{"content": notice}}
 		body = argsOf(card["body"])
 		elements, _ = body["elements"].([]any)
