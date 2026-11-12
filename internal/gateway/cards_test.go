@@ -249,3 +249,30 @@ func TestReplyCardFooterIsCompactAndTerminalOnly(t *testing.T) {
 		t.Fatalf("project path = %q", path)
 	}
 }
+
+func TestConfigurableCardTitleAndLegacyRow(t *testing.T) {
+	if text := jsonText(replyCard("回复", "answer", nil, 0, true, replyDetails{}, time.Second, true)); !strings.Contains(text, "**飞书助手**") {
+		t.Fatalf("default title missing: %s", text)
+	}
+	custom, _ := boundedReplyCardTitle("MOMO", "回复", "answer", nil, 0, true, replyDetails{}, time.Second, true, nil)
+	if text := jsonText(custom); !strings.Contains(text, "**MOMO**") || strings.Contains(text, "**飞书助手**") {
+		t.Fatalf("configured title = %s", text)
+	}
+	escaped, _ := boundedReplyCardTitle("A*B_[C]", "回复", "answer", nil, 0, true, replyDetails{}, time.Second, true, nil)
+	if text := jsonText(escaped); !strings.Contains(text, `A\\*B\\_\\[C\\]`) {
+		t.Fatalf("markdown was not escaped: %s", text)
+	}
+	legacy := replyStatusRow(defaultCardTitle, replyDoneText, "green")
+	delete(legacy, "element_id")
+	if !legacyReplyStatusRow(legacy) {
+		t.Fatal("legacy status row was not pinned to the default title")
+	}
+	legacyCard := core.Args{"body": core.Args{"elements": []any{legacy, core.Args{"tag": "markdown", "element_id": "reply_answer", "content": "answer"}}}}
+	if !replyCardDone(legacyCard) {
+		t.Fatal("legacy done card was not recognized")
+	}
+	updated := setReplyCardStatus(legacyCard, "MOMO", replyDoneText, "green")
+	if text := jsonText(updated); !strings.Contains(text, "**MOMO**") || !replyCardDone(updated) {
+		t.Fatalf("legacy status was not rewritten with the configured title: %s", text)
+	}
+}

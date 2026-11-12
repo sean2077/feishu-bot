@@ -371,7 +371,7 @@ func (g *Gateway) closeDiscardedOutputTx(ctx context.Context, tx *sql.Tx, id str
 		}
 		const text = "本轮交付已由维护者明确放弃；没有确认完整送达，也不标记 Done。原生任务按原有生命周期继续，已发出的消息不会被撤回。"
 		card := DisplayCard("已放弃交付 · 未确认完成", text)
-		card = setReplyCardStatus(card, "已放弃交付 · 未确认完成", "grey")
+		card = setReplyCardStatus(card, g.cardTitle(), "已放弃交付 · 未确认完成", "grey")
 		card["config"] = core.Args{"streaming_mode": false, "summary": core.Args{"content": text}}
 		status, err = g.saveOutput(tx, r, session, text, false, target.String, reply.String, thread.String, card, who, "", "", "status", "pending")
 		if err != nil {

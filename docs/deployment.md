@@ -102,6 +102,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `tenantId`、`appId` | 无 | 飞书租户与应用 ID |
+| `cardTitle` | `飞书助手` | 回复卡状态行左侧的机器人名；空值使用默认，trim 后 1–40 字符且不能含控制字符，markdown 特殊字符渲染时转义。示例可用 `Example Bot` |
 | `dataDir` | `state` | 状态库、工作区与隔离模式原生历史；须持久保存 |
 | `model.baseUrl`、`model.model` | 无 | 见[模型、网络和时区](#模型网络和时区)；`smallModel` 省略时等于 `model` |
 | `projects[]` | 至少一项 | 资源／权限单元；`maintainers` 必填，`permissionMode` 默认 `acceptEdits`，`nativeConfig` 默认 `isolated` |

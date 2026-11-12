@@ -477,7 +477,7 @@ func (g *Gateway) pendingOutputNotice(ctx context.Context, o outgoing, r core.Ro
 			return errCancelledDelivery
 		}
 		card := g.outputCard(latest, r, true)
-		card = setReplyCardStatus(card, "回复尚未完整送达", "orange")
+		card = setReplyCardStatus(card, g.cardTitle(), "回复尚未完整送达", "orange")
 		body := argsOf(card["body"])
 		elements, _ := body["elements"].([]any)
 		body["elements"] = append(elements, core.Args{"tag": "markdown", "content": text + "\n/retry-output " + o.ID})
@@ -689,7 +689,7 @@ func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 		// Legacy/custom metadata can itself exceed the limit. Preserve the full
 		// answer in the export and use a minimal template to unblock delivery.
 		if o.Kind == "status" {
-			card = cancelledOutputCard(nil, o.Text)
+			card = cancelledOutputCardTitle(g.cardTitle(), nil, o.Text)
 		} else {
 			title := "回复"
 			if !o.Success {
@@ -748,7 +748,7 @@ func (g *Gateway) outputCard(o outgoing, room core.Room, filesPending bool) core
 		card = replaceQuickControls(card, g.quickControls(room, o.Session, "", ""))
 	}
 	if filesPending {
-		card = setReplyCardStatus(card, "模型已完成 · 文件待送达", "orange")
+		card = setReplyCardStatus(card, g.cardTitle(), "模型已完成 · 文件待送达", "orange")
 		body := argsOf(card["body"])
 		elements, _ := body["elements"].([]any)
 		body["elements"] = append(elements, core.Args{"tag": "markdown", "content": "文件确认送达后才标记完成。可用 /outputs 查看状态。"})

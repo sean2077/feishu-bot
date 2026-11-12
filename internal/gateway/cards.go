@@ -157,12 +157,35 @@ func appendReplyNotice(card core.Args, notice string) core.Args {
 	return card
 }
 
-func replyStatusRow(text, color string) core.Args {
+const defaultCardTitle = "飞书助手"
+
+// cardTitle returns the configured bot name with the legacy default fallback.
+// The value is configuration, not model output, but it still sits inside a
+// markdown title and must be escaped by replyStatusRow.
+func (g *Gateway) cardTitle() string {
+	if g.config.CardTitle == "" {
+		return defaultCardTitle
+	}
+	return g.config.CardTitle
+}
+
+func escapeCardTitle(title string) string {
+	var b strings.Builder
+	for _, r := range title {
+		if strings.ContainsRune("\\*_[]`<>~|#!&", r) {
+			b.WriteRune('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func replyStatusRow(cardTitle, text, color string) core.Args {
 	return core.Args{
 		"tag": "column_set", "element_id": "reply_status", "flex_mode": "none", "horizontal_spacing": "medium",
 		"columns": []any{
 			core.Args{"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "center", "elements": []any{
-				core.Args{"tag": "markdown", "content": "**飞书助手**"},
+				core.Args{"tag": "markdown", "content": "**" + escapeCardTitle(cardTitle) + "**"},
 			}},
 			core.Args{"tag": "column", "width": "auto", "horizontal_align": "right", "vertical_align": "center", "elements": []any{
 				core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "text_size": "notation", "text_color": color, "content": replyStatusContent(text)}},
@@ -174,13 +197,13 @@ func replyStatusRow(text, color string) core.Args {
 // setReplyCardStatus updates the visible state on a private card copy. Older
 // saved cards may have a header, an unmarked compact row, or both; leaving either
 // old status visible could contradict a pending delivery or cancellation.
-func setReplyCardStatus(card core.Args, text, color string) core.Args {
+func setReplyCardStatus(card core.Args, cardTitle, text, color string) core.Args {
 	body := argsOf(card["body"])
 	if body == nil {
 		body = core.Args{}
 	}
 	elements, _ := body["elements"].([]any)
-	row := replyStatusRow(cut(text, 40), color)
+	row := replyStatusRow(cardTitle, cut(text, 40), color)
 	replaced := false
 	for i, value := range elements {
 		element := argsOf(value)
@@ -216,19 +239,19 @@ func legacyReplyStatusRow(row core.Args) bool {
 	if !strings.HasPrefix(label, "● ") {
 		return false
 	}
-	expected := replyStatusRow(strings.TrimPrefix(label, "● "), stringArg(text, "text_color"))
+	expected := replyStatusRow(defaultCardTitle, strings.TrimPrefix(label, "● "), stringArg(text, "text_color"))
 	delete(expected, "element_id")
 	return jsonText(row) == jsonText(expected)
 }
 
 // The answer is the only large variable field. Bound metadata separately so
 // even a hostile model label or project path cannot consume the answer budget.
-func buildReplyCard(title, answer string, thinking []string, total int, final bool, d replyDetails, elapsed time.Duration, success bool) core.Args {
+func buildReplyCard(cardTitle, title, answer string, thinking []string, total int, final bool, d replyDetails, elapsed time.Duration, success bool) core.Args {
 	title = cut(title, 120)
 	d.Model = cut(d.Model, 256)
 	d.ProjectPath = cut(d.ProjectPath, 512)
 	status, statusColor := replyStatus(title, total, final, success)
-	elements := []any{replyStatusRow(status, statusColor)}
+	elements := []any{replyStatusRow(cardTitle, status, statusColor)}
 	var reasoning core.Args
 	if total > 0 {
 		steps := []any{}
@@ -298,8 +321,12 @@ func bytePrefix(s string, n int) string {
 }
 
 func boundedReplyCard(title, answer string, thinking []string, total int, final bool, d replyDetails, elapsed time.Duration, success bool, actions []any) (core.Args, bool) {
+	return boundedReplyCardTitle(defaultCardTitle, title, answer, thinking, total, final, d, elapsed, success, actions)
+}
+
+func boundedReplyCardTitle(cardTitle, title, answer string, thinking []string, total int, final bool, d replyDetails, elapsed time.Duration, success bool, actions []any) (core.Args, bool) {
 	makeCard := func(body string) core.Args {
-		card := buildReplyCard(title, body, thinking, total, final, d, elapsed, success)
+		card := buildReplyCard(cardTitle, title, body, thinking, total, final, d, elapsed, success)
 		if len(actions) > 0 {
 			body := argsOf(card["body"])
 			elements, _ := body["elements"].([]any)

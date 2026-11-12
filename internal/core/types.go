@@ -280,6 +280,7 @@ type Config struct {
 	TenantID      string                  `json:"tenantId"`
 	AppID         string                  `json:"appId"`
 	AppSecretEnv  string                  `json:"appSecretEnv"`
+	CardTitle     string                  `json:"cardTitle,omitempty"`
 	DataDir       string                  `json:"dataDir"`
 	Runtime       RuntimeConfig           `json:"runtime"`
 	Model         ModelConfig             `json:"model"`

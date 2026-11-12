@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -144,7 +145,7 @@ func validateProjectEnvironment(p *core.Project, derived map[string]string) erro
 }
 
 func Defaults() core.Config {
-	return core.Config{AppSecretEnv: "FEISHU_APP_SECRET", DataDir: "state",
+	return core.Config{AppSecretEnv: "FEISHU_APP_SECRET", CardTitle: "飞书助手", DataDir: "state",
 		Runtime: core.RuntimeConfig{MaxWorkers: 8, IdleMS: 900000},
 		Model:   core.ModelConfig{TokenEnv: "MODEL_AUTH_TOKEN", ExtraHeaders: map[string]string{}},
 		Limits:  core.Limits{BackgroundMS: 900000, TextChars: 20000, InboxPerRoom: 64, AttachmentBytes: 20 << 20, ApprovalMS: 300000, UpdateMS: 1000, MessagesPerMinute: 30, ImageBatchMaxImages: 8, ImageBatchBytes: 40 << 20}}
@@ -441,6 +442,23 @@ func absolute(base, path string) string {
 func validate(c *core.Config, base string) error {
 	if err := validateProfiles(c); err != nil {
 		return err
+	}
+	if c.CardTitle == "" {
+		c.CardTitle = "飞书助手"
+	} else {
+		title := strings.TrimSpace(c.CardTitle)
+		if title == "" {
+			return errors.New("cardTitle must be 1-40 characters")
+		}
+		if len([]rune(title)) > 40 {
+			return errors.New("cardTitle must be 1-40 characters")
+		}
+		for _, r := range title {
+			if unicode.IsControl(r) {
+				return errors.New("cardTitle contains control characters")
+			}
+		}
+		c.CardTitle = title
 	}
 	for k, v := range map[string]string{"tenantId": c.TenantID, "appId": c.AppID, "appSecretEnv": c.AppSecretEnv, "model.tokenEnv": c.Model.TokenEnv} {
 		if !idPattern.MatchString(v) {
