@@ -180,16 +180,37 @@ func escapeCardTitle(title string) string {
 	return b.String()
 }
 
-func replyStatusRow(cardTitle, text, color string) core.Args {
+// replyStatusIcon maps gateway-owned status text to a built-in Feishu icon.
+// The icons are part of the standard icon library, so no image upload or
+// client-side animation is involved.
+func replyStatusIcon(text, color string, final, success bool) string {
+	switch {
+	case text == "思考中" || text == "处理中":
+		return "loading_outlined"
+	case final && success && color == "green":
+		return "succeed_filled"
+	case final && color == "red":
+		return "error_filled"
+	case final && color == "grey":
+		return "stop_outlined"
+	case !final && color == "orange":
+		return "alarm-clock_outlined"
+	}
+	return ""
+}
+
+func replyStatusRow(cardTitle, text, color, iconToken string) core.Args {
+	status := core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "text_size": "notation", "text_color": color, "content": replyStatusContent(text)}}
+	if iconToken != "" {
+		status["icon"] = core.Args{"tag": "standard_icon", "token": iconToken, "color": color}
+	}
 	return core.Args{
 		"tag": "column_set", "element_id": "reply_status", "flex_mode": "none", "horizontal_spacing": "medium",
 		"columns": []any{
 			core.Args{"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "center", "elements": []any{
 				core.Args{"tag": "markdown", "content": "**" + escapeCardTitle(cardTitle) + "**"},
 			}},
-			core.Args{"tag": "column", "width": "auto", "horizontal_align": "right", "vertical_align": "center", "elements": []any{
-				core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "text_size": "notation", "text_color": color, "content": replyStatusContent(text)}},
-			}},
+			core.Args{"tag": "column", "width": "auto", "horizontal_align": "right", "vertical_align": "center", "elements": []any{status}},
 		},
 	}
 }
@@ -203,7 +224,7 @@ func setReplyCardStatus(card core.Args, cardTitle, text, color string) core.Args
 		body = core.Args{}
 	}
 	elements, _ := body["elements"].([]any)
-	row := replyStatusRow(cardTitle, cut(text, 40), color)
+	row := replyStatusRow(cardTitle, cut(text, 40), color, "")
 	replaced := false
 	for i, value := range elements {
 		element := argsOf(value)
@@ -239,7 +260,7 @@ func legacyReplyStatusRow(row core.Args) bool {
 	if !strings.HasPrefix(label, "● ") {
 		return false
 	}
-	expected := replyStatusRow(defaultCardTitle, strings.TrimPrefix(label, "● "), stringArg(text, "text_color"))
+	expected := replyStatusRow(defaultCardTitle, strings.TrimPrefix(label, "● "), stringArg(text, "text_color"), "")
 	delete(expected, "element_id")
 	return jsonText(row) == jsonText(expected)
 }
@@ -251,7 +272,7 @@ func buildReplyCard(cardTitle, title, answer string, thinking []string, total in
 	d.Model = cut(d.Model, 256)
 	d.ProjectPath = cut(d.ProjectPath, 512)
 	status, statusColor := replyStatus(title, total, final, success)
-	elements := []any{replyStatusRow(cardTitle, status, statusColor)}
+	elements := []any{replyStatusRow(cardTitle, status, statusColor, replyStatusIcon(status, statusColor, final, success))}
 	var reasoning core.Args
 	if total > 0 {
 		steps := []any{}

@@ -196,16 +196,16 @@ func TestReplyCardUsesCompactStatusRowAndCollapsedThinking(t *testing.T) {
 
 func TestReplyCardStatusColors(t *testing.T) {
 	cases := []struct {
-		name, title, wantText, wantColor string
-		final, success                   bool
-		total                            int
+		name, title, wantText, wantColor, wantIcon string
+		final, success                             bool
+		total                                      int
 	}{
-		{"processing", "处理中", "● 处理中", "blue", false, true, 0},
-		{"thinking", "处理中", "● 思考中", "blue", false, true, 1},
-		{"waiting", "等待审批", "● 等待审批", "orange", false, true, 0},
-		{"answered", "回复", "● 已回复", "green", true, true, 0},
-		{"failed", "执行失败", "● 执行失败", "red", true, false, 0},
-		{"stopped", "已停止", "● 已停止", "grey", true, false, 0},
+		{"processing", "处理中", "● 处理中", "blue", "loading_outlined", false, true, 0},
+		{"thinking", "处理中", "● 思考中", "blue", "loading_outlined", false, true, 1},
+		{"waiting", "等待审批", "● 等待审批", "orange", "alarm-clock_outlined", false, true, 0},
+		{"answered", "回复", "● 已回复", "green", "succeed_filled", true, true, 0},
+		{"failed", "执行失败", "● 执行失败", "red", "error_filled", true, false, 0},
+		{"stopped", "已停止", "● 已停止", "grey", "stop_outlined", true, false, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -213,6 +213,13 @@ func TestReplyCardStatusColors(t *testing.T) {
 			text, color := replyCardStatus(t, card)
 			if text != tc.wantText || color != tc.wantColor {
 				t.Fatalf("status = %q/%q, want %q/%q", text, color, tc.wantText, tc.wantColor)
+			}
+			elements, _ := argsOf(card["body"])["elements"].([]any)
+			columns, _ := argsOf(elements[0])["columns"].([]any)
+			right, _ := argsOf(columns[1])["elements"].([]any)
+			icon := argsOf(argsOf(right[0])["icon"])
+			if stringArg(icon, "tag") != "standard_icon" || stringArg(icon, "token") != tc.wantIcon || stringArg(icon, "color") != tc.wantColor {
+				t.Fatalf("status icon = %#v, want %s/%s", icon, tc.wantIcon, tc.wantColor)
 			}
 		})
 	}
@@ -262,7 +269,7 @@ func TestConfigurableCardTitleAndLegacyRow(t *testing.T) {
 	if text := jsonText(escaped); !strings.Contains(text, `A\\*B\\_\\[C\\]`) {
 		t.Fatalf("markdown was not escaped: %s", text)
 	}
-	legacy := replyStatusRow(defaultCardTitle, replyDoneText, "green")
+	legacy := replyStatusRow(defaultCardTitle, replyDoneText, "green", "")
 	delete(legacy, "element_id")
 	if !legacyReplyStatusRow(legacy) {
 		t.Fatal("legacy status row was not pinned to the default title")
