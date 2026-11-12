@@ -115,6 +115,30 @@ func TestActionApproverEnvironmentAndRunMetadata(t *testing.T) {
 	}
 }
 
+func TestCleanActionEnvKeepsWindowsPathsAndHonorsOverrides(t *testing.T) {
+	keys := []string{"LOCALAPPDATA", "APPDATA", "USERPROFILE", "SystemDrive", "ProgramData", "ALLUSERSPROFILE"}
+	for _, key := range keys {
+		t.Setenv(key, `C:\inherited\`+key)
+	}
+	t.Setenv("EXAMPLE_ACTION_SECRET", "secret")
+	env := cleanActionEnv(nil)
+	for _, key := range keys {
+		if env[key] != `C:\inherited\`+key {
+			t.Fatalf("base environment lost %s: %#v", key, env)
+		}
+	}
+	if _, ok := env["EXAMPLE_ACTION_SECRET"]; ok {
+		t.Fatal("unrelated environment variable was inherited")
+	}
+	override := cleanActionEnv(map[string]string{"USERPROFILE": `D:\action-home`, "LOCALAPPDATA": `D:\action-local`})
+	if override["USERPROFILE"] != `D:\action-home` || override["LOCALAPPDATA"] != `D:\action-local` {
+		t.Fatalf("action vars did not override inherited values: %#v", override)
+	}
+	if override["APPDATA"] != `C:\inherited\APPDATA` {
+		t.Fatalf("unrelated inherited value changed: %#v", override)
+	}
+}
+
 func TestReadOnlyActionOmitsApproverEnvironment(t *testing.T) {
 	f := newFixture(t, func(c *core.Config) {
 		c.Projects[0].Actions = []core.ActionSpec{{ID: "check", Description: "Check", Executable: "fixture", ReadOnly: true}}

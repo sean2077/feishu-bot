@@ -100,7 +100,10 @@ func directApprovalRejection(requestContext *core.RequestContext, maintainers []
 
 func cleanActionEnv(extra map[string]string) map[string]string {
 	env := map[string]string{}
-	for _, key := range []string{"PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "TZ", "TEMP", "TMP"} {
+	// Keep only a small, non-secret base environment. On Windows, tools such
+	// as lark-cli and PowerShell also need the user/system directory variables
+	// below; action vars can still override any of them explicitly.
+	for _, key := range []string{"PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "TZ", "TEMP", "TMP", "LOCALAPPDATA", "APPDATA", "USERPROFILE", "SystemDrive", "ProgramData", "ALLUSERSPROFILE"} {
 		if v, ok := os.LookupEnv(key); ok {
 			env[key] = v
 		}
