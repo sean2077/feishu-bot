@@ -121,7 +121,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `projects[].displayWorkspace` | 空 | 回复卡工作目录显示：`full`、`basename`、`project`、`hidden`；空时群聊显示项目 id，私聊显示完整路径 |
 | `groups[]`、`dms[]` | 空 | 群与私聊授权，见[飞书应用与授权](#飞书应用与授权) |
 | `groups[].topicHistory` | `"topic"` | `"topic"` 默认只读当前话题；`"chat"` 允许 `read_chat_history` 的 `scope: "chat"` 读取同群时间线和其他话题。只适用于 `sessionScope: "thread"`，其他群配置会在加载时拒绝 |
-| `dms[].historyChats` | 空 | 私聊跨群读取白名单：`[{"chatId","name"}]`，目标必须是显式 `groups[]` 绑定；发起人须为目标群 maintainer 或显式 member（`allowAllMembers` 不算），只读文本并审计；读取后本轮写操作改为 DM 用户审批 |
+| `dms[].historyChats` | 空 | 私聊跨群读取白名单：`[{"chatId","name"}]`，目标必须是显式 `groups[]` 绑定；发起人须为目标群 maintainer 或显式 member（`allowAllMembers` 不算），只读文本并审计；读取后本轮写操作改为 DM 用户审批（`approval: "none"` 的固定操作除外，仍直接执行并记 `tainted=true`） |
 | `runtime.maxWorkers`、`runtime.idleMs` | 8、900000 | 活跃原生进程上限（1–128）与空闲回收时间，见[容量与恢复](#容量与恢复) |
 | `limits.backgroundMessages`／`backgroundMs` | 0／900000 | 非 @ 群消息缓存条数（0–200）与保留时间；默认不缓存 |
 | `limits.textChars` | 20000 | 单条输入正文字符上限（100–200000），超出时明确拒绝 |
