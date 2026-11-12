@@ -9,28 +9,33 @@ import (
 // interruption cannot consume the evidence before its warning is durable.
 func (g *Gateway) recoverInterrupted(ctx context.Context) error {
 	return g.store.Transaction(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.Query(`SELECT room,0 FROM inbox WHERE status IN ('sent','consumed')
-UNION SELECT room,1 FROM requests WHERE state='pending'
-UNION SELECT room,0 FROM action_runs WHERE state='running'`)
+		rows, err := tx.Query(`SELECT room,0,1 FROM inbox WHERE status IN ('sent','consumed')
+UNION SELECT room,1,0 FROM requests WHERE state='pending'
+UNION SELECT room,0,0 FROM action_runs WHERE state='running'`)
 		if err != nil {
 			return err
 		}
-		rooms := map[string]bool{}
+		type roomRecovery struct{ request, interrupted bool }
+		rooms := map[string]roomRecovery{}
 		for rows.Next() {
 			var room string
-			var request bool
-			if err = rows.Scan(&room, &request); err != nil {
+			var state roomRecovery
+			if err = rows.Scan(&room, &state.request, &state.interrupted); err != nil {
 				rows.Close()
 				return err
 			}
-			rooms[room] = rooms[room] || request
+			current := rooms[room]
+			current.request = current.request || state.request
+			current.interrupted = current.interrupted || state.interrupted
+			rooms[room] = current
 		}
 		err = rows.Err()
 		rows.Close()
 		if err != nil {
 			return err
 		}
-		for key, hadRequest := range rooms {
+		for key, state := range rooms {
+			hadRequest, interrupted := state.request, state.interrupted
 			r, ok := RoomFromKey(g.config, key)
 			if !ok {
 				continue
@@ -43,6 +48,9 @@ UNION SELECT room,0 FROM action_runs WHERE state='running'`)
 			text := "上次运行中断。将继续原会话；未确认完成的输入与外部操作不会自动重放，请先核实结果。"
 			if hadRequest {
 				text += "\n\n上次未完成的审批／追问已失效，旧卡片不能继续授权操作。"
+			}
+			if hint := g.resumeHint(interrupted && !g.resumeBlocked(r, nil), r); hint != "" {
+				text += " " + hint
 			}
 			if _, err = g.saveOutput(tx, r, session, text, false, "", "", "", DisplayCard("恢复提醒", text), nil, "", "", "recovery", ""); err != nil {
 				return err
