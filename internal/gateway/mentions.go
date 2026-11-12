@@ -21,6 +21,29 @@ func matchOtherBot(bots []core.OtherBot, target string) (core.OtherBot, bool) {
 	return core.OtherBot{}, false
 }
 
+func requestNamesBot(text string, bot core.OtherBot) bool {
+	text = strings.ToLower(text)
+	if strings.Contains(text, strings.ToLower(bot.AppID)) || strings.Contains(text, strings.ToLower(bot.Name)) {
+		return true
+	}
+	// Users often shorten a bot name ("Gosu" for "Gosu CLI").
+	if fields := strings.Fields(bot.Name); len(fields) > 0 && len([]rune(fields[0])) >= 2 {
+		return strings.Contains(text, strings.ToLower(fields[0]))
+	}
+	return false
+}
+
+func (g *Gateway) requestText(s *slot) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var b strings.Builder
+	for _, d := range s.deliveries {
+		b.WriteString(d.Message.Text)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 // mentionAdmins requires the whole active sender set to be chat maintainers.
 // WP50 can later replace this single admin-identity check with its group
 // administrator list. A missing request context is rejected.
@@ -55,6 +78,10 @@ func (g *Gateway) mentionBot(ctx context.Context, s *slot, room core.Room, p cor
 	if !mentionAdmins(room, request) {
 		g.auditMention(room, request, bot.AppID, body, "denied:admin")
 		return nil, errors.New("mention_bot requires every active sender to be a chat maintainer")
+	}
+	if !requestNamesBot(g.requestText(s), bot) {
+		g.auditMention(room, request, bot.AppID, body, "denied:not_requested")
+		return nil, errors.New("mention_bot requires the active request to name this bot")
 	}
 	if !s.claimMention() {
 		g.auditMention(room, request, bot.AppID, body, "denied:per_turn")

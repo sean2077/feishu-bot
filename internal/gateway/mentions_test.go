@@ -15,7 +15,7 @@ func mentionFixture(t *testing.T, sender string) (*fixture, *fakeWorker, *slot) 
 		c.Groups[0].OtherBots = []core.OtherBot{{AppID: "cli_helper", Name: "Helper", OpenID: "ou_helper"}}
 		c.Limits.BackgroundMessages = 1
 	})
-	f.send(f.message("human", "hello", sender))
+	f.send(f.message("human", "ask Helper", sender))
 	w := f.worker()
 	_ = f.delivery(w)
 	s := f.g.getSlot(f.room().Key)
@@ -108,11 +108,31 @@ func TestMentionBotDisabledWithoutAllowOtherBots(t *testing.T) {
 	f := newFixture(t, func(c *core.Config) {
 		c.Groups[0].OtherBots = []core.OtherBot{{AppID: "cli_helper", Name: "Helper", OpenID: "ou_helper"}}
 	})
-	f.send(f.message("human", "hello", "owner"))
+	f.send(f.message("human", "ask Helper", "owner"))
 	w := f.worker()
 	_ = f.delivery(w)
 	s := f.g.getSlot(f.room().Key)
 	if _, err := f.g.request(s, core.WorkerEvent{Kind: "mention_bot", Input: core.Args{"target": "Helper"}}); err == nil {
 		t.Fatal("mention_bot was available without allowOtherBots")
+	}
+}
+
+func TestMentionBotRequiresRequestToNameTarget(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Groups[0].AllowOtherBots = true
+		c.Groups[0].OtherBots = []core.OtherBot{{AppID: "cli_helper", Name: "Helper", OpenID: "ou_helper"}}
+	})
+	f.send(f.message("human", "hello", "owner"))
+	w := f.worker()
+	_ = f.delivery(w)
+	s := f.g.getSlot(f.room().Key)
+	if _, err := f.g.request(s, core.WorkerEvent{Kind: "mention_bot", Input: core.Args{"target": "Helper"}}); err == nil {
+		t.Fatal("mention_bot accepted a request that did not name the target")
+	}
+	f.tr.mu.Lock()
+	posts := len(f.tr.posts)
+	f.tr.mu.Unlock()
+	if posts != 0 {
+		t.Fatalf("posts = %d", posts)
 	}
 }
