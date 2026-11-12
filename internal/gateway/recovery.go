@@ -40,7 +40,7 @@ UNION SELECT room,0 FROM action_runs WHERE state='running'`)
 			if err != nil && err != sql.ErrNoRows {
 				return err
 			}
-			text := "上次运行中断。将继续原会话；未确认完成的输入与外部操作不会自动重放，请先核实结果。"
+			text := "上次运行中断。将继续原会话；未确认完成的输入与外部操作不会自动重放，请先核实结果。点击卡片上的「继续」，或在**本话题 @我**发送任意内容；直接回复不带 @ 不会触发。"
 			if hadRequest {
 				text += "\n\n上次未完成的审批／追问已失效，旧卡片不能继续授权操作。"
 			}

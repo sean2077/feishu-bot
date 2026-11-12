@@ -41,6 +41,7 @@
 - 回复反馈改为每人每张回复只能反馈一次：`feedback` 以 `(output,user)` 去重，重复点击不覆盖并提示已有选择；按钮文字显示实时计数“有用 · N”／“无用 · M”，每次点击后按 CardKit 元素接口只更新两个按钮，复用 `nextCardSequence` 的严格递增序号和 `feishu_cards.snapshot` 同步；同一张卡串行刷新并在发送前重新读计数，多人并发时最终显示收敛。刷新失败不影响反馈记录，写 `feedback_count_refresh_failed`；旧消息卡没有 CardKit 实体时写 `feedback_count_refresh_skipped`。反馈导出格式不变。
 - 新增顶层 `cardTitle` 配置，默认 `飞书助手`；trim 后须为 1–40 字符且不含控制字符。回复卡状态行使用该名称并对 markdown 特殊字符转义；旧版无 `element_id` 的状态行仍按旧标题识别，只在状态行被重写时替换为新标题，不批量回填旧卡。
 - 固定操作审批通过后向子进程注入 `FEISHU_ACTION_REQUEST_ID`、`FEISHU_ACTION_APPROVER_OPEN_ID`、`FEISHU_ACTION_APPROVED_AT`，污染轮次另注入 `FEISHU_ACTION_TAINT_CONFIRMER_OPEN_ID`；只读操作不注入。`action_runs` 追加可空 `request`、`approver`、`taint_request` 列，分别记录最终审批请求/审批人和污染确认请求；`actions[].env`／`vars` 新增拒绝 `FEISHU_ACTION_` 前缀。审批标识是审计数据，不是授权。
+- 新增异常中断一键续接：恢复提醒卡和状态卡在存在 `uncertain` 输入时显示「继续」按钮，只有原提问人或项目 maintainer 可点，同一张卡只能成功续接一次；点击后在同一话题/会话排队固定续接提示，基于已有上下文继续，不重放中断前的写操作。未点击时仍需在原话题 @机器人 才会恢复；恢复提示会写明直接回复不带 @ 不会触发。
 
 ## 0.5.0 — 2026-11-07
 

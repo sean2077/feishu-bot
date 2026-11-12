@@ -720,6 +720,11 @@ func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 func (g *Gateway) deliveredOutputCard(o outgoing, r core.Room) core.Args {
 	card := g.outputCard(o, r, false)
 	controls := g.quickControls(r, o.Session, "", "")
+	if (o.Kind == "recovery" || o.Kind == "status") && o.Session != "" {
+		if _, ok := g.uncertainInput(r.Key, o.Session); ok {
+			controls = append(controls, g.resumeControls(r, o.Session, g.quickRevision(r, o.Session, "", "", ""))...)
+		}
+	}
 	if o.Kind == "reply" && o.Success && g.feedbackEnabled(r) && replyCardDone(card) {
 		controls = append(controls, g.feedbackControls(r, o.Session, o.ID, g.quickRevision(r, o.Session, "", "", ""))...)
 	}

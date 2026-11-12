@@ -297,6 +297,8 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 	case "status":
 		g.task(func() { g.refreshStatusCard(r, a.UserID) })
 		return "正在刷新状态卡片。", true, nil
+	case "resume_interrupted":
+		return g.resumeInterrupted(ctx, r, a, p)
 	case "answer":
 		if !lockWithin(ctx, &g.approvalMu) {
 			return "", true, ctx.Err()
