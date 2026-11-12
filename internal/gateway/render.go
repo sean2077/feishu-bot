@@ -42,6 +42,7 @@ type render struct {
 	timer                                                    *time.Timer
 	deliveryID                                               string
 	turn                                                     string
+	requester                                                string
 	initialCard                                              core.Args
 	boundTarget, boundKey                                    string
 	waiting, failures                                        int
@@ -63,6 +64,7 @@ func newRender(g *Gateway, s *slot, anchor *core.Delivery) *render {
 	}
 	if anchor != nil {
 		r.turn = anchor.UUID
+		r.requester = anchor.Message.SenderID
 		r.replyTo = messageReply(anchor.Message)
 		r.threadID = anchor.Message.ThreadID
 		r.started = anchor.Message.Time
@@ -76,6 +78,7 @@ func (r *render) bind(anchor *core.Delivery) {
 	r.mu.Lock()
 	if r.messageID == "" && !r.flushing && !r.createUncertain {
 		r.turn = anchor.UUID
+		r.requester = anchor.Message.SenderID
 		r.replyTo = messageReply(anchor.Message)
 		r.threadID = anchor.Message.ThreadID
 		r.started = anchor.Message.Time
@@ -191,7 +194,7 @@ func (r *render) cardFitLocked(title, answer string, final, success bool) (core.
 	d := r.details
 	d.Model = core.Redact(d.Model, r.g.secrets)
 	d.ProjectPath = core.Redact(d.ProjectPath, r.g.secrets)
-	card, needsFile := boundedReplyCardTitle(r.g.cardTitle(), title, answer, r.thinkingLocked(), r.thinkingCount, final, d, time.Duration(max(int64(0), time.Now().UnixMilli()-r.started))*time.Millisecond, success, r.g.quickControls(r.room, r.session, r.turn, r.finalID))
+	card, needsFile := boundedReplyCardTitle(r.g.cardTitle(), title, answer, r.thinkingLocked(), r.thinkingCount, final, d, time.Duration(max(int64(0), time.Now().UnixMilli()-r.started))*time.Millisecond, success, r.g.quickTurnControls(r.room, r.session, r.turn, r.finalID, r.requester))
 	if r.notice != "" {
 		card = fitCardBudget(appendReplyNotice(card, r.notice), core.CardPayloadLimit, "…")
 	}
