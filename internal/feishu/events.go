@@ -42,6 +42,9 @@ func (c *Client) prepareEvent(payload []byte) (pendingEvent, error) {
 			return pendingEvent{}, nil
 		}
 		message := normalizeMessage(event, c.botOpenID(), true)
+		if message.SenderIsBot && message.SenderID == c.config.AppID {
+			message.SenderIsSelf = true
+		}
 		c.rememberOrigin(message.ID, room)
 		return pendingEvent{message: &message}, nil
 	}

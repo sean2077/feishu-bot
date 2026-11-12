@@ -90,6 +90,13 @@ func deploymentChecks(c core.Config) []Diagnostic {
 		check(fmt.Sprintf("dms[%d].userId", i), d.UserID)
 	}
 	checks := []Diagnostic{{Name: "configuration values", OK: len(unfinished) == 0, Detail: "Replace template fields: " + strings.Join(unfinished, ", ")}, {Name: "chat bindings", OK: len(c.Groups)+len(c.DMs) > 0, Detail: "At least one authorized group or DM user is required."}}
+	allowOtherBotsExplicit := true
+	for _, g := range c.Groups {
+		if g.AllowOtherBots && g.ChatID == core.AnyGroupChatID {
+			allowOtherBotsExplicit = false
+		}
+	}
+	checks = append(checks, Diagnostic{Name: "allowOtherBots group bindings", OK: allowOtherBotsExplicit, Detail: "allowOtherBots requires an explicit group chatId; it never applies to the wildcard binding or a DM."})
 	names := []string{c.AppSecretEnv, c.Model.TokenEnv}
 	seen := map[string]bool{}
 	for _, p := range c.Projects {

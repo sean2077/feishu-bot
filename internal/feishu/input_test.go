@@ -250,3 +250,30 @@ func TestInteractiveHistoryCardDegradedContent(t *testing.T) {
 		t.Fatalf("degraded card content = %q, %t", text, ok)
 	}
 }
+
+func TestOtherBotEventHeaderAdmission(t *testing.T) {
+	c, _ := fixtureClient(t, nil, func(w http.ResponseWriter, r *http.Request) {})
+	c.config.Groups[0].AllowOtherBots = true
+	event := messageEvent{}
+	event.Sender.Type = "app"
+	event.Sender.Name = "Helper"
+	event.Sender.ID.AppID = "cli_helper"
+	event.Message = eventMessage{ID: "om_bot", ChatID: "oc_allowed", ChatType: "group", Type: "text", Content: `{"text":"hello"}`}
+	room, ok := c.allowedHeader(event)
+	if !ok || !room.AllowOtherBots {
+		t.Fatalf("other bot event was rejected: %+v %t", room, ok)
+	}
+	m := normalizeMessage(event, c.botOpenID(), true)
+	if m.SenderID != "cli_helper" || !m.SenderIsBot || m.SenderIsSelf {
+		t.Fatalf("other bot sender = %+v", m)
+	}
+	event.Sender.ID.AppID = c.config.AppID
+	if _, ok := c.allowedHeader(event); ok {
+		t.Fatal("self app event was admitted")
+	}
+	event.Sender.ID.AppID = "cli_helper"
+	c.config.Groups[0].AllowOtherBots = false
+	if _, ok := c.allowedHeader(event); ok {
+		t.Fatal("other bot event was admitted without allowOtherBots")
+	}
+}

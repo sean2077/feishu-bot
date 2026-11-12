@@ -25,12 +25,25 @@ func contains(values []string, v string) bool {
 func AuthorizedAuthor(r core.Room, id string) bool {
 	return r.Authorizes(id)
 }
+func otherBot(m core.Message) bool { return m.SenderIsBot && !m.SenderIsSelf }
 func Route(c core.Config, m core.Message) (core.Room, bool) {
-	if m.SenderIsBot || m.SenderID == "" || m.ChatID == "" || m.ID == "" || (m.ChatType != "group" && m.ChatType != "p2p") {
+	if m.SenderID == "" || m.ChatID == "" || m.ID == "" || (m.ChatType != "group" && m.ChatType != "p2p") {
 		return core.Room{}, false
 	}
 	r, ok := c.MessageRoom(m)
-	return r, ok && AuthorizedAuthor(r, m.SenderID)
+	if !ok {
+		return core.Room{}, false
+	}
+	if m.SenderIsBot {
+		// Other bots are admitted only by an explicitly enabled group. This
+		// flag is group-level authorization, not a maintainer or approval
+		// grant, and never applies to a DM or the "*" fallback binding.
+		if m.SenderIsSelf || m.ChatType != "group" || !r.AllowOtherBots {
+			return core.Room{}, false
+		}
+		return r, true
+	}
+	return r, AuthorizedAuthor(r, m.SenderID)
 }
 
 // routeQueued re-authorizes an accepted input for roomKey under the current
@@ -57,6 +70,11 @@ func routeQueued(c core.Config, roomKey string, m core.Message) (core.Room, bool
 	return r, AuthorizedAuthor(r, m.SenderID)
 }
 func Triggers(r core.Room, m core.Message) bool {
+	if otherBot(m) {
+		// Another bot must explicitly mention this bot; mentionOptional only
+		// applies to human authors and must not turn bot chatter into a loop.
+		return m.ChatType == "group" && m.Mentioned
+	}
 	return m.ChatType == "p2p" || m.Mentioned || r.MentionOptional
 }
 func Readable(r core.Room, m core.Message) bool {
@@ -68,7 +86,7 @@ func Readable(r core.Room, m core.Message) bool {
 		return false
 	}
 	if m.SenderIsBot {
-		return m.SenderIsSelf
+		return m.SenderIsSelf || (r.AllowOtherBots && m.ChatType == "group")
 	}
 	return AuthorizedAuthor(r, m.SenderID)
 }
@@ -160,11 +178,13 @@ func argsOf(v any) core.Args {
 func origins(ds []core.Delivery) []core.Origin {
 	o := make([]core.Origin, 0, len(ds))
 	for _, d := range ds {
-		o = append(o, core.Origin{ID: d.Message.ID, SenderID: d.Message.SenderID})
+		o = append(o, core.Origin{ID: d.Message.ID, SenderID: d.Message.SenderID, SenderIsBot: d.Message.SenderIsBot})
 	}
 	return o
 }
-func origin(m core.Message) []core.Origin { return []core.Origin{{ID: m.ID, SenderID: m.SenderID}} }
+func origin(m core.Message) []core.Origin {
+	return []core.Origin{{ID: m.ID, SenderID: m.SenderID, SenderIsBot: m.SenderIsBot}}
+}
 func splitCommand(text string) (string, string) {
 	s := strings.TrimSpace(text)
 	i := strings.IndexAny(s, " \t\r\n")

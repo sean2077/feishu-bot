@@ -425,3 +425,30 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`, row.id, "room", "p", "session", "output-"+row.id
 		t.Fatalf("feedback rows after disabled export = %d: %v", rows, err)
 	}
 }
+
+func TestMentionRowsUseLongerOutboxRetention(t *testing.T) {
+	s := openTest(t)
+	now := time.Now().UnixMilli()
+	old := now - 10*24*60*60*1000
+	for _, row := range []struct {
+		id, kind, state string
+	}{
+		{"old-mention", "mention", "done"},
+		{"old-reply", "reply", "done"},
+	} {
+		if _, err := s.DB.Exec("INSERT INTO outbox(id,room,session,text,success,state,at,kind) VALUES(?,?,?,?,?,?,?,?)", row.id, "room", "session", "text", 1, row.state, old, row.kind); err != nil {
+			t.Fatal(err)
+		}
+	}
+	maintainAllPolicies(t, s, now)
+	var mention, reply int
+	if err := s.DB.QueryRow("SELECT count(*) FROM outbox WHERE id='old-mention'").Scan(&mention); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow("SELECT count(*) FROM outbox WHERE id='old-reply'").Scan(&reply); err != nil {
+		t.Fatal(err)
+	}
+	if mention != 1 || reply != 0 {
+		t.Fatalf("mention=%d reply=%d", mention, reply)
+	}
+}

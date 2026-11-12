@@ -717,6 +717,28 @@ func validate(c *core.Config, base string) error {
 			return errors.New("invalid group binding")
 		}
 		seen[g.ChatID] = true
+		if g.AllowOtherBots && g.ChatID == core.AnyGroupChatID {
+			return errors.New("allowOtherBots requires an explicit group")
+		}
+		if len(g.OtherBots) > 0 && !g.AllowOtherBots {
+			return errors.New("otherBots requires allowOtherBots")
+		}
+		botApps, botNames := map[string]bool{}, map[string]bool{}
+		for j, b := range g.OtherBots {
+			if !strings.HasPrefix(b.AppID, "cli_") || !idPattern.MatchString(b.AppID) || botApps[b.AppID] {
+				return fmt.Errorf("groups[%d].otherBots[%d] has an invalid or duplicate appId", i, j)
+			}
+			name := strings.TrimSpace(b.Name)
+			if name == "" || len([]rune(name)) > 80 || strings.IndexFunc(name, unicode.IsControl) >= 0 || botNames[strings.ToLower(name)] {
+				return fmt.Errorf("groups[%d].otherBots[%d] has an invalid or duplicate name", i, j)
+			}
+			if b.OpenID != "" && (!strings.HasPrefix(b.OpenID, "ou_") || !idPattern.MatchString(b.OpenID)) {
+				return fmt.Errorf("groups[%d].otherBots[%d] has an invalid openId", i, j)
+			}
+			botApps[b.AppID] = true
+			botNames[strings.ToLower(name)] = true
+			g.OtherBots[j].Name = name
+		}
 		if !core.ValidSessionScope(g.SessionScope) {
 			return errors.New("invalid group sessionScope")
 		}

@@ -14,6 +14,7 @@ type identity struct {
 	OpenID  string `json:"open_id"`
 	UserID  string `json:"user_id"`
 	UnionID string `json:"union_id"`
+	AppID   string `json:"app_id"`
 }
 type mention struct {
 	Key  string   `json:"key"`
@@ -99,17 +100,41 @@ func (c *Client) configuredMaintainer(id string) bool {
 func authorizedAuthor(room core.Room, sender string) bool {
 	return room.Authorizes(sender)
 }
+func eventSenderID(event messageEvent) string {
+	if event.Sender.ID.OpenID != "" {
+		return event.Sender.ID.OpenID
+	}
+	return event.Sender.ID.AppID
+}
+
 func (c *Client) allowedHeader(event messageEvent) (core.Room, bool) {
 	m := event.Message
-	sender := event.Sender.ID.OpenID
-	if !validID(m.ID) || !validID(m.ChatID) || !validID(sender) || event.Sender.Type != "user" {
+	sender := eventSenderID(event)
+	if !validID(m.ID) || !validID(m.ChatID) || !validID(sender) {
 		return core.Room{}, false
 	}
 	if m.ChatType != "p2p" && m.ChatType != "group" {
 		return core.Room{}, false
 	}
 	room, ok := c.config.MessageRoom(core.Message{ID: m.ID, ChatID: m.ChatID, ChatType: m.ChatType, SenderID: sender, ThreadID: m.ThreadID, RootID: m.RootID})
-	return room, ok && authorizedAuthor(room, sender)
+	if !ok {
+		return core.Room{}, false
+	}
+	switch event.Sender.Type {
+	case "user":
+		return room, authorizedAuthor(room, sender)
+	case "app":
+		// Never admit this application's own events as other-bot input.
+		if event.Sender.ID.AppID == c.config.AppID || sender == c.botOpenID() {
+			return core.Room{}, false
+		}
+		if m.ChatType != "group" || !room.AllowOtherBots {
+			return core.Room{}, false
+		}
+		return room, true
+	default:
+		return core.Room{}, false
+	}
 }
 func botMentioned(m eventMessage, botID string) bool {
 	if botID == "" {
@@ -139,7 +164,9 @@ func NormalizeEvent(raw []byte, botID string) (core.Message, error) {
 func normalizeMessage(event messageEvent, botID string, strip bool) core.Message {
 	raw := event.Message
 	timestamp, _ := strconv.ParseInt(raw.CreateTime, 10, 64)
-	m := core.Message{ID: raw.ID, ChatID: raw.ChatID, ChatType: raw.ChatType, SenderID: event.Sender.ID.OpenID, SenderName: event.Sender.Name, SenderIsBot: event.Sender.Type != "user", Text: "", Time: timestamp, Mentioned: botMentioned(raw, botID), ReplyTo: raw.ParentID, ThreadID: raw.ThreadID, RootID: raw.RootID, Resources: []core.Resource{}}
+	senderID := eventSenderID(event)
+	self := event.Sender.Type == "app" && botID != "" && senderID == botID
+	m := core.Message{ID: raw.ID, ChatID: raw.ChatID, ChatType: raw.ChatType, SenderID: senderID, SenderName: event.Sender.Name, SenderIsBot: event.Sender.Type != "user", SenderIsSelf: self, Text: "", Time: timestamp, Mentioned: botMentioned(raw, botID), ReplyTo: raw.ParentID, ThreadID: raw.ThreadID, RootID: raw.RootID, Resources: []core.Resource{}}
 	issue := ""
 	if raw.Type == "merge_forward" {
 		issue = forwardedInput

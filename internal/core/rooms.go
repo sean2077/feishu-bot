@@ -95,6 +95,8 @@ func (c Config) RoomFor(chat, dm string) (Room, bool) {
 	var members []string
 	mentionOptional := false
 	allowAllMembers := false
+	allowOtherBots := false
+	var otherBots []OtherBot
 	scope := ""
 	topicHistory := ""
 	if dm != "" {
@@ -113,6 +115,8 @@ func (c Config) RoomFor(chat, dm string) (Room, bool) {
 				members = g.Members
 				mentionOptional = g.MentionOptional
 				allowAllMembers = g.AllowAllMembers
+				allowOtherBots = g.AllowOtherBots
+				otherBots = g.OtherBots
 				scope = g.SessionScope
 				topicHistory = g.TopicHistory
 				fallback = nil
@@ -146,7 +150,7 @@ func (c Config) RoomFor(chat, dm string) (Room, bool) {
 		scope = SessionScopeChat
 	}
 	key, _ := json.Marshal([]any{c.TenantID, c.AppID, project, kind, chat, user})
-	return Room{Key: string(key), ChatKey: string(key), ChatID: chat, ProjectID: project, DMUser: dm, Maintainers: p.Maintainers, Members: members, MentionOptional: mentionOptional, AllowAllMembers: allowAllMembers, SessionScope: scope, TopicHistory: topicHistory}, true
+	return Room{Key: string(key), ChatKey: string(key), ChatID: chat, ProjectID: project, DMUser: dm, Maintainers: p.Maintainers, Members: members, MentionOptional: mentionOptional, AllowAllMembers: allowAllMembers, AllowOtherBots: allowOtherBots, OtherBots: otherBots, SessionScope: scope, TopicHistory: topicHistory}, true
 }
 
 // ThreadRoomFor resolves the room of one topic in a thread-scoped group. The

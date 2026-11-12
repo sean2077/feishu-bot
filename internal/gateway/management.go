@@ -44,7 +44,7 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 	}
 	rows.Close()
 	var outputs int64
-	if e = g.store.DB.QueryRow("SELECT count(*) FROM outbox WHERE room=? AND state NOT IN ('done','cancelled')", r.Key).Scan(&outputs); e != nil {
+	if e = g.store.DB.QueryRow("SELECT count(*) FROM outbox WHERE room=? AND state NOT IN ('done','cancelled') AND kind!='mention'", r.Key).Scan(&outputs); e != nil {
 		return nil, e
 	}
 	outboxStates := core.Args{}
@@ -325,7 +325,7 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 
 	rows, e := g.store.DB.Query(`SELECT o.id,o.state,o.file_state,o.delivery_error,o.kind,o.retry_count,o.retry_after,
 		EXISTS(SELECT 1 FROM outbox f WHERE f.room=o.room AND f.session=o.session AND f.kind='file' AND f.state NOT IN ('done','cancelled'))
-		FROM outbox o WHERE o.room=? AND o.state NOT IN ('done','cancelled') ORDER BY o.at DESC,o.id DESC LIMIT 20`, r.Key)
+		FROM outbox o WHERE o.room=? AND o.state NOT IN ('done','cancelled') AND o.kind!='mention' ORDER BY o.at DESC,o.id DESC LIMIT 20`, r.Key)
 	if e != nil {
 		return "", true, e
 	}

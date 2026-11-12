@@ -59,6 +59,9 @@ func cloneCard(card core.Args) core.Args {
 func (f *localFeishu) Send(ctx context.Context, _ core.Room, _, _, _ string) (string, error) {
 	return "notice-" + core.NewID(), ctx.Err()
 }
+func (f *localFeishu) SendPost(ctx context.Context, _ core.Room, _ core.Args, _, _ string) (string, error) {
+	return "post-" + core.NewID(), ctx.Err()
+}
 func (f *localFeishu) Card(ctx context.Context, room core.Room, card core.Args, replyTo, _ string) (string, error) {
 	if ctx.Err() != nil {
 		return "", ctx.Err()

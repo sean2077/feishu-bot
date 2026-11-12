@@ -111,7 +111,7 @@ const feedbackUnexported = `NOT EXISTS(SELECT 1 FROM feedback_exports e WHERE e.
 // redundant IN term keeps each query matched to its partial index.
 func pendingSession(table string) string {
 	return `EXISTS(SELECT 1 FROM inbox i WHERE i.session=` + table + `.session AND i.status IN ('queued','sent','consumed','uncertain') AND i.status!='uncertain') OR
-EXISTS(SELECT 1 FROM outbox o WHERE o.session=` + table + `.session AND o.state NOT IN ('done','cancelled')) OR
+EXISTS(SELECT 1 FROM outbox o WHERE o.session=` + table + `.session AND o.state NOT IN ('done','cancelled') AND o.kind!='mention') OR
 EXISTS(SELECT 1 FROM requests r WHERE r.session=` + table + `.session AND r.state='pending') OR
 EXISTS(SELECT 1 FROM action_runs a WHERE a.session=` + table + `.session AND a.state IN ('running','uncertain') AND a.state='running')`
 }
@@ -120,7 +120,7 @@ EXISTS(SELECT 1 FROM action_runs a WHERE a.session=` + table + `.session AND a.s
 // session key. Keep it while any durable work in the room can still refer to it.
 func pendingRoom(table string) string {
 	return `EXISTS(SELECT 1 FROM inbox i WHERE i.room=` + table + `.room AND i.status IN ('queued','sent','consumed','uncertain') AND i.status!='uncertain') OR
-EXISTS(SELECT 1 FROM outbox o INDEXED BY outbox_room_active WHERE o.room=` + table + `.room AND o.state NOT IN ('done','cancelled')) OR
+EXISTS(SELECT 1 FROM outbox o INDEXED BY outbox_room_active WHERE o.room=` + table + `.room AND o.state NOT IN ('done','cancelled') AND o.kind!='mention') OR
 EXISTS(SELECT 1 FROM requests r WHERE r.room=` + table + `.room AND r.state='pending') OR
 EXISTS(SELECT 1 FROM action_runs a WHERE a.room=` + table + `.room AND a.state IN ('running','uncertain') AND a.state='running')`
 }
@@ -139,7 +139,8 @@ func maintenancePolicies(now, backgroundMS int64, feedbackExport ...bool) []main
 		{"inbox_bodies", "inbox", "at", "status IN ('done','cancelled') AND (message!='{}' OR payload IS NOT NULL)", inputRefs, "message='{}',payload=NULL", now - dayMS},
 		{"inbox_terminal", "inbox", "at", "status IN ('done','cancelled')", inputRefs + ` OR EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='input' AND d.id=inbox.uuid) OR EXISTS(SELECT 1 FROM output_discarded_origins d WHERE d.room=inbox.room AND d.origin=inbox.id)`, "", now - 30*dayMS},
 		{"outputs", "outputs", "at", "1", `EXISTS(SELECT 1 FROM outbox o WHERE o.target=outputs.id AND o.state NOT IN ('done','cancelled')) OR EXISTS(SELECT 1 FROM outbox o WHERE o.file_target=outputs.id AND o.state NOT IN ('done','cancelled'))`, "", now - 30*dayMS},
-		{"outbox", "outbox", "at", "state IN ('done','cancelled')", `file_path IS NOT NULL OR file_state IN ('sending','uncertain') OR EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id)`, "", now - 7*dayMS},
+		{"outbox", "outbox", "at", "state IN ('done','cancelled') AND kind!='mention'", `file_path IS NOT NULL OR file_state IN ('sending','uncertain') OR EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id)`, "", now - 7*dayMS},
+		{"mentions", "outbox", "at", "kind='mention'", "", "", now - 90*dayMS},
 		{"discarded_output_bodies", "outbox", "at", "state IN ('done','cancelled') AND (text!='' OR card IS NOT NULL OR initial_card IS NOT NULL)", `state!='cancelled' OR file_path IS NOT NULL OR NOT EXISTS(SELECT 1 FROM operator_decisions d WHERE d.kind='output' AND d.id=outbox.id AND d.decision='discard')`, "text='',card=NULL,initial_card=NULL", now - 7*dayMS},
 		{"audit", "audit", "at", "1", "", "", now - 90*dayMS},
 		{"feedback", "feedback", "at", "1", feedbackProtect, "", now - 90*dayMS},
