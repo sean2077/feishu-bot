@@ -2,6 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
+- 回复卡「停止本轮」改为本轮提问人或本聊天 maintainer 可点，其他成员收到「只有提问人或管理员可以停止本轮。」提示且轮次继续。提问人 open_id 来自原生轮次 anchor，写入 HMAC 签名的 quick control payload；客户端不能伪造。拿不到提问人时退化为仅 maintainer 可停止；retry 和会话 resume 仍只限 maintainer。
 - 修复「继续」按钮可能接错历史中断点：关闭状态卡现在把续接按钮绑定到产生它的中断输出，点击时使用该输出对应原始输入的摘要（截断 300 字）构造续接提示，并明确要求只继续这条请求、不要切换到其它历史中断点；恢复提醒卡仍以该会话最新的 uncertain 输入为锚点。续接轮次的回复目标改为被点击的卡片，不再使用可能很旧的原始输入消息；被再次中断时，通过输入的 interactionMessageId 继续解析锚点。停止进行中的状态卡仍显示按钮，点击在停止完成前会被拒绝。关闭状态卡即使原输入已被 `/stop` 取消，只要仍能解析原始请求就显示「继续」。
 - 修复项目 `settingsFile` 含顶层 `autoMode` 时原生进程拒绝启动的问题：现在允许 `autoMode` 为 JSON 对象并原样透传到生成的临时 settings（isolated 和 inherit 都覆盖），已知 `environment`/`allow`/`soft_deny` 和未知子字段均不逐项校验；`autoMode` 不是对象时仍拒绝。`hooks`、`defaultMode`、`apiKeyHelper`、`additionalDirectories` 等其他未知顶层字段继续 fail-closed，错误日志和 doctor 显示具体字段名。
 - 新增 `projects[].permissionMode: "auto"`：网关只对 auto 项目注入 `CLAUDE_CODE_AUTO_MODE_SERVER=0`，强制使用 Claude Code 本地安全分类器；不改变 API_KEY 或非必要流量开关。分类器使用现有模型凭据和 `baseUrl`，固定 `claude-sonnet-5`，每次最多两段、约 40 秒且计费。分类器拒绝写 `auto_mode_denied`，不可用／无法评估写 `auto_mode_unavailable`（`kind=unavailable|unevaluable`），并在回复卡追加一条固定中文提示；工具输入不进入卡片或审计。init 回显 `permissionMode`，不一致写 `permission_mode_mismatch`；`/status` 显示请求与生效值，doctor/config explain 标注运行时 `not_checked`。deny 仍是硬边界，ask 仍进入维护者审批。默认值不变，线上配置未切换。
