@@ -721,7 +721,7 @@ func (g *Gateway) deliveredOutputCard(o outgoing, r core.Room) core.Args {
 	card := g.outputCard(o, r, false)
 	controls := g.quickControls(r, o.Session, "", "")
 	if o.Kind == "recovery" && g.resumeAvailable(r, o.Session) {
-		controls = append(controls, g.resumeControls(r, o.Session, g.quickRevision(r, o.Session, "", "", ""))...)
+		controls = append(controls, g.resumeControls(r, o.Session, "")...)
 	}
 	if o.Kind == "reply" && o.Success && g.feedbackEnabled(r) && replyCardDone(card) {
 		controls = append(controls, g.feedbackControls(r, o.Session, o.ID, g.quickRevision(r, o.Session, "", "", ""))...)
@@ -742,8 +742,8 @@ func (g *Gateway) outputCard(o outgoing, room core.Room, filesPending bool) core
 	}
 	if o.Kind == "status" {
 		card = replaceQuickControls(card, nil)
-		if g.resumeAvailable(room, o.Session) {
-			card = replaceQuickControls(card, g.resumeControls(room, o.Session, g.quickRevision(room, o.Session, "", "", "")))
+		if g.resumeAvailableFor(room, o.Session, o.ID) {
+			card = replaceQuickControls(card, g.resumeControls(room, o.Session, o.ID))
 		}
 	} else if o.State == "pending" || o.State == "uncertain" || o.State == "blocked" {
 		// Only a delivery that can still be retried gets the retry control.

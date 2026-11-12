@@ -49,7 +49,7 @@ func TestStopAfterModelFinishedClosesBlockedFileCardWithoutResend(t *testing.T) 
 	f.tr.mu.Unlock()
 	_, color := replyCardStatus(t, last.card)
 	visible := jsonText(last.card)
-	if fileCalls != 1 || color != "grey" || argsOf(last.card["config"])["streaming_mode"] != false || !strings.Contains(visible, "此前已发出的请求仍可能到达") || strings.Contains(visible, "quick_control") || strings.Contains(visible, "完整答案另附文件") {
+	if fileCalls != 1 || color != "grey" || argsOf(last.card["config"])["streaming_mode"] != false || !strings.Contains(visible, "此前已发出的请求仍可能到达") || strings.Contains(visible, "gateway_quick_retry") || strings.Contains(visible, "重试交付") || strings.Contains(visible, "完整答案另附文件") {
 		t.Fatalf("cancelled card was misleading or resent file: file calls=%d card=%s", fileCalls, visible)
 	}
 	if ok, err := f.g.deliverOutput(context.Background(), original, f.room(), true); err != nil || ok {

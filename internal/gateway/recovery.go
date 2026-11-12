@@ -49,7 +49,7 @@ UNION SELECT room,0,0 FROM action_runs WHERE state='running'`)
 			if hadRequest {
 				text += "\n\n上次未完成的审批／追问已失效，旧卡片不能继续授权操作。"
 			}
-			if hint := g.resumeHint(interrupted && !g.resumeBlocked(r, nil), r); hint != "" {
+			if hint := g.resumeHint(interrupted, r); hint != "" {
 				text += " " + hint
 			}
 			if _, err = g.saveOutput(tx, r, session, text, false, "", "", "", DisplayCard("恢复提醒", text), nil, "", "", "recovery", ""); err != nil {

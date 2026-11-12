@@ -685,7 +685,7 @@ func (g *Gateway) persistExited(ctx context.Context, s *slot, cleanupFailed, int
 		}
 		if cleanupFailed || interrupted || approvals > 0 || n > 0 {
 			text := "原生工作进程意外退出。当前审批／追问已取消；未确认的输入与外部操作不会自动重放。请先核实结果。会话记录仍保留，可以继续原会话。"
-			if hint := g.resumeHint(n > 0 && !cleanupFailed && !g.resumeBlocked(s.room, s), s.room); hint != "" {
+			if hint := g.resumeHint(n > 0 && !cleanupFailed, s.room); hint != "" {
 				text += " " + hint
 			}
 			if cleanupFailed {
