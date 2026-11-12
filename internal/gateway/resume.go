@@ -56,9 +56,6 @@ func (g *Gateway) resumeAvailableFor(r core.Room, session, source string) bool {
 	if session == "" {
 		return false
 	}
-	if g.resumeBlocked(r, g.getSlot(r.Key)) {
-		return false
-	}
 	_, ok := g.resumeRequest(r.Key, session, source)
 	return ok
 }
@@ -71,7 +68,10 @@ func (g *Gateway) resumeRequest(room, session, source string) (core.Message, boo
 		var reply string
 		err := g.store.DB.QueryRow("SELECT reply_to FROM outbox WHERE id=? AND room=? AND session=? AND kind='status' AND reply_to IS NOT NULL", source, room, session).Scan(&reply)
 		if err == nil && reply != "" {
-			if m, ok := g.inboxMessage(room, reply); ok {
+			if m, ok := g.inboxMessage(room, session, reply); ok {
+				return m, true
+			}
+			if m, ok := g.inboxInteractionMessage(room, session, reply); ok {
 				return m, true
 			}
 		}
@@ -80,9 +80,25 @@ func (g *Gateway) resumeRequest(room, session, source string) (core.Message, boo
 	return g.uncertainInput(room, session)
 }
 
-func (g *Gateway) inboxMessage(room, id string) (core.Message, bool) {
+func (g *Gateway) inboxMessage(room, session, id string) (core.Message, bool) {
 	var raw string
-	err := g.store.DB.QueryRow("SELECT message FROM inbox WHERE room=? AND id=?", room, id).Scan(&raw)
+	err := g.store.DB.QueryRow("SELECT message FROM inbox WHERE room=? AND session=? AND id=?", room, session, id).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) || err != nil {
+		return core.Message{}, false
+	}
+	var m core.Message
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return core.Message{}, false
+	}
+	return m, true
+}
+
+// A resumed turn replies to the card that was clicked. That card is not an
+// inbox row, but the synthetic resume input carries it as its interaction
+// message ID; this keeps a second interruption anchorable.
+func (g *Gateway) inboxInteractionMessage(room, session, interaction string) (core.Message, bool) {
+	var raw string
+	err := g.store.DB.QueryRow("SELECT message FROM inbox WHERE room=? AND session=? AND json_valid(message) AND json_extract(message,'$.interactionMessageId')=? ORDER BY at DESC,id DESC LIMIT 1", room, session, interaction).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) || err != nil {
 		return core.Message{}, false
 	}
@@ -145,7 +161,13 @@ func (g *Gateway) resumeInterrupted(ctx context.Context, r core.Room, a core.Car
 	if r.DMUser != "" {
 		chatType = "p2p"
 	}
-	m := core.Message{ID: core.NewID(), ChatID: r.ChatID, ChatType: chatType, SenderID: a.UserID, Text: resumePrompt(original.Text), Time: now, Mentioned: true, ThreadID: original.ThreadID, RootID: original.RootID, InteractionMessageID: a.MessageID, Resources: []core.Resource{}}
+	// Keep the original requester's identity on the synthetic turn so a later
+	// interruption remains resumable by that user, even if a maintainer clicked.
+	sender := original.SenderID
+	if sender == "" {
+		sender = a.UserID
+	}
+	m := core.Message{ID: core.NewID(), ChatID: r.ChatID, ChatType: chatType, SenderID: sender, Text: resumePrompt(original.Text), Time: now, Mentioned: true, ThreadID: original.ThreadID, RootID: original.RootID, InteractionMessageID: a.MessageID, Resources: []core.Resource{}}
 	d := core.Delivery{UUID: core.NewID(), RoomKey: r.Key, SessionID: p.Session, Message: m}
 	g.mu.Lock()
 	err = g.queueInput(ctx, d, now)
