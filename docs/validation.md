@@ -130,6 +130,7 @@ auto 模式另有本地证据：固定 2.1.321 + 假 Messages 服务验证本地
 8. **用量**：无结果时未知；连续轮次、工具轮次、重启和重复结果不重复累计。查询不调用模型，不混入其他聊天、子代理或累计 modelUsage。
 9. **继承与后台**：先用无副作用 hook／技能／MCP 验证配置来源，再测试实际需要的原生后台能力。只清理本次创建的测试任务，记录工具返回的 ID。后台输出归属不能借用随后出现的前台输入。
 10. **服务生命周期**：Windows 登录任务直接执行安装目录中的二进制，不出现脚本或控制台窗口；`daemon status` 报告 PID／配置／日志；`daemon logs -f` 能跟上轮转；`daemon stop` 优雅退出并释放 `gateway.lock`；`daemon start`／`daemon restart` 后 `/status` 仍是同一 session ID 和原生 session ID。未经核实不要删除 stale lock；`daemon start --reclaim-stale-lock` 只清理已无进程持有的锁。`daemon uninstall` 删除任务／unit 但保留 config、service.env、日志和 state。
+11. **复制**：最终成功回复卡显示「复制」「查看状态」；「待回答」「重试交付」「停止本轮」在「更多」overflow。复制发送完整保存正文而非卡片截断内容，脱敏；群内可见、DM 仅本人；超过 30000 字有截断说明。`/copy` 发送当前会话最近完整回复；无回复时提示。流式卡片和状态卡不显示复制。
 
 手机和桌面分别记录。模型流式、多模态、工具和长上下文能力分别验收；基础 Messages 探针成功不替代这些结果。共享 cwd 的原生持久定时任务仍遵循 Claude 的项目级规则，不能宣称跨聊天隔离。
 

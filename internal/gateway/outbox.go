@@ -720,11 +720,18 @@ func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 func (g *Gateway) deliveredOutputCard(o outgoing, r core.Room) core.Args {
 	card := g.outputCard(o, r, false)
 	controls := g.quickControls(r, o.Session, "", "")
+	if o.Kind == "reply" && o.Success && o.Text != "" {
+		controls = g.quickFinalControls(r, o.Session, o.ID)
+	}
 	if o.Kind == "recovery" && g.resumeAvailable(r, o.Session) {
 		controls = append(controls, g.resumeControls(r, o.Session, "")...)
 	}
 	if o.Kind == "reply" && o.Success && g.feedbackEnabled(r) && replyCardDone(card) {
-		controls = append(controls, g.feedbackControls(r, o.Session, o.ID, g.quickRevision(r, o.Session, "", "", ""))...)
+		revision := g.quickRevision(r, o.Session, "", "", "")
+		if o.Text != "" {
+			revision = g.quickRevision(r, o.Session, "", o.ID, "copy")
+		}
+		controls = append(controls, g.feedbackControls(r, o.Session, o.ID, revision)...)
 	}
 	card = replaceQuickControls(card, controls)
 	return fitNoticeCard(card)

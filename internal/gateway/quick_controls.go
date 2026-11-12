@@ -74,26 +74,32 @@ func (g *Gateway) readQuick(token string) (quickControl, bool) {
 // Identical render context produces identical JSON. In particular, wall time
 // must not invalidate streaming snapshot deduplication or a frozen create body.
 func (g *Gateway) quickControls(r core.Room, session, turn, output string) []any {
-	return g.quickControlsRevision(r, session, turn, output, "", "")
+	return g.quickControlSet(r, session, turn, output, "", "", false, false)
 }
 
 // quickTurnControls carries the requester of the turn in the signed payload.
 // The requester is taken from the native anchor, never from a card callback.
 func (g *Gateway) quickTurnControls(r core.Room, session, turn, output, requester string) []any {
-	return g.quickControlsRevision(r, session, turn, output, "", requester)
+	return g.quickControlSet(r, session, turn, output, "", requester, false, false)
 }
 
 // A later failed delivery attempt gets new controls, while duplicate clicks on
 // the same visible attempt remain one-shot. The outbox ID itself stays stable.
 func (g *Gateway) quickOutputControls(r core.Room, session, output string, attempt int) []any {
-	return g.quickControlsRevision(r, session, "", output, "retry:"+strconv.Itoa(attempt), "")
+	return g.quickControlSet(r, session, "", output, "retry:"+strconv.Itoa(attempt), "", true, false)
+}
+
+// quickFinalControls is the compact terminal card: copy and status stay
+// visible; session/answer actions are folded into the overflow menu.
+func (g *Gateway) quickFinalControls(r core.Room, session, output string) []any {
+	return g.quickControlSet(r, session, "", output, "copy", "", false, true)
 }
 
 func (g *Gateway) quickRevision(r core.Room, session, turn, output, salt string) string {
 	return core.Hash(jsonText([]string{r.Key, session, turn, output, salt}))[:32]
 }
 
-func (g *Gateway) quickControlsRevision(r core.Room, session, turn, output, salt, requester string) []any {
+func (g *Gateway) quickControlSet(r core.Room, session, turn, output, salt, requester string, retry, copyButton bool) []any {
 	if session == "" {
 		return nil
 	}
@@ -112,23 +118,44 @@ func (g *Gateway) quickControlsRevision(r core.Room, session, turn, output, salt
 		b["behaviors"] = []any{core.Args{"type": "callback", "value": core.Args{"quick_control": g.signQuick(q)}}}
 		return b
 	}
-	buttons := []any{makeButton("status", "查看状态", "default"), makeButton("answer", "待回答", "default")}
-	if turn != "" {
-		buttons = append(buttons, makeButton("stop", "停止本轮", "danger"))
+	visible := []any{}
+	if copyButton {
+		visible = append(visible, makeButton("copy", "复制", "default"))
 	}
-	if output != "" {
-		b := makeButton("retry", "重试交付", "default")
-		b["confirm"] = core.Args{"title": core.Args{"tag": "plain_text", "content": "重试已保存输出"}, "text": core.Args{"tag": "plain_text", "content": "仅补发保存的输出；此前结果未知时可能重复。"}}
-		buttons = append(buttons, b)
-	}
+	visible = append(visible, makeButton("status", "查看状态", "default"))
 	columns := []any{}
-	for _, b := range buttons {
+	for _, b := range visible {
 		columns = append(columns, core.Args{"tag": "column", "width": "auto", "elements": []any{b}})
 	}
 	result := []any{
 		core.Args{"tag": "hr", "element_id": "gateway_quick_div"},
 		core.Args{"tag": "column_set", "element_id": "gateway_quick_row", "flex_mode": "none", "horizontal_spacing": "medium", "columns": columns},
 	}
+	overflowActions := []string{"answer"}
+	if turn != "" {
+		overflowActions = append(overflowActions, "stop")
+	}
+	if retry && output != "" {
+		overflowActions = append(overflowActions, "retry")
+	}
+	labels := map[string]string{"answer": "待回答", "stop": "停止本轮", "retry": "重试交付"}
+	tokens := core.Args{}
+	options := []any{}
+	for _, action := range overflowActions {
+		q := p
+		q.Action = action
+		tokens[action] = g.signQuick(q)
+		options = append(options, core.Args{
+			"text":  core.Args{"tag": "plain_text", "content": labels[action]},
+			"value": action,
+		})
+	}
+	result = append(result, core.Args{
+		"tag":        "overflow",
+		"element_id": "gateway_quick_more",
+		"options":    options,
+		"behaviors":  []any{core.Args{"type": "callback", "value": core.Args{"quick_controls": tokens}}},
+	})
 	if turn != "" {
 		submit := makeButton("supplement", "发送", "primary_filled")
 		submit["name"] = "quick_supplement_submit"
@@ -178,17 +205,29 @@ func (g *Gateway) bindQuickControls(message string, card core.Args) error {
 	}
 	var found *quickControl
 	mismatch := false
+	record := func(token string) {
+		p, valid := g.readQuick(token)
+		if !valid {
+			return
+		}
+		if found != nil && (found.Room != p.Room || found.Session != p.Session || found.Revision != p.Revision) {
+			mismatch = true
+		}
+		q := p
+		found = &q
+	}
 	var walk func(any)
 	walk = func(value any) {
 		switch v := value.(type) {
 		case map[string]any:
 			if token, ok := v["quick_control"].(string); ok {
-				if p, valid := g.readQuick(token); valid {
-					if found != nil && (found.Room != p.Room || found.Session != p.Session || found.Revision != p.Revision) {
-						mismatch = true
+				record(token)
+			}
+			if controls := argsOf(v["quick_controls"]); controls != nil {
+				for _, raw := range controls {
+					if token, ok := raw.(string); ok {
+						record(token)
 					}
-					q := p
-					found = &q
 				}
 			}
 			for _, child := range v {
@@ -267,6 +306,9 @@ func (g *Gateway) quickRate(ctx context.Context, r core.Room, actor string) bool
 
 func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, bool, error) {
 	token := stringArg(a.Value, "quick_control")
+	if token == "" && a.Option != "" {
+		token = stringArg(argsOf(a.Value["quick_controls"]), a.Option)
+	}
 	if token == "" {
 		return "", false, nil
 	}
@@ -308,6 +350,8 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 	case "status":
 		g.task(func() { g.refreshStatusCard(r, a.UserID) })
 		return "正在刷新状态卡片。", true, nil
+	case "copy":
+		return g.copyOutput(ctx, r, p)
 	case "resume_interrupted":
 		return g.resumeInterrupted(ctx, r, a, p)
 	case "answer":

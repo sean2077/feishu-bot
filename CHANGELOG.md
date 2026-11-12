@@ -2,6 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
+- 回复卡按钮行改为「复制」「查看状态」，「待回答」「重试交付」「停止本轮」收进「更多」overflow。复制读取 outbox 完整正文，脱敏后以普通纯文本重发到当前聊天/话题（超过 30000 字截断）；没有原生卡片剪贴板能力，群内文本对成员可见。新增 `/copy` 命令发送当前会话最近一条完整回复。复制可重复，不消耗停止/恢复/补发的一次性声明。
 - 回复卡「停止本轮」改为本轮提问人或本聊天 maintainer 可点，其他成员收到「只有提问人或管理员可以停止本轮。」提示且轮次继续。提问人 open_id 来自原生轮次 anchor，写入 HMAC 签名的 quick control payload；客户端不能伪造。拿不到提问人时退化为仅 maintainer 可停止；retry 和会话 resume 仍只限 maintainer。
 - 修复「继续」按钮可能接错历史中断点：关闭状态卡现在把续接按钮绑定到产生它的中断输出，点击时使用该输出对应原始输入的摘要（截断 300 字）构造续接提示，并明确要求只继续这条请求、不要切换到其它历史中断点；恢复提醒卡仍以该会话最新的 uncertain 输入为锚点。续接轮次的回复目标改为被点击的卡片，不再使用可能很旧的原始输入消息；被再次中断时，通过输入的 interactionMessageId 继续解析锚点。停止进行中的状态卡仍显示按钮，点击在停止完成前会被拒绝。关闭状态卡即使原输入已被 `/stop` 取消，只要仍能解析原始请求就显示「继续」。
 - 修复项目 `settingsFile` 含顶层 `autoMode` 时原生进程拒绝启动的问题：现在允许 `autoMode` 为 JSON 对象并原样透传到生成的临时 settings（isolated 和 inherit 都覆盖），已知 `environment`/`allow`/`soft_deny` 和未知子字段均不逐项校验；`autoMode` 不是对象时仍拒绝。`hooks`、`defaultMode`、`apiKeyHelper`、`additionalDirectories` 等其他未知顶层字段继续 fail-closed，错误日志和 doctor 显示具体字段名。

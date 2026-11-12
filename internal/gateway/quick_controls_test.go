@@ -27,6 +27,18 @@ func testQuickValue(t *testing.T, g *Gateway, card core.Args, action string) cor
 					result = core.Args{"quick_control": token}
 				}
 			}
+			if controls := argsOf(x["quick_controls"]); controls != nil {
+				for _, raw := range controls {
+					token, ok := raw.(string)
+					if !ok {
+						continue
+					}
+					p, valid := g.readQuick(token)
+					if valid && p.Action == action {
+						result = core.Args{"quick_control": token}
+					}
+				}
+			}
 			for _, child := range x {
 				walk(child)
 			}
@@ -275,8 +287,8 @@ func TestQuickControlsUseCompactLayoutAndTwoLineSupplement(t *testing.T) {
 	r := f.room()
 	s, _ := f.s.Session(r.Key)
 	controls := f.g.quickControls(r, s.ID, "turn-one", "")
-	if len(controls) != 3 {
-		t.Fatalf("quick controls have %d elements, want divider/row/form", len(controls))
+	if len(controls) != 4 {
+		t.Fatalf("quick controls have %d elements, want divider/row/overflow/form", len(controls))
 	}
 	var checkIDs func(any)
 	checkIDs = func(v any) {
@@ -306,8 +318,8 @@ func TestQuickControlsUseCompactLayoutAndTwoLineSupplement(t *testing.T) {
 		t.Fatalf("button row flex_mode = %q, want none", stringArg(row, "flex_mode"))
 	}
 	columns, _ := row["columns"].([]any)
-	if len(columns) != 3 {
-		t.Fatalf("button row has %d columns, want 3", len(columns))
+	if len(columns) != 1 {
+		t.Fatalf("button row has %d columns, want status only", len(columns))
 	}
 	labels := []string{}
 	for _, raw := range columns {
@@ -325,11 +337,23 @@ func TestQuickControlsUseCompactLayoutAndTwoLineSupplement(t *testing.T) {
 		}
 		labels = append(labels, stringArg(argsOf(b["text"]), "content"))
 	}
-	if strings.Join(labels, ",") != "查看状态,待回答,停止本轮" {
+	if strings.Join(labels, ",") != "查看状态" {
 		t.Fatalf("button labels = %v", labels)
 	}
+	overflow := argsOf(controls[2])
+	if stringArg(overflow, "tag") != "overflow" || stringArg(overflow, "element_id") != "gateway_quick_more" {
+		t.Fatalf("overflow control = %#v", overflow)
+	}
+	options, _ := overflow["options"].([]any)
+	var optionLabels []string
+	for _, raw := range options {
+		optionLabels = append(optionLabels, stringArg(argsOf(argsOf(raw)["text"]), "content"))
+	}
+	if strings.Join(optionLabels, ",") != "待回答,停止本轮" {
+		t.Fatalf("overflow options = %v", optionLabels)
+	}
 
-	form := argsOf(controls[2])
+	form := argsOf(controls[3])
 	formElements, _ := form["elements"].([]any)
 	if len(formElements) != 1 {
 		t.Fatalf("form has %d elements, want one column_set", len(formElements))
@@ -517,4 +541,81 @@ func TestStopControlRequesterComesFromAnchor(t *testing.T) {
 	if !valid || p.Requester != "member" || p.Turn != d.UUID {
 		t.Fatalf("stop control provenance = %+v %t", p, valid)
 	}
+}
+
+func TestFinalReplyCopySendsStoredText(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	s, err := f.s.Session(r.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := f.g.saveOutput(f.s.DB, r, s.ID, "full answer text", true, "copy-card", "", "", DisplayCard("回复", "full answer text"), nil, "", "", "reply", "done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := f.g.output(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := f.g.deliveredOutputCard(o, r)
+	if err := f.g.bindQuickControls("copy-card", card); err != nil {
+		t.Fatal(err)
+	}
+	value := testQuickValue(t, f.g, card, "copy")
+	action := core.CardAction{ChatID: r.ChatID, UserID: "member", MessageID: "copy-card", Value: value}
+	if text, err := f.g.Action(context.Background(), action); err != nil || !strings.Contains(text, "复制") {
+		t.Fatalf("copy toast = %q %v", text, err)
+	}
+	eventually(t, func() bool {
+		f.tr.mu.Lock()
+		defer f.tr.mu.Unlock()
+		for _, notice := range f.tr.notices {
+			if notice == "full answer text" {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestOverflowOptionSelectsSignedAction(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	s, _ := f.s.Session(r.Key)
+	controls := f.g.quickControls(r, s.ID, "turn-one", "")
+	card := DisplayCard("fixture", "reply", controls...)
+	if err := f.g.bindQuickControls("overflow-card", card); err != nil {
+		t.Fatal(err)
+	}
+	overflow := argsOf(controls[2])
+	behaviors, _ := overflow["behaviors"].([]any)
+	value := argsOf(argsOf(behaviors[0])["value"])
+	action := core.CardAction{ChatID: r.ChatID, UserID: "member", MessageID: "overflow-card", Option: "answer", Value: value}
+	if text, err := f.g.Action(context.Background(), action); err != nil || !strings.Contains(text, "待回答") {
+		t.Fatalf("overflow answer = %q %v", text, err)
+	}
+}
+
+func TestCopyCommandSendsLatestReply(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	s, err := f.s.Session(r.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.g.saveOutput(f.s.DB, r, s.ID, "latest answer", true, "done-card", "", "", DisplayCard("回复", "latest answer"), nil, "", "", "reply", "done"); err != nil {
+		t.Fatal(err)
+	}
+	f.send(f.message("copy-command", "/copy", "owner"))
+	eventually(t, func() bool {
+		f.tr.mu.Lock()
+		defer f.tr.mu.Unlock()
+		for _, notice := range f.tr.notices {
+			if notice == "latest answer" {
+				return true
+			}
+		}
+		return false
+	})
 }

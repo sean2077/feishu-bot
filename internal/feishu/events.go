@@ -55,8 +55,9 @@ func (c *Client) prepareEvent(payload []byte) (pendingEvent, error) {
 				Message string `json:"open_message_id"`
 			} `json:"context"`
 			Action struct {
-				Value json.RawMessage `json:"value"`
-				Form  core.Args       `json:"form_value"`
+				Value  json.RawMessage `json:"value"`
+				Option string          `json:"option"`
+				Form   core.Args       `json:"form_value"`
 			} `json:"action"`
 		}
 		if json.Unmarshal(envelope.Event, &event) != nil {
@@ -104,7 +105,7 @@ func (c *Client) prepareEvent(payload []byte) (pendingEvent, error) {
 			c.emit("feishu_card_action_dropped", core.Args{"reason": "missing_value"})
 			return pendingEvent{}, nil
 		}
-		action := core.CardAction{UserID: event.Operator.ID, ChatID: event.Context.Chat, MessageID: event.Context.Message, Value: value, FormValue: event.Action.Form}
+		action := core.CardAction{UserID: event.Operator.ID, ChatID: event.Context.Chat, MessageID: event.Context.Message, Option: event.Action.Option, Value: value, FormValue: event.Action.Form}
 		return pendingEvent{action: &action}, nil
 	}
 	return pendingEvent{}, nil

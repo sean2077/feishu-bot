@@ -462,11 +462,11 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		}
 		return nil
 	}
-	if contains([]string{"/help", "/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/model", "/profile", "/rename", "/artifacts", "/inputs", "/cancel-input", "/discard-output"}, cmd) {
+	if contains([]string{"/help", "/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/copy", "/model", "/profile", "/rename", "/artifacts", "/inputs", "/cancel-input", "/discard-output"}, cmd) {
 		if _, err = g.store.Insert(room.Key, m, "done"); err != nil {
 			return err
 		}
-		if contains([]string{"/help", "/status", "/sessions", "/outputs", "/usage", "/retry-output", "/artifacts", "/inputs", "/cancel-input", "/discard-output"}, cmd) {
+		if contains([]string{"/help", "/status", "/sessions", "/outputs", "/usage", "/copy", "/retry-output", "/artifacts", "/inputs", "/cancel-input", "/discard-output"}, cmd) {
 			g.task(func() {
 				if e := g.command(g.ctx, room, m); e != nil {
 					g.audit(room.Key, "management_failed", core.Args{"error": core.Redact(e.Error(), g.secrets)})
@@ -613,7 +613,7 @@ func (g *Gateway) refusalRoom(room core.Room, m core.Message) core.Room {
 
 // topicCommands act on one session. In a thread-scoped group they are
 // accepted only inside the topic that owns that session.
-var topicCommands = []string{"/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/model", "/profile", "/rename", "/artifacts", "/inputs", "/cancel-input", "/discard-output", "/compact", "/btw", "/ps"}
+var topicCommands = []string{"/status", "/sessions", "/new", "/resume", "/stop", "/answer", "/outputs", "/retry-output", "/usage", "/copy", "/model", "/profile", "/rename", "/artifacts", "/inputs", "/cancel-input", "/discard-output", "/compact", "/btw", "/ps"}
 
 func (g *Gateway) foregroundTarget(r core.Room) *core.Delivery {
 	s := g.getSlot(r.Key)
