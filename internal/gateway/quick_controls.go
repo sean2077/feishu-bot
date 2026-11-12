@@ -24,6 +24,7 @@ type quickControl struct {
 	Turn          string `json:"turn,omitempty"`
 	Output        string `json:"output,omitempty"`
 	Requester     string `json:"requester,omitempty"`
+	Confirm       bool   `json:"confirm,omitempty"`
 	TargetSession string `json:"targetSession,omitempty"`
 	Query         string `json:"query,omitempty"`
 	Cursor        string `json:"cursor,omitempty"`
@@ -144,6 +145,9 @@ func (g *Gateway) quickControlSet(r core.Room, session, turn, output, salt, requ
 	for _, action := range overflowActions {
 		q := p
 		q.Action = action
+		if action == "retry" {
+			q.Confirm = true
+		}
 		tokens[action] = g.signQuick(q)
 		options = append(options, core.Args{
 			"text":  core.Args{"tag": "plain_text", "content": labels[action]},
@@ -450,6 +454,9 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 		}
 		if !contains([]string{"pending", "uncertain", "blocked"}, o.State) {
 			return "输出已送达或正在发送，无需重复提交。", true, nil
+		}
+		if p.Confirm && !g.retryConfirmed(a, p) {
+			return "重试可能重复：请在 30 秒内再次选择「重试交付」确认。", true, nil
 		}
 		claimed, err := g.claimQuick(ctx, a, p)
 		if err != nil || !claimed {

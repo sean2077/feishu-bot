@@ -304,6 +304,9 @@ func TestFailedFileNoticeKeepsWorkingOutputRetryControls(t *testing.T) {
 	f.tr.mu.Lock()
 	f.tr.fileHook = nil
 	f.tr.mu.Unlock()
+	if text, err := f.g.Action(context.Background(), action); err != nil || !strings.Contains(text, "再次选择") {
+		t.Fatalf("retry confirmation = %q %v", text, err)
+	}
 	if _, err := f.g.Action(context.Background(), action); err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
@@ -37,10 +38,38 @@ func (g *Gateway) sendCopyText(room core.Room, text string) error {
 	if len(text) > copyTextLimit {
 		text = bytePrefix(text, copyTextLimit) + "\n\n（复制内容已截断）"
 	}
-	content := core.Args{"zh_cn": core.Args{"content": []any{[]any{core.Args{"tag": "text", "text": text}}}}}
+	lines := strings.Split(text, "\n")
+	rows := make([]any, 0, len(lines))
+	for _, line := range lines {
+		rows = append(rows, []any{core.Args{"tag": "text", "text": line}})
+	}
+	content := core.Args{"zh_cn": core.Args{"content": rows}}
 	_, err := g.transport.SendPost(g.ctx, room, content, "", "")
 	if err != nil {
 		g.audit(room.Key, "copy_delivery_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
 	}
 	return err
+}
+
+const retryConfirmWindow = 30 * time.Second
+
+// retryConfirmed implements the overflow retry confirmation: because Feishu
+// overflow options cannot carry a per-option confirm dialog, the first
+// selection only arms a short-lived marker and the second confirms it.
+func (g *Gateway) retryConfirmed(a core.CardAction, p quickControl) bool {
+	now := time.Now()
+	key := a.MessageID + "\x00" + p.Output + "\x00" + a.UserID
+	g.retryConfirmMu.Lock()
+	defer g.retryConfirmMu.Unlock()
+	for k, expiry := range g.retryConfirm {
+		if expiry < now.UnixMilli() {
+			delete(g.retryConfirm, k)
+		}
+	}
+	if expiry, ok := g.retryConfirm[key]; ok && expiry >= now.UnixMilli() {
+		delete(g.retryConfirm, key)
+		return true
+	}
+	g.retryConfirm[key] = now.Add(retryConfirmWindow).UnixMilli()
+	return false
 }

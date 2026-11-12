@@ -550,7 +550,7 @@ func TestFinalReplyCopySendsStoredText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := f.g.saveOutput(f.s.DB, r, s.ID, "full answer text", true, "copy-card", "", "", DisplayCard("回复", "full answer text"), nil, "", "", "reply", "done")
+	id, err := f.g.saveOutput(f.s.DB, r, s.ID, "full answer text\nsecond line", true, "copy-card", "", "", DisplayCard("回复", "full answer text"), nil, "", "", "reply", "done")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,12 +571,24 @@ func TestFinalReplyCopySendsStoredText(t *testing.T) {
 		f.tr.mu.Lock()
 		defer f.tr.mu.Unlock()
 		for _, post := range f.tr.posts {
-			if strings.Contains(jsonText(post.card), "full answer text") {
+			if strings.Contains(jsonText(post.card), "second line") {
 				return true
 			}
 		}
 		return false
 	})
+	f.tr.mu.Lock()
+	var rows []any
+	for _, post := range f.tr.posts {
+		if zh := argsOf(post.card["zh_cn"]); zh != nil {
+			rows, _ = zh["content"].([]any)
+			break
+		}
+	}
+	f.tr.mu.Unlock()
+	if len(rows) != 2 {
+		t.Fatalf("copy post has %d content rows, want one per line", len(rows))
+	}
 }
 
 func TestOverflowOptionSelectsSignedAction(t *testing.T) {
