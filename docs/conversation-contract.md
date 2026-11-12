@@ -20,7 +20,7 @@
 
 只有显式配置 `allowOtherBots: true` 的群会注册 `mention_bot`。目标必须是该群 `otherBots` 名单中的 `name` 或 `appId`，并且名单项配置了 `openId`（飞书的 open_bot_id；post 的 at 元素不接受 appId）。正文可选、最多 2000 字，由网关截断但不改写；最终发送一条结构化 post：at 元素加正文。调用要求本轮 `requestContext` 中所有 senders 都是该项目 maintainer，上下文缺失一律拒绝；每轮最多成功一个目标。发送后本轮结束，网关不等待或汇总对方结果，也不在正文中替用户声明授权或“已批准”。
 
-MOMO 回复其他机器人时不自动 @ 对方；由 `mention_bot` 发出消息后，对方机器人对该消息的回复或同话题后续消息只进入历史和背景，不再触发。每次调用（包括拒绝和发送失败）写 `mention_bot`／`mention_bot_denied` 审计，记录 requester、senders、chat、thread、目标、是否带正文、正文摘要和结果。
+MOMO 回复其他机器人时不自动 @ 对方；由 `mention_bot` 发出消息后，对方机器人对该消息的回复或同话题后续消息只进入历史和背景，不再触发。每次调用（包括拒绝和发送失败）写一条 `mention_bot` 审计，记录 requester、senders、chat、thread、目标、是否带正文、正文摘要和结果。
 
 ## 默认不注入群背景
 
