@@ -5,12 +5,23 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 )
 
 const resumeInterruptedPrompt = "上次回答被中断，请基于已有上下文继续完成刚才的问题。中断前的写操作未重放，请先核实。"
+
+const resumeRequestLimit = 300
+
+func resumePrompt(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return resumeInterruptedPrompt
+	}
+	return "上次回答被中断。请只继续完成这条原始请求，不要切换到历史中的其它中断点：\n\n" + cut(text, resumeRequestLimit) + "\n\n中断前的写操作未重放，请先核实。"
+}
 
 func (g *Gateway) resumeHint(show bool, r core.Room) string {
 	if !show {
@@ -38,14 +49,48 @@ func (g *Gateway) resumeBlocked(r core.Room, s *slot) bool {
 }
 
 func (g *Gateway) resumeAvailable(r core.Room, session string) bool {
+	return g.resumeAvailableFor(r, session, "")
+}
+
+func (g *Gateway) resumeAvailableFor(r core.Room, session, source string) bool {
 	if session == "" {
 		return false
 	}
 	if g.resumeBlocked(r, g.getSlot(r.Key)) {
 		return false
 	}
-	_, ok := g.uncertainInput(r.Key, session)
+	_, ok := g.resumeRequest(r.Key, session, source)
 	return ok
+}
+
+// resumeRequest resolves the request a card was rendered for. A closing status
+// card points at its interrupted output; recovery cards fall back to the
+// newest uncertain input in the session.
+func (g *Gateway) resumeRequest(room, session, source string) (core.Message, bool) {
+	if source != "" {
+		var reply string
+		err := g.store.DB.QueryRow("SELECT reply_to FROM outbox WHERE id=? AND room=? AND session=? AND kind='status' AND reply_to IS NOT NULL", source, room, session).Scan(&reply)
+		if err == nil && reply != "" {
+			if m, ok := g.inboxMessage(room, reply); ok {
+				return m, true
+			}
+		}
+		return core.Message{}, false
+	}
+	return g.uncertainInput(room, session)
+}
+
+func (g *Gateway) inboxMessage(room, id string) (core.Message, bool) {
+	var raw string
+	err := g.store.DB.QueryRow("SELECT message FROM inbox WHERE room=? AND id=?", room, id).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) || err != nil {
+		return core.Message{}, false
+	}
+	var m core.Message
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return core.Message{}, false
+	}
+	return m, true
 }
 
 func (g *Gateway) uncertainInput(room, session string) (core.Message, bool) {
@@ -61,8 +106,8 @@ func (g *Gateway) uncertainInput(room, session string) (core.Message, bool) {
 	return m, true
 }
 
-func (g *Gateway) resumeControls(r core.Room, session, revision string) []any {
-	p := quickControl{Room: r.Key, Session: session, Revision: revision, Action: "resume_interrupted"}
+func (g *Gateway) resumeControls(r core.Room, session, source string) []any {
+	p := quickControl{Room: r.Key, Session: session, Output: source, Revision: g.quickRevision(r, session, "", source, ""), Action: "resume_interrupted"}
 	b := button("继续", nil, "primary_filled")
 	delete(b, "value")
 	b["element_id"] = "gateway_quick_resume"
@@ -78,7 +123,7 @@ func (g *Gateway) resumeControls(r core.Room, session, revision string) []any {
 func (g *Gateway) resumeInterrupted(ctx context.Context, r core.Room, a core.CardAction, p quickControl) (string, bool, error) {
 	unlock := g.inputLocks.lock(r.Key)
 	defer unlock()
-	original, ok := g.uncertainInput(r.Key, p.Session)
+	original, ok := g.resumeRequest(r.Key, p.Session, p.Output)
 	if !ok {
 		return "当前没有可继续的中断输入。", true, nil
 	}
@@ -100,7 +145,7 @@ func (g *Gateway) resumeInterrupted(ctx context.Context, r core.Room, a core.Car
 	if r.DMUser != "" {
 		chatType = "p2p"
 	}
-	m := core.Message{ID: core.NewID(), ChatID: r.ChatID, ChatType: chatType, SenderID: a.UserID, Text: resumeInterruptedPrompt, Time: now, Mentioned: true, ThreadID: original.ThreadID, RootID: original.RootID, InteractionMessageID: messageReply(original), Resources: []core.Resource{}}
+	m := core.Message{ID: core.NewID(), ChatID: r.ChatID, ChatType: chatType, SenderID: a.UserID, Text: resumePrompt(original.Text), Time: now, Mentioned: true, ThreadID: original.ThreadID, RootID: original.RootID, InteractionMessageID: a.MessageID, Resources: []core.Resource{}}
 	d := core.Delivery{UUID: core.NewID(), RoomKey: r.Key, SessionID: p.Session, Message: m}
 	g.mu.Lock()
 	err = g.queueInput(ctx, d, now)
