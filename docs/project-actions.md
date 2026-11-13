@@ -21,7 +21,11 @@
 
 `actions[].approval` 可选，默认 `"card"`；非只读操作逐次弹审批卡。设为 `"none"` 时改为直接执行，但仅当本轮请求上下文 active 且 `senders` 全部是该项目 `maintainers`；否则返回 `{"ok":false,"error":"需要管理员发起"}`，不回退到审批卡。`senders` 只包含请求到达时仍在活动的 deliveries；缓存背景、引用内容以及跨轮次后台进程的延迟调用不参与判定。直接执行仍注入 `FEISHU_REQUEST_*`，不设置审批人环境变量；`action_runs.approval` 记为 `none`。污染轮次（读过其他群）仍是直接执行，但 `action_started` 审计记 `tainted=true`。`approval: "none"` 不使用 `approvers`，也不适用自批规则。`readOnly: true` 与 `approval: "none"` 同时配置是多余的，`doctor` 给出 warning。管理员应只对可回滚、范围受限的操作使用该模式。
 
-`actions[].approvers` 可选，用 open_id 列表指定该操作的审批人；配置后只认这个列表，不再使用项目 maintainers，也不会隐式加入 maintainers 或 owners；空列表按未配置处理，沿用 maintainers。approvers 不要求是 maintainers，但群内审批卡还要求点击者是该群授权作者，否则无法审批，只能等待超时；`doctor` 无法验证群成员关系。私聊中需要审批时，卡片会转发到 approvers 的私聊，而不是 maintainers。未配置 approvers 时仍使用项目 maintainers。原生工具 ask 始终使用 maintainers，不使用 action 的 approvers。自批规则和 owner 例外见[审批资格与自批](deployment.md#审批资格与自批)。`approval: "none"` 的 action 不经过这条审批卡路径。
+`actions[].approval: "open"` 也只对非 `readOnly` 操作生效：不检查 maintainer，只要求请求上下文 active 且 `senders` 非空；调用时没有活动请求（inactive）才返回 `{"ok":false,"error":"需要活跃的用户请求"}`，不回退到审批卡。后台进程若在后续活动轮次发起调用，会归属该轮次。执行时同样注入 `FEISHU_REQUEST_*`，不设置审批人环境变量，`action_runs.approval` 记为 `open`；污染轮次照常直接执行并记 `tainted=true`。权限由动作自身判定（例如 wrapper 读取 roles）；`doctor` 会给出 info 提示，`readOnly: true` 与 `approval: "open"` 同时配置时给出冗余 warning。
+
+`open` 只证明调用时有活动 senders，不证明是哪一个 sender 发起，也不区分人类和其他机器人：动作必须按 `FEISHU_REQUEST_SENDERS` 全集判定，要求每个 sender 都在自身允许名单内，未列入者（包括机器人）自然拒绝；不能只信 `FEISHU_REQUEST_SENDER_OPEN_ID`。跨轮次后台进程的延迟调用会按调用时的活动请求归属；动作不能把请求上下文当作调用来源证明，应使用自身可信的权限系统。
+
+`actions[].approvers` 可选，用 open_id 列表指定该操作的审批人；配置后只认这个列表，不再使用项目 maintainers，也不会隐式加入 maintainers 或 owners；空列表按未配置处理，沿用 maintainers。approvers 不要求是 maintainers，但群内审批卡还要求点击者是该群授权作者，否则无法审批，只能等待超时；`doctor` 无法验证群成员关系。私聊中需要审批时，卡片会转发到 approvers 的私聊，而不是 maintainers。未配置 approvers 时仍使用项目 maintainers。原生工具 ask 始终使用 maintainers，不使用 action 的 approvers。自批规则和 owner 例外见[审批资格与自批](deployment.md#审批资格与自批)。`approval: "none"` 或 `"open"` 的 action 不经过这条审批卡路径。
 
 `workspaceFile` 在审批前保存文件快照和 SHA256，批准后读取快照。GitLab 示例在独立的干净 checkout 中应用补丁，禁用 hooks 和全局 Git 配置，不在可修改项目中运行携带业务凭据的脚本。
 
@@ -35,7 +39,7 @@
 "$FEISHU_ACTION_CLIENT" action jenkins-status '{}'
 ```
 
-权限与 MCP `project_action` 相同：写操作默认仍等待维护者批准；`approval: "none"` 的 action 按直接执行规则判定。这只是调用通道，不新增 cron 或监控调度器。原生进程停止后接口失效，恢复会话不重启旧 Monitor。
+权限与 MCP `project_action` 相同：写操作默认仍等待维护者批准；`approval: "none"` 或 `"open"` 的 action 按直接执行规则判定。这只是调用通道，不新增 cron 或监控调度器。原生进程停止后接口失效，恢复会话不重启旧 Monitor。
 
 ## 请求上下文
 
@@ -55,7 +59,7 @@
 
 没有进行中的 delivery 时（例如轮次已结束、后台任务、定时任务）视为无上下文：不设置这些变量，审计为空，审批卡不显示发起人。网关不会退回到最近一条消息，也不猜测发起人。上下文在 action 请求到达时取得，审批等待期间 deliveries 变化不会改变本次记录。
 
-非只读操作经审批卡批准后，子进程另获得以下审计变量（只读操作和 `approval: "none"` 的直接执行不设置）：
+非只读操作经审批卡批准后，子进程另获得以下审计变量（只读操作和 `approval: "none"`／`"open"` 的直接执行不设置）：
 
 | 变量 | 内容 |
 |---|---|
@@ -70,8 +74,8 @@
 
 审计与状态：
 
-- `action_runs.requester` 保存 anchor 发送者 open_id，`action_runs.request_context` 保存上下文 JSON；两列可空，旧库升级时自动追加。`action_runs.request` 和 `action_runs.approver` 保存最终审批请求 ID 和审批人 open_id，`taint_request` 保存污染轮次的私聊确认请求 ID；均可空。`approval` 保存 `card`、`none` 或 `readonly`，区分审批卡、直接执行和只读自动执行。保留期沿用 `action_runs` 的 90 天。
-- `action_started` 审计事件包含 `requester` 和 `messageId`，不写显示名；同时记录 `approval`，`approval: "none"` 的直接执行还记录 `tainted`。
+- `action_runs.requester` 保存 anchor 发送者 open_id，`action_runs.request_context` 保存上下文 JSON；两列可空，旧库升级时自动追加。`action_runs.request` 和 `action_runs.approver` 保存最终审批请求 ID 和审批人 open_id，`taint_request` 保存污染轮次的私聊确认请求 ID；均可空。`approval` 保存 `card`、`none`、`open` 或 `readonly`，区分审批卡、两种直接执行和只读自动执行。保留期沿用 `action_runs` 的 90 天。
+- `action_started` 审计事件包含 `requester` 和 `messageId`，不写显示名；同时记录 `approval`，`approval: "none"`／`"open"` 的直接执行还记录 `tainted`。`action_direct_rejected` 记录 `approval`、`reason` 和可得的 `requester`／`messageId`；执行后的完整 sender 集合在 `action_runs.request_context`，被拒绝的调用不写 `action_runs`。
 - 非只读操作的审批卡摘要增加一行「发起人：<转义后的显示名>（`open_id`）」；没有显示名时只显示 open_id。显示名来自事件，经过控制字符和空白清理以及 markdown 转义，不额外调用通讯录 API。
 
 原生进程始终启动一个只绑定 `127.0.0.1` 的中继；即使项目没有配置 `actions`，也可以通过 `FEISHU_ACTION_CLIENT`、`FEISHU_ACTION_URL` 和 `FEISHU_ACTION_TOKEN` 查询只读上下文：

@@ -115,13 +115,13 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `projects[].owners` | 空 | maintainers 子集；仅用于 `forbidSelfApproval` 时的 owner 例外，不增加其他权限 |
 | `projects[].approvals.forbidSelfApproval` | `false` | 开启后发起人不能批准自己的请求，owner 例外；见[审批资格与自批](#审批资格与自批) |
 | `actions[].approvers` | 空 | 该操作的指定审批人；配置后替代 maintainers，不隐式加入 maintainers 或 owners |
-| `actions[].approval` | `"card"` | `"card"` 逐次审批；`"none"` 仅在本轮 senders 全为项目 maintainers 时直接执行，否则拒绝；见[审批资格与自批](#审批资格与自批) |
+| `actions[].approval` | `"card"` | `"card"` 逐次审批；`"none"` 仅在本轮 senders 全为项目 maintainers 时直接执行；`"open"` 对 active senders 直接执行，权限由动作自身判定；见[审批资格与自批](#审批资格与自批) |
 | `projects[].feedback.enabled` | `false` | 在最终 Done 回复卡上显示「有用／无用」反馈，见[回复反馈](#回复反馈) |
 | `feedback.export.enabled`、`feedback.export.dir` | `false`、空 | 维护前按项目、UTC 日期归档反馈；开启时 `dir` 必填且目录须已存在，见[回复反馈](#回复反馈) |
 | `projects[].displayWorkspace` | 空 | 回复卡工作目录显示：`full`、`basename`、`project`、`hidden`；空时群聊显示项目 id，私聊显示完整路径 |
 | `groups[]`、`dms[]` | 空 | 群与私聊授权，见[飞书应用与授权](#飞书应用与授权) |
 | `groups[].topicHistory` | `"topic"` | `"topic"` 默认只读当前话题；`"chat"` 允许 `read_chat_history` 的 `scope: "chat"` 读取同群时间线和其他话题。只适用于 `sessionScope: "thread"`，其他群配置会在加载时拒绝 |
-| `dms[].historyChats` | 空 | 私聊跨群读取白名单：`[{"chatId","name"}]`，目标必须是显式 `groups[]` 绑定；发起人须为目标群 maintainer 或显式 member（`allowAllMembers` 不算），只读文本并审计；读取后本轮写操作改为 DM 用户审批（`approval: "none"` 的固定操作除外，仍直接执行并记 `tainted=true`） |
+| `dms[].historyChats` | 空 | 私聊跨群读取白名单：`[{"chatId","name"}]`，目标必须是显式 `groups[]` 绑定；发起人须为目标群 maintainer 或显式 member（`allowAllMembers` 不算），只读文本并审计；读取后本轮写操作改为 DM 用户审批（`approval: "none"`／`"open"` 的固定操作除外，仍直接执行并记 `tainted=true`） |
 | `runtime.maxWorkers`、`runtime.idleMs` | 8、900000 | 活跃原生进程上限（1–128）与空闲回收时间，见[容量与恢复](#容量与恢复) |
 | `limits.backgroundMessages`／`backgroundMs` | 0／900000 | 非 @ 群消息缓存条数（0–200）与保留时间；默认不缓存 |
 | `limits.textChars` | 20000 | 单条输入正文字符上限（100–200000），超出时明确拒绝 |
@@ -180,7 +180,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 }
 ```
 
-目标 `chatId` 必须是 `groups[]` 中显式绑定的群，不能是 `*` 兜底或私聊；同一私聊内 `name` 与 `chatId` 合并后必须唯一。配置后，该私聊的 `read_chat_history` 可传 `chat`（配置名或 chatId），其余参数与 `scope: "chat"` 相同；目标群是话题模式时复用群时间线和 `expandThreads`。每次调用（包括游标续页）都要求存在活动人类请求，发起人必须是该 DM 用户，并且在目标群 `maintainers` 或显式 `members` 中；`allowAllMembers` 不构成跨群授权。跨群结果只含文本，不返回附件，`fetch_attachment` 对目标群消息不可用；`threadId` 仍需先通过时间线或展开观察到。读取成功后本轮标记为污染：写工具、`send_file`、非只读 `project_action` 和未知工具需要 DM 用户确认，只读工具放行；非只读 action 先由 DM 用户确认污染，再按原有 approvers／`forbidSelfApproval` 审批，污染确认不能替换原审批。`actions[].approval: "none"` 的非只读 action 例外：维持直接执行，不弹污染确认，`action_started` 审计记 `tainted=true`。新的用户输入且后台任务结束后清除标记，`/stop`、超时和 worker 结束一律拒绝挂起的污染审批。每次跨群读取写 `history_cross_chat_read`，每次污染审批写 `tainted_turn_prompt`，都不记录正文。详细边界和残余风险见 [SECURITY](../SECURITY.md)。
+目标 `chatId` 必须是 `groups[]` 中显式绑定的群，不能是 `*` 兜底或私聊；同一私聊内 `name` 与 `chatId` 合并后必须唯一。配置后，该私聊的 `read_chat_history` 可传 `chat`（配置名或 chatId），其余参数与 `scope: "chat"` 相同；目标群是话题模式时复用群时间线和 `expandThreads`。每次调用（包括游标续页）都要求存在活动人类请求，发起人必须是该 DM 用户，并且在目标群 `maintainers` 或显式 `members` 中；`allowAllMembers` 不构成跨群授权。跨群结果只含文本，不返回附件，`fetch_attachment` 对目标群消息不可用；`threadId` 仍需先通过时间线或展开观察到。读取成功后本轮标记为污染：写工具、`send_file`、非只读 `project_action` 和未知工具需要 DM 用户确认，只读工具放行；非只读 action 先由 DM 用户确认污染，再按原有 approvers／`forbidSelfApproval` 审批，污染确认不能替换原审批。`actions[].approval: "none"` 或 `"open"` 的非只读 action 例外：维持直接执行，不弹污染确认，`action_started` 审计记 `tainted=true`。新的用户输入且后台任务结束后清除标记，`/stop`、超时和 worker 结束一律拒绝挂起的污染审批。每次跨群读取写 `history_cross_chat_read`，每次污染审批写 `tainted_turn_prompt`，都不记录正文。详细边界和残余风险见 [SECURITY](../SECURITY.md)。
 
 污染下非只读 `project_action` 需要污染确认和原审批两张卡，最长约 `2 × approvalMs`。如果管理员把 `MCP_TOOL_TIMEOUT` 或该 MCP server 的 `timeout` 设得比这更短，模型会收到工具超时报错（`mcp_call_unanswered`）；但审批完成后操作仍可能在后台执行，调用方必须按结果未知处理，不能重放。
 
@@ -396,12 +396,13 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 - 原生工具 ask 和未配置 `approvers` 的固定操作使用项目 maintainers 作为审批人。
 - 固定操作可以配置 `actions[].approvers`；配置后该操作只认这个列表，不再认 maintainers，也不会隐式加入 maintainers 或 owners。空列表按未配置处理，沿用 maintainers。approvers 不要求是 maintainers，但群内审批卡还要求点击者是该群授权作者；否则点击被拒绝并只能等待超时。`doctor` 无法验证群成员关系。
 - 固定操作可以配置 `actions[].approval: "none"` 跳过审批卡：仅当请求上下文 active 且本轮 `senders` 全部在项目 `maintainers` 中时执行；否则返回 `{"ok":false,"error":"需要管理员发起"}`，不回退到审批卡。`senders` 只包含请求到达时仍在活动的 deliveries，缓存背景、引用内容和跨轮次后台进程的延迟调用不参与判定。污染轮次仍直接执行，`action_started` 审计记 `tainted=true`。执行时注入 `FEISHU_REQUEST_*`，不设置 `FEISHU_ACTION_REQUEST_ID`／`APPROVER_OPEN_ID`／`APPROVED_AT`／`TAINT_CONFIRMER_OPEN_ID`；`action_runs.approval` 为 `none`。该模式不使用 `approvers` 或自批规则，只应对可回滚、范围受限的操作启用。
+- 固定操作可以配置 `actions[].approval: "open"`：不检查 maintainer，只要求请求上下文 active 且 `senders` 非空；调用时没有活动请求（inactive）才返回 `{"ok":false,"error":"需要活跃的用户请求"}`，不回退到审批卡；后台进程在后续活动轮次发起调用会归属该轮次。权限由动作自身判定（例如 wrapper 读取 roles），应按 `FEISHU_REQUEST_SENDERS` 全集校验，未列入允许名单的 sender（包括机器人）应拒绝；网关只提供请求上下文和审计。污染轮次仍直接执行，`action_started` 审计记 `tainted=true`。执行时注入 `FEISHU_REQUEST_*`，不设置审批人环境变量；`action_runs.approval` 为 `open`。该模式不使用 `approvers` 或自批规则。
 - `AskUserQuestion` 不使用审批人列表，也不受自批规则限制，保持现有行为。
 - `forbidSelfApproval: true` 时，请求到达时上下文中的 `senders` 包含点击者、且点击者不是 owner 的批准请求会被拒绝，审批保持待处理，其他审批人仍可批准；拒绝（deny）不受自批限制，但点击者仍必须是审批人。
 - 请求上下文为空（后台任务、没有进行中的输入）时无法确定发起人；此时只有 owner 可以批准，其他审批人批准会被拒绝。拒绝仍允许审批人执行。
 - 私聊中的审批请求如果当前用户不是审批人，会转发到审批人的私聊；配置 approvers 时转发给 approvers，否则转发给 maintainers。指定 approvers 的审批卡标题为“需要指定审批人批准”，摘要显示“审批人：指定审批人”，不列出名单。
 
-`doctor` 在 `forbidSelfApproval` 为 true 且 owners 为空时给出一条提示（不算失败）：只有一个维护者时，他将无法审批自己发起的请求。`doctor` 还检查 `actions[].approval` 只能为 `card` 或 `none`；`readOnly: true` 与 `approval: "none"` 同时配置时给出 warning；项目配置了 `approval: "none"` 但 `maintainers` 为空时失败。`config explain` 显示 owners 数量、`forbidSelfApproval` 和当前用户是否 owner；`canApproveTools` 仍只表示 maintainers 身份。
+`doctor` 在 `forbidSelfApproval` 为 true 且 owners 为空时给出一条提示（不算失败）：只有一个维护者时，他将无法审批自己发起的请求。`doctor` 还检查 `actions[].approval` 只能为 `card`、`none` 或 `open`；`readOnly: true` 与 `approval: "none"`／`"open"` 同时配置时给出 warning；项目配置了 `approval: "none"` 但 `maintainers` 为空时失败；`approval: "open"` 给出「对所有可触发 sender 开放（包括 allowOtherBots 群中的其他机器人）、权限由动作自身判定」的 info。`config explain` 显示 owners 数量、`forbidSelfApproval` 和当前用户是否 owner；`canApproveTools` 仍只表示 maintainers 身份。
 
 ```json
 {

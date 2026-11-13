@@ -325,15 +325,24 @@ func TestLegacyActionWorkingDirectoryRemainsProcessRelative(t *testing.T) {
 	}
 }
 
-func TestActionApprovalRejectsUnknownModes(t *testing.T) {
+func TestActionApprovalValidatesModes(t *testing.T) {
 	v := fixture(t)
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := v["projects"].([]any)[0].(map[string]any)
-	p["actions"] = []any{map[string]any{"id": "build", "description": "Build", "executable": exe, "approval": "sometimes"}}
+	p["actions"] = []any{map[string]any{"id": "build", "description": "Build", "executable": exe, "approval": "open"}}
 	data, _ := json.Marshal(v)
+	c, err := Parse(data, t.TempDir())
+	if err != nil {
+		t.Fatalf("open action approval rejected: %v", err)
+	}
+	if c.Projects[0].Actions[0].Approval != "open" {
+		t.Fatalf("open action approval = %q", c.Projects[0].Actions[0].Approval)
+	}
+	p["actions"] = []any{map[string]any{"id": "build", "description": "Build", "executable": exe, "approval": "sometimes"}}
+	data, _ = json.Marshal(v)
 	_, err = Parse(data, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "invalid action approval") {
 		t.Fatalf("unknown action approval error = %v", err)
