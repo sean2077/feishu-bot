@@ -54,6 +54,32 @@ func TestRequestContextUsesDeliveriesAndAnchor(t *testing.T) {
 	}
 }
 
+func TestRequestContextMarksBotSenders(t *testing.T) {
+	s := &slot{
+		deliveries: map[string]core.Delivery{
+			"human": {UUID: "human", Message: core.Message{ID: "m1", ChatID: "oc_example", ChatType: "group", SenderID: "ou_human"}},
+			"bot":   {UUID: "bot", Message: core.Message{ID: "m2", ChatID: "oc_example", ChatType: "group", SenderID: "cli_other", SenderIsBot: true}},
+		},
+		order:  []string{"human", "bot"},
+		anchor: "human",
+	}
+	got := requestContextLocked(s)
+	if got == nil || !got.HasBotSender {
+		t.Fatalf("bot sender not marked: %#v", got)
+	}
+	if strings.Join(got.Senders, ",") != "ou_human,cli_other" {
+		t.Fatalf("senders = %#v", got.Senders)
+	}
+	for id := range s.deliveries {
+		delivery := s.deliveries[id]
+		delivery.Message.SenderIsBot = false
+		s.deliveries[id] = delivery
+	}
+	if got = requestContextLocked(s); got == nil || got.HasBotSender {
+		t.Fatalf("human-only context marked as bot: %#v", got)
+	}
+}
+
 func TestGatewayBindsLiveRequestContextToWorker(t *testing.T) {
 	f := newFixture(t, nil)
 	f.send(f.message("one", "work", "member"))

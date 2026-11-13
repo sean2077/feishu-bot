@@ -80,6 +80,7 @@ func actionArguments(spec core.ActionSpec, input core.Args, snapshots map[string
 
 const directApprovalError = "需要管理员发起"
 const openApprovalError = "需要活跃的用户请求"
+const botSenderApprovalError = "机器人消息不能触发写操作"
 
 // directApprovalRejection reports why an approval:none action may not run. The
 // action executes only when the request is active and every sender in this
@@ -297,6 +298,17 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 	direct := !spec.ReadOnly && (approvalMode == "none" || approvalMode == "open")
 	run := core.NewID()
 	if direct {
+		if requestContext != nil && requestContext.HasBotSender {
+			detail := core.Args{"run": run, "action": id, "reason": "bot_sender", "approval": approvalMode, "bot_sender": true}
+			if requestContext.SenderOpenID != "" {
+				detail["requester"] = requestContext.SenderOpenID
+			}
+			if requestContext.MessageID != "" {
+				detail["messageId"] = requestContext.MessageID
+			}
+			g.audit(r.Key, "action_direct_rejected", detail)
+			return core.Args{"ok": false, "error": botSenderApprovalError}, nil
+		}
 		reason := ""
 		if approvalMode == "none" {
 			reason = directApprovalRejection(requestContext, p.Maintainers)

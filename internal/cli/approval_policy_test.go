@@ -54,7 +54,7 @@ func TestActionApprovalChecks(t *testing.T) {
 	if check, ok := byName["project team-tools action read approval"]; !ok || !check.OK || !strings.Contains(check.Detail, "redundant") {
 		t.Fatalf("readOnly warning = %#v", check)
 	}
-	if check, ok := byName["project team-tools action ota approval"]; !ok || !check.OK || !strings.Contains(check.Detail, "Info:") || !strings.Contains(check.Detail, "action itself must enforce authorization") {
+	if check, ok := byName["project team-tools action ota approval"]; !ok || !check.OK || !strings.Contains(check.Detail, "Info:") || !strings.Contains(check.Detail, "bot senders are rejected") || !strings.Contains(check.Detail, "action itself must enforce authorization") {
 		t.Fatalf("open info = %#v", check)
 	}
 	if check, ok := byName["project team-tools action openread approval"]; !ok || !check.OK || !strings.Contains(check.Detail, "redundant") {

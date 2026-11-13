@@ -395,14 +395,14 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 
 - 原生工具 ask 和未配置 `approvers` 的固定操作使用项目 maintainers 作为审批人。
 - 固定操作可以配置 `actions[].approvers`；配置后该操作只认这个列表，不再认 maintainers，也不会隐式加入 maintainers 或 owners。空列表按未配置处理，沿用 maintainers。approvers 不要求是 maintainers，但群内审批卡还要求点击者是该群授权作者；否则点击被拒绝并只能等待超时。`doctor` 无法验证群成员关系。
-- 固定操作可以配置 `actions[].approval: "none"` 跳过审批卡：仅当请求上下文 active 且本轮 `senders` 全部在项目 `maintainers` 中时执行；否则返回 `{"ok":false,"error":"需要管理员发起"}`，不回退到审批卡。`senders` 只包含请求到达时仍在活动的 deliveries，缓存背景、引用内容和跨轮次后台进程的延迟调用不参与判定。污染轮次仍直接执行，`action_started` 审计记 `tainted=true`。执行时注入 `FEISHU_REQUEST_*`，不设置 `FEISHU_ACTION_REQUEST_ID`／`APPROVER_OPEN_ID`／`APPROVED_AT`／`TAINT_CONFIRMER_OPEN_ID`；`action_runs.approval` 为 `none`。该模式不使用 `approvers` 或自批规则，只应对可回滚、范围受限的操作启用。
-- 固定操作可以配置 `actions[].approval: "open"`：不检查 maintainer，只要求请求上下文 active 且 `senders` 非空；调用时没有活动请求（inactive）才返回 `{"ok":false,"error":"需要活跃的用户请求"}`，不回退到审批卡；后台进程在后续活动轮次发起调用会归属该轮次。权限由动作自身判定（例如 wrapper 读取 roles），应按 `FEISHU_REQUEST_SENDERS` 全集校验，未列入允许名单的 sender（包括机器人）应拒绝；网关只提供请求上下文和审计。污染轮次仍直接执行，`action_started` 审计记 `tainted=true`。执行时注入 `FEISHU_REQUEST_*`，不设置审批人环境变量；`action_runs.approval` 为 `open`。该模式不使用 `approvers` 或自批规则。
+- 固定操作可以配置 `actions[].approval: "none"` 跳过审批卡：仅当请求上下文 active、本轮 `senders` 全部在项目 `maintainers` 中且不含机器人 sender 时执行；否则返回 `{"ok":false,"error":"需要管理员发起"}`（含机器人时返回「机器人消息不能触发写操作」），不回退到审批卡。`senders` 只包含请求到达时仍在活动的 deliveries，缓存背景、引用内容和跨轮次后台进程的延迟调用不参与判定。污染轮次仍直接执行，`action_started` 审计记 `tainted=true`。执行时注入 `FEISHU_REQUEST_*`，不设置 `FEISHU_ACTION_REQUEST_ID`／`APPROVER_OPEN_ID`／`APPROVED_AT`／`TAINT_CONFIRMER_OPEN_ID`；`action_runs.approval` 为 `none`。该模式不使用 `approvers` 或自批规则，只应对可回滚、范围受限的操作启用。
+- 固定操作可以配置 `actions[].approval: "open"`：不检查 maintainer，只要求请求上下文 active 且 `senders` 非空，并且不含机器人 sender；调用时没有活动请求（inactive）才返回 `{"ok":false,"error":"需要活跃的用户请求"}`，含机器人时返回「机器人消息不能触发写操作」，不回退到审批卡；后台进程在后续活动轮次发起调用会归属该轮次。权限由动作自身判定（例如 wrapper 读取 roles），应按 `FEISHU_REQUEST_SENDERS` 全集校验，未列入允许名单的人类 sender 应拒绝；网关只提供请求上下文和审计。污染轮次仍直接执行，`action_started` 审计记 `tainted=true`。执行时注入 `FEISHU_REQUEST_*`，不设置审批人环境变量；`action_runs.approval` 为 `open`。该模式不使用 `approvers` 或自批规则。
 - `AskUserQuestion` 不使用审批人列表，也不受自批规则限制，保持现有行为。
 - `forbidSelfApproval: true` 时，请求到达时上下文中的 `senders` 包含点击者、且点击者不是 owner 的批准请求会被拒绝，审批保持待处理，其他审批人仍可批准；拒绝（deny）不受自批限制，但点击者仍必须是审批人。
 - 请求上下文为空（后台任务、没有进行中的输入）时无法确定发起人；此时只有 owner 可以批准，其他审批人批准会被拒绝。拒绝仍允许审批人执行。
 - 私聊中的审批请求如果当前用户不是审批人，会转发到审批人的私聊；配置 approvers 时转发给 approvers，否则转发给 maintainers。指定 approvers 的审批卡标题为“需要指定审批人批准”，摘要显示“审批人：指定审批人”，不列出名单。
 
-`doctor` 在 `forbidSelfApproval` 为 true 且 owners 为空时给出一条提示（不算失败）：只有一个维护者时，他将无法审批自己发起的请求。`doctor` 还检查 `actions[].approval` 只能为 `card`、`none` 或 `open`；`readOnly: true` 与 `approval: "none"`／`"open"` 同时配置时给出 warning；项目配置了 `approval: "none"` 但 `maintainers` 为空时失败；`approval: "open"` 给出「对所有可触发 sender 开放（包括 allowOtherBots 群中的其他机器人）、权限由动作自身判定」的 info。`config explain` 显示 owners 数量、`forbidSelfApproval` 和当前用户是否 owner；`canApproveTools` 仍只表示 maintainers 身份。
+`doctor` 在 `forbidSelfApproval` 为 true 且 owners 为空时给出一条提示（不算失败）：只有一个维护者时，他将无法审批自己发起的请求。`doctor` 还检查 `actions[].approval` 只能为 `card`、`none` 或 `open`；`readOnly: true` 与 `approval: "none"`／`"open"` 同时配置时给出 warning；项目配置了 `approval: "none"` 但 `maintainers` 为空时失败；`approval: "open"` 给出「对所有可触发真人 sender 开放；机器人 sender 会被网关拒绝、权限由动作自身判定」的 info。`config explain` 显示 owners 数量、`forbidSelfApproval` 和当前用户是否 owner；`canApproveTools` 仍只表示 maintainers 身份。
 
 ```json
 {

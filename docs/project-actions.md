@@ -23,7 +23,9 @@
 
 `actions[].approval: "open"` 也只对非 `readOnly` 操作生效：不检查 maintainer，只要求请求上下文 active 且 `senders` 非空；调用时没有活动请求（inactive）才返回 `{"ok":false,"error":"需要活跃的用户请求"}`，不回退到审批卡。后台进程若在后续活动轮次发起调用，会归属该轮次。执行时同样注入 `FEISHU_REQUEST_*`，不设置审批人环境变量，`action_runs.approval` 记为 `open`；污染轮次照常直接执行并记 `tainted=true`。权限由动作自身判定（例如 wrapper 读取 roles）；`doctor` 会给出 info 提示，`readOnly: true` 与 `approval: "open"` 同时配置时给出冗余 warning。
 
-`open` 只证明调用时有活动 senders，不证明是哪一个 sender 发起，也不区分人类和其他机器人：动作必须按 `FEISHU_REQUEST_SENDERS` 全集判定，要求每个 sender 都在自身允许名单内，未列入者（包括机器人）自然拒绝；不能只信 `FEISHU_REQUEST_SENDER_OPEN_ID`。跨轮次后台进程的延迟调用会按调用时的活动请求归属；动作不能把请求上下文当作调用来源证明，应使用自身可信的权限系统。
+`open` 只证明调用时有活动 senders，不证明是哪一个 sender 发起；机器人 sender 已被网关拒绝，但多个人类 sender 仍不能只按 anchor 判定。动作必须按 `FEISHU_REQUEST_SENDERS` 全集判定，要求每个 sender 都在自身允许名单内，未列入者自然拒绝；不能只信 `FEISHU_REQUEST_SENDER_OPEN_ID`。跨轮次后台进程的延迟调用会按调用时的活动请求归属；动作不能把请求上下文当作调用来源证明，应使用自身可信的权限系统。
+
+`none` 和 `open` 都拒绝含机器人 sender 的轮次：本轮 `senders` 中只要有一个 `SenderIsBot`（包括 `allowOtherBots` 群里的其他机器人），返回 `{"ok":false,"error":"机器人消息不能触发写操作"}`，`action_direct_rejected` 审计记 `bot_sender=true`。`card` 不受影响，仍由真人点击审批卡。
 
 `actions[].approvers` 可选，用 open_id 列表指定该操作的审批人；配置后只认这个列表，不再使用项目 maintainers，也不会隐式加入 maintainers 或 owners；空列表按未配置处理，沿用 maintainers。approvers 不要求是 maintainers，但群内审批卡还要求点击者是该群授权作者，否则无法审批，只能等待超时；`doctor` 无法验证群成员关系。私聊中需要审批时，卡片会转发到 approvers 的私聊，而不是 maintainers。未配置 approvers 时仍使用项目 maintainers。原生工具 ask 始终使用 maintainers，不使用 action 的 approvers。自批规则和 owner 例外见[审批资格与自批](deployment.md#审批资格与自批)。`approval: "none"` 或 `"open"` 的 action 不经过这条审批卡路径。
 
