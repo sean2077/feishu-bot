@@ -58,7 +58,9 @@ func TestLoadProjectPromptFailuresAreClassified(t *testing.T) {
 		{"missing", filepath.Join(base, "missing.prompt"), nil, "missing"},
 		{"too large", filepath.Join(base, "large.prompt"), []byte(strings.Repeat("x", 16<<10+1)), "too_large"},
 		{"invalid utf8", filepath.Join(base, "bad.prompt"), []byte{0xff, 0xfe}, "invalid_utf8"},
-		{"nul", filepath.Join(base, "nul.prompt"), []byte("x\x00y"), "nul"},
+		// Avoid Windows reserved device names such as nul.txt, which some runners
+		// resolve to the NUL device instead of a regular file.
+		{"nul", filepath.Join(base, "has-nul.prompt"), []byte("x\x00y"), "nul"},
 		{"empty", filepath.Join(base, "empty.prompt"), []byte{}, ""},
 	}
 	for _, tc := range cases {
