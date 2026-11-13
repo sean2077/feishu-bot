@@ -2,7 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
-- 新增 `actions[].approval: "open"`：非只读固定操作在请求上下文 active 且 `senders` 非空时直接执行，不检查 maintainer，权限由动作自身（例如 wrapper 的 roles）判定；后台或 inactive 请求返回 `{"ok":false,"error":"需要活跃的用户请求"}`。执行时注入 `FEISHU_REQUEST_*`，不设置审批人环境变量，`action_runs.approval` 记为 `open`；污染轮次直接执行并记 `tainted=true`。`doctor` 对 `open` 给出 info，`readOnly` 与 `open` 同时配置时给出冗余 warning；`card` 和 `none` 行为不变。
+- 新增 `actions[].approval: "open"`：非只读固定操作在请求上下文 active 且 `senders` 非空时直接执行，不检查 maintainer，权限由动作自身（例如 wrapper 的 roles）判定；调用时没有活动请求（inactive）才返回 `{"ok":false,"error":"需要活跃的用户请求"}`，延迟调用会归属调用时的活动轮次。执行时注入 `FEISHU_REQUEST_*`，不设置审批人环境变量，`action_runs.approval` 记为 `open`；污染轮次直接执行并记 `tainted=true`。`doctor` 对 `open` 给出 info，`readOnly` 与 `open` 同时配置时给出冗余 warning；`card` 和 `none` 行为不变。
 
 ## 0.6.1 — 2026-11-13
 
