@@ -33,9 +33,9 @@ func processFixture(args []string) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	case "graceful":
-		_ = os.WriteFile(args[1]+".ready", []byte("ready"), 0600)
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGTERM)
+		_ = os.WriteFile(args[1]+".ready", []byte("ready"), 0600)
 		<-ch
 		_ = os.WriteFile(args[1], []byte("finally"), 0600)
 	case "hold", "orphan", "closed-pipes":
