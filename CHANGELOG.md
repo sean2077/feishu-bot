@@ -2,6 +2,10 @@
 
 ## Unreleased — Go 原生网关
 
+## 0.6.1 — 2026-11-13
+
+- 恢复 v0.6.0 的发布：修复项目提示词失败分类测试把夹具文件命名为 `nul.prompt`（Windows 保留设备名，`windows-2022` 上读写落到 NUL 设备）导致发布构建失败的问题；本版本包含 v0.6.0 的全部变更，生产行为不变。
+
 ## 0.6.0 — 2026-11-13
 
 - 固定操作子进程的基础环境增加 Windows 用户／系统目录变量 `LOCALAPPDATA`、`APPDATA`、`USERPROFILE`、`SystemDrive`、`ProgramData`、`ALLUSERSPROFILE`；`actions[].vars` 同名值覆盖继承值，其他服务环境变量仍不继承。
