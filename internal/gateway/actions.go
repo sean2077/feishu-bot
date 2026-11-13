@@ -184,6 +184,9 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 	return n, nil
 }
 func (b *boundedOutput) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.b.String() }
+
+const actionTerminateGrace = 5 * time.Second
+
 func runActionCommand(ctx context.Context, executable string, args []string, cwd string, env map[string]string, timeoutMS int64) (int, string, error) {
 	if e := ctx.Err(); e != nil {
 		return 0, "", e
@@ -250,7 +253,7 @@ func runActionCommand(ctx context.Context, executable string, args []string, cwd
 	case <-output.overflow:
 		reason = "output size limit"
 	}
-	if err := tree.Terminate(done); err != nil {
+	if err := tree.TerminateWithGrace(done, actionTerminateGrace); err != nil {
 		return 0, output.String(), fmt.Errorf("%s; process termination unconfirmed: %w", reason, err)
 	}
 	select {

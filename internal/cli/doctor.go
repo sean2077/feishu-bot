@@ -223,6 +223,18 @@ func actionApprovalChecks(c core.Config) []Diagnostic {
 	return checks
 }
 
+func actionTimeoutChecks(c core.Config) []Diagnostic {
+	var checks []Diagnostic
+	for _, p := range c.Projects {
+		for _, a := range p.Actions {
+			if a.TimeoutMS > 600000 {
+				checks = append(checks, Diagnostic{Name: "project " + p.ID + " action " + a.ID + " timeout", OK: true, Detail: "Info: action timeout exceeds 10 minutes; the gateway interrupts before force-killing, but the action should release resources within its own timeout."})
+			}
+		}
+	}
+	return checks
+}
+
 func permissionModeChecks(c core.Config) []Diagnostic {
 	var checks []Diagnostic
 	for _, p := range c.Projects {
@@ -346,6 +358,7 @@ func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) Doct
 	checks = append(checks, projectSettingsChecks(c)...)
 	checks = append(checks, approvalPolicyChecks(c)...)
 	checks = append(checks, actionApprovalChecks(c)...)
+	checks = append(checks, actionTimeoutChecks(c)...)
 	checks = append(checks, permissionModeChecks(c)...)
 	checks = append(checks, projectModelProfileChecks(c)...)
 	checks = append(checks, projectPromptChecks(c)...)

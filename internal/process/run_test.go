@@ -32,6 +32,11 @@ func processFixture(args []string) {
 			_ = os.WriteFile(args[1], []byte(time.Now().Format(time.RFC3339Nano)), 0600)
 			time.Sleep(10 * time.Millisecond)
 		}
+	case "graceful":
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGTERM)
+		<-ch
+		_ = os.WriteFile(args[1], []byte("finally"), 0600)
 	case "hold", "orphan", "closed-pipes":
 		child := exec.Command(os.Args[0], "process-fixture", "ticker", args[1])
 		if args[0] != "closed-pipes" {

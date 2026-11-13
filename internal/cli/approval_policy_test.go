@@ -73,6 +73,18 @@ func TestActionApprovalChecks(t *testing.T) {
 	}
 }
 
+func TestActionTimeoutChecks(t *testing.T) {
+	c := config.Defaults()
+	c.Projects = []core.Project{{ID: "team-tools", Actions: []core.ActionSpec{
+		{ID: "long", TimeoutMS: 600001},
+		{ID: "short", TimeoutMS: 600000},
+	}}}
+	checks := actionTimeoutChecks(c)
+	if len(checks) != 1 || checks[0].Name != "project team-tools action long timeout" || !checks[0].OK || !strings.Contains(checks[0].Detail, "Info:") {
+		t.Fatalf("timeout info = %#v", checks)
+	}
+}
+
 func TestDeploymentChecksRejectPlaceholderApprovers(t *testing.T) {
 	base := config.Defaults()
 	base.TenantID, base.AppID = "tenant_local", "cli_local"

@@ -16,6 +16,7 @@ var setJob = kernel32.NewProc("SetInformationJobObject")
 var assignJob = kernel32.NewProc("AssignProcessToJobObject")
 var queryJob = kernel32.NewProc("QueryInformationJobObject")
 var terminateJob = kernel32.NewProc("TerminateJobObject")
+var generateConsoleCtrlEvent = kernel32.NewProc("GenerateConsoleCtrlEvent")
 var openProcess = kernel32.NewProc("OpenProcess")
 var waitForSingleObject = kernel32.NewProc("WaitForSingleObject")
 var createSnapshot = kernel32.NewProc("CreateToolhelp32Snapshot")
@@ -48,7 +49,10 @@ type jobAccounting struct {
 	TotalUserTime, TotalKernelTime, PeriodUserTime, PeriodKernelTime               int64
 	TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses uint32
 }
-type platformTree struct{ job uintptr }
+type platformTree struct {
+	job uintptr
+	pid int
+}
 
 func winError(name string, err error) error {
 	if err == syscall.Errno(0) {
@@ -85,7 +89,7 @@ func attachCommand(cmd *exec.Cmd) (tree *platformTree, err error) {
 		_ = cmd.Process.Kill()
 		return nil, winError("CreateJobObject", e)
 	}
-	tree = &platformTree{job: job}
+	tree = &platformTree{job: job, pid: cmd.Process.Pid}
 	defer func() {
 		if err != nil {
 			_ = cmd.Process.Kill()
@@ -135,9 +139,48 @@ func attachCommand(cmd *exec.Cmd) (tree *platformTree, err error) {
 	}
 	return tree, nil
 }
-func (t *platformTree) terminate(_ <-chan struct{}) error {
+func (t *platformTree) active() (bool, error) {
+	var accounting jobAccounting
+	r, _, err := queryJob.Call(t.job, 1, uintptr(unsafe.Pointer(&accounting)), unsafe.Sizeof(accounting), 0)
+	if r == 0 {
+		return false, winError("QueryInformationJobObject", err)
+	}
+	return accounting.ActiveProcesses > 0, nil
+}
+
+func (t *platformTree) terminate(exited <-chan struct{}, grace time.Duration) error {
 	if t == nil || t.job == 0 {
 		return nil
+	}
+	if grace <= 0 {
+		grace = 750 * time.Millisecond
+	}
+	alive, err := t.active()
+	if err != nil {
+		return err
+	}
+	if !alive {
+		return nil
+	}
+	// CREATE_NEW_PROCESS_GROUP lets Ctrl+Break reach the wrapper without
+	// stopping the gateway. Delivery is best-effort when no console is shared;
+	// the job is force-terminated if the wrapper does not exit within grace.
+	if t.pid > 0 {
+		if r, _, _ := generateConsoleCtrlEvent.Call(1, uintptr(t.pid)); r != 0 {
+			timer := time.NewTimer(grace)
+			select {
+			case <-exited:
+			case <-timer.C:
+			}
+			timer.Stop()
+			alive, err = t.active()
+			if err != nil {
+				return err
+			}
+			if !alive {
+				return nil
+			}
+		}
 	}
 	r, _, err := terminateJob.Call(t.job, 1)
 	if r == 0 {
@@ -145,12 +188,11 @@ func (t *platformTree) terminate(_ <-chan struct{}) error {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		var accounting jobAccounting
-		r, _, err = queryJob.Call(t.job, 1, uintptr(unsafe.Pointer(&accounting)), unsafe.Sizeof(accounting), 0)
-		if r == 0 {
-			return winError("QueryInformationJobObject", err)
+		alive, err = t.active()
+		if err != nil {
+			return err
 		}
-		if accounting.ActiveProcesses == 0 {
+		if !alive {
 			return nil
 		}
 		if time.Now().After(deadline) {

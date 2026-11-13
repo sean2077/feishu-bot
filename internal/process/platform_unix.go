@@ -38,9 +38,12 @@ func attachCommand(cmd *exec.Cmd) (*platformTree, error) {
 	}
 	return &platformTree{pid: cmd.Process.Pid, group: group}, nil
 }
-func (t *platformTree) terminate(exited <-chan struct{}) error {
+func (t *platformTree) terminate(exited <-chan struct{}, grace time.Duration) error {
 	if t == nil || t.pid <= 0 {
 		return nil
+	}
+	if grace <= 0 {
+		grace = 750 * time.Millisecond
 	}
 	alive, err := t.group.active()
 	if err != nil {
@@ -53,7 +56,7 @@ func (t *platformTree) terminate(exited <-chan struct{}) error {
 	if err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("send SIGTERM to process group %d: %w", t.pid, err)
 	}
-	timer := time.NewTimer(750 * time.Millisecond)
+	timer := time.NewTimer(grace)
 	select {
 	case <-exited:
 	case <-timer.C:

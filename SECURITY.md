@@ -37,7 +37,7 @@
 
 私聊非维护者请求敏感操作时，审批所需摘要和参数会发给维护者，不转发完整聊天历史；仍应避免在操作参数中夹带与审批无关的私人内容。
 
-固定操作使用受控的资源和 argv。`readOnly: true` 是管理员对可信执行器的声明，不是自动安全证明。`approval: "none"` 只把是否发起委托给 maintainers-only 的请求上下文，不是额外安全边界；`approval: "open"` 把授权完全交给动作自身，网关只要求 active senders 非空；执行器仍应自行校验业务权限，不能把 open 当作安全边界。请求上下文只取请求到达时活动 deliveries 的 senders，缓存背景、引用内容和跨轮次后台延迟调用不在其中；`hasBotSender` 标记本轮是否存在机器人 sender（包括 `allowOtherBots` 群里的其他机器人），`none`／`open` 直接拒绝此类轮次，`card` 仍由真人点击。多个人类 sender 时不能只按 anchor 判定，动作应按 `FEISHU_REQUEST_SENDERS` 全集判定：要求每个 sender 都在自身允许名单内，未列入者自然拒绝；延迟调用按调用时活动请求归属，不是调用来源证明。动作应使用可信的请求上下文或自身权限系统，不能把 open 当作安全边界。文件参数在审批前生成快照与摘要，防止批准后内容变化。持有服务凭据的执行器不得运行不可信 checkout 的 hooks、构建脚本或拼接 shell。
+固定操作使用受控的资源和 argv。`readOnly: true` 是管理员对可信执行器的声明，不是自动安全证明。`approval: "none"` 只把是否发起委托给 maintainers-only 的请求上下文，不是额外安全边界；`approval: "open"` 把授权完全交给动作自身，网关只要求 active senders 非空；执行器仍应自行校验业务权限，不能把 open 当作安全边界。请求上下文只取请求到达时活动 deliveries 的 senders，缓存背景、引用内容和跨轮次后台延迟调用不在其中；`hasBotSender` 标记本轮是否存在机器人 sender（包括 `allowOtherBots` 群里的其他机器人），`none`／`open` 直接拒绝此类轮次，`card` 仍由真人点击。多个人类 sender 时不能只按 anchor 判定，动作应按 `FEISHU_REQUEST_SENDERS` 全集判定：要求每个 sender 都在自身允许名单内，未列入者自然拒绝；延迟调用按调用时活动请求归属，不是调用来源证明。动作应使用可信的请求上下文或自身权限系统，不能把 open 当作安全边界。超时、取消或输出超限时网关先发中断信号并最多等待 5 秒再强杀；Unix 使用 `SIGTERM`，Windows 的 `Ctrl+Break` 投递依赖控制台共享，属于尽力而为，wrapper 仍应在自身 timeout 内释放租约。文件参数在审批前生成快照与摘要，防止批准后内容变化。持有服务凭据的执行器不得运行不可信 checkout 的 hooks、构建脚本或拼接 shell。
 
 `projects[].preContext` 复用同一个只读固定操作：管理员选择 action 和参数，网关把触发消息的文本作为单个 argv 放在字面量 `--` 之后传入，不经过 shell；参数先折叠空白和控制字符、按 `maxLength` 截断，pattern 不通过时 fail-open。执行器仍会收到配置的 `env`／`vars` 凭据和 `FEISHU_REQUEST_*` 请求上下文，并可通过 `project_action` 被模型再次调用。检索输出作为不可信背景注入模型，不是授权，也不会被显示为回复；`pre_context_failed` 审计不含提问或输出正文。管理员必须审核该执行器如何处理原文、是否产生外部读写以及其凭据范围；输入原文本就会离开网关进程，不能把预检索当作纯本地操作。
 

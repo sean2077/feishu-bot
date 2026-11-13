@@ -116,6 +116,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `projects[].approvals.forbidSelfApproval` | `false` | 开启后发起人不能批准自己的请求，owner 例外；见[审批资格与自批](#审批资格与自批) |
 | `actions[].approvers` | 空 | 该操作的指定审批人；配置后替代 maintainers，不隐式加入 maintainers 或 owners |
 | `actions[].approval` | `"card"` | `"card"` 逐次审批；`"none"` 仅在本轮 senders 全为项目 maintainers 时直接执行；`"open"` 对 active senders 直接执行，权限由动作自身判定；见[审批资格与自批](#审批资格与自批) |
+| `actions[].timeoutMs` | `60000` | `readOnly` 上限 600000（10 分钟），非只读上限 1800000（30 分钟）；超过 10 分钟由 doctor 给 info；超时先中断等待 5 秒再强杀 |
 | `projects[].feedback.enabled` | `false` | 在最终 Done 回复卡上显示「有用／无用」反馈，见[回复反馈](#回复反馈) |
 | `feedback.export.enabled`、`feedback.export.dir` | `false`、空 | 维护前按项目、UTC 日期归档反馈；开启时 `dir` 必填且目录须已存在，见[回复反馈](#回复反馈) |
 | `projects[].displayWorkspace` | 空 | 回复卡工作目录显示：`full`、`basename`、`project`、`hidden`；空时群聊显示项目 id，私聊显示完整路径 |
@@ -402,7 +403,7 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 - 请求上下文为空（后台任务、没有进行中的输入）时无法确定发起人；此时只有 owner 可以批准，其他审批人批准会被拒绝。拒绝仍允许审批人执行。
 - 私聊中的审批请求如果当前用户不是审批人，会转发到审批人的私聊；配置 approvers 时转发给 approvers，否则转发给 maintainers。指定 approvers 的审批卡标题为“需要指定审批人批准”，摘要显示“审批人：指定审批人”，不列出名单。
 
-`doctor` 在 `forbidSelfApproval` 为 true 且 owners 为空时给出一条提示（不算失败）：只有一个维护者时，他将无法审批自己发起的请求。`doctor` 还检查 `actions[].approval` 只能为 `card`、`none` 或 `open`；`readOnly: true` 与 `approval: "none"`／`"open"` 同时配置时给出 warning；项目配置了 `approval: "none"` 但 `maintainers` 为空时失败；`approval: "open"` 给出「对所有可触发真人 sender 开放；机器人 sender 会被网关拒绝、权限由动作自身判定」的 info。`config explain` 显示 owners 数量、`forbidSelfApproval` 和当前用户是否 owner；`canApproveTools` 仍只表示 maintainers 身份。
+`doctor` 在 `forbidSelfApproval` 为 true 且 owners 为空时给出一条提示（不算失败）：只有一个维护者时，他将无法审批自己发起的请求。`doctor` 还检查 `actions[].approval` 只能为 `card`、`none` 或 `open`；`readOnly: true` 与 `approval: "none"`／`"open"` 同时配置时给出 warning；项目配置了 `approval: "none"` 但 `maintainers` 为空时失败；`approval: "open"` 给出「对所有可触发真人 sender 开放；机器人 sender 会被网关拒绝、权限由动作自身判定」的 info；action 的 `timeoutMs` 超过 10 分钟时给出 info。`config explain` 显示 owners 数量、`forbidSelfApproval` 和当前用户是否 owner；`canApproveTools` 仍只表示 maintainers 身份。
 
 ```json
 {
