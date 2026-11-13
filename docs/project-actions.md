@@ -27,7 +27,7 @@
 
 `none` 和 `open` 都拒绝含机器人 sender 的轮次：本轮 `senders` 中只要有一个 `SenderIsBot`（包括 `allowOtherBots` 群里的其他机器人），返回 `{"ok":false,"error":"机器人消息不能触发写操作"}`，`action_direct_rejected` 审计记 `bot_sender=true`。`card` 不受影响，仍由真人点击审批卡。
 
-`actions[].timeoutMs` 默认 60 秒；`readOnly: true` 的 action 上限 10 分钟，非只读 action 上限 30 分钟。超过 10 分钟的 action 由 `doctor` 给 info。超时、取消或输出超限时，网关先发中断信号（Unix `SIGTERM`，Windows 尽力发送 `Ctrl+Break`），最多等待 5 秒让 wrapper 执行 finally（释放租约等），然后强制结束整个进程树；结果按失败处理，不自动重放。
+`actions[].timeoutMs` 默认 60 秒；`readOnly: true` 的 action 上限 10 分钟，非只读 action 上限 30 分钟。超过 10 分钟的 action 由 `doctor` 给 info。超时、取消或输出超限时，网关先发中断信号（Unix `SIGTERM`，Windows 尽力发送 `Ctrl+Break`），最多等待 5 秒让 wrapper 执行 finally（释放租约等），然后强制结束整个进程树；结果按失败处理，不自动重放。原生 Bash/Monitor 的 `feishu-bot action` 客户端等待上限为 160 分钟，覆盖 30 分钟执行、最多两轮审批和收尾，避免客户端先退出而网关仍在执行外部写操作。
 
 `actions[].approvers` 可选，用 open_id 列表指定该操作的审批人；配置后只认这个列表，不再使用项目 maintainers，也不会隐式加入 maintainers 或 owners；空列表按未配置处理，沿用 maintainers。approvers 不要求是 maintainers，但群内审批卡还要求点击者是该群授权作者，否则无法审批，只能等待超时；`doctor` 无法验证群成员关系。私聊中需要审批时，卡片会转发到 approvers 的私聊，而不是 maintainers。未配置 approvers 时仍使用项目 maintainers。原生工具 ask 始终使用 maintainers，不使用 action 的 approvers。自批规则和 owner 例外见[审批资格与自批](deployment.md#审批资格与自批)。`approval: "none"` 或 `"open"` 的 action 不经过这条审批卡路径。
 

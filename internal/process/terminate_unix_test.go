@@ -25,6 +25,16 @@ func TestTerminateWithGraceLetsHandlerRun(t *testing.T) {
 	defer tree.Close()
 	done := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(done) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(marker + ".ready"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child did not install signal handler")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err = tree.TerminateWithGrace(done, 2*time.Second); err != nil {
 		t.Fatal(err)
 	}

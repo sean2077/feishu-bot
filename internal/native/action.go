@@ -118,6 +118,11 @@ func (a *actionRelay) close() {
 	}
 }
 
+// The bridge must outlast the host action: up to 30 minutes of execution plus
+// up to two approval windows (tainted card actions) and graceful teardown.
+// Otherwise the CLI exits while the host may still perform the external write.
+const actionBridgeTimeout = 160 * time.Minute
+
 // RunActionClient is used by `feishu-bot action <id> <json>` inside the native
 // CLI's Bash or Monitor. It sends only to this conversation's loopback relay;
 // the host's existing action policy is the authority for execution/approval.
@@ -141,7 +146,7 @@ func RunActionClient(ctx context.Context, argv []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, actionBridgeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint.String(), bytes.NewReader(body))
 	if err != nil {

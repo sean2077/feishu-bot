@@ -162,10 +162,15 @@ func (t *platformTree) terminate(exited <-chan struct{}, grace time.Duration) er
 	if !alive {
 		return nil
 	}
-	// CREATE_NEW_PROCESS_GROUP lets Ctrl+Break reach the wrapper without
-	// stopping the gateway. Delivery is best-effort when no console is shared;
-	// the job is force-terminated if the wrapper does not exit within grace.
-	if t.pid > 0 {
+	// A normally finished action must not signal a stale group: skip the
+	// graceful interrupt when the direct child has already exited.
+	graceful := true
+	select {
+	case <-exited:
+		graceful = false
+	default:
+	}
+	if graceful && t.pid > 0 {
 		if r, _, _ := generateConsoleCtrlEvent.Call(1, uintptr(t.pid)); r != 0 {
 			timer := time.NewTimer(grace)
 			select {
