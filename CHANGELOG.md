@@ -2,6 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
+- 新增 `thinking_icon_upload` 日志：`status=ok|fallback`，fallback 带固定 `reason`（`upload_failed`／`empty_key`／`unsupported_transport`），不打印 image_key。
 - 回复卡状态行在「思考中」「处理中」时优先使用启动时上传一次的点阵 GIF `custom_icon`，客户端循环播放，运行时零更新；上传不可用或失败时回退到静态 `loading_outlined`。终态图标不变。
 - 「查看状态」和「更多」overflow 收进同一行，减少不必要的换行；流式和最终卡片使用同一布局。
 - `actions[].timeoutMs` 上限调整：`readOnly` 保持 10 分钟，非只读放宽到 30 分钟；`doctor` 对超过 10 分钟的 action 给 info。超时、取消或输出超限时先发中断信号并最多等待 5 秒（Unix `SIGTERM`，Windows 尽力 `Ctrl+Break`），再强制结束进程树，给 wrapper 的 finally 释放租约机会。原生 Bash/Monitor 的 `feishu-bot action` 客户端等待上限同步提高到 160 分钟，避免客户端提前退出后网关仍执行外部写操作；`project_action` MCP 调用仍需把 `MCP_TOOL_TIMEOUT` 设到 action timeout 加审批窗口之上。

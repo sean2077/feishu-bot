@@ -220,7 +220,8 @@ func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerF
 			}
 		}
 	})
-	g.task(func() { g.ensureThinkingIcon(ctx) })
+	iconLogger := g.logger
+	g.task(func() { g.ensureThinkingIconWithLogger(ctx, iconLogger) })
 	return g
 }
 func (g *Gateway) task(fn func()) bool {
