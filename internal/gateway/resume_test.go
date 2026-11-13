@@ -94,6 +94,39 @@ func TestResumeInterruptedRecoveryCard(t *testing.T) {
 	}
 }
 
+func TestResumeRejectsBotOrigin(t *testing.T) {
+	f := newFixture(t, nil)
+	r := f.room()
+	session, err := f.s.Session(r.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := core.Message{ID: "card:bot", ChatID: r.ChatID, ChatType: "group", SenderID: "cli_other", SenderIsBot: true, Text: "bot original request", Time: time.Now().UnixMilli(), InteractionMessageID: "om_botcard"}
+	if _, err = f.s.DB.Exec("INSERT INTO inbox(room,id,message,status,at,session) VALUES(?,?,?,'uncertain',?,?)", r.Key, original.ID, jsonText(original), original.Time, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.s.DB.Exec("INSERT INTO outbox(id,room,session,text,reply_to,success,state,at,kind,origins) VALUES(?,?,?,?,?,?,?,?,?,?)", "status-bot", r.Key, session.ID, "已停止", original.ID, 0, "done", original.Time, "status", "[]"); err != nil {
+		t.Fatal(err)
+	}
+	card := f.g.deliveredOutputCard(outgoing{Kind: "recovery", ID: "recovery-bot-out", Session: session.ID, State: "done", Text: "上次运行中断"}, r)
+	if err := f.g.bindQuickControls("recovery-bot-card", card); err != nil {
+		t.Fatal(err)
+	}
+	value := cardValue(card, "继续")
+	if value == nil {
+		t.Fatal("resume button has no callback value")
+	}
+	action := core.CardAction{UserID: "owner", ChatID: r.ChatID, MessageID: "recovery-bot-card", Value: value}
+	if text, err := f.g.Action(context.Background(), action); err != nil || !strings.Contains(text, "机器人来源") {
+		t.Fatalf("bot-origin resume = %q %v", text, err)
+	}
+	for _, message := range queuedMessages(t, f, r.Key) {
+		if strings.Contains(message.Text, "bot original request") {
+			t.Fatalf("bot-origin resume was queued: %#v", message)
+		}
+	}
+}
+
 func TestResumeButtonVisibleWhileStopInProgress(t *testing.T) {
 	f := newFixture(t, nil)
 	r := f.room()

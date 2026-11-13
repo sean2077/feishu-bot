@@ -495,8 +495,31 @@ func TestDirectApprovalRejectsBotSenders(t *testing.T) {
 				if detail["bot_sender"] != true || stringArg(detail, "approval") != mode || stringArg(detail, "reason") != "bot_sender" {
 					t.Fatalf("bot sender audit = %#v", detail)
 				}
+				if stringArg(detail, "requester") != tc.senders[0] || stringArg(detail, "messageId") != "bot-message" {
+					t.Fatalf("bot sender audit identity = %#v", detail)
+				}
 			})
 		}
+	}
+}
+
+func TestReadOnlyActionIgnoresBotSenderGuard(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "check", Description: "Check", Executable: "fixture", ReadOnly: true}}
+	})
+	called := false
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, _ map[string]string, _ int64) (int, string, error) {
+		called = true
+		return 0, "checked", nil
+	}
+	requestContext := &core.RequestContext{ChatID: "group", MessageID: "bot-message", SenderOpenID: "cli_other", Senders: []string{"cli_other"}, HasBotSender: true}
+	result, err := f.g.executeAction(context.Background(), f.room(), "session", f.c.Projects[0], "check", core.Args{}, core.Workspace{}, requestContext)
+	if err != nil || !boolArg(result, "ok") || !called {
+		t.Fatalf("readOnly bot sender result = %#v called=%t err=%v", result, called, err)
+	}
+	var approval string
+	if err := f.s.DB.QueryRow("SELECT approval FROM action_runs WHERE action='check'").Scan(&approval); err != nil || approval != "readonly" {
+		t.Fatalf("readOnly bot sender run = %q %v", approval, err)
 	}
 }
 

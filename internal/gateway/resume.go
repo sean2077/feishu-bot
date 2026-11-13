@@ -146,6 +146,11 @@ func (g *Gateway) resumeInterrupted(ctx context.Context, r core.Room, a core.Car
 	if a.UserID != original.SenderID && !contains(r.Maintainers, a.UserID) {
 		return "只有原提问人或维护者可以继续这次回答。", true, nil
 	}
+	// A resumed bot turn would otherwise replay bot-authored text as a synthetic
+	// human input and bypass the direct-write bot-sender guard.
+	if original.SenderIsBot {
+		return "机器人来源的中断输入不能继续；请由真人重新发起。", true, nil
+	}
 	if g.resumeBlocked(r, g.getSlot(r.Key)) {
 		return "当前聊天处于暂停或停止未确认状态，暂时不能继续。", true, nil
 	}

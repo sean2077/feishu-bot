@@ -99,7 +99,7 @@ func requestContextLocked(s *slot) *core.RequestContext {
 	for _, id := range ids {
 		delivery := s.deliveries[id]
 		sender := delivery.Message.SenderID
-		if sender != "" && delivery.Message.SenderIsBot {
+		if delivery.Message.SenderIsBot {
 			context.HasBotSender = true
 		}
 		if sender != "" && !senderSeen[sender] {

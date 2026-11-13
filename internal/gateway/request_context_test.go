@@ -70,6 +70,11 @@ func TestRequestContextMarksBotSenders(t *testing.T) {
 	if strings.Join(got.Senders, ",") != "ou_human,cli_other" {
 		t.Fatalf("senders = %#v", got.Senders)
 	}
+	s.deliveries["bot-same"] = core.Delivery{UUID: "bot-same", Message: core.Message{ID: "m3", ChatID: "oc_example", ChatType: "group", SenderID: "ou_human", SenderIsBot: true}}
+	s.order = append(s.order, "bot-same")
+	if got = requestContextLocked(s); got == nil || !got.HasBotSender {
+		t.Fatalf("overlapping bot sender not marked: %#v", got)
+	}
 	for id := range s.deliveries {
 		delivery := s.deliveries[id]
 		delivery.Message.SenderIsBot = false
