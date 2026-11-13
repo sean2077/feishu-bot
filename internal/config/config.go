@@ -600,7 +600,7 @@ func validate(c *core.Config, base string) error {
 			if a.TimeoutMS < 100 || a.TimeoutMS > 600000 {
 				return errors.New("invalid action timeoutMs")
 			}
-			if a.Approval != "card" && a.Approval != "none" {
+			if a.Approval != "card" && a.Approval != "none" && a.Approval != "open" {
 				return errors.New("invalid action approval")
 			}
 			if a.CWD != "" {

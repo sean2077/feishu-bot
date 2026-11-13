@@ -206,8 +206,14 @@ func actionApprovalChecks(c core.Config) []Diagnostic {
 				if a.ReadOnly {
 					checks = append(checks, Diagnostic{Name: name, OK: true, Detail: "Warning: approval:none is redundant for a readOnly action; readOnly actions never ask for approval."})
 				}
+			case "open":
+				if a.ReadOnly {
+					checks = append(checks, Diagnostic{Name: name, OK: true, Detail: "Warning: approval:open is redundant for a readOnly action; readOnly actions never ask for approval."})
+				} else {
+					checks = append(checks, Diagnostic{Name: name, OK: true, Detail: "Info: approval:open allows any member who can trigger the bot to execute this action; the action itself must enforce authorization."})
+				}
 			default:
-				checks = append(checks, Diagnostic{Name: name, OK: false, Detail: "approval must be card or none."})
+				checks = append(checks, Diagnostic{Name: name, OK: false, Detail: "approval must be card, none or open."})
 			}
 		}
 		if direct && len(p.Maintainers) == 0 {

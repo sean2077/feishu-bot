@@ -354,6 +354,125 @@ func TestActionApprovalNoneDoesNotAffectReadOnly(t *testing.T) {
 	}
 }
 
+func TestActionApprovalOpenRunsForMemberWithoutCard(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "ota", Description: "OTA", Executable: "fixture", Approval: "open"}}
+	})
+	var env map[string]string
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, got map[string]string, _ int64) (int, string, error) {
+		env = got
+		return 0, "queued", nil
+	}
+	requestContext := &core.RequestContext{ChatID: "group", ChatType: "group", MessageID: "member-message", SenderOpenID: "member", Senders: []string{"member"}}
+	result, err := f.g.executeAction(context.Background(), f.room(), "session", f.c.Projects[0], "ota", core.Args{}, core.Workspace{}, requestContext)
+	if err != nil || !boolArg(result, "ok") {
+		t.Fatalf("open action = %#v %v", result, err)
+	}
+	if f.tr.cardCount() != 0 {
+		t.Fatal("open action created an approval card")
+	}
+	if env["FEISHU_REQUEST_SENDERS"] != "member" || env["FEISHU_REQUEST_MESSAGE_ID"] != "member-message" {
+		t.Fatalf("request env = %#v", env)
+	}
+	for _, key := range []string{"FEISHU_ACTION_REQUEST_ID", "FEISHU_ACTION_APPROVER_OPEN_ID", "FEISHU_ACTION_APPROVED_AT", "FEISHU_ACTION_TAINT_CONFIRMER_OPEN_ID"} {
+		if _, ok := env[key]; ok {
+			t.Fatalf("open action received %s", key)
+		}
+	}
+	var approval string
+	var request, approver, taint any
+	if err := f.s.DB.QueryRow("SELECT approval,request,approver,taint_request FROM action_runs WHERE action='ota'").Scan(&approval, &request, &approver, &taint); err != nil {
+		t.Fatal(err)
+	}
+	if approval != "open" || request != nil || approver != nil || taint != nil {
+		t.Fatalf("open run metadata = %q %#v %#v %#v", approval, request, approver, taint)
+	}
+	detail := auditDetail(t, f, "action_started")
+	if stringArg(detail, "approval") != "open" || detail["tainted"] != false {
+		t.Fatalf("open action_started detail = %#v", detail)
+	}
+}
+
+func TestActionApprovalOpenRejectsInactiveAndEmptySenders(t *testing.T) {
+	cases := []struct {
+		name    string
+		context *core.RequestContext
+	}{
+		{name: "inactive", context: nil},
+		{name: "empty", context: &core.RequestContext{ChatID: "group", MessageID: "empty"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, func(c *core.Config) {
+				c.Projects[0].Actions = []core.ActionSpec{{ID: "ota", Description: "OTA", Executable: "fixture", Approval: "open"}}
+			})
+			called := false
+			f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, _ map[string]string, _ int64) (int, string, error) {
+				called = true
+				return 0, "", nil
+			}
+			result, err := f.g.executeAction(context.Background(), f.room(), "session", f.c.Projects[0], "ota", core.Args{}, core.Workspace{}, tc.context)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if boolArg(result, "ok") || stringArg(result, "error") != "需要活跃的用户请求" || called {
+				t.Fatalf("open rejection = %#v executed=%t", result, called)
+			}
+			if f.tr.cardCount() != 0 {
+				t.Fatal("open rejection created an approval card")
+			}
+			var runs, requests int
+			if err := f.s.DB.QueryRow("SELECT count(*) FROM action_runs").Scan(&runs); err != nil || runs != 0 {
+				t.Fatalf("rejected action wrote %d runs: %v", runs, err)
+			}
+			if err := f.s.DB.QueryRow("SELECT count(*) FROM requests").Scan(&requests); err != nil || requests != 0 {
+				t.Fatalf("rejected action wrote %d requests: %v", requests, err)
+			}
+			detail := auditDetail(t, f, "action_direct_rejected")
+			if stringArg(detail, "reason") != "inactive" || stringArg(detail, "action") != "ota" {
+				t.Fatalf("open rejection audit = %#v", detail)
+			}
+		})
+	}
+}
+
+func TestActionApprovalOpenStaysDirectOnTaintedTurn(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "ota", Description: "OTA", Executable: "fixture", Approval: "open"}}
+	})
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, _ map[string]string, _ int64) (int, string, error) {
+		return 0, "queued", nil
+	}
+	requestContext := &core.RequestContext{ChatID: "group", MessageID: "member-message", SenderOpenID: "member", Senders: []string{"member"}}
+	result, err := f.g.executeActionTainted(context.Background(), f.room(), "session", f.c.Projects[0], "ota", core.Args{}, core.Workspace{}, requestContext, true, []string{"other"})
+	if err != nil || !boolArg(result, "ok") {
+		t.Fatalf("tainted open action = %#v %v", result, err)
+	}
+	if f.tr.cardCount() != 0 {
+		t.Fatal("tainted open action created an approval card")
+	}
+	detail := auditDetail(t, f, "action_started")
+	if detail["tainted"] != true || stringArg(detail, "approval") != "open" {
+		t.Fatalf("tainted open action_started detail = %#v", detail)
+	}
+	var approval string
+	if err := f.s.DB.QueryRow("SELECT approval FROM action_runs WHERE action='ota'").Scan(&approval); err != nil || approval != "open" {
+		t.Fatalf("tainted open run approval = %q %v", approval, err)
+	}
+}
+
+func TestOpenApprovalRejectionReasons(t *testing.T) {
+	if reason := openApprovalRejection(nil); reason != "inactive" {
+		t.Fatalf("inactive reason = %q", reason)
+	}
+	if reason := openApprovalRejection(&core.RequestContext{Senders: []string{}}); reason != "inactive" {
+		t.Fatalf("empty senders reason = %q", reason)
+	}
+	if reason := openApprovalRejection(&core.RequestContext{Senders: []string{"member"}}); reason != "" {
+		t.Fatalf("member reason = %q", reason)
+	}
+}
+
 func TestDirectApprovalRejectionReasons(t *testing.T) {
 	maintainers := []string{"owner"}
 	if reason := directApprovalRejection(nil, maintainers); reason != "inactive" {

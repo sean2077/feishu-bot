@@ -79,6 +79,7 @@ func actionArguments(spec core.ActionSpec, input core.Args, snapshots map[string
 }
 
 const directApprovalError = "需要管理员发起"
+const openApprovalError = "需要活跃的用户请求"
 
 // directApprovalRejection reports why an approval:none action may not run. The
 // action executes only when the request is active and every sender in this
@@ -94,6 +95,16 @@ func directApprovalRejection(requestContext *core.RequestContext, maintainers []
 		if !contains(maintainers, sender) {
 			return "non_maintainer"
 		}
+	}
+	return ""
+}
+
+// openApprovalRejection reports why an approval:open action may not run. The
+// action itself decides authorization from roles; the gateway only requires a
+// live human request context with at least one sender.
+func openApprovalRejection(requestContext *core.RequestContext) string {
+	if requestContext == nil || len(requestContext.Senders) == 0 {
+		return "inactive"
 	}
 	return ""
 }
@@ -280,11 +291,19 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 		approvalMode = "readonly"
 	} else if spec.Approval == "none" {
 		approvalMode = "none"
+	} else if spec.Approval == "open" {
+		approvalMode = "open"
 	}
-	direct := !spec.ReadOnly && approvalMode == "none"
+	direct := !spec.ReadOnly && (approvalMode == "none" || approvalMode == "open")
 	run := core.NewID()
 	if direct {
-		if reason := directApprovalRejection(requestContext, p.Maintainers); reason != "" {
+		reason := ""
+		if approvalMode == "none" {
+			reason = directApprovalRejection(requestContext, p.Maintainers)
+		} else {
+			reason = openApprovalRejection(requestContext)
+		}
+		if reason != "" {
 			detail := core.Args{"run": run, "action": id, "reason": reason}
 			if requestContext != nil {
 				if requestContext.SenderOpenID != "" {
@@ -295,7 +314,11 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 				}
 			}
 			g.audit(r.Key, "action_direct_rejected", detail)
-			return core.Args{"ok": false, "error": directApprovalError}, nil
+			text := directApprovalError
+			if approvalMode == "open" {
+				text = openApprovalError
+			}
+			return core.Args{"ok": false, "error": text}, nil
 		}
 	}
 	staging := filepath.Join(g.config.DataDir, "action-inputs", run)

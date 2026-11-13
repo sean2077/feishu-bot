@@ -40,6 +40,8 @@ func TestActionApprovalChecks(t *testing.T) {
 		{ID: "team-tools", Maintainers: []string{"ou_owner"}, Actions: []core.ActionSpec{
 			{ID: "build", Approval: "none"},
 			{ID: "read", Approval: "none", ReadOnly: true},
+			{ID: "ota", Approval: "open"},
+			{ID: "openread", Approval: "open", ReadOnly: true},
 		}},
 		{ID: "no-owner", Actions: []core.ActionSpec{{ID: "deploy", Approval: "none"}}},
 		{ID: "bad", Maintainers: []string{"ou_owner"}, Actions: []core.ActionSpec{{ID: "other", Approval: "sometimes"}}},
@@ -52,10 +54,16 @@ func TestActionApprovalChecks(t *testing.T) {
 	if check, ok := byName["project team-tools action read approval"]; !ok || !check.OK || !strings.Contains(check.Detail, "redundant") {
 		t.Fatalf("readOnly warning = %#v", check)
 	}
+	if check, ok := byName["project team-tools action ota approval"]; !ok || !check.OK || !strings.Contains(check.Detail, "Info:") || !strings.Contains(check.Detail, "action itself must enforce authorization") {
+		t.Fatalf("open info = %#v", check)
+	}
+	if check, ok := byName["project team-tools action openread approval"]; !ok || !check.OK || !strings.Contains(check.Detail, "redundant") {
+		t.Fatalf("readOnly open warning = %#v", check)
+	}
 	if check, ok := byName["project no-owner approval:none maintainers"]; !ok || check.OK {
 		t.Fatalf("missing maintainer check = %#v", check)
 	}
-	if check, ok := byName["project bad action other approval"]; !ok || check.OK || !strings.Contains(check.Detail, "card or none") {
+	if check, ok := byName["project bad action other approval"]; !ok || check.OK || !strings.Contains(check.Detail, "card, none or open") {
 		t.Fatalf("invalid approval check = %#v", check)
 	}
 	for name := range byName {

@@ -21,6 +21,8 @@
 
 `actions[].approval` 可选，默认 `"card"`；非只读操作逐次弹审批卡。设为 `"none"` 时改为直接执行，但仅当本轮请求上下文 active 且 `senders` 全部是该项目 `maintainers`；否则返回 `{"ok":false,"error":"需要管理员发起"}`，不回退到审批卡。`senders` 只包含请求到达时仍在活动的 deliveries；缓存背景、引用内容以及跨轮次后台进程的延迟调用不参与判定。直接执行仍注入 `FEISHU_REQUEST_*`，不设置审批人环境变量；`action_runs.approval` 记为 `none`。污染轮次（读过其他群）仍是直接执行，但 `action_started` 审计记 `tainted=true`。`approval: "none"` 不使用 `approvers`，也不适用自批规则。`readOnly: true` 与 `approval: "none"` 同时配置是多余的，`doctor` 给出 warning。管理员应只对可回滚、范围受限的操作使用该模式。
 
+`actions[].approval: "open"` 也只对非 `readOnly` 操作生效：不检查 maintainer，只要求请求上下文 active 且 `senders` 非空；后台或 inactive 请求返回 `{"ok":false,"error":"需要活跃的用户请求"}`，不回退到审批卡。执行时同样注入 `FEISHU_REQUEST_*`，不设置审批人环境变量，`action_runs.approval` 记为 `open`；污染轮次照常直接执行并记 `tainted=true`。权限由动作自身判定（例如 wrapper 读取 roles）；`doctor` 会给出 info 提示，`readOnly: true` 与 `approval: "open"` 同时配置时给出冗余 warning。
+
 `actions[].approvers` 可选，用 open_id 列表指定该操作的审批人；配置后只认这个列表，不再使用项目 maintainers，也不会隐式加入 maintainers 或 owners；空列表按未配置处理，沿用 maintainers。approvers 不要求是 maintainers，但群内审批卡还要求点击者是该群授权作者，否则无法审批，只能等待超时；`doctor` 无法验证群成员关系。私聊中需要审批时，卡片会转发到 approvers 的私聊，而不是 maintainers。未配置 approvers 时仍使用项目 maintainers。原生工具 ask 始终使用 maintainers，不使用 action 的 approvers。自批规则和 owner 例外见[审批资格与自批](deployment.md#审批资格与自批)。`approval: "none"` 的 action 不经过这条审批卡路径。
 
 `workspaceFile` 在审批前保存文件快照和 SHA256，批准后读取快照。GitLab 示例在独立的干净 checkout 中应用补丁，禁用 hooks 和全局 Git 配置，不在可修改项目中运行携带业务凭据的脚本。

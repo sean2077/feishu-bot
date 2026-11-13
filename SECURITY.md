@@ -21,7 +21,7 @@
 
 群背景预注入默认关闭。按需历史工具不能指定其他聊天，分页游标绑定当前聊天和 session；话题范围的群默认只读当前话题，只有管理员显式配置 `groups[].topicHistory: "chat"` 后才能用 `scope: "chat"` 读取同群其他话题，且每次结果和引用展开都重新检查发言者。其他话题内容会标注 `background: true`，但这是提示层面的约束，硬边界仍是 permission 规则。只有本机器人自己的历史回复作为机器人内容保留，其他机器人的内容不自动进入上下文。转发集合不自动递归展开，避免从内层内容绕过作者权限。
 
-只有显式配置 `dms[].historyChats` 的私聊可以按配置名或 ID 读取目标群。目标必须是 `groups[]` 中显式绑定的群，不能是兜底 `*` 或私聊；每次调用（包括游标续页）都要求当前是活动人类请求、发起人是该 DM 用户，并且是目标群的 maintainer 或显式 member。`allowAllMembers` 不构成目标群授权，目标群消息本身仍按目标群作者规则过滤。第一版只返回文本，跨群附件不可用；每次读取写 `history_cross_chat_read`，不记录正文。成功读取后本轮标记为污染：写工具、`send_file`、非只读 `project_action` 和未知工具需要 DM 用户确认，只读工具放行；其中非只读 action 先由 DM 用户确认污染，再走原有的 action approvers 和 `forbidSelfApproval` 规则，污染确认不能替换或削弱原审批。`actions[].approval: "none"` 的非只读 action 例外：维持直接执行，不弹污染确认，`action_started` 审计记 `tainted=true`。直接执行的授权只看请求到达时活动 deliveries 的 senders；缓存背景、引用内容和跨轮次后台进程的延迟调用不在 senders 集合内，因此非 maintainer 的文本仍可能进入模型上下文，或延迟调用可能在后续 maintainer 轮次执行。这是该模式的已知残余风险；管理员应只对可回滚、范围受限的操作启用。审批只解除污染拦截，不替代或绕过原生 permission 规则，`/stop`、超时或 worker 结束一律 deny。污染按轮次生效，新的用户输入且后台任务已结束时清除；跨群正文仍可能留在原生 transcript 并影响后续轮次，硬边界仍是原生权限和审批。只读 action 若会访问外部服务，其参数可能带出跨群内容，管理员应只把没有外发的操作标为 `readOnly`。
+只有显式配置 `dms[].historyChats` 的私聊可以按配置名或 ID 读取目标群。目标必须是 `groups[]` 中显式绑定的群，不能是兜底 `*` 或私聊；每次调用（包括游标续页）都要求当前是活动人类请求、发起人是该 DM 用户，并且是目标群的 maintainer 或显式 member。`allowAllMembers` 不构成目标群授权，目标群消息本身仍按目标群作者规则过滤。第一版只返回文本，跨群附件不可用；每次读取写 `history_cross_chat_read`，不记录正文。成功读取后本轮标记为污染：写工具、`send_file`、非只读 `project_action` 和未知工具需要 DM 用户确认，只读工具放行；其中非只读 action 先由 DM 用户确认污染，再走原有的 action approvers 和 `forbidSelfApproval` 规则，污染确认不能替换或削弱原审批。`actions[].approval: "none"` 或 `"open"` 的非只读 action 例外：维持直接执行，不弹污染确认，`action_started` 审计记 `tainted=true`。直接执行的授权只看请求到达时活动 deliveries 的 senders；缓存背景、引用内容和跨轮次后台进程的延迟调用不在 senders 集合内，因此非 maintainer 的文本仍可能进入模型上下文，或延迟调用可能在后续 maintainer 轮次执行。这是该模式的已知残余风险；管理员应只对可回滚、范围受限的操作启用。审批只解除污染拦截，不替代或绕过原生 permission 规则，`/stop`、超时或 worker 结束一律 deny。污染按轮次生效，新的用户输入且后台任务已结束时清除；跨群正文仍可能留在原生 transcript 并影响后续轮次，硬边界仍是原生权限和审批。只读 action 若会访问外部服务，其参数可能带出跨群内容，管理员应只把没有外发的操作标为 `readOnly`。
 
 工具返回的历史是资料，不是授权。被拒绝消息不会作为新输入保存；旧原生 transcript 已经包含的内容无法靠新过滤规则自动撤回。修改授权或关闭背景时，不应声称旧会话因此从未见过相关资料。
 
@@ -33,11 +33,11 @@
 
 `permissionMode: auto` 把白名单外操作交给 Claude Code 的本地安全分类器，不再弹维护者审批。分类器读取与主模型相同的凭据和 `baseUrl`，请求固定使用 `claude-sonnet-5`，并包含会话 transcript、CLAUDE.md 和相关工具输入；它可能耗时数十秒且会计费。分类器不是安全沙箱，deny 规则仍是硬边界，ask 规则仍进入维护者审批；PowerShell/Bash 等其他执行工具需要单独配置规则。分类器不可用或无法评估时按 fail-closed 处理。
 
-允许的群、私聊用户和维护者使用明确 ID；显示名、正文、引用与背景均不能授予权限。写操作审批绑定请求、会话、操作及参数，一次性生效，停止、超时或重启后失效；`approval: "none"` 的固定操作不走审批卡，按 maintainers-only 的 senders 规则直接执行。卡片点击按真实操作人、卡片消息 ID 和当前授权检查，未授权操作不产生可见回复。
+允许的群、私聊用户和维护者使用明确 ID；显示名、正文、引用与背景均不能授予权限。写操作审批绑定请求、会话、操作及参数，一次性生效，停止、超时或重启后失效；`approval: "none"` 的固定操作不走审批卡，按 maintainers-only 的 senders 规则直接执行；`approval: "open"` 只要求 active senders 非空，权限完全由动作自身判定。卡片点击按真实操作人、卡片消息 ID 和当前授权检查，未授权操作不产生可见回复。
 
 私聊非维护者请求敏感操作时，审批所需摘要和参数会发给维护者，不转发完整聊天历史；仍应避免在操作参数中夹带与审批无关的私人内容。
 
-固定操作使用受控的资源和 argv。`readOnly: true` 是管理员对可信执行器的声明，不是自动安全证明。`approval: "none"` 只把是否发起委托给 maintainers-only 的请求上下文，不是额外安全边界；执行器仍应自行校验业务权限。文件参数在审批前生成快照与摘要，防止批准后内容变化。持有服务凭据的执行器不得运行不可信 checkout 的 hooks、构建脚本或拼接 shell。
+固定操作使用受控的资源和 argv。`readOnly: true` 是管理员对可信执行器的声明，不是自动安全证明。`approval: "none"` 只把是否发起委托给 maintainers-only 的请求上下文，不是额外安全边界；`approval: "open"` 把授权完全交给动作自身，网关只要求 active senders 非空；执行器仍应自行校验业务权限，不能把 open 当作安全边界。文件参数在审批前生成快照与摘要，防止批准后内容变化。持有服务凭据的执行器不得运行不可信 checkout 的 hooks、构建脚本或拼接 shell。
 
 `projects[].preContext` 复用同一个只读固定操作：管理员选择 action 和参数，网关把触发消息的文本作为单个 argv 放在字面量 `--` 之后传入，不经过 shell；参数先折叠空白和控制字符、按 `maxLength` 截断，pattern 不通过时 fail-open。执行器仍会收到配置的 `env`／`vars` 凭据和 `FEISHU_REQUEST_*` 请求上下文，并可通过 `project_action` 被模型再次调用。检索输出作为不可信背景注入模型，不是授权，也不会被显示为回复；`pre_context_failed` 审计不含提问或输出正文。管理员必须审核该执行器如何处理原文、是否产生外部读写以及其凭据范围；输入原文本就会离开网关进程，不能把预检索当作纯本地操作。
 
@@ -51,9 +51,9 @@ CC 直连配置的模型服务，模型凭据进入该进程环境。飞书和�
 
 开启 `projects[].feedback.enabled` 后，`feedback` 表保存用户问题原文（最多 4000 字符）、回复摘要（最多 2000 字符）、room、project、gateway session、原生 session（有则记录）、outbox／卡片消息 ID、open_id、投票时间和值；入库前使用现有 secrets 脱敏。问题来源已被保留期清理时留空，导出以 `questionMissing` 标记；记录本身仍保留。反馈保留 90 天。`feedback export` 只读打开状态库，输出包含用户问答和 open_id，应按敏感数据保护，不要提交或公开。反馈按钮只在 Done 后出现，每人每回复只能一票；点击不重写整张卡片，只按元素更新两个按钮文字。
 
-固定操作和只读 context 端点会携带请求上下文：发送者 open_id、事件中的显示名、chat／thread／消息 ID 和当前 senders／messageIds。这些信息会进入固定操作子进程环境和 `action_runs`（`requester`、`request_context`），保留期沿用 `action_runs` 的 90 天；`action_started` 审计只含 open_id 和消息 ID，不含显示名。非只读操作审批通过后另写入 `FEISHU_ACTION_REQUEST_ID`／`APPROVER_OPEN_ID`／`APPROVED_AT`，污染轮次还写入 `TAINT_CONFIRMER_OPEN_ID`；`action_runs.request`／`approver`／`taint_request` 保存对应审批标识。`approval: "none"` 不写这些审批标识，也不设置审批人环境变量；`action_runs.approval` 记为 `none`，`action_started` 对污染轮次记 `tainted=true`。这些信息只用于审计和下游记录，不是授权；是否允许执行仍由网关在审批时检查，下游不能据此扩大权限。每个原生进程的 loopback 中继使用独立 token，始终启动（即使没有配置 `actions`），只返回该 worker 所在 slot 的上下文，action 调用仍按原策略审批或拒绝；同账户代码仍可读取环境变量并调用该端点，不是额外隔离边界。
+固定操作和只读 context 端点会携带请求上下文：发送者 open_id、事件中的显示名、chat／thread／消息 ID 和当前 senders／messageIds。这些信息会进入固定操作子进程环境和 `action_runs`（`requester`、`request_context`），保留期沿用 `action_runs` 的 90 天；`action_started` 审计只含 open_id 和消息 ID，不含显示名。非只读操作审批通过后另写入 `FEISHU_ACTION_REQUEST_ID`／`APPROVER_OPEN_ID`／`APPROVED_AT`，污染轮次还写入 `TAINT_CONFIRMER_OPEN_ID`；`action_runs.request`／`approver`／`taint_request` 保存对应审批标识。`approval: "none"` 不写这些审批标识，也不设置审批人环境变量；`approval: "open"` 同样不写审批标识、不设置审批人环境变量。`action_runs.approval` 分别记为 `none`／`open`，`action_started` 对污染轮次记 `tainted=true`。这些信息只用于审计和下游记录，不是授权；是否允许执行仍由网关在审批时检查，下游不能据此扩大权限。每个原生进程的 loopback 中继使用独立 token，始终启动（即使没有配置 `actions`），只返回该 worker 所在 slot 的上下文，action 调用仍按原策略审批或拒绝；同账户代码仍可读取环境变量并调用该端点，不是额外隔离边界。
 
-自批判断只使用请求上下文中的 open_id 与配置的 owners：同一个人使用两个账号或另一种身份无法被识别，不能把该规则当作强身份隔离。`forbidSelfApproval` 开启且请求上下文为空时，只允许 owner 批准；拒绝不受自批限制，但点击者仍必须是审批人。自批或未知发起人被拒绝时写入 `approval_self_rejected` 审计，`reason` 为 `self` 或 `unknown_requester`，不写显示名。`actions[].approvers` 和 `projects[].owners` 是静态配置，网关不实时验证群成员关系；approvers 不是该群授权作者时不能点击群内审批卡。`approval: "none"` 不使用 approvers 或自批规则，只要求本轮 senders 全为项目 maintainers。`requests` 表随审批记录保存 `requester` 和请求上下文 JSON，应按部署的数据保留策略保护。
+自批判断只使用请求上下文中的 open_id 与配置的 owners：同一个人使用两个账号或另一种身份无法被识别，不能把该规则当作强身份隔离。`forbidSelfApproval` 开启且请求上下文为空时，只允许 owner 批准；拒绝不受自批限制，但点击者仍必须是审批人。自批或未知发起人被拒绝时写入 `approval_self_rejected` 审计，`reason` 为 `self` 或 `unknown_requester`，不写显示名。`actions[].approvers` 和 `projects[].owners` 是静态配置，网关不实时验证群成员关系；approvers 不是该群授权作者时不能点击群内审批卡。`approval: "none"` 不使用 approvers 或自批规则，只要求本轮 senders 全为项目 maintainers；`approval: "open"` 也不使用 approvers 或自批规则，只要求 active senders 非空。`requests` 表随审批记录保存 `requester` 和请求上下文 JSON，应按部署的数据保留策略保护。
 
 内置 daemon 使用 `<work-dir>/service.env` 保存必需凭据和白名单运行变量，写入时尽量使用 0600；Windows 上实际保护取决于用户 profile 的 ACL。`~/.feishu-bot/daemon.json` 只保存绝对路径、平台和安装信息；任务／unit 参数只引用 env 文件路径，不写密钥。升级失败时保留的私有恢复副本同样含凭据，应按原安装数据的权限保管并在处理后删除。不要把 `service.env` 提交到仓库或附在问题报告中。`daemon install` 复制的二进制、配置和 env 文件位于同一账户可读范围，不是额外的安全边界。
 
