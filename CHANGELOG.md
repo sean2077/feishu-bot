@@ -2,6 +2,8 @@
 
 ## Unreleased — Go 原生网关
 
+## 0.6.0 — 2026-11-13
+
 - 固定操作子进程的基础环境增加 Windows 用户／系统目录变量 `LOCALAPPDATA`、`APPDATA`、`USERPROFILE`、`SystemDrive`、`ProgramData`、`ALLUSERSPROFILE`；`actions[].vars` 同名值覆盖继承值，其他服务环境变量仍不继承。
 - 回复卡状态行改用飞书内置图标：思考中／处理中显示 `loading_outlined`，已回复 `succeed_filled`，失败 `error_filled`，停止 `stop_outlined`，等待审批／回答 `alarm-clock_outlined`；不引入图片上传或客户端动画配置。
 - 新增 `actions[].approval`（默认 `"card"`）：`"none"` 的非只读固定操作在本轮请求上下文 active 且全部 senders 都是项目 maintainers 时直接执行，不弹审批卡；否则返回 `{"ok":false,"error":"需要管理员发起"}`，不回退。直接执行仍注入 `FEISHU_REQUEST_*`，不设置审批人环境变量；`action_runs.approval` 区分 `card`、`none` 和 `readonly`。污染轮次维持直接执行，`action_started` 审计记 `tainted=true`。`readOnly` 与 `approval: "none"` 同时配置时 doctor 给 warning；项目配置 `approval: "none"` 而 maintainers 为空时 doctor 失败，非法取值在配置加载时拒绝。
