@@ -102,9 +102,10 @@ type Delivery struct {
 	PreContext *PreContext `json:"preContext,omitempty"`
 }
 
-// RequestContext describes the human inputs active in a room when a request
+// RequestContext describes the inputs active in a room when a request
 // arrives. It comes from the gateway's current deliveries and anchor, never
 // from model-reported values. Senders and message IDs follow delivery order.
+// HasBotSender marks turns containing any bot sender, including other bots.
 type RequestContext struct {
 	ChatID       string   `json:"chatId"`
 	ChatType     string   `json:"chatType"`
@@ -113,6 +114,10 @@ type RequestContext struct {
 	SenderOpenID string   `json:"senderOpenId"`
 	SenderName   string   `json:"senderName"`
 	Senders      []string `json:"senders"`
+	// HasBotSender is true when any sender of this turn is a bot, including
+	// another bot admitted by allowOtherBots. Direct write approvals reject
+	// such turns; card approvals still require a human click.
+	HasBotSender bool     `json:"hasBotSender,omitempty"`
 	MessageIDs   []string `json:"messageIds"`
 }
 

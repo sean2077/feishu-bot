@@ -597,7 +597,11 @@ func validate(c *core.Config, base string) error {
 				}
 				approvers[approver] = true
 			}
-			if a.TimeoutMS < 100 || a.TimeoutMS > 600000 {
+			maxTimeout := int64(600000)
+			if !a.ReadOnly {
+				maxTimeout = 1800000
+			}
+			if a.TimeoutMS < 100 || a.TimeoutMS > maxTimeout {
 				return errors.New("invalid action timeoutMs")
 			}
 			if a.Approval != "card" && a.Approval != "none" && a.Approval != "open" {

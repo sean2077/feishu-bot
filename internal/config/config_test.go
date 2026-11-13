@@ -325,6 +325,30 @@ func TestLegacyActionWorkingDirectoryRemainsProcessRelative(t *testing.T) {
 	}
 }
 
+func TestActionTimeoutLimits(t *testing.T) {
+	v := fixture(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := v["projects"].([]any)[0].(map[string]any)
+	p["actions"] = []any{map[string]any{"id": "write", "description": "Write", "executable": exe, "timeoutMs": 1800000}}
+	data, _ := json.Marshal(v)
+	if _, err = Parse(data, t.TempDir()); err != nil {
+		t.Fatalf("non-readOnly 30 minute timeout rejected: %v", err)
+	}
+	p["actions"].([]any)[0].(map[string]any)["timeoutMs"] = 1800001
+	data, _ = json.Marshal(v)
+	if _, err = Parse(data, t.TempDir()); err == nil || !strings.Contains(err.Error(), "invalid action timeoutMs") {
+		t.Fatalf("non-readOnly timeout above 30 minutes = %v", err)
+	}
+	p["actions"] = []any{map[string]any{"id": "read", "description": "Read", "executable": exe, "readOnly": true, "timeoutMs": 600001}}
+	data, _ = json.Marshal(v)
+	if _, err = Parse(data, t.TempDir()); err == nil || !strings.Contains(err.Error(), "invalid action timeoutMs") {
+		t.Fatalf("readOnly timeout above 10 minutes = %v", err)
+	}
+}
+
 func TestActionApprovalValidatesModes(t *testing.T) {
 	v := fixture(t)
 	exe, err := os.Executable()

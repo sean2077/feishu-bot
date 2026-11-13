@@ -80,6 +80,7 @@ func actionArguments(spec core.ActionSpec, input core.Args, snapshots map[string
 
 const directApprovalError = "需要管理员发起"
 const openApprovalError = "需要活跃的用户请求"
+const botSenderApprovalError = "机器人消息不能触发写操作"
 
 // directApprovalRejection reports why an approval:none action may not run. The
 // action executes only when the request is active and every sender in this
@@ -183,6 +184,9 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 	return n, nil
 }
 func (b *boundedOutput) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.b.String() }
+
+const actionTerminateGrace = 5 * time.Second
+
 func runActionCommand(ctx context.Context, executable string, args []string, cwd string, env map[string]string, timeoutMS int64) (int, string, error) {
 	if e := ctx.Err(); e != nil {
 		return 0, "", e
@@ -249,7 +253,7 @@ func runActionCommand(ctx context.Context, executable string, args []string, cwd
 	case <-output.overflow:
 		reason = "output size limit"
 	}
-	if err := tree.Terminate(done); err != nil {
+	if err := tree.TerminateWithGrace(done, actionTerminateGrace); err != nil {
 		return 0, output.String(), fmt.Errorf("%s; process termination unconfirmed: %w", reason, err)
 	}
 	select {
@@ -297,6 +301,17 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 	direct := !spec.ReadOnly && (approvalMode == "none" || approvalMode == "open")
 	run := core.NewID()
 	if direct {
+		if requestContext != nil && requestContext.HasBotSender {
+			detail := core.Args{"run": run, "action": id, "reason": "bot_sender", "approval": approvalMode, "bot_sender": true}
+			if requestContext.SenderOpenID != "" {
+				detail["requester"] = requestContext.SenderOpenID
+			}
+			if requestContext.MessageID != "" {
+				detail["messageId"] = requestContext.MessageID
+			}
+			g.audit(r.Key, "action_direct_rejected", detail)
+			return core.Args{"ok": false, "error": botSenderApprovalError}, nil
+		}
 		reason := ""
 		if approvalMode == "none" {
 			reason = directApprovalRejection(requestContext, p.Maintainers)

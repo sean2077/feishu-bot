@@ -461,6 +461,68 @@ func TestActionApprovalOpenStaysDirectOnTaintedTurn(t *testing.T) {
 	}
 }
 
+func TestDirectApprovalRejectsBotSenders(t *testing.T) {
+	cases := []struct {
+		name    string
+		senders []string
+	}{
+		{name: "bot", senders: []string{"cli_other"}},
+		{name: "mixed", senders: []string{"member", "cli_other"}},
+	}
+	for _, mode := range []string{"none", "open"} {
+		for _, tc := range cases {
+			t.Run(mode+"-"+tc.name, func(t *testing.T) {
+				f := newFixture(t, func(c *core.Config) {
+					c.Projects[0].Actions = []core.ActionSpec{{ID: "ota", Description: "OTA", Executable: "fixture", Approval: mode}}
+				})
+				called := false
+				f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, _ map[string]string, _ int64) (int, string, error) {
+					called = true
+					return 0, "", nil
+				}
+				requestContext := &core.RequestContext{ChatID: "group", MessageID: "bot-message", SenderOpenID: tc.senders[0], Senders: tc.senders, HasBotSender: true}
+				result, err := f.g.executeAction(context.Background(), f.room(), "session", f.c.Projects[0], "ota", core.Args{}, core.Workspace{}, requestContext)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if boolArg(result, "ok") || stringArg(result, "error") != "机器人消息不能触发写操作" || called {
+					t.Fatalf("bot sender result = %#v executed=%t", result, called)
+				}
+				if f.tr.cardCount() != 0 {
+					t.Fatal("bot sender created an approval card")
+				}
+				detail := auditDetail(t, f, "action_direct_rejected")
+				if detail["bot_sender"] != true || stringArg(detail, "approval") != mode || stringArg(detail, "reason") != "bot_sender" {
+					t.Fatalf("bot sender audit = %#v", detail)
+				}
+				if stringArg(detail, "requester") != tc.senders[0] || stringArg(detail, "messageId") != "bot-message" {
+					t.Fatalf("bot sender audit identity = %#v", detail)
+				}
+			})
+		}
+	}
+}
+
+func TestReadOnlyActionIgnoresBotSenderGuard(t *testing.T) {
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].Actions = []core.ActionSpec{{ID: "check", Description: "Check", Executable: "fixture", ReadOnly: true}}
+	})
+	called := false
+	f.g.actionRunner = func(_ context.Context, _ string, _ []string, _ string, _ map[string]string, _ int64) (int, string, error) {
+		called = true
+		return 0, "checked", nil
+	}
+	requestContext := &core.RequestContext{ChatID: "group", MessageID: "bot-message", SenderOpenID: "cli_other", Senders: []string{"cli_other"}, HasBotSender: true}
+	result, err := f.g.executeAction(context.Background(), f.room(), "session", f.c.Projects[0], "check", core.Args{}, core.Workspace{}, requestContext)
+	if err != nil || !boolArg(result, "ok") || !called {
+		t.Fatalf("readOnly bot sender result = %#v called=%t err=%v", result, called, err)
+	}
+	var approval string
+	if err := f.s.DB.QueryRow("SELECT approval FROM action_runs WHERE action='check'").Scan(&approval); err != nil || approval != "readonly" {
+		t.Fatalf("readOnly bot sender run = %q %v", approval, err)
+	}
+}
+
 func TestOpenApprovalRejectionReasons(t *testing.T) {
 	if reason := openApprovalRejection(nil); reason != "inactive" {
 		t.Fatalf("inactive reason = %q", reason)

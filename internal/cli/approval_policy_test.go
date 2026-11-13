@@ -54,7 +54,7 @@ func TestActionApprovalChecks(t *testing.T) {
 	if check, ok := byName["project team-tools action read approval"]; !ok || !check.OK || !strings.Contains(check.Detail, "redundant") {
 		t.Fatalf("readOnly warning = %#v", check)
 	}
-	if check, ok := byName["project team-tools action ota approval"]; !ok || !check.OK || !strings.Contains(check.Detail, "Info:") || !strings.Contains(check.Detail, "action itself must enforce authorization") {
+	if check, ok := byName["project team-tools action ota approval"]; !ok || !check.OK || !strings.Contains(check.Detail, "Info:") || !strings.Contains(check.Detail, "bot senders are rejected") || !strings.Contains(check.Detail, "action itself must enforce authorization") {
 		t.Fatalf("open info = %#v", check)
 	}
 	if check, ok := byName["project team-tools action openread approval"]; !ok || !check.OK || !strings.Contains(check.Detail, "redundant") {
@@ -70,6 +70,18 @@ func TestActionApprovalChecks(t *testing.T) {
 		if name == "project team-tools action build approval" {
 			t.Fatalf("valid direct action produced a diagnostic: %#v", byName[name])
 		}
+	}
+}
+
+func TestActionTimeoutChecks(t *testing.T) {
+	c := config.Defaults()
+	c.Projects = []core.Project{{ID: "team-tools", Actions: []core.ActionSpec{
+		{ID: "long", TimeoutMS: 600001},
+		{ID: "short", TimeoutMS: 600000},
+	}}}
+	checks := actionTimeoutChecks(c)
+	if len(checks) != 1 || checks[0].Name != "project team-tools action long timeout" || !checks[0].OK || !strings.Contains(checks[0].Detail, "Info:") {
+		t.Fatalf("timeout info = %#v", checks)
 	}
 }
 

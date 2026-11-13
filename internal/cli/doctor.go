@@ -210,7 +210,7 @@ func actionApprovalChecks(c core.Config) []Diagnostic {
 				if a.ReadOnly {
 					checks = append(checks, Diagnostic{Name: name, OK: true, Detail: "Warning: approval:open is redundant for a readOnly action; readOnly actions never ask for approval."})
 				} else {
-					checks = append(checks, Diagnostic{Name: name, OK: true, Detail: "Info: approval:open allows any sender who can trigger the bot (including admitted other bots) to execute this action; the action itself must enforce authorization."})
+					checks = append(checks, Diagnostic{Name: name, OK: true, Detail: "Info: approval:open allows any human sender who can trigger the bot to execute this action; bot senders are rejected for direct approvals. The action itself must enforce authorization."})
 				}
 			default:
 				checks = append(checks, Diagnostic{Name: name, OK: false, Detail: "approval must be card, none or open."})
@@ -218,6 +218,18 @@ func actionApprovalChecks(c core.Config) []Diagnostic {
 		}
 		if direct && len(p.Maintainers) == 0 {
 			checks = append(checks, Diagnostic{Name: "project " + p.ID + " approval:none maintainers", OK: false, Detail: "approval:none requires at least one project maintainer; otherwise every call is rejected."})
+		}
+	}
+	return checks
+}
+
+func actionTimeoutChecks(c core.Config) []Diagnostic {
+	var checks []Diagnostic
+	for _, p := range c.Projects {
+		for _, a := range p.Actions {
+			if a.TimeoutMS > 600000 {
+				checks = append(checks, Diagnostic{Name: "project " + p.ID + " action " + a.ID + " timeout", OK: true, Detail: "Info: action timeout exceeds 10 minutes; the gateway interrupts before force-killing, but the action should release resources within its own timeout."})
+			}
 		}
 	}
 	return checks
@@ -346,6 +358,7 @@ func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) Doct
 	checks = append(checks, projectSettingsChecks(c)...)
 	checks = append(checks, approvalPolicyChecks(c)...)
 	checks = append(checks, actionApprovalChecks(c)...)
+	checks = append(checks, actionTimeoutChecks(c)...)
 	checks = append(checks, permissionModeChecks(c)...)
 	checks = append(checks, projectModelProfileChecks(c)...)
 	checks = append(checks, projectPromptChecks(c)...)

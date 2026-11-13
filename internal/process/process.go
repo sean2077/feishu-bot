@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 // ErrUnconfirmed requires the caller to retain its deployment/worker lock.
@@ -44,6 +45,17 @@ func Attach(cmd *exec.Cmd) (*Tree, error) {
 // group/job member remains. A failure is unconfirmed cleanup, not a free slot.
 // exited closes when the direct child's Wait finishes; it only shortens grace.
 func (t *Tree) Terminate(exited <-chan struct{}) error {
+	return t.terminate(exited, 0)
+}
+
+// TerminateWithGrace gives the direct child a grace period after the platform's
+// graceful interrupt before forcing the whole tree down. Actions use this so a
+// wrapper can release leases in a finally block.
+func (t *Tree) TerminateWithGrace(exited <-chan struct{}, grace time.Duration) error {
+	return t.terminate(exited, grace)
+}
+
+func (t *Tree) terminate(exited <-chan struct{}, grace time.Duration) error {
 	if t == nil {
 		return nil
 	}
@@ -56,7 +68,7 @@ func (t *Tree) Terminate(exited <-chan struct{}) error {
 		return fmt.Errorf("%w: process tree already closed", ErrUnconfirmed)
 	}
 	t.terminated = true
-	t.result = t.platform.terminate(exited)
+	t.result = t.platform.terminate(exited, grace)
 	if t.result != nil {
 		t.result = errors.Join(ErrUnconfirmed, t.result)
 	}
