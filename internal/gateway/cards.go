@@ -69,6 +69,7 @@ func actionRow(buttons ...core.Args) core.Args {
 type replyDetails struct {
 	Model, ProjectPath string
 	Context, Usage     core.Args
+	ThinkingIconKey    string
 }
 
 func tokenLabel(n int64) string {
@@ -180,29 +181,32 @@ func escapeCardTitle(title string) string {
 	return b.String()
 }
 
-// replyStatusIcon maps gateway-owned status text to a built-in Feishu icon.
-// The icons are part of the standard icon library, so no image upload or
-// client-side animation is involved.
-func replyStatusIcon(text, color string, final, success bool) string {
+// replyStatusIcon maps gateway-owned status text to a Feishu icon. The
+// animated thinking GIF is uploaded once and referenced as a custom icon;
+// without it, the static standard icon remains the fallback.
+func replyStatusIcon(text, color string, final, success bool, d replyDetails) core.Args {
 	switch {
 	case text == "思考中" || text == "处理中":
-		return "loading_outlined"
+		if d.ThinkingIconKey != "" {
+			return core.Args{"tag": "custom_icon", "img_key": d.ThinkingIconKey}
+		}
+		return core.Args{"tag": "standard_icon", "token": "loading_outlined", "color": color}
 	case final && success && color == "green":
-		return "succeed_filled"
+		return core.Args{"tag": "standard_icon", "token": "succeed_filled", "color": color}
 	case final && color == "red":
-		return "error_filled"
+		return core.Args{"tag": "standard_icon", "token": "error_filled", "color": color}
 	case final && color == "grey":
-		return "stop_outlined"
+		return core.Args{"tag": "standard_icon", "token": "stop_outlined", "color": color}
 	case !final && color == "orange":
-		return "alarm-clock_outlined"
+		return core.Args{"tag": "standard_icon", "token": "alarm-clock_outlined", "color": color}
 	}
-	return ""
+	return nil
 }
 
-func replyStatusRow(cardTitle, text, color, iconToken string) core.Args {
+func replyStatusRow(cardTitle, text, color string, icon core.Args) core.Args {
 	status := core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "text_size": "notation", "text_color": color, "content": replyStatusContent(text)}}
-	if iconToken != "" {
-		status["icon"] = core.Args{"tag": "standard_icon", "token": iconToken, "color": color}
+	if len(icon) > 0 {
+		status["icon"] = icon
 	}
 	return core.Args{
 		"tag": "column_set", "element_id": "reply_status", "flex_mode": "none", "horizontal_spacing": "medium",
@@ -224,7 +228,7 @@ func setReplyCardStatus(card core.Args, cardTitle, text, color string) core.Args
 		body = core.Args{}
 	}
 	elements, _ := body["elements"].([]any)
-	row := replyStatusRow(cardTitle, cut(text, 40), color, "")
+	row := replyStatusRow(cardTitle, cut(text, 40), color, nil)
 	replaced := false
 	for i, value := range elements {
 		element := argsOf(value)
@@ -260,7 +264,7 @@ func legacyReplyStatusRow(row core.Args) bool {
 	if !strings.HasPrefix(label, "● ") {
 		return false
 	}
-	expected := replyStatusRow(defaultCardTitle, strings.TrimPrefix(label, "● "), stringArg(text, "text_color"), "")
+	expected := replyStatusRow(defaultCardTitle, strings.TrimPrefix(label, "● "), stringArg(text, "text_color"), nil)
 	delete(expected, "element_id")
 	return jsonText(row) == jsonText(expected)
 }
@@ -272,7 +276,7 @@ func buildReplyCard(cardTitle, title, answer string, thinking []string, total in
 	d.Model = cut(d.Model, 256)
 	d.ProjectPath = cut(d.ProjectPath, 512)
 	status, statusColor := replyStatus(title, total, final, success)
-	elements := []any{replyStatusRow(cardTitle, status, statusColor, replyStatusIcon(status, statusColor, final, success))}
+	elements := []any{replyStatusRow(cardTitle, status, statusColor, replyStatusIcon(status, statusColor, final, success, d))}
 	var reasoning core.Args
 	if total > 0 {
 		steps := []any{}

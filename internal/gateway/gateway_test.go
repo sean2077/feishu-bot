@@ -52,6 +52,17 @@ type fakeTransport struct {
 	fetchHook         func(context.Context, string, core.Room) (*core.Message, error)
 	fileHook          func(context.Context, string) (string, error)
 	receiptHook       func(context.Context, string, string, string) error
+	thinkingKey       string
+}
+
+func (t *fakeTransport) UploadImage(_ context.Context, data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", errors.New("empty image")
+	}
+	if t.thinkingKey == "" {
+		return "", errors.New("no thinking image")
+	}
+	return t.thinkingKey, nil
 }
 
 func (t *fakeTransport) Send(_ context.Context, _ core.Room, text, _, _ string) (string, error) {

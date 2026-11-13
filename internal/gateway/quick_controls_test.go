@@ -287,8 +287,8 @@ func TestQuickControlsUseCompactLayoutAndTwoLineSupplement(t *testing.T) {
 	r := f.room()
 	s, _ := f.s.Session(r.Key)
 	controls := f.g.quickControls(r, s.ID, "turn-one", "")
-	if len(controls) != 4 {
-		t.Fatalf("quick controls have %d elements, want divider/row/overflow/form", len(controls))
+	if len(controls) != 3 {
+		t.Fatalf("quick controls have %d elements, want divider/row/form", len(controls))
 	}
 	var checkIDs func(any)
 	checkIDs = func(v any) {
@@ -318,29 +318,33 @@ func TestQuickControlsUseCompactLayoutAndTwoLineSupplement(t *testing.T) {
 		t.Fatalf("button row flex_mode = %q, want none", stringArg(row, "flex_mode"))
 	}
 	columns, _ := row["columns"].([]any)
-	if len(columns) != 1 {
-		t.Fatalf("button row has %d columns, want status only", len(columns))
+	if len(columns) != 2 {
+		t.Fatalf("button row has %d columns, want status and overflow", len(columns))
 	}
-	labels := []string{}
-	for _, raw := range columns {
-		column := argsOf(raw)
-		if stringArg(column, "width") != "auto" {
-			t.Fatalf("button column width = %q, want auto", stringArg(column, "width"))
-		}
-		children, _ := column["elements"].([]any)
-		if len(children) != 1 {
-			t.Fatalf("button column has %d elements", len(children))
-		}
-		b := argsOf(children[0])
-		if _, exists := b["width"]; exists {
-			t.Fatalf("button should keep its natural width: %#v", b)
-		}
-		labels = append(labels, stringArg(argsOf(b["text"]), "content"))
+	statusColumn := argsOf(columns[0])
+	if stringArg(statusColumn, "width") != "auto" {
+		t.Fatalf("status column width = %q, want auto", stringArg(statusColumn, "width"))
 	}
-	if strings.Join(labels, ",") != "查看状态" {
-		t.Fatalf("button labels = %v", labels)
+	statusChildren, _ := statusColumn["elements"].([]any)
+	if len(statusChildren) != 1 {
+		t.Fatalf("status column has %d elements", len(statusChildren))
 	}
-	overflow := argsOf(controls[2])
+	statusButton := argsOf(statusChildren[0])
+	if _, exists := statusButton["width"]; exists {
+		t.Fatalf("button should keep its natural width: %#v", statusButton)
+	}
+	if label := stringArg(argsOf(statusButton["text"]), "content"); label != "查看状态" {
+		t.Fatalf("status button label = %q", label)
+	}
+	overflowColumn := argsOf(columns[1])
+	if stringArg(overflowColumn, "width") != "auto" {
+		t.Fatalf("overflow column width = %q, want auto", stringArg(overflowColumn, "width"))
+	}
+	overflowChildren, _ := overflowColumn["elements"].([]any)
+	if len(overflowChildren) != 1 {
+		t.Fatalf("overflow column has %d elements", len(overflowChildren))
+	}
+	overflow := argsOf(overflowChildren[0])
 	if stringArg(overflow, "tag") != "overflow" || stringArg(overflow, "element_id") != "gateway_quick_more" {
 		t.Fatalf("overflow control = %#v", overflow)
 	}
@@ -353,7 +357,7 @@ func TestQuickControlsUseCompactLayoutAndTwoLineSupplement(t *testing.T) {
 		t.Fatalf("overflow options = %v", optionLabels)
 	}
 
-	form := argsOf(controls[3])
+	form := argsOf(controls[2])
 	formElements, _ := form["elements"].([]any)
 	if len(formElements) != 1 {
 		t.Fatalf("form has %d elements, want one column_set", len(formElements))
@@ -566,19 +570,16 @@ func TestFinalReplyCardKeepsStatusControlOnly(t *testing.T) {
 		t.Fatalf("final card still renders a copy control: %s", text)
 	}
 	elements, _ := argsOf(card["body"])["elements"].([]any)
-	var row, overflow core.Args
+	var row core.Args
 	for _, raw := range elements {
 		element := argsOf(raw)
-		switch stringArg(element, "element_id") {
-		case "gateway_quick_row":
+		if stringArg(element, "element_id") == "gateway_quick_row" {
 			row = element
-		case "gateway_quick_more":
-			overflow = element
 		}
 	}
 	columns, _ := row["columns"].([]any)
-	if len(columns) != 1 {
-		t.Fatalf("final button row has %d columns, want status only", len(columns))
+	if len(columns) != 2 {
+		t.Fatalf("final button row has %d columns, want status and overflow", len(columns))
 	}
 	children, _ := argsOf(columns[0])["elements"].([]any)
 	if len(children) != 1 {
@@ -587,6 +588,11 @@ func TestFinalReplyCardKeepsStatusControlOnly(t *testing.T) {
 	if label := stringArg(argsOf(argsOf(children[0])["text"]), "content"); label != "查看状态" {
 		t.Fatalf("final button label = %q, want 查看状态", label)
 	}
+	overflowChildren, _ := argsOf(columns[1])["elements"].([]any)
+	if len(overflowChildren) != 1 {
+		t.Fatalf("final overflow column has %d elements", len(overflowChildren))
+	}
+	overflow := argsOf(overflowChildren[0])
 	options, _ := overflow["options"].([]any)
 	if len(options) != 1 || stringArg(argsOf(options[0]), "value") != "answer" {
 		t.Fatalf("final overflow options = %#v, want answer only", options)
@@ -623,7 +629,10 @@ func TestOverflowOptionSelectsSignedAction(t *testing.T) {
 	if err := f.g.bindQuickControls("overflow-card", card); err != nil {
 		t.Fatal(err)
 	}
-	overflow := argsOf(controls[2])
+	row := argsOf(controls[1])
+	columns, _ := row["columns"].([]any)
+	overflowChildren, _ := argsOf(columns[1])["elements"].([]any)
+	overflow := argsOf(overflowChildren[0])
 	behaviors, _ := overflow["behaviors"].([]any)
 	value := argsOf(argsOf(behaviors[0])["value"])
 	action := core.CardAction{ChatID: r.ChatID, UserID: "member", MessageID: "overflow-card", Option: "answer", Value: value}
