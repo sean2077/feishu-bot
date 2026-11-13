@@ -253,7 +253,7 @@ func TestActionApprovalNoneRejectsNonMaintainerAndInactiveRequests(t *testing.T)
 				t.Fatalf("rejected action wrote %d approval requests: %v", requests, err)
 			}
 			detail := auditDetail(t, f, "action_direct_rejected")
-			if stringArg(detail, "reason") != tc.reason || stringArg(detail, "action") != "build" {
+			if stringArg(detail, "reason") != tc.reason || stringArg(detail, "action") != "build" || stringArg(detail, "approval") != "none" {
 				t.Fatalf("rejection audit = %#v", detail)
 			}
 			if tc.context != nil && tc.context.SenderOpenID != "" && stringArg(detail, "requester") != tc.context.SenderOpenID {
@@ -429,7 +429,7 @@ func TestActionApprovalOpenRejectsInactiveAndEmptySenders(t *testing.T) {
 				t.Fatalf("rejected action wrote %d requests: %v", requests, err)
 			}
 			detail := auditDetail(t, f, "action_direct_rejected")
-			if stringArg(detail, "reason") != "inactive" || stringArg(detail, "action") != "ota" {
+			if stringArg(detail, "reason") != "inactive" || stringArg(detail, "action") != "ota" || stringArg(detail, "approval") != "open" {
 				t.Fatalf("open rejection audit = %#v", detail)
 			}
 		})

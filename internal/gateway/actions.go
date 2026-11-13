@@ -304,7 +304,7 @@ func (g *Gateway) executeActionPolicy(ctx context.Context, r core.Room, session 
 			reason = openApprovalRejection(requestContext)
 		}
 		if reason != "" {
-			detail := core.Args{"run": run, "action": id, "reason": reason}
+			detail := core.Args{"run": run, "action": id, "reason": reason, "approval": approvalMode}
 			if requestContext != nil {
 				if requestContext.SenderOpenID != "" {
 					detail["requester"] = requestContext.SenderOpenID
