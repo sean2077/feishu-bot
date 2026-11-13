@@ -188,6 +188,10 @@ func (f *artifactPlatform) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		artifactJSON(w, core.Args{"file_key": "file_artifact_complete"})
 		return
 	}
+	if path == "/open-apis/im/v1/images" && r.Method == http.MethodPost {
+		artifactJSON(w, core.Args{"image_key": "img_artifact_thinking"})
+		return
+	}
 	if path == "/open-apis/im/v1/messages" && r.Method == http.MethodGet {
 		artifactJSON(w, core.Args{"items": []core.Args{{"message_id": "om_history", "chat_id": "oc_artifact", "msg_type": "text", "create_time": strconv.FormatInt(time.Now().Add(-time.Minute).UnixMilli(), 10), "sender": core.Args{"id": "ou_member", "id_type": "open_id", "sender_type": "user"}, "body": core.Args{"content": `{"text":"ARTIFACT_HISTORY_MARKER"}`}}}, "has_more": false})
 		return

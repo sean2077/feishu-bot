@@ -1,6 +1,7 @@
 package feishu
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -311,6 +312,53 @@ func (c *Client) Download(ctx context.Context, messageID string, r core.Resource
 		return err
 	}
 	return c.downloadResource(ctx, c.base+"/open-apis/im/v1/messages/"+message+"/resources/"+key+"?type="+url.QueryEscape(r.Kind), token, destination, maxBytes)
+}
+
+const imageUploadLimit = 10 << 20
+
+// UploadImage uploads a reusable message image. The gateway uses it once for
+// the animated thinking icon and caches the returned image key.
+func (c *Client) UploadImage(ctx context.Context, data []byte) (string, error) {
+	if len(data) == 0 || len(data) > imageUploadLimit {
+		return "", errors.New("feishu: invalid image size")
+	}
+	token, err := c.accessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err = writer.WriteField("image_type", "message"); err != nil {
+		return "", errors.New("feishu: image upload failed")
+	}
+	part, err := writer.CreateFormFile("image", "thinking.gif")
+	if err != nil {
+		return "", errors.New("feishu: image upload failed")
+	}
+	if _, err = part.Write(data); err != nil {
+		return "", errors.New("feishu: image upload failed")
+	}
+	if err = writer.Close(); err != nil {
+		return "", errors.New("feishu: image upload failed")
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", c.base+"/open-apis/im/v1/images", &body)
+	if err != nil {
+		return "", errors.New("feishu: image upload failed")
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+token)
+	var result struct {
+		ImageKey string `json:"image_key"`
+	}
+	if err = c.doAPI(req, &result, true); err != nil {
+		return "", err
+	}
+	if result.ImageKey == "" {
+		return "", errors.New("feishu: image upload returned no key")
+	}
+	return result.ImageKey, nil
 }
 
 func (c *Client) File(ctx context.Context, room core.Room, path, name string) (messageID string, resultErr error) {

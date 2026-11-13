@@ -56,7 +56,7 @@ type render struct {
 }
 
 func newRender(g *Gateway, s *slot, anchor *core.Delivery) *render {
-	r := &render{g: g, room: s.room, session: s.session.ID, ctx: s.ctx, blocks: map[string]*renderBlock{}, thinking: map[string]string{}, status: "处理中", deliveryID: "preview:" + core.NewID(), started: time.Now().UnixMilli(), details: replyDetails{Model: g.config.Model.Model, ProjectPath: g.workspaceLabel(s.room, s.room.ProjectID, s.workspace.Work)}}
+	r := &render{g: g, room: s.room, session: s.session.ID, ctx: s.ctx, blocks: map[string]*renderBlock{}, thinking: map[string]string{}, status: "处理中", deliveryID: "preview:" + core.NewID(), started: time.Now().UnixMilli(), details: replyDetails{Model: g.config.Model.Model, ProjectPath: g.workspaceLabel(s.room, s.room.ProjectID, s.workspace.Work), ThinkingIconKey: g.thinkingIcon()}}
 	if project, ok := g.config.Project(s.room.ProjectID); ok {
 		if selected, _, err := config.ResolveProjectModel(g.config, project, s.session.Profile); err == nil {
 			r.details.Model = selected.Model.Model

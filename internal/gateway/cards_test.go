@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -194,6 +195,39 @@ func TestReplyCardUsesCompactStatusRowAndCollapsedThinking(t *testing.T) {
 	}
 }
 
+func TestReplyCardThinkingUsesUploadedGIFIcon(t *testing.T) {
+	card := buildReplyCard(defaultCardTitle, "处理中", "", nil, 0, false, replyDetails{ThinkingIconKey: "img_test"}, time.Second, true)
+	elements, _ := argsOf(card["body"])["elements"].([]any)
+	columns, _ := argsOf(elements[0])["columns"].([]any)
+	right, _ := argsOf(columns[1])["elements"].([]any)
+	icon := argsOf(argsOf(right[0])["icon"])
+	if stringArg(icon, "tag") != "custom_icon" || stringArg(icon, "img_key") != "img_test" {
+		t.Fatalf("thinking GIF icon = %#v", icon)
+	}
+	if strings.Contains(jsonText(card), "loading_outlined") {
+		t.Fatal("uploaded GIF icon still rendered the static fallback")
+	}
+}
+
+func TestThinkingIconUploadCachesKey(t *testing.T) {
+	tr := &fakeTransport{thinkingKey: "img_test"}
+	g := &Gateway{transport: tr, ctx: context.Background()}
+	g.ensureThinkingIcon(context.Background())
+	if got := g.thinkingIcon(); got != "img_test" {
+		t.Fatalf("thinking icon key = %q", got)
+	}
+	tr.thinkingKey = "img_other"
+	g.ensureThinkingIcon(context.Background())
+	if got := g.thinkingIcon(); got != "img_test" {
+		t.Fatalf("thinking icon key changed after load: %q", got)
+	}
+	fallback := &Gateway{transport: &fakeTransport{}, ctx: context.Background()}
+	fallback.ensureThinkingIcon(context.Background())
+	if got := fallback.thinkingIcon(); got != "" {
+		t.Fatalf("failed upload should fall back to static icon: %q", got)
+	}
+}
+
 func TestReplyCardStatusColors(t *testing.T) {
 	cases := []struct {
 		name, title, wantText, wantColor, wantIcon string
@@ -269,7 +303,7 @@ func TestConfigurableCardTitleAndLegacyRow(t *testing.T) {
 	if text := jsonText(escaped); !strings.Contains(text, `A\\*B\\_\\[C\\]`) {
 		t.Fatalf("markdown was not escaped: %s", text)
 	}
-	legacy := replyStatusRow(defaultCardTitle, replyDoneText, "green", "")
+	legacy := replyStatusRow(defaultCardTitle, replyDoneText, "green", nil)
 	delete(legacy, "element_id")
 	if !legacyReplyStatusRow(legacy) {
 		t.Fatal("legacy status row was not pinned to the default title")

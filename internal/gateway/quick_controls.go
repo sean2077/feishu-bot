@@ -120,14 +120,6 @@ func (g *Gateway) quickControlSet(r core.Room, session, turn, output, salt, requ
 		return b
 	}
 	visible := []any{makeButton("status", "查看状态", "default")}
-	columns := []any{}
-	for _, b := range visible {
-		columns = append(columns, core.Args{"tag": "column", "width": "auto", "elements": []any{b}})
-	}
-	result := []any{
-		core.Args{"tag": "hr", "element_id": "gateway_quick_div"},
-		core.Args{"tag": "column_set", "element_id": "gateway_quick_row", "flex_mode": "none", "horizontal_spacing": "medium", "columns": columns},
-	}
 	overflowActions := []string{"answer"}
 	if turn != "" {
 		overflowActions = append(overflowActions, "stop")
@@ -150,12 +142,23 @@ func (g *Gateway) quickControlSet(r core.Room, session, turn, output, salt, requ
 			"value": action,
 		})
 	}
-	result = append(result, core.Args{
+	overflow := core.Args{
 		"tag":        "overflow",
 		"element_id": "gateway_quick_more",
 		"options":    options,
 		"behaviors":  []any{core.Args{"type": "callback", "value": core.Args{"quick_controls": tokens}}},
-	})
+	}
+	columns := []any{}
+	for _, b := range visible {
+		columns = append(columns, core.Args{"tag": "column", "width": "auto", "elements": []any{b}})
+	}
+	// Keep the more menu on the same row as the visible controls. A separate
+	// overflow element renders on its own line and wastes vertical space.
+	columns = append(columns, core.Args{"tag": "column", "width": "auto", "elements": []any{overflow}})
+	result := []any{
+		core.Args{"tag": "hr", "element_id": "gateway_quick_div"},
+		core.Args{"tag": "column_set", "element_id": "gateway_quick_row", "flex_mode": "none", "horizontal_spacing": "medium", "columns": columns},
+	}
 	if turn != "" {
 		submit := makeButton("supplement", "发送", "primary_filled")
 		submit["name"] = "quick_supplement_submit"

@@ -191,6 +191,9 @@ type Gateway struct {
 	otherBotRounds                                               map[string]otherBotRound
 	retryConfirmMu                                               sync.Mutex
 	retryConfirm                                                 map[string]int64
+	thinkingIconMu                                               sync.Mutex
+	thinkingIconKey                                              string
+	thinkingIconLoaded, thinkingIconLoading                      bool
 	secrets                                                      []string
 }
 
@@ -217,6 +220,7 @@ func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerF
 			}
 		}
 	})
+	g.task(func() { g.ensureThinkingIcon(ctx) })
 	return g
 }
 func (g *Gateway) task(fn func()) bool {

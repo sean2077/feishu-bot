@@ -58,6 +58,7 @@ type Client struct {
 }
 
 var _ core.Transport = (*Client)(nil)
+var _ core.ImageUploader = (*Client)(nil)
 
 // New does not connect to Feishu. Start owns the long connection and blocks until
 // shutdown; REST calls are available independently. DB is the existing store's

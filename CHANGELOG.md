@@ -2,6 +2,8 @@
 
 ## Unreleased — Go 原生网关
 
+- 回复卡状态行在「思考中」「处理中」时优先使用启动时上传一次的点阵 GIF `custom_icon`，客户端循环播放，运行时零更新；上传不可用或失败时回退到静态 `loading_outlined`。终态图标不变。
+- 「查看状态」和「更多」overflow 收进同一行，减少不必要的换行；流式和最终卡片使用同一布局。
 - `actions[].timeoutMs` 上限调整：`readOnly` 保持 10 分钟，非只读放宽到 30 分钟；`doctor` 对超过 10 分钟的 action 给 info。超时、取消或输出超限时先发中断信号并最多等待 5 秒（Unix `SIGTERM`，Windows 尽力 `Ctrl+Break`），再强制结束进程树，给 wrapper 的 finally 释放租约机会。原生 Bash/Monitor 的 `feishu-bot action` 客户端等待上限同步提高到 160 分钟，避免客户端提前退出后网关仍执行外部写操作；`project_action` MCP 调用仍需把 `MCP_TOOL_TIMEOUT` 设到 action timeout 加审批窗口之上。
 - 网关对 `actions[].approval: "none"`／`"open"` 增加机器人 sender 拒绝：本轮活动 senders 中任一 `SenderIsBot`（包括 `allowOtherBots` 群里的其他机器人）时返回 `{"ok":false,"error":"机器人消息不能触发写操作"}`，`action_direct_rejected` 审计记 `bot_sender=true`；`card` 不受影响，仍由真人点击审批。`RequestContext` 增加 `hasBotSender`；机器人来源的中断输入不提供续接，点击「继续」提示由真人重新发起。
 - 新增 `actions[].approval: "open"`：非只读固定操作在请求上下文 active 且 `senders` 非空时直接执行，不检查 maintainer，权限由动作自身（例如 wrapper 的 roles）判定；调用时没有活动请求（inactive）才返回 `{"ok":false,"error":"需要活跃的用户请求"}`，延迟调用会归属调用时的活动轮次。执行时注入 `FEISHU_REQUEST_*`，不设置审批人环境变量，`action_runs.approval` 记为 `open`；污染轮次直接执行并记 `tainted=true`。`doctor` 对 `open` 给出 info，`readOnly` 与 `open` 同时配置时给出冗余 warning；`card` 和 `none` 行为不变。

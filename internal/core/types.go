@@ -345,6 +345,13 @@ type Transport interface {
 	Receipt(context.Context, string, string, string) error
 	File(context.Context, Room, string, string) (string, error)
 }
+
+// ImageUploader is implemented by transports that can upload a message image
+// and return its reusable image key. The animated thinking icon uses it once
+// per process; failure leaves the static standard icon in place.
+type ImageUploader interface {
+	UploadImage(context.Context, []byte) (string, error)
+}
 type CardAction struct {
 	UserID    string
 	ChatID    string
