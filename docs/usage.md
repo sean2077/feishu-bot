@@ -16,6 +16,32 @@
 
 这是需要合入主配置的片段。`default` 会对未预授权操作询问，不等于禁止所有写入的只读沙箱。获准私聊用户直接发消息，不需要 @。
 
+## 从本地 Claude Code 转到飞书话题
+
+适合在终端里已经聊了很久、想离开电脑后继续同一上下文的情况。先在私聊绑定上启用认领根目录，并要求项目继承本机 Claude 配置：
+
+```json
+{
+  "projects": [{ "id": "assistant", "maintainers": ["ou_example_owner"], "nativeConfig": "inherit", "actions": [] }],
+  "dms": [{
+    "userId": "ou_example_owner",
+    "projectId": "assistant",
+    "adoptRoots": ["/srv/example-projects"]
+  }]
+}
+```
+
+把 [examples/skills/feishu](../examples/skills/feishu/SKILL.md) 复制到 `~/.claude/skills/feishu/`。之后在终端里说“转到飞书继续”“开个飞书话题聊”“通知我飞书”或运行 `/feishu`，技能会总结目标、已完成和待决问题，调用 `feishu-bot attach`，并在私聊里创建一张根卡片和话题。摘要显示在话题首条回复里。
+
+- 终端还开着时，话题内消息会排队并提示“本地终端仍在使用该会话”；不会启动第二个进程。`/status` 显示等待原因，`/stop` 正常可用。
+- 退出终端后，网关在下一次定期检查（默认约 30 秒）发现占用释放，并在同一轮处理排队消息；之后在话题里直接发消息即可用原 native ID 和原工作目录继续。原上下文、工具和权限规则不变。想让话题从头开始，在话题内发送 `/new`。
+- 对已认领的话题再次认领前，如果话题里还有运行中的任务、待处理输入、未完成输出或审批，会拒绝并要求先 `/stop`。在本机执行 `claude --resume` 前也要先在话题里 `/stop`，否则可能两个写入方同时续接同一会话；网关无法阻止本地直接恢复。
+- 结果 state 为 `open` 才表示认领完成；`pending`／`uncertain` 只提示状态并保留根消息 ID，不自动重发。遇到时先检查私聊是否已有话题或根消息，不要反复发起认领。
+- 本地 transcript 最近使用的 model 与网关配置不同时会警告；跨模型续接可能失败。
+- 想回到本地终端，仍需先停止服务并使用 `session run`；认领话题不会让终端和飞书同时驱动同一个进程。
+
+完整配置、命令、Windows Git Bash 的 `MSYS_NO_PATHCONV=1` 说明和限制见[认领本地会话到飞书私聊话题](deployment.md#认领本地会话到飞书私聊话题)。
+
 ## 资料整理与文档协作
 
 可以发送附件，或将获准使用的文档目录设为 `seedDir`。首次建立工作区时复制资料并创建本地 Git baseline 记录修改，后续不自动覆盖；源目录更新也不会同步到已有会话。资料不必是代码，但这不是知识库检索服务；远端资料通过获准的工具或固定操作访问。

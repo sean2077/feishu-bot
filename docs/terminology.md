@@ -328,3 +328,15 @@ _英文_: installation recovery copy
 
 服务停止后，持同一个服务锁在本地原生终端恢复已保存的会话身份；进程树退出确认后才释放锁。没有两个写入者同时接管，不额外建立网关 agent loop。
 _英文_: local terminal handoff
+
+**认领话题**
+
+用户在本地 Claude Code 终端显式发起、由 `dms[].adoptRoots` 允许并绑定到本人私聊的飞书话题。一张 `adopted_topics` 记录保存房间键、原生 session、`thread_id`、根消息、登记工作目录和状态。只有 open 状态且 `thread_id` 与根消息同时精确匹配的入站进入该话题；pending／uncertain 只报告状态，不启动原生进程、不重放外部写入。工作目录取自本地 transcript 并每次按 adoptRoots 重新校验。
+_英文_: adopted topic
+_避免_: 把认领话题称为普通话题会话或群话题；它只存在于私聊
+
+**终端占用**
+
+认领话题登记的本机 Claude Code 进程身份（PID 与可得时的启动时间）。进程仍存活时，话题消息只排队并提示等待，网关不启动第二个原生进程；进程退出或启动时间确认不同后释放。`/new` 通过切换到新会话解除当前占用，不结束本机进程。
+_英文_: terminal holder
+_避免_: 把终端占用称为锁或租约；它不是文件锁，也不阻止其他管理命令
