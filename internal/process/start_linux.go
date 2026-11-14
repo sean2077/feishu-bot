@@ -4,14 +4,16 @@ package process
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"strconv"
 	"strings"
 )
 
-// StartTime returns the kernel start time of pid combined with the boot time,
-// so a reused PID after a reboot cannot compare equal. The value is an
-// identity token, not a wall-clock timestamp.
+// StartTime returns a stable identity for pid. It combines the kernel
+// starttime ticks with the boot ID, never the wall-clock boot time: NTP, VM or
+// WSL clock corrections can change btime and must not make a live holder look
+// like PID reuse. The value is an identity token, not a timestamp.
 func StartTime(pid int) (int64, bool) {
 	if pid <= 0 {
 		return 0, false
@@ -35,28 +37,21 @@ func StartTime(pid int) (int64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	boot := bootTimeSeconds()
-	if boot <= 0 {
-		return ticks, true
+	bootID := ""
+	if data, err := os.ReadFile("/proc/sys/kernel/random/boot_id"); err == nil {
+		bootID = strings.TrimSpace(string(data))
 	}
-	// Linux reports starttime in clock ticks (normally 100 Hz). The scaling
-	// only needs to be stable for equality checks.
-	return boot*1000 + ticks*10, true
+	return startIdentity(bootID, ticks), true
 }
 
-func bootTimeSeconds() int64 {
-	data, err := os.ReadFile("/proc/stat")
-	if err != nil {
-		return 0
+// startIdentity combines a boot identity with raw starttime ticks. It is a
+// deterministic identity token; wall-clock changes are deliberately excluded.
+// Without a boot ID the raw ticks are still stable within the current boot.
+func startIdentity(bootID string, ticks int64) int64 {
+	if bootID == "" {
+		return ticks
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if !strings.HasPrefix(line, "btime ") {
-			continue
-		}
-		value, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "btime ")), 10, 64)
-		if err == nil {
-			return value
-		}
-	}
-	return 0
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(bootID))
+	return int64(hash.Sum64()) ^ ticks
 }
