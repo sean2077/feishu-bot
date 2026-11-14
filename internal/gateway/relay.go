@@ -13,10 +13,12 @@ import (
 // so a gateway restart can restore relay while the same holder is alive.
 // Tokens never enter SQLite, logs or audit rows.
 type adoptEndpoint struct {
-	Socket     string
-	Token      string
-	ConfigPath string
-	Native     string
+	Socket        string
+	Token         string
+	ConfigPath    string
+	Native        string
+	HolderPID     int
+	HolderStarted int64
 	// Restored marks an endpoint loaded after a restart. Its first submission
 	// failure removes the persisted endpoint and falls back to the queue.
 	Restored bool
@@ -73,6 +75,24 @@ func (g *Gateway) removeAdoptEndpoint(room string) {
 	}
 }
 
+// removeAdoptEndpointIfCurrent removes only the endpoint that failed, not a
+// newer registration that replaced it while the submission was in flight. The
+// map lock also covers the file removal so a concurrent persist cannot lose its
+// file between the comparison and deletion.
+func (g *Gateway) removeAdoptEndpointIfCurrent(room string, expected adoptEndpoint) {
+	g.mu.Lock()
+	current, ok := g.adoptEndpoints[room]
+	if !ok || current != expected {
+		g.mu.Unlock()
+		return
+	}
+	delete(g.adoptEndpoints, room)
+	if current.Native != "" {
+		g.removeAdoptEndpointFile(current.Native)
+	}
+	g.mu.Unlock()
+}
+
 // failForwarded marks unanswered forwarded messages uncertain when the local
 // terminal no longer owns the session. They are never replayed.
 func (g *Gateway) failForwarded(room core.Room, reason string) {
@@ -125,8 +145,9 @@ func (g *Gateway) relayTopicMessage(ctx context.Context, room core.Room, m core.
 	if err = g.adoptSender(ctx, endpoint.Socket, endpoint.Token, text); err != nil {
 		if endpoint.Restored {
 			// A restored endpoint that fails once is stale; do not keep trusting
-			// its persisted socket/token after a restart.
-			g.removeAdoptEndpoint(room.Key)
+			// its persisted socket/token after a restart. Only remove this exact
+			// registration: a concurrent notify may have refreshed it already.
+			g.removeAdoptEndpointIfCurrent(room.Key, endpoint)
 		}
 		_, _ = g.store.MarkForwarded(room.Key, m.ID, "cancelled")
 		g.audit(room.Key, "topic_forward_failed", core.Args{"count": 1, "reason": "inbox_submission", "message": m.ID})

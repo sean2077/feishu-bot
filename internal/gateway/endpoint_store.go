@@ -30,9 +30,11 @@ func (g *Gateway) adoptEndpointPath(native string) (string, bool) {
 }
 
 type storedAdoptEndpoint struct {
-	Socket     string `json:"socket"`
-	Token      string `json:"token"`
-	ConfigPath string `json:"configPath,omitempty"`
+	Socket        string `json:"socket"`
+	Token         string `json:"token"`
+	ConfigPath    string `json:"configPath,omitempty"`
+	HolderPID     int    `json:"holderPid"`
+	HolderStarted int64  `json:"holderStarted"`
 }
 
 func (g *Gateway) logEndpointError(event, native string, err error) {
@@ -50,7 +52,17 @@ func (g *Gateway) persistAdoptEndpoint(endpoint adoptEndpoint) {
 	if !ok || strings.TrimSpace(endpoint.Socket) == "" || strings.TrimSpace(endpoint.Token) == "" {
 		return
 	}
-	data, err := json.Marshal(storedAdoptEndpoint{Socket: endpoint.Socket, Token: endpoint.Token, ConfigPath: endpoint.ConfigPath})
+	record, found, err := g.store.AdoptedTopicByNative(endpoint.Native)
+	if err != nil || !found || record.State != store.AdoptedOpen || !g.holderAlive(record) {
+		return
+	}
+	data, err := json.Marshal(storedAdoptEndpoint{
+		Socket:        endpoint.Socket,
+		Token:         endpoint.Token,
+		ConfigPath:    endpoint.ConfigPath,
+		HolderPID:     record.HolderPID,
+		HolderStarted: record.HolderStarted,
+	})
 	if err != nil {
 		return
 	}
@@ -119,7 +131,15 @@ func (g *Gateway) readAdoptEndpoint(native string) (adoptEndpoint, bool) {
 	if stored.Socket == "" || strings.TrimSpace(stored.Token) == "" {
 		return adoptEndpoint{}, false
 	}
-	return adoptEndpoint{Socket: stored.Socket, Token: stored.Token, ConfigPath: stored.ConfigPath, Native: native, Restored: true}, true
+	return adoptEndpoint{
+		Socket:        stored.Socket,
+		Token:         stored.Token,
+		ConfigPath:    stored.ConfigPath,
+		Native:        native,
+		HolderPID:     stored.HolderPID,
+		HolderStarted: stored.HolderStarted,
+		Restored:      true,
+	}, true
 }
 
 func (g *Gateway) setRestoredAdoptEndpoint(room string, endpoint adoptEndpoint) {
@@ -184,6 +204,12 @@ func (g *Gateway) restoreAdoptEndpoints() {
 			continue
 		}
 		if !g.holderAlive(record) {
+			_ = os.Remove(path)
+			continue
+		}
+		if endpoint.HolderPID != record.HolderPID || endpoint.HolderStarted != record.HolderStarted {
+			// The file was written by a different holder; the current holder
+			// must re-register before its endpoint is trusted.
 			_ = os.Remove(path)
 			continue
 		}

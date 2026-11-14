@@ -187,7 +187,20 @@ func (g *Gateway) Notify(ctx context.Context, req core.NotifyRequest) core.Notif
 			}
 		}
 		if sameSession {
-			g.setAdoptEndpoint(room.Key, adoptEndpoint{Socket: req.MessagingSocket, Token: req.MessagingToken, ConfigPath: req.ConfigPath, Native: req.Native})
+			// Re-check under the room input lock: /new or /resume can rotate the
+			// session while this notify is sending, and only the current holder
+			// may register the relay endpoint.
+			if unlock, lockErr := g.inputLocks.lockContext(ctx, room.Key); lockErr == nil {
+				current, currentFound, currentErr := g.store.CurrentSession(room.Key)
+				fresh, freshFound, freshErr := g.store.AdoptedTopicByNative(req.Native)
+				switch {
+				case currentErr != nil || !currentFound || current.ID != record.Session:
+					g.removeAdoptEndpoint(room.Key)
+				case freshErr == nil && freshFound && req.HolderPID > 0 && fresh.HolderPID == req.HolderPID:
+					g.setAdoptEndpoint(room.Key, adoptEndpoint{Socket: req.MessagingSocket, Token: req.MessagingToken, ConfigPath: req.ConfigPath, Native: req.Native})
+				}
+				unlock()
+			}
 		}
 		g.audit(room.Key, "notify", core.Args{"native": req.Native, "message": messageID, "created": false})
 		return core.NotifyResult{OK: true, State: store.AdoptedOpen, ChatID: room.ChatID, RootMessageID: record.Root, ThreadID: record.Thread, MessageID: messageID, SessionName: name, TopicURL: topicAppLink(room.ChatID, record.Thread), Created: false, Warnings: warnings}

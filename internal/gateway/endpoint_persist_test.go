@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/process"
 	"github.com/sean2077/feishu-bot/internal/store"
 )
 
@@ -43,6 +44,9 @@ func TestAdoptEndpointPersistsAndRestores(t *testing.T) {
 	}
 	if stored.Socket != `\\.\pipe\fixture-inbox` || stored.Token != "secret-token-value" || stored.ConfigPath != "C:/config/config.json" {
 		t.Fatalf("stored endpoint: %+v", stored)
+	}
+	if stored.HolderPID != record.HolderPID || stored.HolderStarted != record.HolderStarted {
+		t.Fatalf("stored holder: %+v, record: %+v", stored, record)
 	}
 
 	// A restart only clears memory; the file is reloaded while the holder lives.
@@ -133,6 +137,47 @@ func TestIncompleteEndpointStaysInMemoryOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("incomplete endpoint was persisted: %v", err)
+	}
+}
+
+func TestAdoptEndpointRestoreRejectsDifferentHolder(t *testing.T) {
+	f, _, native, _ := relayFixture(t)
+	record, _, _ := f.s.AdoptedTopicByNative(native)
+	path := endpointPathFor(t, f.g, native)
+	parent := os.Getppid()
+	if parent <= 0 || parent == os.Getpid() || !process.Alive(parent) {
+		t.Skip("no distinct live holder process")
+	}
+	if err := f.s.UpdateAdoptionHolder(native, parent, 0); err != nil {
+		t.Fatal(err)
+	}
+	f.g.clearAdoptEndpoint(record.Room)
+	f.g.restoreAdoptEndpoints()
+	if _, ok := f.g.endpointFor(record.Room); ok {
+		t.Fatal("endpoint written by another holder was restored")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("stale endpoint file: %v", err)
+	}
+}
+
+func TestRestoredFailureKeepsRefreshedEndpoint(t *testing.T) {
+	f, _, native, result := relayFixture(t)
+	record, _, _ := f.s.AdoptedTopicByNative(native)
+	f.g.clearAdoptEndpoint(record.Room)
+	f.g.restoreAdoptEndpoints()
+	f.g.adoptSender = func(context.Context, string, string, string) error {
+		// A notify refreshes the endpoint while the stale submission is in flight.
+		f.g.setAdoptEndpoint(record.Room, adoptEndpoint{Socket: `\\.\pipe\fresh`, Token: "fresh-token", ConfigPath: "C:/fresh.json", Native: native})
+		return os.ErrClosed
+	}
+	f.send(relayMessage(f, "om_refresh_race", "hello", result.RootMessageID))
+	endpoint, ok := f.g.endpointFor(record.Room)
+	if !ok || endpoint.Socket != `\\.\pipe\fresh` {
+		t.Fatalf("refreshed endpoint was removed: %+v %v", endpoint, ok)
+	}
+	if _, err := os.Stat(endpointPathFor(t, f.g, native)); err != nil {
+		t.Fatalf("refreshed endpoint file: %v", err)
 	}
 }
 
