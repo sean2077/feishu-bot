@@ -87,6 +87,37 @@ func TestAdoptEndpointReattachWithoutInboxRemovesFile(t *testing.T) {
 	}
 }
 
+func TestAdoptEndpointRestoreRejectsChangedSession(t *testing.T) {
+	f, _, native, _ := relayFixture(t)
+	record, _, _ := f.s.AdoptedTopicByNative(native)
+	path := endpointPathFor(t, f.g, native)
+	if _, err := f.s.NewSession(record.Room); err != nil {
+		t.Fatal(err)
+	}
+	f.g.clearAdoptEndpoint(record.Room)
+	f.g.restoreAdoptEndpoints()
+	if _, ok := f.g.endpointFor(record.Room); ok {
+		t.Fatal("endpoint was restored after the session changed")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("stale endpoint file: %v", err)
+	}
+}
+
+func TestIncompleteEndpointStaysInMemoryOnly(t *testing.T) {
+	f, _, native, _ := relayFixture(t)
+	record, _, _ := f.s.AdoptedTopicByNative(native)
+	path := endpointPathFor(t, f.g, native)
+	f.g.removeAdoptEndpoint(record.Room)
+	f.g.setAdoptEndpoint(record.Room, adoptEndpoint{Socket: `\\.\pipe\incomplete`, Native: native})
+	if endpoint, ok := f.g.endpointFor(record.Room); !ok || endpoint.Token != "" {
+		t.Fatalf("in-memory endpoint: %+v %v", endpoint, ok)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("incomplete endpoint was persisted: %v", err)
+	}
+}
+
 func TestNewSessionRemovesPersistedEndpoint(t *testing.T) {
 	f, _, native, result := relayFixture(t)
 	record, _, _ := f.s.AdoptedTopicByNative(native)
