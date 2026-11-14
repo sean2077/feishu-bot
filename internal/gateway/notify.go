@@ -312,6 +312,11 @@ func (g *Gateway) TopicReply(ctx context.Context, req core.TopicReplyRequest) co
 	}
 	replyFooter := "\n\n— " + adoptFooter(record.SessionName, record.Native)
 	replyText := cut(text, g.config.Limits.TextChars-utf8.RuneCountInString(replyFooter)) + replyFooter
+	if g.config.Limits.TextChars <= utf8.RuneCountInString(replyFooter) {
+		// Keep the answer when the configured text budget is too small for a
+		// footer; a truncated reply is worse than a missing attribution.
+		replyText = cut(text, g.config.Limits.TextChars)
+	}
 	replyID, err := g.transport.Send(ctx, room, replyText, room.Thread, "")
 	if err != nil {
 		if deliveryUncertain(err) {
