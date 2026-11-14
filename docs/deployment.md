@@ -629,14 +629,14 @@ feishu-bot daemon start
 
 `adoptRoots` 接受绝对路径或相对配置文件目录的路径；每个目录必须已存在，加载时转为物理路径，且不能与 `dataDir/rooms` 相互包含。未配置时认领和七段私聊话题键都关闭。项目不是 `inherit` 时配置加载失败，因为隔离模式读不到本机终端会话历史。
 
-技能源是项目技能 `.agents/skills/feishu/SKILL.md`，`.claude/skills/feishu` 是 relink 生成的项目投影。在 feishu-bot 仓库内工作时 `/feishu` 可直接使用；实际认领通常发生在其他项目，需要把同一目录复制到用户级（网关不会读取技能，也不会替 Agent 规划步骤）：
+技能源是仓库顶层的 `skills/feishu/SKILL.md`。它按通用 skill 目录布局发布，可直接从仓库的 GitHub URL 全局安装，不再提供 `.agents/skills` 或 `.claude/skills` 投影。用你的 skill 安装器指向仓库的 `skills/feishu`；也可以手动复制到用户级（网关不会读取技能，也不会替 Agent 规划步骤）：
 
 ```sh
 mkdir -p ~/.claude/skills
-cp -r /path/to/feishu-bot/.agents/skills/feishu ~/.claude/skills/feishu
+cp -r /path/to/feishu-bot/skills/feishu ~/.claude/skills/feishu
 ```
 
-修改技能后编辑 `.agents/skills/feishu/SKILL.md`，运行 `bash .agents/relink-skills.sh`，并提交源与 `.claude/skills/feishu` 投影。
+修改技能后直接编辑 `skills/feishu/SKILL.md` 并提交。
 
 在本机 Claude Code 中说“转到飞书继续”“开个飞书话题聊”或运行 `/feishu`，技能会写一段交接摘要并调用：
 
