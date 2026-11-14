@@ -9,13 +9,19 @@ import (
 )
 
 // adoptEndpoint is the live native CC inbox registered by the local terminal.
-// It is kept in memory only: tokens never enter SQLite, logs or audit rows, and
-// a gateway restart trusts only the next attach/notify request.
+// It is kept in memory and, when complete, persisted as a per-native 0600 file
+// so a gateway restart can restore relay while the same holder is alive.
+// Tokens never enter SQLite, logs or audit rows.
 type adoptEndpoint struct {
-	Socket     string
-	Token      string
-	ConfigPath string
-	Native     string
+	Socket        string
+	Token         string
+	ConfigPath    string
+	Native        string
+	HolderPID     int
+	HolderStarted int64
+	// Restored marks an endpoint loaded after a restart. Its first submission
+	// failure removes the persisted endpoint and falls back to the queue.
+	Restored bool
 }
 
 func (g *Gateway) setAdoptEndpoint(room string, endpoint adoptEndpoint) {
@@ -23,16 +29,26 @@ func (g *Gateway) setAdoptEndpoint(room string, endpoint adoptEndpoint) {
 		return
 	}
 	endpoint.Socket = strings.TrimSpace(endpoint.Socket)
+	endpoint.Restored = false
 	if endpoint.Socket == "" {
-		g.clearAdoptEndpoint(room)
+		g.removeAdoptEndpoint(room)
 		return
 	}
+	previous, hadPrevious := g.endpointFor(room)
 	g.mu.Lock()
 	if g.adoptEndpoints == nil {
 		g.adoptEndpoints = map[string]adoptEndpoint{}
 	}
 	g.adoptEndpoints[room] = endpoint
 	g.mu.Unlock()
+	if hadPrevious && previous.Native != "" && previous.Native != endpoint.Native {
+		g.removeAdoptEndpointFile(previous.Native)
+	}
+	if strings.TrimSpace(endpoint.Token) == "" || !core.ValidThreadRoot(endpoint.Native) {
+		g.removeAdoptEndpointFile(endpoint.Native)
+		return
+	}
+	g.persistAdoptEndpoint(endpoint)
 }
 
 func (g *Gateway) endpointFor(room string) (adoptEndpoint, bool) {
@@ -45,6 +61,35 @@ func (g *Gateway) endpointFor(room string) (adoptEndpoint, bool) {
 func (g *Gateway) clearAdoptEndpoint(room string) {
 	g.mu.Lock()
 	delete(g.adoptEndpoints, room)
+	g.mu.Unlock()
+}
+
+// removeAdoptEndpoint drops the in-memory endpoint and its persisted file. It
+// is used when the holder is released, the session changes or a restored
+// endpoint fails; a plain restart only clears memory and lets restore reload.
+func (g *Gateway) removeAdoptEndpoint(room string) {
+	endpoint, ok := g.endpointFor(room)
+	g.clearAdoptEndpoint(room)
+	if ok && endpoint.Native != "" {
+		g.removeAdoptEndpointFile(endpoint.Native)
+	}
+}
+
+// removeAdoptEndpointIfCurrent removes only the endpoint that failed, not a
+// newer registration that replaced it while the submission was in flight. The
+// map lock also covers the file removal so a concurrent persist cannot lose its
+// file between the comparison and deletion.
+func (g *Gateway) removeAdoptEndpointIfCurrent(room string, expected adoptEndpoint) {
+	g.mu.Lock()
+	current, ok := g.adoptEndpoints[room]
+	if !ok || current != expected {
+		g.mu.Unlock()
+		return
+	}
+	delete(g.adoptEndpoints, room)
+	if current.Native != "" {
+		g.removeAdoptEndpointFile(current.Native)
+	}
 	g.mu.Unlock()
 }
 
@@ -98,6 +143,12 @@ func (g *Gateway) relayTopicMessage(ctx context.Context, room core.Room, m core.
 	}
 	text := relayWrapper(record, endpoint, m)
 	if err = g.adoptSender(ctx, endpoint.Socket, endpoint.Token, text); err != nil {
+		if endpoint.Restored {
+			// A restored endpoint that fails once is stale; do not keep trusting
+			// its persisted socket/token after a restart. Only remove this exact
+			// registration: a concurrent notify may have refreshed it already.
+			g.removeAdoptEndpointIfCurrent(room.Key, endpoint)
+		}
 		_, _ = g.store.MarkForwarded(room.Key, m.ID, "cancelled")
 		g.audit(room.Key, "topic_forward_failed", core.Args{"count": 1, "reason": "inbox_submission", "message": m.ID})
 		g.notifyAdoptOnce("relay-failed:"+room.Key, room, "转递失败，消息已按终端存活排队；终端退出后自动继续。", &m)

@@ -187,9 +187,12 @@ func (g *Gateway) holderFor(room core.Room, sessionID string) (store.AdoptedTopi
 		return record, true
 	}
 	if record.HolderPID > 0 {
-		_, _ = g.store.ClearAdoptionHolder(record.Native, record.HolderPID, record.HolderStarted)
-		g.clearAdoptNotice(room.Key)
-		g.failForwarded(room, "holder_released")
+		cleared, err := g.store.ClearAdoptionHolder(record.Native, record.HolderPID, record.HolderStarted)
+		if err == nil && cleared {
+			g.clearAdoptNotice(room.Key)
+			g.removeAdoptEndpoint(room.Key)
+			g.failForwarded(room, "holder_released")
+		}
 	}
 	return record, false
 }
@@ -319,14 +322,20 @@ func (g *Gateway) sweepAdoptions(now int64) {
 		if g.holderAlive(record) {
 			continue
 		}
-		if _, err := g.store.ClearAdoptionHolder(record.Native, record.HolderPID, record.HolderStarted); err != nil {
+		cleared, err := g.store.ClearAdoptionHolder(record.Native, record.HolderPID, record.HolderStarted)
+		if err != nil {
 			if g.logger != nil {
 				g.logger("adopt_holder_clear_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
 			}
 			continue
 		}
+		if !cleared {
+			// A newer holder replaced this snapshot; leave its endpoint intact.
+			continue
+		}
 		g.clearAdoptNotice(record.Room)
 		g.audit(record.Room, "adopted_holder_released", core.Args{"native": record.Native, "pid": record.HolderPID})
+		g.removeAdoptEndpoint(record.Room)
 		if room, ok := g.roomFromKey(record.Room); ok {
 			g.failForwarded(room, "holder_released")
 		} else {

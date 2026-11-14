@@ -511,7 +511,7 @@ func (g *Gateway) command(ctx context.Context, r core.Room, m core.Message) erro
 		if _, e := g.store.NewSession(r.Key); e != nil {
 			return e
 		}
-		g.clearAdoptEndpoint(r.Key)
+		g.removeAdoptEndpoint(r.Key)
 		if adopted, ok := g.roomFromKey(r.Key); ok {
 			g.failForwarded(adopted, "new_session")
 		}

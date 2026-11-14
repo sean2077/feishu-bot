@@ -317,6 +317,9 @@ func (g *Gateway) Recover(ctx context.Context) error {
 			}
 		}
 	}
+	// Restore persisted inbox endpoints only after the restart cleanup, so an
+	// unanswered submission is still evidence while a live holder keeps relay.
+	g.restoreAdoptEndpoints()
 	if err := g.recoverInterrupted(ctx); err != nil {
 		return err
 	}
