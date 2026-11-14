@@ -448,3 +448,67 @@ func TestHolderQueuesWithoutStartingAndResumesAfterExit(t *testing.T) {
 	f.finish(worker, delivery, "done")
 	eventually(t, func() bool { return f.status("om_held") == "done" })
 }
+
+func TestUncertainAdoptionWithRootEvidenceStillNotifies(t *testing.T) {
+	f, work, native := adoptFixture(t)
+	f.tr.userCardHook = func(context.Context, string, core.Args) (string, string, error) {
+		if _, err := f.s.DB.Exec("INSERT INTO sessions(id,room,cc,state,created) VALUES('conflict','room:conflict',?,'open',1)", native); err != nil {
+			return "", "", err
+		}
+		return "om_evidence_root", "oc_adopted", nil
+	}
+	result := f.g.Attach(context.Background(), attachRequest(native, work))
+	if result.OK || result.State != store.AdoptedUncertain || result.RootMessageID != "om_evidence_root" {
+		t.Fatalf("attach result: %+v", result)
+	}
+	record, found, err := f.s.AdoptedTopicByNative(native)
+	if err != nil || !found || record.State != store.AdoptedUncertain || record.Room == "" || record.Root != "om_evidence_root" {
+		t.Fatalf("root evidence: %+v %v %v", record, found, err)
+	}
+	msg := core.Message{ID: "om_uncertain_in", ChatID: "oc_adopted", ChatType: "p2p", SenderID: "member", ThreadID: "omt_unknown", RootID: "om_evidence_root", Text: "hello", Time: time.Now().UnixMilli(), Resources: []core.Resource{}}
+	f.send(msg)
+	if f.starts.Load() != 0 {
+		t.Fatal("uncertain adoption started a worker")
+	}
+	waitFor(t, "uncertain notice", func() bool {
+		f.tr.mu.Lock()
+		defer f.tr.mu.Unlock()
+		for _, notice := range f.tr.notices {
+			if strings.Contains(notice, "认领结果未确认") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestReattachRejectsDifferentLiveHolder(t *testing.T) {
+	f, work, native := adoptFixture(t)
+	pid := os.Getpid()
+	started, ok := process.StartTime(pid)
+	if !ok {
+		t.Skip("process start time is unavailable")
+	}
+	req := attachRequest(native, work)
+	req.HolderPID, req.HolderStarted = pid, started
+	if result := f.g.Attach(context.Background(), req); !result.OK {
+		t.Fatalf("attach failed: %+v", result)
+	}
+	parent := os.Getppid()
+	if parent <= 0 || parent == pid {
+		t.Skip("no distinct live parent process")
+	}
+	parentStarted, parentOK := process.StartTime(parent)
+	next := attachRequest(native, work)
+	next.HolderPID, next.HolderStarted = parent, parentStarted
+	if !parentOK {
+		next.HolderStarted = 0
+	}
+	result := f.g.Attach(context.Background(), next)
+	if result.OK {
+		t.Fatal("re-attach replaced a different live holder")
+	}
+	if !strings.Contains(result.Error, "仍由本地终端") {
+		t.Fatalf("re-attach rejection: %q", result.Error)
+	}
+}

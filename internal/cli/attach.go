@@ -208,6 +208,16 @@ func waitAttachResult(ctx context.Context, dataDir, id string) (core.AttachResul
 	}
 }
 
+func withdrawAttachRequest(dataDir, id string) bool {
+	path := filepath.Join(dataDir, "control", attachRequestDir, id+".json")
+	withdrawn := path + ".withdrawn"
+	if err := os.Rename(path, withdrawn); err != nil {
+		return false
+	}
+	_ = os.Remove(withdrawn)
+	return true
+}
+
 func printAttachResult(out io.Writer, o Options, result core.AttachResult) error {
 	if o.JSON {
 		data, err := json.MarshalIndent(result, "", "  ")
@@ -322,7 +332,10 @@ func runAttach(ctx context.Context, c core.Config, o Options, out io.Writer) err
 		return err
 	}
 	if !confirmed {
-		return errors.New("adoption not confirmed: the gateway did not answer within 30 seconds. Check Feishu for a topic; do not send the request again.")
+		if withdrawAttachRequest(c.DataDir, req.ID) {
+			return errors.New("adoption not confirmed: the request was withdrawn before processing; no topic was created.")
+		}
+		return errors.New("adoption not confirmed: the gateway did not answer within 30 seconds; it may still process the request. Check Feishu; do not resend.")
 	}
 	return printAttachResult(out, o, result)
 }

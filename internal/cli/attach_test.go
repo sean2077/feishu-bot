@@ -243,3 +243,28 @@ func TestRunAttachEndToEnd(t *testing.T) {
 		t.Fatalf("output: %s", out.String())
 	}
 }
+
+func TestWithdrawAttachRequest(t *testing.T) {
+	dataDir := t.TempDir()
+	req := core.AttachRequest{ID: core.NewID(), At: time.Now().UnixMilli()}
+	path, err := writeAttachRequest(dataDir, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !withdrawAttachRequest(dataDir, req.ID) {
+		t.Fatal("pending request was not withdrawn")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("withdrawn request still exists")
+	}
+	if _, err = writeAttachRequest(dataDir, req); err != nil {
+		t.Fatal(err)
+	}
+	processing := path + ".processing"
+	if err = os.Rename(path, processing); err != nil {
+		t.Fatal(err)
+	}
+	if withdrawAttachRequest(dataDir, req.ID) {
+		t.Fatal("request already being processed was withdrawn")
+	}
+}

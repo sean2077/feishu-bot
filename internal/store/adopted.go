@@ -204,9 +204,41 @@ func (s *Store) BeginAdoption(native, user, work string, holderPID int, holderSt
 	return result, created, err
 }
 
+// SetAdoptionRootEvidence records a delivered root message and its room before
+// the session transaction. It is idempotent for the same evidence and refuses
+// a conflicting record. Keeping the evidence lets an interrupted adoption
+// still match topic replies and report its uncertain state.
+func (s *Store) SetAdoptionRootEvidence(native, room, root string) error {
+	if native == "" || room == "" || root == "" {
+		return errors.New("incomplete adoption root evidence")
+	}
+	result, err := s.DB.Exec("UPDATE adopted_topics SET room=?,root=?,updated=? WHERE native=? AND state=? AND room IS NULL AND root IS NULL",
+		room, root, time.Now().UnixMilli(), native, AdoptedPending)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 1 {
+		return nil
+	}
+	var state string
+	var existingRoom, existingRoot sql.NullString
+	if err = s.DB.QueryRow("SELECT state,room,root FROM adopted_topics WHERE native=?", native).Scan(&state, &existingRoom, &existingRoot); err != nil {
+		return err
+	}
+	if state == AdoptedPending && existingRoom.String == room && existingRoot.String == root {
+		return nil
+	}
+	return errors.New("adoption root evidence conflicts with the existing record")
+}
+
 // BindAdoptionRoot records the delivered root message and creates the gateway
 // session and launch identity in the same transaction. It runs only after the
-// root card was sent successfully.
+// root card was sent successfully. A room/root evidence row written before the
+// transaction is accepted when it matches; a conflicting row is refused.
 func (s *Store) BindAdoptionRoot(native, room, root, session, configDir string, configOverride bool, created int64) error {
 	if native == "" || room == "" || root == "" || session == "" || configDir == "" {
 		return errors.New("incomplete adoption root")
@@ -225,8 +257,14 @@ func (s *Store) BindAdoptionRoot(native, room, root, session, configDir string, 
 		if err := tx.QueryRow("SELECT work,state,room,root,session FROM adopted_topics WHERE native=?", native).Scan(&work, &state, &existingRoom, &existingRoot, &existingSession); err != nil {
 			return err
 		}
-		if state != AdoptedPending || existingRoom.Valid || existingRoot.Valid || existingSession.Valid {
+		if state != AdoptedPending || existingSession.Valid {
 			return errors.New("adoption is not awaiting a root")
+		}
+		if existingRoom.Valid && existingRoom.String != room {
+			return errors.New("adoption root evidence does not match")
+		}
+		if existingRoot.Valid && existingRoot.String != root {
+			return errors.New("adoption root evidence does not match")
 		}
 		var claimed int
 		if err := tx.QueryRow("SELECT count(*) FROM sessions WHERE cc=?", native).Scan(&claimed); err != nil {
@@ -244,7 +282,8 @@ func (s *Store) BindAdoptionRoot(native, room, root, session, configDir string, 
 		if _, err := tx.Exec("INSERT INTO usage_coverage(session,room,started,prior_unknown) VALUES(?,?,?,1)", session, room, created); err != nil {
 			return err
 		}
-		result, err := tx.Exec("UPDATE adopted_topics SET room=?,root=?,session=?,updated=? WHERE native=? AND state=? AND room IS NULL AND root IS NULL AND session IS NULL", room, root, session, time.Now().UnixMilli(), native, AdoptedPending)
+		result, err := tx.Exec("UPDATE adopted_topics SET room=?,root=?,session=?,updated=? WHERE native=? AND state=? AND session IS NULL AND (room IS NULL OR room=?) AND (root IS NULL OR root=?)",
+			room, root, session, time.Now().UnixMilli(), native, AdoptedPending, room, root)
 		if err != nil {
 			return err
 		}

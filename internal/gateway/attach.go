@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -139,6 +140,11 @@ func (g *Gateway) existingAdoption(ctx context.Context, req core.AttachRequest, 
 			if err != nil || !core.SamePath(expected, work) {
 				return core.AttachResult{}, errors.New("本地会话工作目录与认领记录不一致")
 			}
+		}
+		if record.HolderPID > 0 && g.holderAlive(record) &&
+			(record.HolderPID != req.HolderPID || record.HolderStarted != req.HolderStarted) {
+			g.audit(record.Room, "adopt_reattach_rejected", core.Args{"native": record.Native, "user": req.User, "reason": "holder_active", "pid": record.HolderPID})
+			return core.AttachResult{}, fmt.Errorf("该会话仍由本地终端 PID %d 持有；请先退出该终端或 /stop 后再认领", record.HolderPID)
 		}
 		current, found, err := g.store.CurrentSession(record.Room)
 		if err != nil {
@@ -278,8 +284,17 @@ func (g *Gateway) attach(ctx context.Context, req core.AttachRequest) (core.Atta
 		return core.AttachResult{}, errors.New("当前传输不支持认领卡片")
 	}
 	rootID, chatID, err := sender.SendUserCard(core.WithDeliveryID(ctx, "attach:"+req.ID+":root"), req.User, attachCard(title, work, req.Native))
+	recordEvidence := func() {
+		if rootID == "" || chatID == "" {
+			return
+		}
+		if room, ok := g.config.AdoptedTopicRoom(chatID, req.User, rootID); ok {
+			_ = g.store.SetAdoptionRootEvidence(req.Native, room.Key, rootID)
+		}
+	}
 	if err != nil {
 		if deliveryUncertain(err) {
+			recordEvidence()
 			_ = g.store.MarkAdoptionUncertain(req.Native)
 			return core.AttachResult{State: store.AdoptedUncertain, RootMessageID: rootID, ChatID: chatID, Error: "根卡片发送结果未确认；请检查私聊中的根消息，不会自动重发。"}, nil
 		}
@@ -291,6 +306,10 @@ func (g *Gateway) attach(ctx context.Context, req core.AttachRequest) (core.Atta
 		_ = g.store.MarkAdoptionUncertain(req.Native)
 		return core.AttachResult{State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, Error: "根卡片已发送，但话题房间配置校验失败；请核查根消息 " + rootID + "。"}, nil
 	}
+	// Persist the known root and room before the session transaction. If that
+	// transaction fails, the topic can still match replies and report its
+	// uncertain state instead of falling back to the ordinary DM session.
+	_ = g.store.SetAdoptionRootEvidence(req.Native, room.Key, rootID)
 	sessionID := core.NewID()
 	now := time.Now().UnixMilli()
 	if err = g.store.BindAdoptionRoot(req.Native, room.Key, rootID, sessionID, configDir, override, now); err != nil {

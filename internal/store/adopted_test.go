@@ -255,3 +255,58 @@ func TestAuditDBWritesRow(t *testing.T) {
 		t.Fatalf("audit row: %d %v", count, err)
 	}
 }
+
+func TestAdoptionRootEvidenceSurvivesBindFailure(t *testing.T) {
+	s := adoptionFixture(t)
+	native := "native-evidence"
+	if _, _, err := s.BeginAdoption(native, "member", t.TempDir(), 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	room := `["t","a","p","p2p","oc_dm","member","om_evidence"]`
+	root := "om_evidence"
+	if err := s.SetAdoptionRootEvidence(native, room, root); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAdoptionRootEvidence(native, room, root); err != nil {
+		t.Fatalf("idempotent evidence: %v", err)
+	}
+	if err := s.SetAdoptionRootEvidence(native, `["t","a","p","p2p","oc_dm","member","om_other"]`, root); err == nil {
+		t.Fatal("conflicting evidence was accepted")
+	}
+	if _, err := s.DB.Exec("INSERT INTO sessions(id,room,cc,state,created) VALUES('conflict','room:conflict',?,'open',1)", native); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BindAdoptionRoot(native, room, root, "session-evidence", "/cfg", false, 1); err != ErrNativeClaimed {
+		t.Fatalf("bind should fail on a claimed native: %v", err)
+	}
+	if err := s.MarkAdoptionUncertain(native); err != nil {
+		t.Fatal(err)
+	}
+	record, found, err := s.AdoptedTopicByRoot(root)
+	if err != nil || !found || record.State != AdoptedUncertain || record.Room != room || record.Root != root {
+		t.Fatalf("evidence lost: %+v %v %v", record, found, err)
+	}
+}
+
+func TestBindAdoptionRootAcceptsMatchingEvidence(t *testing.T) {
+	s := adoptionFixture(t)
+	native := "native-evidence-ok"
+	if _, _, err := s.BeginAdoption(native, "member", t.TempDir(), 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	room := `["t","a","p","p2p","oc_dm","member","om_evidence_ok"]`
+	root := "om_evidence_ok"
+	if err := s.SetAdoptionRootEvidence(native, room, root); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BindAdoptionRoot(native, room, root, "session-evidence-ok", "/cfg", false, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OpenAdoption(native, "omt_evidence_ok"); err != nil {
+		t.Fatal(err)
+	}
+	record, found, err := s.AdoptedTopicByThread("omt_evidence_ok")
+	if err != nil || !found || record.Room != room || record.Session != "session-evidence-ok" || record.State != AdoptedOpen {
+		t.Fatalf("bound evidence: %+v %v %v", record, found, err)
+	}
+}
