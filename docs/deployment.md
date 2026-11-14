@@ -647,7 +647,11 @@ feishu-bot attach --config /srv/feishu-bot/config.json \
 
 `--native` 默认取 `$CLAUDE_CODE_SESSION_ID`，`--holder-pid` 默认取 `$CLAUDE_PID`；两者也可显式传入。工作目录不取 shell 当前目录：命令在网关所用的继承 Claude 配置目录（`CLAUDE_CONFIG_DIR` 或 `~/.claude`）下按 native ID 定位 transcript，读取其启动 cwd，并核对项目目录编码。找不到、多个匹配或目录不一致都拒绝。有多个启用 adoptRoots 的私聊时须用 `--user` 指定；只有一个时可省略。`--summary-file -` 从标准输入读取，摘要最多 6000 字，显示在话题首条回复中，不进入审计。
 
+`--name` 显式指定会话显示名；未指定时读取同一配置目录下的 `sessions/<holder-pid>.json`，仅当其中 `sessionId` 与 native ID 完全一致才采用 `name`，文件内其他字段（包括 messaging socket）一律忽略。读不到时显示 native ID 前 8 位。该名称只用于飞书显示，不重命名原生会话。根卡片标题为 `<会话名> · <标题>`（标题为空时用 `本地会话认领` 或 `本地会话`），正文显示工作目录、完整 native ID 和 `claude --resume <完整 ID>`；终端退出后直接在本话题继续。后续 attach 或 notify 观察到名称变化时刷新根卡片标题，通知追加和 `topic reply` 的回复末尾带一行 `— <会话名> · <ID 前 8 位>`。
+
 认领结果中的 state 为 `open` 时才表示话题已建立；`pending` 表示处理中，`uncertain` 表示外部写入结果未确认。后两者不会自动重发，成功发出的根消息 ID 会保留用于核查。终端仍存活时，话题内消息排队并提示等待；退出终端后网关用原 native ID 和登记 cwd 续接。`/status` 会显示 `awaiting_terminal_exit`，`/new` 可在话题内新建会话并解除原终端占用。
+
+话题内 `/status` 另外显示本地会话名、完整原生会话 ID 和终端占用状态（仍占用时带 PID）；`/status --json` 的 `adoption` 对象包含 `state`、`native`、`root`、`thread`、`name`、`holderActive` 和 `holderPid`。`attach --json` 结果增加 `session_name` 和 `topic_url`。
 
 Windows 注意：**Git Bash 会把以 `/` 开头的参数改写成 Windows 路径**。在 Git Bash 中运行技能或手动调用时先设置 `MSYS_NO_PATHCONV=1`，尤其是标题等以 `/` 开头的文本：
 
@@ -680,9 +684,9 @@ feishu-bot notify --config /srv/feishu-bot/config.json \
   --summary-file /tmp/result.md --title "构建完成" --json
 ```
 
-第一次调用创建话题，之后追加回复，不新开话题；`--summary-file -` 从标准输入读取，摘要最多 6000 字。`--native`、`--holder-pid` 默认同 `attach`，`--user` 只在多个 DM 启用 adoptRoots 时需要。`notify` 需要已经在运行的网关和 `nativeConfig: "inherit"` 的项目。
+第一次调用创建话题，之后追加回复，不新开话题；`--summary-file -` 从标准输入读取，摘要最多 6000 字。`--native`、`--holder-pid` 默认同 `attach`，`--user` 只在多个 DM 启用 adoptRoots 时需要，`--name` 的解析规则也与 `attach` 相同。`notify` 需要已经在运行的网关和 `nativeConfig: "inherit"` 的项目。
 
-JSON 结果字段：`ok`、`state`、`chat_id`、`root_message_id`、`thread_id`、`message_id`、`created`、`warnings`；失败时带 `error: {"code","message"}`。进程退出码：
+JSON 结果字段：`ok`、`state`、`chat_id`、`root_message_id`、`thread_id`、`message_id`、`session_name`、`topic_url`、`created`、`warnings`；失败时带 `error: {"code","message"}`。`topic_url` 是打开该话题的飞书 AppLink，话题 ID 尚未确认时省略。进程退出码：
 
 | 退出码 | code | 含义 | harness 处理 |
 |---|---|---|---|
@@ -702,5 +706,15 @@ JSON 结果字段：`ok`、`state`、`chat_id`、`root_message_id`、`thread_id`
 - 只转递 DM owner 的消息；网关命令仍由网关处理。图片／文件本期只转递文本占位并说明未携带附件，不专门拒绝；本地路径携带随后续迭代评估。
 - socket 缺失或写入失败时退回排队并提示；已提交但未回复的消息在终端退出、`/new`、重启或转递失败时标 uncertain、不重放。
 - 原生收件箱协议是 CC 内部实现派生的实验性接口，CC 升级可能变化；Codex 会话不在本期范围。
+
+### 查看已认领话题
+
+`feishu-bot topics` 只读列出本机已登记的认领关系，网关运行时也可读取：
+
+```sh
+feishu-bot topics --config /srv/feishu-bot/config.json [--native ID] [--json]
+```
+
+`--json` 输出 `{"topics":[{"name","native","thread","root","state","holder_alive","topic_url"}]}`；`name` 读不到时用 native ID 前 8 位，`holder_alive` 表示登记的本机终端进程仍持有该会话，`topic_url` 在话题 ID 未确认时省略。`--native` 按完整 native ID 过滤；没有匹配时输出空列表。
 
 [场景配置](usage.md#任务结果通知与话题内交互) · [对话规则](conversation-contract.md#任务通知与话题转递) · [术语](terminology.md) · [验收](validation.md)

@@ -143,7 +143,7 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 		if r.DMUser != "" {
 			if record, found, err := g.store.AdoptedTopicByRoom(r.Key); err == nil && found {
 				holder := record.State == store.AdoptedOpen && saved != nil && saved.ID == record.Session && g.holderAlive(record)
-				view["adoption"] = core.Args{"state": record.State, "native": record.Native, "root": record.Root, "thread": record.Thread, "holderActive": holder}
+				view["adoption"] = core.Args{"state": record.State, "native": record.Native, "root": record.Root, "thread": record.Thread, "name": record.SessionName, "holderActive": holder, "holderPid": record.HolderPID}
 				if holder {
 					view["phase"] = "awaiting_terminal_exit"
 				} else if record.State != store.AdoptedOpen {
@@ -278,6 +278,22 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 				binding = r.WorkspaceCWD
 			}
 			text += fmt.Sprintf("\n话题根消息：`%s`\n话题工作区绑定：%s", r.Thread, binding)
+		}
+		if v["adoption"] != nil {
+			adoption := argsOf(v["adoption"])
+			name := stringArg(adoption, "name")
+			if name == "" {
+				name = core.ShortNative(stringArg(adoption, "native"))
+			}
+			text += "\n本地会话名：" + name
+			holder := "否"
+			if boolArg(adoption, "holderActive") {
+				holder = "是"
+				if pid, ok := numberArg(adoption, "holderPid"); ok && pid > 0 {
+					holder = fmt.Sprintf("是（PID %d）", pid)
+				}
+			}
+			text += "\n终端占用：" + holder
 		}
 		if name := stringArg(v, "sessionName"); name != "" {
 			text += "\n会话名称：" + name

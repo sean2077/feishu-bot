@@ -115,6 +115,7 @@ MOMO 回复其他机器人时不自动 @ 对方；由 `mention_bot` 发出消息
 用户在本机 Claude Code 终端显式发起认领（`/feishu` 技能调用 `feishu-bot attach`）后，网关在该私聊创建一个话题并接管同一个原生会话。认领只允许配置了 `dms[].adoptRoots` 且项目 `nativeConfig: "inherit"` 的私聊用户；工作目录取自本地 transcript 的启动 cwd，必须仍在当前 adoptRoots 内。交接语义是：终端仍持有会话时，话题内消息正常入队并提示等待，不启动第二个原生进程；终端退出后用同一个原生 ID 续接。话题只开在机器人与该用户的私聊里，不能用于群聊或另一个私聊。
 
 - **根消息与归属。** 认领先发一张根卡片，再以话题回复建立 thread。只有登记在 `adopted_topics` 的 `thread_id` 与根消息 ID 同时精确匹配，入站才进入该话题房间；根消息自身可能带 `thread_id` 但没有 `root_id`，不能据此归属。未登记的私聊话题回复维持普通私聊行为；记录存在但不匹配时拒绝并写 `adopted_topic_rejected` 审计，不回落私聊房间。存储查询失败同样拒绝。
+- **显示身份。** 根卡片标题为 `<本地会话名> · <标题>`，正文给出工作目录、完整 native ID 和 `claude --resume <ID>`。本地会话名优先取显式 `--name`，否则取 `sessions/<holder-pid>.json` 的 `name`（仅当 `sessionId` 与 native ID 完全一致），再退回 native ID 前 8 位；它只用于飞书显示，不重命名原生会话。后续 attach／notify 观察到名称变化时刷新根卡片标题；通知追加和 `topic reply` 末尾带一行 `— <会话名> · <ID 前 8 位>`。话题内 `/status` 显示本地会话名、完整原生 ID 和终端占用，`feishu-bot topics` 可从会话反查已绑定话题。
 - **状态。** `pending` 表示认领尚未完成，`uncertain` 表示外部写入结果未确认。两者都只回显状态，不启动原生进程、不重发根卡片，并保留根消息 ID 供核查。根卡片成功发送后，即使后续事务失败，网关也会尽量把已知的 room/root 写入记录，使话题内回复仍能匹配到该记录并收到 uncertain 提示；根消息本身未知时无法匹配，这是已知限制。网关启动时把遗留 `pending` 全部置为 `uncertain`，因为重启后已没有正在发送中的请求。
 - **终端占用。** 登记记录保存本地终端 PID 和可得时的启动时间；进程仍存活（且启动时间不冲突）时，消息排队、加待处理回执并回复一次等待说明，`dispatch` 也拒绝启动。`/status` 显示 `awaiting_terminal_exit` 和认领状态；`/stop` 正常可用；`/new` 在该话题建立新会话，不再受原终端占用约束，原认领记录保留。holder 释放由定期检查发现（默认间隔 30 秒），释放后同一轮检查会处理排队输入，因此终端退出到话题开始处理可能有这个延迟。Linux 上的启动身份由内核 starttime 和 boot ID 组成，不依赖可能被 NTP／虚拟机校时改变的墙钟启动时间。
 - **重新认领。** 对已 open 的话题再次发起认领时，网关先取得该房间的输入与派发锁；仍有存活原生进程、排队／已交出的输入、未完成输出、运行中的操作或审批时拒绝，并提示先在话题内 `/stop`，等运行结束后再认领。现有 holder 仍存活且与本次请求的 PID／启动时间不同时也拒绝，避免另一个终端覆盖正在使用的会话。只有确认空闲且 holder 不是另一个存活进程时才更新终端占用。对已经认领过的会话，在本机执行 `claude --resume` 之前也必须先在话题里 `/stop`；这是本地绕过网关的操作，网关无法阻止两个写入方。
@@ -124,7 +125,7 @@ MOMO 回复其他机器人时不自动 @ 对方；由 `mention_bot` 发出消息
 
 ### 任务通知与话题转递
 
-本地会话可以用 `feishu-bot notify` 把任务结果发到自己的认领话题：第一次调用创建话题（根卡片加摘要回复），之后都在同一话题追加回复，不新开话题。`notify` 复用 `adopted_topics`；`state`、`created`、`message_id` 和错误码见[部署与配置](deployment.md#任务通知与话题内交互)。pending／uncertain 只报告，不重发。
+本地会话可以用 `feishu-bot notify` 把任务结果发到自己的认领话题：第一次调用创建话题（根卡片加摘要回复），之后都在同一话题追加回复，不新开话题。`notify` 复用 `adopted_topics`；`state`、`created`、`message_id` 和错误码见[部署与配置](deployment.md#任务通知与话题内交互)。pending／uncertain 只报告，不重发。追加回复和 `topic reply` 的正文末尾带 `— <会话名> · <ID 前 8 位>` 页脚；`attach`／`notify` 的 JSON 同时返回会话名和话题 AppLink。`feishu-bot topics --native ID --json` 只读列出本机登记会话的 `name`、`native`、`thread`、`root`、`state` 和 `holder_alive`。
 
 终端仍存活时，话题内 owner 的普通文本消息由网关转递给正在运行的本地 Claude Code 进程，而不是排队等终端退出：
 

@@ -38,10 +38,10 @@ This skill performs one local action: it asks the already-running `feishu-bot` g
    & $env:FEISHU_BOT_BIN attach --config $env:FEISHU_BOT_CONFIG --title "<short topic title>" --summary-file "<temporary summary file>" --json
    ```
 
-   If several DMs enable `adoptRoots`, add `--user <open_id>`. Never guess it.
+   If several DMs enable `adoptRoots`, add `--user <open_id>`. Never guess it. The session display name is read automatically from `$CLAUDE_CONFIG_DIR/sessions/<holder-pid>.json` when its `sessionId` matches; pass `--name "<label>"` only when the user asks for a specific name.
 
 3. Read the JSON result:
-   - `ok: true` and `state: "open"`: report the chat, root message ID, thread ID and any warnings. Tell the user to run `/exit` when ready; the topic takes over after the terminal exits.
+   - `ok: true` and `state: "open"`: report the chat, root message ID, thread ID, `session_name`, `topic_url` and any warnings. Tell the user to run `/exit` when ready; the topic takes over after the terminal exits.
    - `ok: false` with `state: "pending"`: the request is still being processed. Tell the user to check the DM shortly; do not retry.
    - `ok: false` with `state: "uncertain"`: report the state and root message ID if present. Tell the user to inspect the DM; never retry automatically.
    - No JSON / non-zero exit: report the error. A 30-second timeout means the result is unconfirmed, not a failure; tell the user to check Feishu and not to resend blindly.
@@ -50,7 +50,10 @@ This skill performs one local action: it asks the already-running `feishu-bot` g
 
 ## After adoption
 
+- The root card title is `<session name> · <title>` and its body shows the working directory, the full native session ID and the `claude --resume <ID>` command. Topic replies end with a faint `<session name> · <ID first 8>` footer.
+- If the session name changes later, a new `attach` or `notify` refreshes the root card title. Use `feishu-bot topics --native "$CLAUDE_CODE_SESSION_ID" --json` to find the bound topic (`name`, `native`, `thread`, `root`, `state`, `holder_alive`, `topic_url`).
 - If the gateway registered this session's native inbox, topic messages are forwarded to this running session; reply with the `feishu-bot topic reply ...` command included in the wrapper. Otherwise they queue and get a waiting notice. The gateway checks the holder on its periodic sweep (about 30 seconds); after the terminal exits, that sweep releases it and processes queued input.
+- `/status` inside the topic shows the local session name, the full native ID and whether the terminal still holds the session.
 - If the user later wants to run `claude --resume` on the same session locally, first send `/stop` in the topic. The gateway cannot prevent a local process from resuming the same session, so the user must avoid two writers.
 - Re-attaching an already open topic is refused while it has a live worker, queued input, unfinished output, action or approval. Tell the user to `/stop` and wait before asking again.
 
@@ -64,7 +67,7 @@ When the user asks to be notified on Feishu when a task finishes, run:
   --summary-file "<temporary summary file>" --json
 ```
 
-The first call creates the topic; later calls append to it. Exit codes: 0 success; 2 pending/uncertain (report, do not resend); 3 not configured; 4 gateway unavailable; 5 invalid request; 6 transport failure. Only 3 and 4 may fall back to a legacy DM notification. Remove the temporary summary file afterwards.
+The first call creates the topic; later calls append to it. Appended replies end with a `<session name> · <ID first 8>` footer; the JSON result includes `session_name` and `topic_url`. Pass `--name "<label>"` only when a specific display name is wanted; otherwise it is read from the live session record. Exit codes: 0 success; 2 pending/uncertain (report, do not resend); 3 not configured; 4 gateway unavailable; 5 invalid request; 6 transport failure. Only 3 and 4 may fall back to a legacy DM notification. Remove the temporary summary file afterwards.
 
 ## Topic relay
 

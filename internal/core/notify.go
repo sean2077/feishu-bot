@@ -39,6 +39,7 @@ type NotifyRequest struct {
 	HolderPID       int    `json:"holderPid,omitempty"`
 	HolderStarted   int64  `json:"holderStarted,omitempty"`
 	Title           string `json:"title,omitempty"`
+	SessionName     string `json:"sessionName,omitempty"`
 	Summary         string `json:"summary,omitempty"`
 	ConfigPath      string `json:"configPath,omitempty"`
 	MessagingSocket string `json:"messagingSocket,omitempty"`
@@ -53,6 +54,8 @@ type NotifyResult struct {
 	RootMessageID string      `json:"root_message_id,omitempty"`
 	ThreadID      string      `json:"thread_id,omitempty"`
 	MessageID     string      `json:"message_id,omitempty"`
+	SessionName   string      `json:"session_name,omitempty"`
+	TopicURL      string      `json:"topic_url,omitempty"`
 	Created       bool        `json:"created"`
 	Warnings      []string    `json:"warnings,omitempty"`
 	Error         *AdoptError `json:"error,omitempty"`

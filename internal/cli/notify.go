@@ -55,6 +55,12 @@ func printNotifyResult(out io.Writer, o Options, result core.NotifyResult) {
 	}
 	if result.OK {
 		_, _ = fmt.Fprintf(out, "Notification delivered.\nChat: %s\nRoot: %s\nThread: %s\nMessage: %s\nCreated: %t\n", result.ChatID, result.RootMessageID, result.ThreadID, result.MessageID, result.Created)
+		if result.SessionName != "" {
+			_, _ = fmt.Fprintf(out, "Session: %s\n", result.SessionName)
+		}
+		if result.TopicURL != "" {
+			_, _ = fmt.Fprintf(out, "Topic: %s\n", result.TopicURL)
+		}
 	} else {
 		state := result.State
 		if state == "" {
@@ -184,6 +190,7 @@ func runNotify(ctx context.Context, c core.Config, o Options, out io.Writer) err
 		printNotifyResult(out, o, result)
 		return &exitCodeError{code: 5}
 	}
+	name := adoptSessionName(o.AttachName, configDir, holderPID, nativeID)
 	req := core.NotifyRequest{
 		Kind:            core.ControlKindNotify,
 		ID:              core.NewID(),
@@ -194,6 +201,7 @@ func runNotify(ctx context.Context, c core.Config, o Options, out io.Writer) err
 		HolderPID:       holderPID,
 		HolderStarted:   holderStarted,
 		Title:           title,
+		SessionName:     name,
 		Summary:         clipRunes(summary, core.AdoptSummaryRunes),
 		ConfigPath:      o.ConfigPath,
 		MessagingSocket: strings.TrimSpace(os.Getenv("CLAUDE_CODE_MESSAGING_SOCKET")),
@@ -309,11 +317,13 @@ const notifyHelp = `Send a task-result summary to the owner's adopted Feishu DM 
 Usage:
   feishu-bot notify --config PATH --summary-file PATH|-
                     [--title TEXT] [--native ID] [--holder-pid PID]
-                    [--user OPEN_ID] [--json]
+                    [--user OPEN_ID] [--name NAME] [--json]
 
 The first call creates the topic; later calls append one reply to the same
 topic. Defaults come from $CLAUDE_CODE_SESSION_ID and $CLAUDE_PID; the working
-directory comes from the local transcript. Exit codes: 0 ok, 2 pending or
+directory comes from the local transcript. The session display name is read
+from $CLAUDE_CONFIG_DIR/sessions/<holder-pid>.json only when its sessionId
+matches the native ID; --name overrides it. Exit codes: 0 ok, 2 pending or
 uncertain (do not resend), 3 not configured, 4 gateway unavailable, 5 invalid
 request, 6 transport failure. Only 3 and 4 are safe for a legacy DM fallback.
 
