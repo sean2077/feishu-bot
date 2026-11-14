@@ -42,6 +42,21 @@
 
 完整配置、命令、Windows Git Bash 的 `MSYS_NO_PATHCONV=1` 说明和限制见[认领本地会话到飞书私聊话题](deployment.md#认领本地会话到飞书私聊话题)。
 
+## 任务结果通知与话题内交互
+
+长任务在本地跑完后，可以不在电脑前也能收到结果：
+
+```sh
+feishu-bot notify --config /srv/feishu-bot/config.json \
+  --summary-file - --title "构建完成" --json <<'EOF'
+已完成构建，产物路径和下一步见下条。
+EOF
+```
+
+第一次调用会在 owner 私聊创建话题，之后追加到同一话题。`notify` 的 `--summary-file` 是 Agent 写的任务摘要；也可以由 harness 在任务结束时调用。结果错误码见[部署与配置](deployment.md#任务通知与话题内交互)。
+
+终端还开着时，话题里的普通文本消息会转递给这个正在运行的本地会话，会话可以用包装消息里的 `feishu-bot topic reply --native ... --message-id ... --text-file -` 回复；不需要等终端退出。网关命令（`/status`、`/stop`、`/new` 等）仍由网关处理。转递消息按 owner 本人输入处理，可以批准门控操作；只接受 owner 的消息，未回复的消息不重放。socket 不可用或写入失败时，消息退回排队，终端退出后由网关继续。图片／文件本期只转递文本占位并说明未携带附件；Codex 会话不支持。
+
 ## 资料整理与文档协作
 
 可以发送附件，或将获准使用的文档目录设为 `seedDir`。首次建立工作区时复制资料并创建本地 Git baseline 记录修改，后续不自动覆盖；源目录更新也不会同步到已有会话。资料不必是代码，但这不是知识库检索服务；远端资料通过获准的工具或固定操作访问。
