@@ -281,7 +281,7 @@ func (g *Gateway) attach(ctx context.Context, req core.AttachRequest) (core.Atta
 	if err != nil {
 		if deliveryUncertain(err) {
 			_ = g.store.MarkAdoptionUncertain(req.Native)
-			return core.AttachResult{State: store.AdoptedUncertain, Error: "根卡片发送结果未确认；请检查私聊中的根消息，不会自动重发。"}, nil
+			return core.AttachResult{State: store.AdoptedUncertain, RootMessageID: rootID, ChatID: chatID, Error: "根卡片发送结果未确认；请检查私聊中的根消息，不会自动重发。"}, nil
 		}
 		_ = g.store.DeleteUnsentAdoption(req.Native)
 		return core.AttachResult{}, err

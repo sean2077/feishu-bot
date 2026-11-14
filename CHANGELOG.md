@@ -2,7 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
-- 新增本地 Claude Code 会话认领到飞书私聊话题：配置 `dms[].adoptRoots`（仅允许 `nativeConfig: "inherit"` 的私聊项目，目录须存在且不得与 `dataDir/rooms` 重叠）、本机命令 `feishu-bot attach` 和用户级 `/feishu` 技能模板。网关先在数据目录控制通道落库认领意图，再发送根卡片并以 `reply_in_thread` 建立话题；成功后才置 `open`。根卡片一旦发出，后续任何失败都保留根消息并置 `uncertain`，不重发；网关启动把遗留 `pending` 置 `uncertain`。只有登记记录的 `thread_id` 与根消息 ID 同时匹配的入站进入认领房间，键形状合法但无记录时拒绝；现有房间键和 SQLite schema 不变（新增 `adopted_topics` 表与七段私聊话题键）。工作目录取自本地 transcript 启动 cwd 并每次按 adoptRoots 重校验；本地终端存活时消息排队并提示，退出后按原 native ID 续接。`/status` 显示 `awaiting_terminal_exit`，`/new` 建立新会话并解除原终端占用。认领前的本地用量标记为未知；跨模型续接给出警告但不阻止。
+- 新增本地 Claude Code 会话认领到飞书私聊话题：配置 `dms[].adoptRoots`（仅允许 `nativeConfig: "inherit"` 的私聊项目，目录须存在且不得与 `dataDir/rooms` 重叠）、本机命令 `feishu-bot attach` 和用户级 `/feishu` 技能模板。网关先在数据目录控制通道落库认领意图，再发送根卡片并以 `reply_in_thread` 建立话题；成功后才置 `open`。根卡片一旦发出，后续任何失败都保留根消息并置 `uncertain`，不重发；网关启动把遗留 `pending` 置 `uncertain`。只有登记记录的 `thread_id` 与根消息 ID 同时匹配的入站进入认领房间，键形状合法但无记录时拒绝；现有表和房间键命名空间不变，新增 `adopted_topics` 表与七段私聊话题键。工作目录取自本地 transcript 启动 cwd 并每次按 adoptRoots 重校验；本地终端存活时消息排队并提示，退出后按原 native ID 续接。`/status` 显示 `awaiting_terminal_exit`，`/new` 建立新会话并解除原终端占用。认领前的本地用量标记为未知；跨模型续接给出警告但不阻止。
 - 新增 `thinking_icon_upload` 日志：`status=ok|fallback`，fallback 带固定 `reason`（`upload_failed`／`empty_key`／`unsupported_transport`），不打印 image_key。
 - 回复卡状态行在「思考中」「处理中」时优先使用启动时上传一次的点阵 GIF `custom_icon`，客户端循环播放，运行时零更新；上传不可用或失败时回退到静态 `loading_outlined`。终态图标不变。
 - 「查看状态」和「更多」overflow 收进同一行，减少不必要的换行；流式和最终卡片使用同一布局。
