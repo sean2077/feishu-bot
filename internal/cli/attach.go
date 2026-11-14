@@ -125,97 +125,17 @@ func gatewayRunning(dataDir string) error {
 }
 
 func writeAttachRequest(dataDir string, req core.AttachRequest) (string, error) {
-	dir := filepath.Join(dataDir, "control", attachRequestDir)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", errors.New("cannot create the attach control directory")
-	}
-	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() {
-		return "", errors.New("attach control path is not a directory")
-	}
-	data, err := json.Marshal(req)
-	if err != nil {
-		return "", errors.New("cannot encode the attach request")
-	}
-	file, err := os.CreateTemp(dir, ".attach-*.tmp")
-	if err != nil {
-		return "", errors.New("cannot write the attach request")
-	}
-	name := file.Name()
-	cleanup := func() {
-		_ = file.Close()
-		_ = os.Remove(name)
-	}
-	if err = file.Chmod(0600); err != nil {
-		cleanup()
-		return "", errors.New("cannot secure the attach request")
-	}
-	if _, err = file.Write(data); err != nil {
-		cleanup()
-		return "", errors.New("cannot write the attach request")
-	}
-	if err = file.Sync(); err != nil {
-		cleanup()
-		return "", errors.New("cannot persist the attach request")
-	}
-	if err = file.Close(); err != nil {
-		_ = os.Remove(name)
-		return "", errors.New("cannot close the attach request")
-	}
-	final := filepath.Join(dir, req.ID+".json")
-	if err = os.Rename(name, final); err != nil {
-		_ = os.Remove(name)
-		return "", errors.New("cannot publish the attach request")
-	}
-	return final, nil
+	return writeControlRequest(dataDir, req.ID, req)
 }
 
 func waitAttachResult(ctx context.Context, dataDir, id string) (core.AttachResult, bool, error) {
-	dir := filepath.Join(dataDir, "control", attachRequestDir)
-	resultPath := filepath.Join(dir, id+".result.json")
-	requestPath := filepath.Join(dir, id+".json")
-	deadline := time.Now().Add(attachWait)
-	for {
-		if info, err := os.Lstat(resultPath); err == nil && info.Mode().IsRegular() {
-			file, err := os.Open(resultPath)
-			if err != nil {
-				return core.AttachResult{}, false, errors.New("cannot read the attach result")
-			}
-			data, err := io.ReadAll(io.LimitReader(file, attachResultLimit+1))
-			file.Close()
-			_ = os.Remove(resultPath)
-			_ = os.Remove(requestPath)
-			if err != nil || len(data) > attachResultLimit {
-				return core.AttachResult{}, false, errors.New("invalid attach result")
-			}
-			var result core.AttachResult
-			if err = json.Unmarshal(data, &result); err != nil {
-				return core.AttachResult{}, false, errors.New("invalid attach result")
-			}
-			return result, true, nil
-		}
-		if ctx.Err() != nil {
-			return core.AttachResult{}, false, ctx.Err()
-		}
-		if time.Now().After(deadline) {
-			return core.AttachResult{}, false, nil
-		}
-		select {
-		case <-ctx.Done():
-			return core.AttachResult{}, false, ctx.Err()
-		case <-time.After(attachResultPollTime):
-		}
-	}
+	var result core.AttachResult
+	ok, err := waitControlResult(ctx, dataDir, id, &result)
+	return result, ok, err
 }
 
 func withdrawAttachRequest(dataDir, id string) bool {
-	path := filepath.Join(dataDir, "control", attachRequestDir, id+".json")
-	withdrawn := path + ".withdrawn"
-	if err := os.Rename(path, withdrawn); err != nil {
-		return false
-	}
-	_ = os.Remove(withdrawn)
-	return true
+	return withdrawControlRequest(dataDir, id)
 }
 
 func printAttachResult(out io.Writer, o Options, result core.AttachResult) error {
@@ -314,15 +234,19 @@ func runAttach(ctx context.Context, c core.Config, o Options, out io.Writer) err
 		return err
 	}
 	req := core.AttachRequest{
-		ID:            core.NewID(),
-		At:            time.Now().UnixMilli(),
-		User:          user,
-		Native:        nativeID,
-		CWD:           cwd,
-		HolderPID:     holderPID,
-		HolderStarted: holderStarted,
-		Title:         strings.Join(strings.Fields(o.AttachTitle), " "),
-		Summary:       clipRunes(summary, core.AdoptSummaryRunes),
+		Kind:            core.ControlKindAttach,
+		ID:              core.NewID(),
+		At:              time.Now().UnixMilli(),
+		User:            user,
+		Native:          nativeID,
+		CWD:             cwd,
+		HolderPID:       holderPID,
+		HolderStarted:   holderStarted,
+		Title:           strings.Join(strings.Fields(o.AttachTitle), " "),
+		Summary:         clipRunes(summary, core.AdoptSummaryRunes),
+		ConfigPath:      o.ConfigPath,
+		MessagingSocket: strings.TrimSpace(os.Getenv("CLAUDE_CODE_MESSAGING_SOCKET")),
+		MessagingToken:  os.Getenv("CLAUDE_CODE_MESSAGING_TOKEN"),
 	}
 	if _, err = writeAttachRequest(c.DataDir, req); err != nil {
 		return err

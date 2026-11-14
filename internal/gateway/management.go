@@ -495,6 +495,11 @@ func (g *Gateway) command(ctx context.Context, r core.Room, m core.Message) erro
 		if _, e := g.store.NewSession(r.Key); e != nil {
 			return e
 		}
+		g.clearAdoptEndpoint(r.Key)
+		if adopted, ok := g.roomFromKey(r.Key); ok {
+			g.failForwarded(adopted, "new_session")
+		}
+		g.clearAdoptNotice(r.Key)
 		g.clearProfileWait(r.Key)
 		g.notify(r, "已新建本聊天会话，旧运行未交付的补充已取消。", &m)
 	case "/stop":

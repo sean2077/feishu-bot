@@ -629,14 +629,14 @@ feishu-bot daemon start
 
 `adoptRoots` 接受绝对路径或相对配置文件目录的路径；每个目录必须已存在，加载时转为物理路径，且不能与 `dataDir/rooms` 相互包含。未配置时认领和七段私聊话题键都关闭。项目不是 `inherit` 时配置加载失败，因为隔离模式读不到本机终端会话历史。
 
-技能源是项目技能 `.agents/skills/feishu/SKILL.md`，`.claude/skills/feishu` 是 relink 生成的项目投影。在 feishu-bot 仓库内工作时 `/feishu` 可直接使用；实际认领通常发生在其他项目，需要把同一目录复制到用户级（网关不会读取技能，也不会替 Agent 规划步骤）：
+技能源是仓库顶层的 `skills/feishu/SKILL.md`。它按通用 skill 目录布局发布，可直接从仓库的 GitHub URL 全局安装，不再提供 `.agents/skills` 或 `.claude/skills` 投影。用你的 skill 安装器指向仓库的 `skills/feishu`；也可以手动复制到用户级（网关不会读取技能，也不会替 Agent 规划步骤）：
 
 ```sh
 mkdir -p ~/.claude/skills
-cp -r /path/to/feishu-bot/.agents/skills/feishu ~/.claude/skills/feishu
+cp -r /path/to/feishu-bot/skills/feishu ~/.claude/skills/feishu
 ```
 
-修改技能后编辑 `.agents/skills/feishu/SKILL.md`，运行 `bash .agents/relink-skills.sh`，并提交源与 `.claude/skills/feishu` 投影。
+修改技能后直接编辑 `skills/feishu/SKILL.md` 并提交。
 
 在本机 Claude Code 中说“转到飞书继续”“开个飞书话题聊”或运行 `/feishu`，技能会写一段交接摘要并调用：
 
@@ -670,3 +670,37 @@ PowerShell 不做该转换，但调用本地程序时使用 `&`；路径仍建�
 - 认领话题不参与 `dms[].historyChats`，也不能被其他会话读取；同一系统账户下的目录和进程不是多租户沙箱。
 
 [场景配置](usage.md#从本地-claude-code-转到飞书话题) · [对话规则](conversation-contract.md#认领本地会话到私聊话题) · [术语](terminology.md) · [验收](validation.md)
+
+### 任务通知与话题内交互
+
+本地会话把任务结果发到自己的认领话题：
+
+```sh
+feishu-bot notify --config /srv/feishu-bot/config.json \
+  --summary-file /tmp/result.md --title "构建完成" --json
+```
+
+第一次调用创建话题，之后追加回复，不新开话题；`--summary-file -` 从标准输入读取，摘要最多 6000 字。`--native`、`--holder-pid` 默认同 `attach`，`--user` 只在多个 DM 启用 adoptRoots 时需要。`notify` 需要已经在运行的网关和 `nativeConfig: "inherit"` 的项目。
+
+JSON 结果字段：`ok`、`state`、`chat_id`、`root_message_id`、`thread_id`、`message_id`、`created`、`warnings`；失败时带 `error: {"code","message"}`。进程退出码：
+
+| 退出码 | code | 含义 | harness 处理 |
+|---|---|---|---|
+| 0 | — | 成功（`state=open`） | 正常 |
+| 2 | `pending`／`uncertain` | 认领未完成或结果未确认 | 报告，不重发 |
+| 3 | `not_configured` | 未配置 adoptRoots、项目非 inherit 或私聊未绑定 | 可退回旧单聊通知 |
+| 4 | `gateway_unavailable` | 网关未运行或锁不可用 | 可退回旧单聊通知 |
+| 5 | `invalid_request` | transcript、cwd、native 或参数无效 | 报告，不重发 |
+| 6 | `transport_failure` | 外部写入失败或未确认 | 报告，不重发（避免重复） |
+
+只有 3 和 4 适合回落到旧的单聊通知；2、5、6 重发可能重复。
+
+终端仍存活时，话题内 owner 的普通文本消息会通过 Claude Code 原生跨会话收件箱转递给运行中的本地会话。本地 CLI 在 attach/notify 时读取 `CLAUDE_CODE_MESSAGING_SOCKET` 和 `CLAUDE_CODE_MESSAGING_TOKEN`；网关只保存在内存中，不写 SQLite、日志或审计。holder 释放、重新认领、`/new` 和网关重启后重新注册，旧 endpoint 不被信任。
+
+- 转递成功后话题收到「已提交给本机会话；回复会出现在本话题」，不承诺已读；最终回复由本地会话执行包装消息中的 `feishu-bot topic reply --native ... --message-id ... --text-file -` 回到话题。
+- 包装消息写明「来自飞书私聊话题，网关已校验为 owner 本人」。按 owner 本人输入处理，可以批准门控操作，但仍受原生权限规则和项目配置约束；这是个人使用场景的信任边界，不是通用远程审批通道。
+- 只转递 DM owner 的消息；网关命令仍由网关处理。图片／文件本期只转递文本占位并说明未携带附件，不专门拒绝；本地路径携带随后续迭代评估。
+- socket 缺失或写入失败时退回排队并提示；已提交但未回复的消息在终端退出、`/new`、重启或转递失败时标 uncertain、不重放。
+- 原生收件箱协议是 CC 内部实现派生的实验性接口，CC 升级可能变化；Codex 会话不在本期范围。
+
+[场景配置](usage.md#任务结果通知与话题内交互) · [对话规则](conversation-contract.md#任务通知与话题转递) · [术语](terminology.md) · [验收](validation.md)

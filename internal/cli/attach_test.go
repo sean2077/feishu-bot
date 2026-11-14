@@ -107,6 +107,16 @@ func (g *fakeAttachGateway) Attach(_ context.Context, req core.AttachRequest) co
 	return g.result
 }
 
+func (g *fakeAttachGateway) Notify(_ context.Context, req core.NotifyRequest) core.NotifyResult {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return core.NotifyResult{OK: false, Error: &core.AdoptError{Code: core.NotifyErrorInvalidRequest, Message: "not used in this test"}}
+}
+
+func (g *fakeAttachGateway) TopicReply(_ context.Context, req core.TopicReplyRequest) core.TopicReplyResult {
+	return core.TopicReplyResult{Error: &core.AdoptError{Code: core.NotifyErrorInvalidRequest, Message: "not used in this test"}}
+}
+
 func (g *fakeAttachGateway) seen() core.AttachRequest {
 	g.mu.Lock()
 	defer g.mu.Unlock()

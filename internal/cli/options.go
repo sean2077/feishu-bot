@@ -25,6 +25,7 @@ type Options struct {
 	AttachNative                               string
 	AttachHolderPID                            int
 	AttachHolderSet                            bool
+	TopicMessageID, TopicTextFile              string
 
 	EnvFile  string
 	LogFile  string
@@ -120,7 +121,22 @@ func Parse(args []string) (Options, error) {
 		return parseConfig(args[2:], o)
 	}
 	if o.Command == "attach" {
-		return parseAttach(args[1:], o)
+		return parseAdoptFlags(args[1:], o, "attach")
+	}
+	if o.Command == "notify" {
+		return parseAdoptFlags(args[1:], o, "notify")
+	}
+	if o.Command == "topic" {
+		if len(args) < 2 || args[1] == "--help" || args[1] == "-h" {
+			o.Command = "help"
+			o.Subcommand = "topic"
+			return o, nil
+		}
+		o.Subcommand = args[1]
+		if o.Subcommand != "reply" {
+			return o, errors.New("unknown topic command; use feishu-bot topic --help")
+		}
+		return parseTopicReply(args[2:], o)
 	}
 	switch o.Command {
 	case "help", "init", "doctor", "run":
@@ -287,13 +303,13 @@ func parseTop(args []string, o Options) (Options, error) {
 	return resolveOptions(&o)
 }
 
-func parseAttach(args []string, o Options) (Options, error) {
+func parseAdoptFlags(args []string, o Options, sub string) (Options, error) {
 	seen := map[string]bool{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--help" || arg == "-h" {
 			o.Command = "help"
-			o.Subcommand = "attach"
+			o.Subcommand = sub
 			return o, nil
 		}
 		matched := false
@@ -354,7 +370,70 @@ func parseAttach(args []string, o Options) (Options, error) {
 			}
 			o.JSON = true
 		default:
-			return o, errors.New("unexpected option; see feishu-bot attach --help")
+			return o, fmt.Errorf("unexpected option; see feishu-bot %s --help", sub)
+		}
+	}
+	return resolveOptions(&o)
+}
+
+func parseAttach(args []string, o Options) (Options, error) {
+	return parseAdoptFlags(args, o, "attach")
+}
+
+func parseTopicReply(args []string, o Options) (Options, error) {
+	seen := map[string]bool{}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--help" || arg == "-h" {
+			o.Command = "help"
+			o.Subcommand = "topic"
+			return o, nil
+		}
+		matched := false
+		for name, dst := range map[string]*string{"--config": &o.ConfigPath, "--native": &o.AttachNative, "--message-id": &o.TopicMessageID} {
+			if arg == name || strings.HasPrefix(arg, name+"=") {
+				if err := mark(seen, name); err != nil {
+					return o, err
+				}
+				value, _, err := takeValue(args, &i, arg, name)
+				if err != nil {
+					return o, err
+				}
+				*dst = value
+				if name == "--config" {
+					o.ConfigExplicit = true
+				}
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+		switch {
+		case arg == "--text-file" || strings.HasPrefix(arg, "--text-file="):
+			if err := mark(seen, "--text-file"); err != nil {
+				return o, err
+			}
+			value := strings.TrimPrefix(arg, "--text-file=")
+			if arg == "--text-file" {
+				i++
+				if i >= len(args) {
+					return o, errors.New("--text-file requires a path or -")
+				}
+				value = args[i]
+			}
+			if value == "" || strings.ContainsRune(value, 0) || value != "-" && strings.TrimSpace(value) == "" {
+				return o, errors.New("--text-file requires a path or -")
+			}
+			o.TopicTextFile = value
+		case arg == "--json":
+			if o.JSON {
+				return o, errors.New("--json may only be specified once")
+			}
+			o.JSON = true
+		default:
+			return o, errors.New("unexpected option; see feishu-bot topic reply --help")
 		}
 	}
 	return resolveOptions(&o)

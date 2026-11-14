@@ -16,6 +16,7 @@ import (
 
 	"github.com/sean2077/feishu-bot/internal/config"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/native"
 	"github.com/sean2077/feishu-bot/internal/process"
 	"github.com/sean2077/feishu-bot/internal/store"
 	"github.com/sean2077/feishu-bot/internal/workspace"
@@ -191,6 +192,8 @@ type Gateway struct {
 	otherBotRounds                                               map[string]otherBotRound
 	adoptNotice                                                  map[string]bool
 	adoptLocks                                                   keyedLocks
+	adoptEndpoints                                               map[string]adoptEndpoint
+	adoptSender                                                  func(context.Context, string, string, string) error
 	retryConfirmMu                                               sync.Mutex
 	retryConfirm                                                 map[string]int64
 	thinkingIconMu                                               sync.Mutex
@@ -203,7 +206,8 @@ type Gateway struct {
 func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerFactory, log core.Logger) *Gateway {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{config: c, store: st, transport: tr, factory: factory, logger: log, ctx: ctx, cancel: cancel,
-		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, launchFailure: map[string]map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}, otherBotRounds: map[string]otherBotRound{}, adoptNotice: map[string]bool{}, retryConfirm: map[string]int64{}, exportFailures: map[string]string{}}
+		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, launchFailure: map[string]map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}, otherBotRounds: map[string]otherBotRound{}, adoptNotice: map[string]bool{}, adoptEndpoints: map[string]adoptEndpoint{}, retryConfirm: map[string]int64{}, exportFailures: map[string]string{}}
+	g.adoptSender = native.SendInbox
 	if _, err := rand.Read(g.historyKey[:]); err != nil {
 		panic("cannot initialize history cursor authentication")
 	}
@@ -299,6 +303,19 @@ func (g *Gateway) Recover(ctx context.Context) error {
 	now := time.Now().UnixMilli()
 	if err = g.store.ExpirePendingAdoptions(now, now); err != nil {
 		return err
+	}
+	// The gateway restart loses the in-memory inbox endpoints. Any message that
+	// was submitted but not answered is evidence, not a request to replay.
+	if rooms, e := g.store.ForwardedRooms(); e != nil {
+		return e
+	} else {
+		for _, key := range rooms {
+			if room, ok := g.roomFromKey(key); ok {
+				g.failForwarded(room, "restart")
+			} else {
+				_, _ = g.store.FailForwarded(key)
+			}
+		}
 	}
 	if err := g.recoverInterrupted(ctx); err != nil {
 		return err
@@ -534,6 +551,14 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 			return nil
 		}
 		return g.command(ctx, room, m)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(m.Text), "/") && room.AdoptedState == store.AdoptedOpen && room.DMUser != "" && m.SenderID == room.DMUser {
+		// A verified owner topic message goes to the live local session instead
+		// of waiting for the terminal to exit. Commands keep their gateway
+		// meaning. A false return falls back to the ordinary queued holder path.
+		if relayed, relayErr := g.relayTopicMessage(ctx, room, m); relayed {
+			return relayErr
+		}
 	}
 	supplementTo := ""
 	if cmd == "/btw" || cmd == "/ps" {
