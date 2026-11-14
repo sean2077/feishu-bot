@@ -651,7 +651,7 @@ feishu-bot attach --config /srv/feishu-bot/config.json \
 
 认领结果中的 state 为 `open` 时才表示话题已建立；`pending` 表示处理中，`uncertain` 表示外部写入结果未确认。后两者不会自动重发，成功发出的根消息 ID 会保留用于核查。终端仍存活时，话题内消息排队并提示等待；退出终端后网关用原 native ID 和登记 cwd 续接。`/status` 会显示 `awaiting_terminal_exit`，`/new` 可在话题内新建会话并解除原终端占用。
 
-话题内 `/status` 另外显示本地会话名、完整原生会话 ID 和终端占用状态（仍占用时带 PID）；`/status --json` 的 `adoption` 对象包含 `state`、`native`、`root`、`thread`、`name`、`holderActive` 和 `holderPid`。`attach --json` 结果增加 `sessionName` 和 `topicUrl`。
+话题内 `/status` 另外显示本地会话名、完整原生会话 ID 和终端占用状态（仍占用时带 PID）；`/status --json` 的 `adoption` 对象包含 `state`、`native`、`root`、`thread`、`name`、`holderActive` 和 `holderPid`。`attach --json` 结果增加 `session_name` 和 `topic_url`。
 
 Windows 注意：**Git Bash 会把以 `/` 开头的参数改写成 Windows 路径**。在 Git Bash 中运行技能或手动调用时先设置 `MSYS_NO_PATHCONV=1`，尤其是标题等以 `/` 开头的文本：
 

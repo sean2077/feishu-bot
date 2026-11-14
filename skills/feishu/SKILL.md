@@ -41,7 +41,7 @@ This skill performs one local action: it asks the already-running `feishu-bot` g
    If several DMs enable `adoptRoots`, add `--user <open_id>`. Never guess it. The session display name is read automatically from `$CLAUDE_CONFIG_DIR/sessions/<holder-pid>.json` when its `sessionId` matches; pass `--name "<label>"` only when the user asks for a specific name.
 
 3. Read the JSON result:
-   - `ok: true` and `state: "open"`: report the chat, root message ID, thread ID, `sessionName`, `topicUrl` and any warnings. Tell the user to run `/exit` when ready; the topic takes over after the terminal exits.
+   - `ok: true` and `state: "open"`: report the chat, root message ID, thread ID, `session_name`, `topic_url` and any warnings. Tell the user to run `/exit` when ready; the topic takes over after the terminal exits.
    - `ok: false` with `state: "pending"`: the request is still being processed. Tell the user to check the DM shortly; do not retry.
    - `ok: false` with `state: "uncertain"`: report the state and root message ID if present. Tell the user to inspect the DM; never retry automatically.
    - No JSON / non-zero exit: report the error. A 30-second timeout means the result is unconfirmed, not a failure; tell the user to check Feishu and not to resend blindly.

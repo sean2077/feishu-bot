@@ -75,8 +75,8 @@ type AttachResult struct {
 	ChatID        string   `json:"chatId,omitempty"`
 	RootMessageID string   `json:"rootMessageId,omitempty"`
 	ThreadID      string   `json:"threadId,omitempty"`
-	SessionName   string   `json:"sessionName,omitempty"`
-	TopicURL      string   `json:"topicUrl,omitempty"`
+	SessionName   string   `json:"session_name,omitempty"`
+	TopicURL      string   `json:"topic_url,omitempty"`
 	Warnings      []string `json:"warnings,omitempty"`
 	Error         string   `json:"error,omitempty"`
 }
