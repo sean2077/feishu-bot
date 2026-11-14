@@ -265,6 +265,7 @@ func (g *Gateway) existingAdoption(ctx context.Context, req core.AttachRequest, 
 	if err != nil {
 		return result, err
 	}
+	result.SessionName = chosenAdoptName(req.SessionName, record.SessionName, record.Native)
 	g.audit(record.Room, "adopt_status_reported", core.Args{"native": record.Native, "user": req.User, "state": record.State})
 	return result, nil
 }

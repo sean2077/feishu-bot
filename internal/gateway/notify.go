@@ -141,7 +141,9 @@ func (g *Gateway) Notify(ctx context.Context, req core.NotifyRequest) core.Notif
 			return notifyFailure(core.NotifyErrorInvalidRequest, "该原生会话属于其他私聊，不能在此通知")
 		}
 		if record.State != store.AdoptedOpen {
-			return existingNotifyResult(record)
+			result := existingNotifyResult(record)
+			result.SessionName = chosenAdoptName(req.SessionName, record.SessionName, record.Native)
+			return result
 		}
 		if _, _, bad := g.notifyWork(req, record.Work); bad != nil {
 			return core.NotifyResult{OK: false, Error: bad}
