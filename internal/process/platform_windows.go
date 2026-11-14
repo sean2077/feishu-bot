@@ -24,6 +24,7 @@ var firstThread = kernel32.NewProc("Thread32First")
 var nextThread = kernel32.NewProc("Thread32Next")
 var openThread = kernel32.NewProc("OpenThread")
 var resumeThread = kernel32.NewProc("ResumeThread")
+var getProcessTimes = kernel32.NewProc("GetProcessTimes")
 var closeHandle = kernel32.NewProc("CloseHandle")
 
 type jobBasicLimit struct {
@@ -77,6 +78,27 @@ func Alive(pid int) bool {
 	defer closeHandle.Call(handle)
 	result, _, _ := waitForSingleObject.Call(handle, 0)
 	return result == 0x102 // WAIT_TIMEOUT
+}
+
+type fileTime struct{ Low, High uint32 }
+
+// StartTime returns a stable creation timestamp for an existing process. It is
+// compared for equality only, so raw FILETIME ticks are sufficient.
+func StartTime(pid int) (int64, bool) {
+	if pid <= 0 {
+		return 0, false
+	}
+	handle, _, _ := openProcess.Call(0x1000, 0, uintptr(pid)) // QUERY_LIMITED_INFORMATION
+	if handle == 0 {
+		return 0, false
+	}
+	defer closeHandle.Call(handle)
+	var creation, exit, kernel, user fileTime
+	r, _, _ := getProcessTimes.Call(handle, uintptr(unsafe.Pointer(&creation)), uintptr(unsafe.Pointer(&exit)), uintptr(unsafe.Pointer(&kernel)), uintptr(unsafe.Pointer(&user)))
+	if r == 0 {
+		return 0, false
+	}
+	return int64(creation.High)<<32 | int64(creation.Low), true
 }
 func prepareCommand(cmd *exec.Cmd) {
 	// Suspend before the first instruction: all descendants enter the owned Job,

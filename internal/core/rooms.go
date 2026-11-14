@@ -34,6 +34,53 @@ func (c Config) HistoryChats(dm string) []HistoryChat {
 	return nil
 }
 
+// DM returns the configured private-chat binding for one user.
+func (c Config) DM(user string) (DM, bool) {
+	for _, d := range c.DMs {
+		if d.UserID == user {
+			return d, true
+		}
+	}
+	return DM{}, false
+}
+
+// AdoptRoots returns the configured local-adoption roots for one DM binding.
+// The returned slice is a copy so callers cannot mutate the loaded config.
+func (c Config) AdoptRoots(dm string) []string {
+	for _, b := range c.DMs {
+		if b.UserID == dm {
+			return append([]string(nil), b.AdoptRoots...)
+		}
+	}
+	return nil
+}
+
+// AdoptEnabled reports whether the DM may adopt local sessions: the binding
+// must opt in with at least one root and its project must inherit the live
+// Claude configuration.
+func (c Config) AdoptEnabled(dm string) bool {
+	b, ok := c.DM(dm)
+	if !ok || len(b.AdoptRoots) == 0 {
+		return false
+	}
+	p, ok := c.Project(b.ProjectID)
+	return ok && p.NativeConfig == "inherit"
+}
+
+// AdoptWorkAllowed reports whether work is inside one of the DM's configured
+// adoption roots. Both sides must already be physical paths.
+func (c Config) AdoptWorkAllowed(dm, work string) bool {
+	if work == "" {
+		return false
+	}
+	for _, root := range c.AdoptRoots(dm) {
+		if Inside(root, work) {
+			return true
+		}
+	}
+	return false
+}
+
 // HistoryChatTarget resolves a configured name or chat ID within one DM.
 // Names and IDs are validated unique together, so the match is unambiguous.
 func (c Config) HistoryChatTarget(dm, key string) (HistoryChat, bool) {
@@ -173,6 +220,26 @@ func (c Config) ThreadRoomFor(chat, root string) (Room, bool) {
 	return r, true
 }
 
+// AdoptedTopicRoom resolves the room of one adopted DM topic. The key appends
+// the registered root message ID to the unchanged DM room key fields. The
+// workspace working directory is not part of the key; the gateway fills it
+// from the durable adoption record after re-validating the configured roots.
+func (c Config) AdoptedTopicRoom(chat, dm, root string) (Room, bool) {
+	if dm == "" || !ValidThreadRoot(root) || !c.AdoptEnabled(dm) {
+		return Room{}, false
+	}
+	base, ok := c.RoomFor(chat, dm)
+	if !ok {
+		return Room{}, false
+	}
+	key, _ := json.Marshal([]any{c.TenantID, c.AppID, base.ProjectID, "p2p", chat, dm, root})
+	base.Key = string(key)
+	// ChatKey stays the six-part DM room key: adopted topics share the DM
+	// workspace, native HOME placement and chat-level inbox budget.
+	base.Thread = root
+	return base, true
+}
+
 // WorkingDirectory returns the explicit directory for this room, or an empty
 // string for the managed, seeded workspace. Only an explicit topic binding
 // overrides the project directory; neither value is taken from chat input.
@@ -228,6 +295,15 @@ func ParseRoomKey(key string) (chat, dm, thread string, ok bool) {
 		if !ok || dm == "" {
 			return "", "", "", false
 		}
+	case kind == "p2p" && len(parts) == 7:
+		dm, ok = parts[5].(string)
+		if !ok || dm == "" {
+			return "", "", "", false
+		}
+		thread, ok = parts[6].(string)
+		if !ok || !ValidThreadRoot(thread) {
+			return "", "", "", false
+		}
 	case kind == "group" && len(parts) == 6:
 		if parts[5] != nil {
 			return "", "", "", false
@@ -244,8 +320,10 @@ func ParseRoomKey(key string) (chat, dm, thread string, ok bool) {
 }
 
 // RoomForKey resolves a stored room key under the current configuration. A
-// topic key is valid only while its group remains thread-scoped; the chat room
-// key of the same group stays valid so earlier chat sessions remain reachable.
+// group topic key is valid only while its group remains thread-scoped; a DM
+// topic key is valid only while its DM still enables local adoption. The chat
+// room key of the same chat stays valid so earlier chat sessions remain
+// reachable.
 func (c Config) RoomForKey(key string) (Room, bool) {
 	chat, dm, thread, ok := ParseRoomKey(key)
 	if !ok {
@@ -253,7 +331,11 @@ func (c Config) RoomForKey(key string) (Room, bool) {
 	}
 	var r Room
 	if thread != "" {
-		r, ok = c.ThreadRoomFor(chat, thread)
+		if dm != "" {
+			r, ok = c.AdoptedTopicRoom(chat, dm, thread)
+		} else {
+			r, ok = c.ThreadRoomFor(chat, thread)
+		}
 	} else {
 		r, ok = c.RoomFor(chat, dm)
 	}

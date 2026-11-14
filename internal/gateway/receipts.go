@@ -129,7 +129,7 @@ func (g *Gateway) flushReceipt(id string) {
 			return
 		}
 		if desired != "clear" {
-			r, ok := RoomFromKey(g.config, room)
+			r, ok := g.roomFromKey(room)
 			if !ok || !AuthorizedAuthor(r, sender.String) {
 				_, _ = g.store.DB.Exec("UPDATE receipts SET desired='clear' WHERE id=?", id)
 				continue

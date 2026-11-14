@@ -57,7 +57,6 @@ func TestThreadRoomKeyRoundTripsOnlyWhileThreadScoped(t *testing.T) {
 	}
 	for _, key := range []string{
 		`["tenant","app","project","group","oc_topics","member","om_root"]`,
-		`["tenant","app","project","p2p","oc_dm","member","om_root"]`,
 		`["tenant","app","project","group","oc_topics",null,"om/../x"]`,
 		`["tenant","app","project","group","oc_topics",null,""]`,
 		`["tenant","app","project","group","oc_topics","member"]`,

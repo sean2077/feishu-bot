@@ -407,6 +407,9 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 	}
 	g.reclaimPressure(ctx)
 	g.poolMu.Unlock()
+	// Release holders before kicking, so an exited terminal's queued input can
+	// be dispatched by the same sweep.
+	g.sweepAdoptions(now)
 	g.kickWaiting()
 	g.pruneExports(now)
 	paused := g.exportFeedback(ctx, now)
@@ -457,7 +460,7 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 		return
 	}
 	for _, key := range keys {
-		r, ok := RoomFromKey(g.config, key)
+		r, ok := g.roomFromKey(key)
 		if !ok {
 			continue
 		}

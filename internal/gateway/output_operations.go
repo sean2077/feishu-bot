@@ -45,7 +45,7 @@ AND d.origin IN (SELECT json_extract(value,'$.id') FROM json_each(o.origins)) LI
 	// Native final replies are inserted in render.persist's transaction. Close
 	// an already known preview atomically with that inherited disposition.
 	if tx, ok := db.(*sql.Tx); ok {
-		r, exists := RoomFromKey(g.config, room)
+		r, exists := g.roomFromKey(room)
 		if exists {
 			_, _, err = g.closeDiscardedOutputTx(context.Background(), tx, id, r, "")
 		}
@@ -89,7 +89,7 @@ func (g *Gateway) discardOutputCommand(ctx context.Context, r core.Room, m core.
 func (g *Gateway) discardOutput(ctx context.Context, r core.Room, id, actor string) (outputDiscardResult, error) {
 	var result outputDiscardResult
 	var closingStatuses []string
-	current, ok := RoomFromKey(g.config, r.Key)
+	current, ok := g.roomFromKey(r.Key)
 	if !ok || !canManage(current, actor) {
 		return result, errOutputNotFound
 	}

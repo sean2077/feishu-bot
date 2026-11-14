@@ -36,7 +36,7 @@ UNION SELECT room,0,0 FROM action_runs WHERE state='running'`)
 		}
 		for key, state := range rooms {
 			hadRequest, interrupted := state.request, state.interrupted
-			r, ok := RoomFromKey(g.config, key)
+			r, ok := g.roomFromKey(key)
 			if !ok {
 				continue
 			}

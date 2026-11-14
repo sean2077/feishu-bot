@@ -123,6 +123,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `groups[]`、`dms[]` | 空 | 群与私聊授权，见[飞书应用与授权](#飞书应用与授权) |
 | `groups[].topicHistory` | `"topic"` | `"topic"` 默认只读当前话题；`"chat"` 允许 `read_chat_history` 的 `scope: "chat"` 读取同群时间线和其他话题。只适用于 `sessionScope: "thread"`，其他群配置会在加载时拒绝 |
 | `dms[].historyChats` | 空 | 私聊跨群读取白名单：`[{"chatId","name"}]`，目标必须是显式 `groups[]` 绑定；发起人须为目标群 maintainer 或显式 member（`allowAllMembers` 不算），只读文本并审计；读取后本轮写操作改为 DM 用户审批（`approval: "none"`／`"open"` 的固定操作除外，仍直接执行并记 `tainted=true`） |
+| `dms[].adoptRoots` | 空 | 本地 Claude Code 会话认领根目录。仅当该私聊绑定的项目 `nativeConfig: "inherit"` 时允许；每个目录须存在，按配置文件目录解析并转为物理路径，且不得与 `dataDir/rooms` 相互包含。未设置时认领完全关闭 |
 | `runtime.maxWorkers`、`runtime.idleMs` | 8、900000 | 活跃原生进程上限（1–128）与空闲回收时间，见[容量与恢复](#容量与恢复) |
 | `limits.backgroundMessages`／`backgroundMs` | 0／900000 | 非 @ 群消息缓存条数（0–200）与保留时间；默认不缓存 |
 | `limits.textChars` | 20000 | 单条输入正文字符上限（100–200000），超出时明确拒绝 |
@@ -608,3 +609,64 @@ feishu-bot daemon start
 原生 TUI 使用保存的 native ID、工作目录、配置模式、已应用模型配置（未显式选择时使用项目默认）和权限模式。权限提示在终端回答；飞书专用 MCP、固定操作 relay 与飞书输出交付不在本地开启。该期间的原生用量不会写入网关用量记录，覆盖缺口会显示在 `/usage` 中。此入口服务于同一受信任账户下的接续，目录和锁不构成多租户沙箱。
 
 [场景配置](usage.md) · [对话规则](conversation-contract.md) · [权限与数据边界](../SECURITY.md) · [验收](validation.md)
+
+## 认领本地会话到飞书私聊话题
+
+这个入口把本机正在使用的 Claude Code 会话交给同一用户的私聊话题：先在本机终端发起认领，终端退出后由飞书话题继续。它与[本地终端交接](#本地终端交接)方向相反，不需要停止正在运行的服务；网关必须已经在运行。
+
+先在私聊绑定上启用认领根目录，并确保该私聊绑定的项目使用 `nativeConfig: "inherit"`：
+
+```json
+{
+  "projects": [{ "id": "assistant", "maintainers": ["ou_example_owner"], "nativeConfig": "inherit", "actions": [] }],
+  "dms": [{
+    "userId": "ou_example_owner",
+    "projectId": "assistant",
+    "adoptRoots": ["/srv/example-projects", "~/example-repo"]
+  }]
+}
+```
+
+`adoptRoots` 接受绝对路径或相对配置文件目录的路径；每个目录必须已存在，加载时转为物理路径，且不能与 `dataDir/rooms` 相互包含。未配置时认领和七段私聊话题键都关闭。项目不是 `inherit` 时配置加载失败，因为隔离模式读不到本机终端会话历史。
+
+技能源是项目技能 `.agents/skills/feishu/SKILL.md`，`.claude/skills/feishu` 是 relink 生成的项目投影。在 feishu-bot 仓库内工作时 `/feishu` 可直接使用；实际认领通常发生在其他项目，需要把同一目录复制到用户级（网关不会读取技能，也不会替 Agent 规划步骤）：
+
+```sh
+mkdir -p ~/.claude/skills
+cp -r /path/to/feishu-bot/.agents/skills/feishu ~/.claude/skills/feishu
+```
+
+修改技能后编辑 `.agents/skills/feishu/SKILL.md`，运行 `bash .agents/relink-skills.sh`，并提交源与 `.claude/skills/feishu` 投影。
+
+在本机 Claude Code 中说“转到飞书继续”“开个飞书话题聊”或运行 `/feishu`，技能会写一段交接摘要并调用：
+
+```sh
+feishu-bot attach --config /srv/feishu-bot/config.json \
+  --title "继续排查构建失败" --summary-file /tmp/handoff.md --json
+```
+
+`--native` 默认取 `$CLAUDE_CODE_SESSION_ID`，`--holder-pid` 默认取 `$CLAUDE_PID`；两者也可显式传入。工作目录不取 shell 当前目录：命令在网关所用的继承 Claude 配置目录（`CLAUDE_CONFIG_DIR` 或 `~/.claude`）下按 native ID 定位 transcript，读取其启动 cwd，并核对项目目录编码。找不到、多个匹配或目录不一致都拒绝。有多个启用 adoptRoots 的私聊时须用 `--user` 指定；只有一个时可省略。`--summary-file -` 从标准输入读取，摘要最多 6000 字，显示在话题首条回复中，不进入审计。
+
+认领结果中的 state 为 `open` 时才表示话题已建立；`pending` 表示处理中，`uncertain` 表示外部写入结果未确认。后两者不会自动重发，成功发出的根消息 ID 会保留用于核查。终端仍存活时，话题内消息排队并提示等待；退出终端后网关用原 native ID 和登记 cwd 续接。`/status` 会显示 `awaiting_terminal_exit`，`/new` 可在话题内新建会话并解除原终端占用。
+
+Windows 注意：**Git Bash 会把以 `/` 开头的参数改写成 Windows 路径**。在 Git Bash 中运行技能或手动调用时先设置 `MSYS_NO_PATHCONV=1`，尤其是标题等以 `/` 开头的文本：
+
+```sh
+MSYS_NO_PATHCONV=1 feishu-bot attach --config 'C:/Users/example/feishu-bot/config.json' \
+  --title "/tmp 路径也要保留" --summary-file - --json
+```
+
+PowerShell 不做该转换，但调用本地程序时使用 `&`；路径仍建议使用正斜杠或加引号。
+
+限制：
+
+- 交接语义要求终端退出后才由话题续接；终端仍存活时不会启动第二个原生进程。holder 释放由网关的定期检查发现（默认约 30 秒），之后同一轮检查才处理排队输入。强制结束本机进程也可能让占用记录留到下次检查。Linux 的 holder 启动身份由内核 starttime 与 boot ID 组成；升级换了身份格式后，仍在运行的旧占用会被视为不可核对，升级前应先退出终端或在话题内 `/stop`，升级后重新 attach。
+- `attach` 等待 30 秒仍未收到结果时会尝试撤回本地请求；撤回成功表示网关尚未开始处理，没有创建话题。若网关已经取走请求（`processing`）则撤回失败，结果仍未确认，按提示核查飞书，不要重复发送。
+- 对已经认领的会话，重新发起认领前必须确认话题空闲。话题里仍有运行中的原生进程、排队／已交出的输入、未完成输出、运行中的操作或审批时，重新认领会被拒绝，需先在话题内 `/stop`。在本机执行 `claude --resume` 之前也必须先 `/stop`；这是本地绕过网关的操作，网关无法阻止两个写入方同时续接同一原生会话。
+- 反向交接回本地终端仍需先停止服务并使用 `session run`；认领话题的会话会按登记 cwd 核对，目录失效时拒绝。
+- 本地 transcript 最近使用的 model 与网关将启动的 model 不同时会警告；跨模型或跨供应商续接可能因 thinking 签名等失败。
+- 如果 transcript 记录的启动路径经过符号链接、目录联接或大小写差异，物理工作目录编码出的项目目录会与 transcript 所在目录不同，`--resume` 将找不到会话；认领在 attach 阶段直接拒绝，需从该目录的原始物理路径重启 Claude Code。
+- 认领前的本地用量未经过网关观测，`/usage` 会把这部分标记为未知。
+- 认领话题不参与 `dms[].historyChats`，也不能被其他会话读取；同一系统账户下的目录和进程不是多租户沙箱。
+
+[场景配置](usage.md#从本地-claude-code-转到飞书话题) · [对话规则](conversation-contract.md#认领本地会话到私聊话题) · [术语](terminology.md) · [验收](validation.md)

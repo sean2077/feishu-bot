@@ -90,6 +90,22 @@ func deploymentChecks(c core.Config) []Diagnostic {
 		check(fmt.Sprintf("dms[%d].userId", i), d.UserID)
 	}
 	checks := []Diagnostic{{Name: "configuration values", OK: len(unfinished) == 0, Detail: "Replace template fields: " + strings.Join(unfinished, ", ")}, {Name: "chat bindings", OK: len(c.Groups)+len(c.DMs) > 0, Detail: "At least one authorized group or DM user is required."}}
+	for i, dm := range c.DMs {
+		if len(dm.AdoptRoots) == 0 {
+			continue
+		}
+		ok := true
+		for _, root := range dm.AdoptRoots {
+			if info, err := os.Stat(root); err != nil || !info.IsDir() {
+				ok = false
+			}
+		}
+		detail := "enabled"
+		if !ok {
+			detail = "configured adoption root is missing"
+		}
+		checks = append(checks, Diagnostic{Name: fmt.Sprintf("dms[%d].adoptRoots", i), OK: ok, Detail: detail})
+	}
 	allowOtherBotsExplicit := true
 	for _, g := range c.Groups {
 		if g.AllowOtherBots && g.ChatID == core.AnyGroupChatID {

@@ -189,6 +189,8 @@ type Gateway struct {
 	historyKey                                                   [32]byte
 	otherBotMu                                                   sync.Mutex
 	otherBotRounds                                               map[string]otherBotRound
+	adoptNotice                                                  map[string]bool
+	adoptLocks                                                   keyedLocks
 	retryConfirmMu                                               sync.Mutex
 	retryConfirm                                                 map[string]int64
 	thinkingIconMu                                               sync.Mutex
@@ -201,7 +203,7 @@ type Gateway struct {
 func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerFactory, log core.Logger) *Gateway {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{config: c, store: st, transport: tr, factory: factory, logger: log, ctx: ctx, cancel: cancel,
-		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, launchFailure: map[string]map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}, otherBotRounds: map[string]otherBotRound{}, retryConfirm: map[string]int64{}, exportFailures: map[string]string{}}
+		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, launchFailure: map[string]map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}, otherBotRounds: map[string]otherBotRound{}, adoptNotice: map[string]bool{}, retryConfirm: map[string]int64{}, exportFailures: map[string]string{}}
 	if _, err := rand.Read(g.historyKey[:]); err != nil {
 		panic("cannot initialize history cursor authentication")
 	}
@@ -291,6 +293,13 @@ func (g *Gateway) Recover(ctx context.Context) error {
 		g.stopBlocked[key] = true
 	}
 	g.mu.Unlock()
+	// A gateway restart cannot continue an in-flight adoption send. Any pending
+	// intent left from before this process started is uncertain evidence, not a
+	// request to replay the external write.
+	now := time.Now().UnixMilli()
+	if err = g.store.ExpirePendingAdoptions(now, now); err != nil {
+		return err
+	}
 	if err := g.recoverInterrupted(ctx); err != nil {
 		return err
 	}
@@ -308,7 +317,7 @@ func (g *Gateway) Recover(ctx context.Context) error {
 		return err
 	}
 	for _, key := range pending {
-		r, ok := RoomFromKey(g.config, key)
+		r, ok := g.roomFromKey(key)
 		ds, e := g.store.Pending(key)
 		if e != nil {
 			return e
@@ -342,7 +351,7 @@ func (g *Gateway) Recover(ctx context.Context) error {
 	}
 	rows.Close()
 	for _, key := range outputRooms {
-		if r, ok := RoomFromKey(g.config, key); ok {
+		if r, ok := g.roomFromKey(key); ok {
 			for _, id := range g.retryable(key) {
 				id := id
 				g.task(func() { _, _ = g.deliverOutput(g.ctx, id, r, false) })
@@ -353,8 +362,13 @@ func (g *Gateway) Recover(ctx context.Context) error {
 	return ctx.Err()
 }
 func (g *Gateway) sanitize(r core.Room, d *core.Delivery) bool {
-	current, ok := routeQueued(g.config, r.Key, d.Message)
+	current, ok := g.routeQueued(r.Key, d.Message)
 	if !ok || !Triggers(current, d.Message) || d.Message.InputIssue != "" {
+		return false
+	}
+	if current.AdoptedState != "" && current.AdoptedState != store.AdoptedOpen {
+		// A queued input from an interrupted adoption must not survive recovery
+		// into a launch attempt; the topic only reports its state.
 		return false
 	}
 	if d.SupplementTo != "" && d.Command != nil {
@@ -389,8 +403,9 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		return nil
 	}
 	defer g.wg.Done()
-	room, ok := Route(g.config, original)
+	room, ok := g.route(original)
 	if !ok {
+		g.notifyAdoptionFailure(original)
 		return nil
 	}
 	if !otherBot(original) {
@@ -412,6 +427,16 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	seen, err := g.store.Seen(room.Key, original.ID)
 	if err != nil || seen {
 		return err
+	}
+	if room.AdoptedState != "" && room.AdoptedState != store.AdoptedOpen {
+		// An interrupted adoption is durable evidence, not a request to launch
+		// another native process. Answer once in the topic and keep the input.
+		if _, err = g.store.Insert(room.Key, original, "done"); err != nil {
+			return err
+		}
+		record, _, _ := g.store.AdoptedTopicByRoom(room.Key)
+		g.notifyAdoptOnce("state:"+room.Key, room, adoptedStateNotice(record), &original)
+		return nil
 	}
 	m := original
 	m.Text = cut(strings.TrimSpace(m.Text), g.config.Limits.TextChars)
@@ -612,6 +637,13 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		g.notify(room, stopBlockedNotice, &m)
 		return nil
 	}
+	if _, terminal := g.holderFor(room, session.ID); terminal {
+		// The local terminal still owns this native session. Queue the input but
+		// never start a second writer; dispatch is also gated as a safety net.
+		g.acceptReceipt(room, session.ID, m)
+		g.notifyAdoptOnce("holder:"+room.Key, room, adoptedHolderNotice, &m)
+		return nil
+	}
 	g.acceptReceipt(room, session.ID, m)
 	g.kick(room)
 	if command != nil && count > 0 {
@@ -708,7 +740,7 @@ func (g *Gateway) cancelSupplement(r core.Room, d core.Delivery, reason string, 
 			return nil
 		}
 		changed = true
-		current, ok := routeQueued(g.config, r.Key, d.Message)
+		current, ok := g.routeQueued(r.Key, d.Message)
 		if ok && Triggers(current, d.Message) {
 			id, e = g.saveOutput(tx, r, d.SessionID, text, false, "", messageReply(d.Message), d.Message.ThreadID, DisplayCard("补充已取消", text), origin(d.Message), "", "", "recovery", "")
 		} else {
@@ -871,7 +903,7 @@ func (g *Gateway) kickWaiting() {
 	}
 	g.mu.Unlock()
 	for _, key := range keys {
-		r, ok := RoomFromKey(g.config, key)
+		r, ok := g.roomFromKey(key)
 		if ok {
 			g.kick(r)
 		}
@@ -958,6 +990,14 @@ func (g *Gateway) dispatch(r core.Room) (err error) {
 	if g.isClosing() || g.stopIsBlocked(r.Key) {
 		// A kick may have been waiting on the dispatch lock while a stop
 		// failed; the block must hold for it too.
+		return nil
+	}
+	if r.AdoptedState != "" && r.AdoptedState != store.AdoptedOpen {
+		return nil
+	}
+	if g.adoptionHold(r) {
+		// Recovery and periodic kicks must not start a second writer while the
+		// local terminal still owns the adopted native session.
 		return nil
 	}
 	_, profileErr := g.prepareProfile(r)
@@ -1435,7 +1475,7 @@ func (g *Gateway) prepareInputs(s *slot, r core.Room, members []core.Delivery) e
 			return context.Canceled
 		}
 		for _, d := range members {
-			current, ok := routeQueued(g.config, r.Key, d.Message)
+			current, ok := g.routeQueued(r.Key, d.Message)
 			if !ok || !Triggers(current, d.Message) || !g.stillQueued(d) || !g.supplementAlive(r, d) {
 				return errors.New("input preparation cancelled")
 			}

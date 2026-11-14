@@ -141,7 +141,7 @@ func (g *Gateway) event(s *slot, ev core.WorkerEvent) {
 		}
 		s.mu.Unlock()
 		if ok && d.SupplementTo != "" && !accepted {
-			r, allowed := routeQueued(g.config, s.room.Key, d.Message)
+			r, allowed := g.routeQueued(s.room.Key, d.Message)
 			if allowed {
 				if receipt := supplementReceipt(d.Message); receipt != "" {
 					g.notify(r, receipt, &d.Message)
@@ -636,7 +636,7 @@ func (g *Gateway) exitEvent(s *slot, ev core.WorkerEvent) {
 		// rooms may now use the released capacity.
 		keys, _ := g.store.PendingRooms()
 		for _, key := range keys {
-			candidate, ok := RoomFromKey(g.config, key)
+			candidate, ok := g.roomFromKey(key)
 			if !ok {
 				continue
 			}

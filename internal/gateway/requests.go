@@ -9,7 +9,7 @@ import (
 )
 
 func (g *Gateway) request(s *slot, ev core.WorkerEvent) (core.Args, error) {
-	current, ok := RoomFromKey(g.config, s.room.Key)
+	current, ok := g.roomFromKey(s.room.Key)
 	if !ok || s.ctx.Err() != nil {
 		return nil, errors.New("conversation is no longer authorized")
 	}

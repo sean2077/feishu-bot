@@ -110,7 +110,7 @@ func (g *Gateway) outputAllowed(o outgoing, r core.Room) bool {
 	return g.outputAllowedContext(context.Background(), o, r)
 }
 func (g *Gateway) outputAllowedContext(ctx context.Context, o outgoing, r core.Room) bool {
-	current, ok := RoomFromKey(g.config, r.Key)
+	current, ok := g.roomFromKey(r.Key)
 	if !ok {
 		return false
 	}

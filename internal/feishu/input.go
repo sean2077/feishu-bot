@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/store"
 )
 
 type identity struct {
@@ -70,6 +71,15 @@ func (c *Client) validatedRoom(room core.Room) (core.Room, error) {
 	if !ok || current.Key != room.Key {
 		return core.Room{}, fmt.Errorf("feishu: invalid room scope")
 	}
+	if current.DMUser != "" && current.Thread != "" {
+		// A shape-valid seven-part DM key is not authority by itself: the
+		// durable adoption record must name this room and root.
+		record, found, err := store.AdoptedTopicByRoomDB(c.db, current.Key)
+		if err != nil || !found || record.Room != current.Key || record.Root != current.Thread {
+			return core.Room{}, fmt.Errorf("feishu: invalid room scope")
+		}
+		current.AdoptedState = record.State
+	}
 	return current, nil
 }
 
@@ -97,6 +107,59 @@ func (c *Client) configuredMaintainer(id string) bool {
 	return false
 }
 
+// adoptedRoom resolves an inbound DM topic message to its durable adoption
+// record. An open record requires the exact thread and root. Pending or
+// uncertain records are accepted so the gateway can explain the state without
+// launching a native process. A mismatch is rejected and audited; it never
+// falls back to the ordinary DM room.
+func (c *Client) adoptedRoom(m eventMessage, sender string) (core.Room, bool, bool) {
+	reject := func(reason, room string) (core.Room, bool, bool) {
+		c.emit("adopted_topic_rejected", core.Args{"reason": reason})
+		if c.db != nil {
+			_ = store.AuditDB(c.db, room, "adopted_topic_rejected", core.Args{
+				"reason": reason, "message": m.ID, "thread": m.ThreadID, "root": m.RootID,
+			})
+		}
+		return core.Room{}, false, true
+	}
+	record, found, err := store.AdoptedTopicByThreadDB(c.db, m.ThreadID)
+	if err != nil {
+		return reject("lookup_failed", "")
+	}
+	if !found && m.RootID != "" {
+		record, found, err = store.AdoptedTopicByRootDB(c.db, m.RootID)
+		if err != nil {
+			return reject("lookup_failed", "")
+		}
+	}
+	if !found {
+		return core.Room{}, false, false
+	}
+	if record.Room == "" || record.Root == "" {
+		// The adoption intent exists but the root card has not been durably
+		// recorded. There is no room key to answer in yet.
+		return core.Room{}, false, false
+	}
+	if record.State == store.AdoptedOpen {
+		if m.ThreadID != record.Thread || m.RootID != record.Root {
+			return reject("thread_or_root_mismatch", record.Room)
+		}
+	} else {
+		if record.Thread != "" && m.ThreadID != record.Thread {
+			return reject("thread_mismatch", record.Room)
+		}
+		if m.RootID != "" && m.RootID != record.Root {
+			return reject("root_mismatch", record.Room)
+		}
+	}
+	room, ok := c.config.AdoptedTopicRoom(m.ChatID, sender, record.Root)
+	if !ok || room.Key != record.Room {
+		return reject("configuration_changed", record.Room)
+	}
+	room.AdoptedState = record.State
+	return room, true, false
+}
+
 func authorizedAuthor(room core.Room, sender string) bool {
 	return room.Authorizes(sender)
 }
@@ -119,6 +182,15 @@ func (c *Client) allowedHeader(event messageEvent) (core.Room, bool) {
 	room, ok := c.config.MessageRoom(core.Message{ID: m.ID, ChatID: m.ChatID, ChatType: m.ChatType, SenderID: sender, ThreadID: m.ThreadID, RootID: m.RootID})
 	if !ok {
 		return core.Room{}, false
+	}
+	if m.ChatType == "p2p" && m.ThreadID != "" {
+		adopted, found, rejected := c.adoptedRoom(m, sender)
+		if rejected {
+			return core.Room{}, false
+		}
+		if found {
+			room = adopted
+		}
 	}
 	switch event.Sender.Type {
 	case "user":

@@ -110,7 +110,7 @@ Linux／Windows 使用内置服务命令，不需要编写 `.ps1`、`.vbs`、`.c
 
 默认使用原生 `acceptEdits`，常规文件编辑不逐次询问；需要更多确认时使用 `default`。预授权工具由 `allowedTools` 配置，不默认开放任意 shell。Jenkins、GitLab、飞书文档和多维表格只是[可选操作示例](docs/project-actions.md)，不是运行依赖。示例配置见[使用场景](docs/usage.md)。
 
-排查授权时可运行 `feishu-bot config explain --chat <聊天ID> --user <用户ID> --mentioned --json`，它只读取配置并复用实际路由规则。需要在终端继续现有会话时，见[本地终端交接](docs/deployment.md#本地终端交接)。
+排查授权时可运行 `feishu-bot config explain --chat <聊天ID> --user <用户ID> --mentioned --json`，它只读取配置并复用实际路由规则。需要在终端继续现有会话时，见[本地终端交接](docs/deployment.md#本地终端交接)；需要把当前本地会话交给飞书私聊话题时，见[认领本地会话到飞书私聊话题](docs/deployment.md#认领本地会话到飞书私聊话题)。
 
 ## 运行边界
 

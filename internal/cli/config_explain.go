@@ -85,6 +85,10 @@ func explainRoute(c core.Config, o Options) core.Args {
 		reason = "mention_required"
 	}
 	view := core.Args{"scope": "offline_config_policy", "chat": m.ChatID, "chatType": m.ChatType, "user": m.SenderID, "binding": binding, "authorAuthorized": authorized, "eventAdmitted": admitted, "triggersNative": trigger, "canManageSession": manager, "canApproveTools": admitted && maintainer, "reason": reason, "liveMembershipVerified": false}
+	if dm != "" {
+		view["adoptRoots"] = c.AdoptRoots(dm)
+		view["adoptionEnabled"] = c.AdoptEnabled(dm)
+	}
 	if bound {
 		view["project"] = r.ProjectID
 		view["roomKey"] = r.Key
@@ -218,6 +222,10 @@ func runConfigExplain(ctx context.Context, o Options, out io.Writer) error {
 	if profile, ok := view["modelProfile"].(string); ok && profile != "" {
 		modelProfile = profile
 	}
-	_, err = fmt.Fprintf(out, "Configuration policy (offline)\nBinding: %v\nProject: %v\nProject model profile: %v\nAuthor authorized: %v\nEvent admitted: %v\nTriggers native input: %v\nManage session: %v\nApprove tools: %v\nOwners: %v\nForbid self approval: %v\nUser is owner: %v\nReason: %v\n%sThis evaluates configured policy only; it does not verify live membership, credentials or Feishu delivery.\n", view["binding"], view["project"], modelProfile, view["authorAuthorized"], view["eventAdmitted"], view["triggersNative"], view["canManageSession"], view["canApproveTools"], view["ownerCount"], view["forbidSelfApproval"], view["isOwner"], view["reason"], envDetail)
+	adoption := "disabled"
+	if enabled, _ := view["adoptionEnabled"].(bool); enabled {
+		adoption = "enabled"
+	}
+	_, err = fmt.Fprintf(out, "Configuration policy (offline)\nBinding: %v\nProject: %v\nProject model profile: %v\nAuthor authorized: %v\nEvent admitted: %v\nTriggers native input: %v\nManage session: %v\nApprove tools: %v\nOwners: %v\nForbid self approval: %v\nUser is owner: %v\nLocal session adoption: %v\nReason: %v\n%sThis evaluates configured policy only; it does not verify live membership, credentials or Feishu delivery.\n", view["binding"], view["project"], modelProfile, view["authorAuthorized"], view["eventAdmitted"], view["triggersNative"], view["canManageSession"], view["canApproveTools"], view["ownerCount"], view["forbidSelfApproval"], view["isOwner"], adoption, view["reason"], envDetail)
 	return err
 }
