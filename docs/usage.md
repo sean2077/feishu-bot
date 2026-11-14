@@ -31,7 +31,7 @@
 }
 ```
 
-把 [examples/skills/feishu](../examples/skills/feishu/SKILL.md) 复制到 `~/.claude/skills/feishu/`。之后在终端里说“转到飞书继续”“开个飞书话题聊”“通知我飞书”或运行 `/feishu`，技能会总结目标、已完成和待决问题，调用 `feishu-bot attach`，并在私聊里创建一张根卡片和话题。摘要显示在话题首条回复里。
+把项目技能 [.agents/skills/feishu](../.agents/skills/feishu/SKILL.md) 复制到 `~/.claude/skills/feishu/`；在 feishu-bot 仓库内工作时项目投影已直接可用，其他项目使用用户级副本。之后在终端里说“转到飞书继续”“开个飞书话题聊”“通知我飞书”或运行 `/feishu`，技能会总结目标、已完成和待决问题，调用 `feishu-bot attach`，并在私聊里创建一张根卡片和话题。摘要显示在话题首条回复里。
 
 - 终端还开着时，话题内消息会排队并提示“本地终端仍在使用该会话”；不会启动第二个进程。`/status` 显示等待原因，`/stop` 正常可用。
 - 退出终端后，网关在下一次定期检查（默认约 30 秒）发现占用释放，并在同一轮处理排队消息；之后在话题里直接发消息即可用原 native ID 和原工作目录继续。原上下文、工具和权限规则不变。想让话题从头开始，在话题内发送 `/new`。
