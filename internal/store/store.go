@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS usage_results(session TEXT NOT NULL, result_id TEXT N
  input_tokens INTEGER, output_tokens INTEGER, cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER, PRIMARY KEY(session,result_id));
 CREATE INDEX IF NOT EXISTS usage_room_session ON usage_results(room,session,at);
 CREATE TABLE IF NOT EXISTS adopted_topics(native TEXT PRIMARY KEY, room TEXT UNIQUE, session TEXT REFERENCES sessions(id), thread TEXT NOT NULL DEFAULT '', root TEXT UNIQUE, work TEXT NOT NULL, holder_pid INTEGER NOT NULL DEFAULT 0, holder_started INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS adopted_topics_thread ON adopted_topics(thread);
+CREATE UNIQUE INDEX IF NOT EXISTS adopted_topics_thread_unique ON adopted_topics(thread) WHERE thread!='';
 CREATE INDEX IF NOT EXISTS adopted_topics_state ON adopted_topics(state,updated);
 `
 

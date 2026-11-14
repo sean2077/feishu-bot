@@ -193,6 +193,38 @@ func TestExpirePendingAdoptions(t *testing.T) {
 	}
 }
 
+func TestAdoptionThreadIsUnique(t *testing.T) {
+	s := adoptionFixture(t)
+	first, second := "native-first", "native-second"
+	for _, native := range []string{first, second} {
+		if _, _, err := s.BeginAdoption(native, t.TempDir(), 0, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.BindAdoptionRoot(first, `["t","a","p","p2p","oc_dm","member","om_root_a"]`, "om_root_a", "session-first", "/cfg", false, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BindAdoptionRoot(second, `["t","a","p","p2p","oc_dm","member","om_root_b"]`, "om_root_b", "session-second", "/cfg", false, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OpenAdoption(first, "omt_shared"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OpenAdoption(second, "omt_shared"); err == nil {
+		t.Fatal("two adoption records shared one Feishu thread")
+	}
+}
+
+func TestBeginAdoptionReportsNonConstraintStorageError(t *testing.T) {
+	s := adoptionFixture(t)
+	if _, err := s.DB.Exec(`CREATE TRIGGER fail_adoption BEFORE INSERT ON adopted_topics WHEN NEW.native='native-fail' BEGIN SELECT RAISE(FAIL,'storage probe'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.BeginAdoption("native-fail", t.TempDir(), 0, 0); err == nil || err == ErrNativeClaimed {
+		t.Fatalf("storage failure was misreported: %v", err)
+	}
+}
+
 func TestAuditDBWritesRow(t *testing.T) {
 	s := adoptionFixture(t)
 	if err := AuditDB(s.DB, "room", "adopted_topic_rejected", map[string]any{"reason": "root_mismatch"}); err != nil {

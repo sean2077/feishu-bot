@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
+	"modernc.org/sqlite"
 )
 
 // Adoption states are durable. A topic room is routable only in the open
@@ -132,7 +133,14 @@ func (s *Store) BeginAdoption(native, work string, holderPID int, holderStarted 
 		}
 		if _, err = tx.Exec("INSERT INTO adopted_topics(native,room,session,thread,root,work,holder_pid,holder_started,state,created,updated) VALUES(?,NULL,NULL,'',NULL,?,?,?,?,?,?)",
 			native, work, holderPID, holderStarted, AdoptedPending, now, now); err != nil {
-			return ErrNativeClaimed
+			// Only a primary-key or unique-constraint conflict means another
+			// adoption or gateway session already owns this native identity.
+			// Disk, locking and schema failures must reach the caller unchanged.
+			var failure *sqlite.Error
+			if errors.As(err, &failure) && failure.Code() == 19 {
+				return ErrNativeClaimed
+			}
+			return err
 		}
 		result, err = adoptedRow(tx.QueryRow("SELECT "+adoptedCols+" FROM adopted_topics WHERE native=?", native))
 		created = err == nil
