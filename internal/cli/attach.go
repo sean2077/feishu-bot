@@ -293,6 +293,9 @@ func runAttach(ctx context.Context, c core.Config, o Options, out io.Writer) err
 	if err != nil {
 		return errors.New("local session working directory is not available")
 	}
+	if !native.SameProjectDir(native.EncodeProjectDir(cwd), filepath.Base(filepath.Dir(transcript.Path))) {
+		return errors.New("local session physical working directory does not match its transcript project directory (symlink or case difference); restart Claude Code from the physical path before adopting")
+	}
 	if !c.AdoptWorkAllowed(user, cwd) {
 		return errors.New("local session working directory is outside the configured adoptRoots")
 	}

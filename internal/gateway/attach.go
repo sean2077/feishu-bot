@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -120,7 +121,7 @@ func existingAdoptionResult(record store.AdoptedTopic, holderPID int, holderStar
 	}
 }
 
-func (g *Gateway) existingAdoption(req core.AttachRequest, record store.AdoptedTopic) (core.AttachResult, error) {
+func (g *Gateway) existingAdoption(ctx context.Context, req core.AttachRequest, record store.AdoptedTopic) (core.AttachResult, error) {
 	if record.User != req.User {
 		return core.AttachResult{}, errors.New("该原生会话属于其他私聊，不能在此认领")
 	}
@@ -145,6 +146,25 @@ func (g *Gateway) existingAdoption(req core.AttachRequest, record store.AdoptedT
 		}
 		if !found || current.ID != record.Session {
 			return core.AttachResult{}, errors.New("该话题已切换到其他会话；请在话题内用 /resume 选择原会话后再认领")
+		}
+		// Re-attaching a local terminal is a second writer. Refuse while the
+		// gateway room still has a live worker, queued input, unfinished output,
+		// action or approval; the user must /stop first.
+		inputUnlock, err := g.inputLocks.lockContext(ctx, record.Room)
+		if err != nil {
+			return core.AttachResult{}, err
+		}
+		defer inputUnlock()
+		dispatchUnlock, err := g.dispatchLocks.lockContext(ctx, record.Room)
+		if err != nil {
+			return core.AttachResult{}, err
+		}
+		defer dispatchUnlock()
+		if reason, busyErr := g.adoptedRoomBusy(record); busyErr != nil {
+			return core.AttachResult{}, busyErr
+		} else if reason != "" {
+			g.audit(record.Room, "adopt_reattach_rejected", core.Args{"native": record.Native, "user": req.User, "reason": reason})
+			return core.AttachResult{}, errors.New("该话题仍有运行中的任务、待处理输入、未完成输出或审批。请先在话题里 /stop，等运行结束后再认领")
 		}
 		if err = g.store.UpdateAdoptionHolder(record.Native, req.HolderPID, req.HolderStarted); err != nil {
 			return core.AttachResult{}, err
@@ -214,7 +234,7 @@ func (g *Gateway) attach(ctx context.Context, req core.AttachRequest) (core.Atta
 		return core.AttachResult{}, err
 	}
 	if found {
-		return g.existingAdoption(req, record)
+		return g.existingAdoption(ctx, req, record)
 	}
 	_, configDir, override, err := workspace.InheritedConfig()
 	if err != nil {
@@ -227,6 +247,9 @@ func (g *Gateway) attach(ctx context.Context, req core.AttachRequest) (core.Atta
 	work, err := workspace.PhysicalDirectory(transcript.CWD)
 	if err != nil {
 		return core.AttachResult{}, errors.New("本地会话工作目录不可用")
+	}
+	if !native.SameProjectDir(native.EncodeProjectDir(work), filepath.Base(filepath.Dir(transcript.Path))) {
+		return core.AttachResult{}, errors.New("本地会话的物理工作目录与 transcript 项目目录不一致（符号链接或大小写差异）；请从该目录的原始物理路径重启 Claude Code 后再认领")
 	}
 	if req.CWD != "" {
 		expected, e := workspace.PhysicalDirectory(req.CWD)
@@ -247,7 +270,7 @@ func (g *Gateway) attach(ctx context.Context, req core.AttachRequest) (core.Atta
 		return core.AttachResult{}, err
 	}
 	if !created {
-		return g.existingAdoption(req, record)
+		return g.existingAdoption(ctx, req, record)
 	}
 	sender, ok := g.transport.(core.UserCardSender)
 	if !ok {

@@ -640,6 +640,7 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	if _, terminal := g.holderFor(room, session.ID); terminal {
 		// The local terminal still owns this native session. Queue the input but
 		// never start a second writer; dispatch is also gated as a safety net.
+		g.acceptReceipt(room, session.ID, m)
 		g.notifyAdoptOnce("holder:"+room.Key, room, adoptedHolderNotice, &m)
 		return nil
 	}

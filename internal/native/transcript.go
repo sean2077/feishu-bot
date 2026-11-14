@@ -48,6 +48,15 @@ func EncodeProjectDir(cwd string) string {
 	return out.String()
 }
 
+// SameProjectDir compares two encoded project directory names with the case
+// sensitivity of the host filesystem.
+func SameProjectDir(a, b string) bool {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 // LocateTranscript finds the single JSONL transcript for nativeID below the
 // Claude configuration directory. The startup cwd is read from the first
 // record that carries it and must agree with the encoded project directory;
@@ -88,11 +97,7 @@ func LocateTranscript(configDir, nativeID string) (Transcript, error) {
 	}
 	expected := EncodeProjectDir(cwd)
 	actual := filepath.Base(filepath.Dir(path))
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		if !strings.EqualFold(actual, expected) {
-			return Transcript{}, errors.New("local Claude Code transcript directory does not match its working directory")
-		}
-	} else if actual != expected {
+	if !SameProjectDir(actual, expected) {
 		return Transcript{}, errors.New("local Claude Code transcript directory does not match its working directory")
 	}
 	return Transcript{Path: path, CWD: cwd, Model: lastModel(path)}, nil

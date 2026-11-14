@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -93,5 +94,16 @@ func TestEncodeProjectDir(t *testing.T) {
 		if got := EncodeProjectDir(input); got != want {
 			t.Fatalf("EncodeProjectDir(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestSameProjectDirFollowsHostCaseRules(t *testing.T) {
+	if !SameProjectDir("encoded", "encoded") {
+		t.Fatal("identical project directories differ")
+	}
+	got := SameProjectDir("encoded", "ENCODED")
+	want := runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+	if got != want {
+		t.Fatalf("SameProjectDir case rule = %v on %s", got, runtime.GOOS)
 	}
 }

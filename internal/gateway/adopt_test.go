@@ -26,8 +26,7 @@ func (e *fakeDeliveryFailure) DeliveryRetryAfter() time.Duration { return 0 }
 
 func adoptFixture(t *testing.T) (*fixture, string, string) {
 	t.Helper()
-	work := t.TempDir()
-	physical, err := filepath.EvalSymlinks(work)
+	work, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +47,7 @@ func adoptFixture(t *testing.T) (*fixture, string, string) {
 	}
 	f := newFixture(t, func(c *core.Config) {
 		c.Projects[0].NativeConfig = "inherit"
-		c.DMs[0].AdoptRoots = []string{physical}
+		c.DMs[0].AdoptRoots = []string{work}
 	})
 	f.tr.fetchHook = func(_ context.Context, id string, room core.Room) (*core.Message, error) {
 		return &core.Message{ID: id, ChatID: room.ChatID, ChatType: "p2p", SenderID: "app", SenderIsSelf: true, ThreadID: "omt_fixture", RootID: room.Thread}, nil
@@ -161,6 +160,46 @@ func TestAttachAfterRootFailureKeepsRootAndNeverReplays(t *testing.T) {
 	}
 	if len(f.tr.userCards) != 1 {
 		t.Fatalf("retry resent the root card: %d", len(f.tr.userCards))
+	}
+}
+
+func TestAttachRejectsSymlinkedTranscriptPath(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(base, "real")
+	if err = os.MkdirAll(real, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err = os.Symlink(real, link); err != nil {
+		t.Skipf("directory symlinks are unavailable: %v", err)
+	}
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	native := "11111111-2222-3333-4444-555555555555"
+	project := filepath.Join(configDir, "projects", nativepkg.EncodeProjectDir(link))
+	if err = os.MkdirAll(project, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cwdJSON, _ := json.Marshal(link)
+	if err = os.WriteFile(filepath.Join(project, native+".jsonl"), []byte(`{"cwd":`+string(cwdJSON)+`}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFixture(t, func(c *core.Config) {
+		c.Projects[0].NativeConfig = "inherit"
+		c.DMs[0].AdoptRoots = []string{real}
+	})
+	f.tr.fetchHook = func(_ context.Context, id string, room core.Room) (*core.Message, error) {
+		return &core.Message{ID: id, ChatID: room.ChatID, ChatType: "p2p", SenderIsSelf: true, ThreadID: "omt_fixture", RootID: room.Thread}, nil
+	}
+	result := f.g.Attach(context.Background(), attachRequest(native, link))
+	if result.OK {
+		t.Fatalf("symlinked transcript path was adopted: %+v", result)
+	}
+	if !strings.Contains(result.Error, "物理工作目录") {
+		t.Fatalf("unexpected rejection: %q", result.Error)
 	}
 }
 
@@ -322,6 +361,39 @@ func TestNewInHeldTopicRotatesSessionAndReleasesGate(t *testing.T) {
 	}
 }
 
+func TestReattachIsRejectedWhileRoomHasPendingInput(t *testing.T) {
+	f, work, native := adoptFixture(t)
+	pid := os.Getpid()
+	started, ok := process.StartTime(pid)
+	if !ok {
+		t.Skip("process start time is unavailable")
+	}
+	req := attachRequest(native, work)
+	req.HolderPID, req.HolderStarted = pid, started
+	result := f.g.Attach(context.Background(), req)
+	if !result.OK {
+		t.Fatalf("attach failed: %+v", result)
+	}
+	room, ok := f.g.roomFromKey(result.Room)
+	if !ok {
+		t.Fatal("adopted room did not resolve")
+	}
+	if _, err := f.s.Insert(room.Key, core.Message{ID: "om_pending", ChatID: "oc_adopted", ChatType: "p2p", SenderID: "member", Text: "queued", Time: time.Now().UnixMilli(), Resources: []core.Resource{}}, "queued"); err != nil {
+		t.Fatal(err)
+	}
+	next := attachRequest(native, work)
+	next.HolderPID, next.HolderStarted = pid, started
+	if result := f.g.Attach(context.Background(), next); result.OK {
+		t.Fatalf("re-attach accepted a room with pending input: %+v", result)
+	} else if !strings.Contains(result.Error, "/stop") {
+		t.Fatalf("re-attach rejection did not point to /stop: %q", result.Error)
+	}
+	var rejected int
+	if err := f.s.DB.QueryRow("SELECT count(*) FROM audit WHERE event='adopt_reattach_rejected'").Scan(&rejected); err != nil || rejected == 0 {
+		t.Fatalf("re-attach rejection audit: %d %v", rejected, err)
+	}
+}
+
 func TestHolderQueuesWithoutStartingAndResumesAfterExit(t *testing.T) {
 	f, work, native := adoptFixture(t)
 	pid := os.Getpid()
@@ -358,17 +430,21 @@ func TestHolderQueuesWithoutStartingAndResumesAfterExit(t *testing.T) {
 	if err := f.s.DB.QueryRow("SELECT status FROM inbox WHERE room=? AND id=?", room.Key, "om_held").Scan(&status); err != nil || status != "queued" {
 		t.Fatalf("held input status = %q, %v", status, err)
 	}
-	if cleared, err := f.s.ClearAdoptionHolder(native, pid, started); err != nil || !cleared {
-		t.Fatalf("clear holder: %v %v", cleared, err)
+	var receipts int
+	if err := f.s.DB.QueryRow("SELECT count(*) FROM receipts WHERE id='om_held'").Scan(&receipts); err != nil || receipts != 1 {
+		t.Fatalf("held input did not get a processing receipt: %d %v", receipts, err)
 	}
-	f.g.kick(room)
+	// Simulate the terminal exiting without deleting the whole record: the
+	// sweep sees a dead PID, releases the holder and kicks the queued input.
+	if err := f.s.UpdateAdoptionHolder(native, 1<<30, 0); err != nil {
+		t.Fatal(err)
+	}
+	f.g.Sweep(context.Background(), time.Now().UnixMilli())
 	worker := f.worker()
-	select {
-	case delivery := <-worker.sent:
-		if delivery.Message.ID != "om_held" {
-			t.Fatalf("delivery = %+v", delivery)
-		}
-	case <-time.After(fixtureWait):
-		t.Fatal("held input was not dispatched after the holder exited")
+	delivery := f.delivery(worker)
+	if delivery.Message.ID != "om_held" {
+		t.Fatalf("delivery = %+v", delivery)
 	}
+	f.finish(worker, delivery, "done")
+	eventually(t, func() bool { return f.status("om_held") == "done" })
 }

@@ -207,6 +207,45 @@ func (g *Gateway) adoptionHold(room core.Room) bool {
 	return held
 }
 
+// adoptedRoomBusy reports why a re-attach must not hand the native session to
+// a local terminal. Callers hold the room's input and dispatch locks so a new
+// input or worker start cannot slip in between this check and the holder
+// update. The returned reason is empty when the room is safe to re-attach.
+func (g *Gateway) adoptedRoomBusy(record store.AdoptedTopic) (string, error) {
+	var queued, outputs, actions int
+	err := g.store.DB.QueryRow(`SELECT
+ (SELECT count(*) FROM inbox WHERE room=? AND status IN ('queued','sent','consumed')),
+ (SELECT count(*) FROM outbox WHERE room=? AND state NOT IN ('done','cancelled')),
+ (SELECT count(*) FROM action_runs WHERE room=? AND state NOT IN ('done','failed','uncertain'))`,
+		record.Room, record.Room, record.Room).Scan(&queued, &outputs, &actions)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case queued > 0:
+		return "pending_inputs", nil
+	case outputs > 0:
+		return "pending_outputs", nil
+	case actions > 0:
+		return "pending_actions", nil
+	}
+	if g.approvalCount(record.Session) > 0 {
+		return "pending_approvals", nil
+	}
+	if g.stopIsBlocked(record.Room) {
+		return "stop_blocked", nil
+	}
+	if s := g.getSlot(record.Room); s != nil {
+		s.mu.Lock()
+		live := s.live || s.worker != nil || s.busy || s.background != 0 || s.pinned || s.activeRequests > 0 || s.stopUnconfirmed
+		s.mu.Unlock()
+		if live {
+			return "worker_active", nil
+		}
+	}
+	return "", nil
+}
+
 func (g *Gateway) notifyAdoptOnce(key string, room core.Room, text string, m *core.Message) {
 	g.mu.Lock()
 	if g.adoptNotice == nil {
@@ -270,9 +309,9 @@ func (g *Gateway) sweepAdoptions(now int64) {
 	}
 	for _, record := range records {
 		if record.State != store.AdoptedOpen || record.HolderPID <= 0 {
-			if record.Room != "" {
-				g.clearAdoptNotice(record.Room)
-			}
+			// Never clear the one-shot notice here: a periodic sweep is not a
+			// state change and must not turn pending/uncertain notices into a
+			// per-sweep reminder.
 			continue
 		}
 		if g.holderAlive(record) {

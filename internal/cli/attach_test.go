@@ -181,7 +181,10 @@ func TestWatchAttachRecoversInterruptedProcessingAsUncertain(t *testing.T) {
 }
 
 func TestRunAttachEndToEnd(t *testing.T) {
-	work := t.TempDir()
+	work, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	c := attachConfig(t, work)
 	configDir := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
