@@ -21,15 +21,19 @@ const (
 // Claude Code session into a Feishu DM topic. It is written by the CLI below
 // the gateway data directory (mode 0700) and never contains credentials.
 type AttachRequest struct {
-	ID            string `json:"id"`
-	At            int64  `json:"at"`
-	User          string `json:"user"`
-	Native        string `json:"native"`
-	CWD           string `json:"cwd,omitempty"`
-	HolderPID     int    `json:"holderPid,omitempty"`
-	HolderStarted int64  `json:"holderStarted,omitempty"`
-	Title         string `json:"title,omitempty"`
-	Summary       string `json:"summary,omitempty"`
+	Kind            string `json:"kind,omitempty"`
+	ID              string `json:"id"`
+	At              int64  `json:"at"`
+	User            string `json:"user"`
+	Native          string `json:"native"`
+	CWD             string `json:"cwd,omitempty"`
+	HolderPID       int    `json:"holderPid,omitempty"`
+	HolderStarted   int64  `json:"holderStarted,omitempty"`
+	Title           string `json:"title,omitempty"`
+	Summary         string `json:"summary,omitempty"`
+	ConfigPath      string `json:"configPath,omitempty"`
+	MessagingSocket string `json:"messagingSocket,omitempty"`
+	MessagingToken  string `json:"messagingToken,omitempty"`
 }
 
 // AttachResult is the gateway's answer to AttachRequest. State is empty for a

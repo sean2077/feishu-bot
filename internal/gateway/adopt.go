@@ -189,6 +189,7 @@ func (g *Gateway) holderFor(room core.Room, sessionID string) (store.AdoptedTopi
 	if record.HolderPID > 0 {
 		_, _ = g.store.ClearAdoptionHolder(record.Native, record.HolderPID, record.HolderStarted)
 		g.clearAdoptNotice(room.Key)
+		g.failForwarded(room, "holder_released")
 	}
 	return record, false
 }
@@ -262,7 +263,8 @@ func (g *Gateway) notifyAdoptOnce(key string, room core.Room, text string, m *co
 func (g *Gateway) clearAdoptNotice(roomKey string) {
 	g.mu.Lock()
 	for key := range g.adoptNotice {
-		if key == "holder:"+roomKey || key == "state:"+roomKey || key == "failure:"+roomKey {
+		if key == "holder:"+roomKey || key == "state:"+roomKey || key == "failure:"+roomKey ||
+			key == "relay:"+roomKey || key == "relay-failed:"+roomKey || key == "forward-failed:"+roomKey {
 			delete(g.adoptNotice, key)
 		}
 	}
@@ -325,6 +327,11 @@ func (g *Gateway) sweepAdoptions(now int64) {
 		}
 		g.clearAdoptNotice(record.Room)
 		g.audit(record.Room, "adopted_holder_released", core.Args{"native": record.Native, "pid": record.HolderPID})
+		if room, ok := g.roomFromKey(record.Room); ok {
+			g.failForwarded(room, "holder_released")
+		} else {
+			g.clearAdoptEndpoint(record.Room)
+		}
 	}
 }
 

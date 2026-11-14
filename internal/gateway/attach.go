@@ -176,6 +176,7 @@ func (g *Gateway) existingAdoption(ctx context.Context, req core.AttachRequest, 
 			return core.AttachResult{}, err
 		}
 		record.HolderPID, record.HolderStarted = req.HolderPID, req.HolderStarted
+		g.setAdoptEndpoint(record.Room, adoptEndpoint{Socket: req.MessagingSocket, Token: req.MessagingToken, ConfigPath: req.ConfigPath, Native: record.Native})
 		result, err := existingAdoptionResult(record, req.HolderPID, req.HolderStarted)
 		if err == nil {
 			g.audit(record.Room, "adopt_reattached", core.Args{"native": record.Native, "user": req.User, "pid": req.HolderPID})
@@ -334,6 +335,7 @@ func (g *Gateway) attach(ctx context.Context, req core.AttachRequest) (core.Atta
 		"native": req.Native, "user": req.User, "work": work,
 		"root": rootID, "thread": message.ThreadID, "holderPid": req.HolderPID,
 	})
+	g.setAdoptEndpoint(room.Key, adoptEndpoint{Socket: req.MessagingSocket, Token: req.MessagingToken, ConfigPath: req.ConfigPath, Native: req.Native})
 	return core.AttachResult{
 		OK:            true,
 		State:         store.AdoptedOpen,

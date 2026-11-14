@@ -20,12 +20,14 @@ const (
 
 type attachGateway interface {
 	Attach(context.Context, core.AttachRequest) core.AttachResult
+	Notify(context.Context, core.NotifyRequest) core.NotifyResult
+	TopicReply(context.Context, core.TopicReplyRequest) core.TopicReplyResult
 }
 
-// watchAttach consumes local adoption requests. Like the stop control file it
-// relies on the data directory's same-account boundary; there is no socket or
-// remote endpoint. Each request is renamed before processing so a crash can
-// never replay it silently.
+// watchAttach consumes local adoption/notify/reply requests. Like the stop
+// control file it relies on the data directory's same-account boundary; there
+// is no socket or remote endpoint. Each request is renamed before processing
+// so a crash can never replay it silently.
 func watchAttach(ctx context.Context, gateway attachGateway, dataDir string, log core.Logger) {
 	dir := filepath.Join(dataDir, "control", "attach")
 	recoverProcessing(dir, log)
@@ -89,25 +91,69 @@ func processAttachFile(ctx context.Context, gateway attachGateway, dir, path str
 	data, err := readLimited(file, 64<<10)
 	file.Close()
 	if err != nil {
-		writeAttachResult(dir, id, core.AttachResult{Error: "认领请求无法读取"}, log)
+		writeControlError(dir, id, core.ControlKindAttach, "控制请求无法读取", log)
 		return
 	}
-	var req core.AttachRequest
-	if json.Unmarshal(data, &req) != nil || req.ID != id {
-		writeAttachResult(dir, id, core.AttachResult{Error: "认领请求格式无效"}, log)
+	var envelope struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal(data, &envelope) != nil {
+		writeControlError(dir, id, core.ControlKindAttach, "控制请求格式无效", log)
 		return
 	}
-	if req.At > 0 && time.Since(time.UnixMilli(req.At)) > attachRequestTTL {
-		writeAttachResult(dir, id, core.AttachResult{Error: "认领请求已过期，请重新发起"}, log)
+	kind := envelope.Kind
+	if kind == "" {
+		kind = core.ControlKindAttach
+	}
+	var age int64
+	var at struct {
+		At int64 `json:"at"`
+	}
+	_ = json.Unmarshal(data, &at)
+	age = at.At
+	if age > 0 && time.Since(time.UnixMilli(age)) > attachRequestTTL {
+		writeControlError(dir, id, kind, "控制请求已过期，请重新发起", log)
 		return
 	}
-	attachCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-	result := gateway.Attach(attachCtx, req)
-	cancel()
-	if result.Error == "" && !result.OK {
-		result.Error = "认领未确认"
+	requestCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	switch kind {
+	case core.ControlKindAttach:
+		var req core.AttachRequest
+		if json.Unmarshal(data, &req) != nil || req.ID != id {
+			writeControlError(dir, id, kind, "认领请求格式无效", log)
+			return
+		}
+		result := gateway.Attach(requestCtx, req)
+		if result.Error == "" && !result.OK {
+			result.Error = "认领未确认"
+		}
+		writeControlResult(dir, id, result, log)
+	case core.ControlKindNotify:
+		var req core.NotifyRequest
+		if json.Unmarshal(data, &req) != nil || req.ID != id {
+			writeControlError(dir, id, kind, "通知请求格式无效", log)
+			return
+		}
+		result := gateway.Notify(requestCtx, req)
+		if result.Error == nil && !result.OK {
+			result.Error = &core.AdoptError{Code: core.NotifyErrorInvalidRequest, Message: "通知未确认"}
+		}
+		writeControlResult(dir, id, result, log)
+	case core.ControlKindReply:
+		var req core.TopicReplyRequest
+		if json.Unmarshal(data, &req) != nil || req.ID != id {
+			writeControlError(dir, id, kind, "回复请求格式无效", log)
+			return
+		}
+		result := gateway.TopicReply(requestCtx, req)
+		if result.Error == nil && !result.OK {
+			result.Error = &core.AdoptError{Code: core.NotifyErrorInvalidRequest, Message: "回复未确认"}
+		}
+		writeControlResult(dir, id, result, log)
+	default:
+		writeControlError(dir, id, kind, "未知的控制请求类型", log)
 	}
-	writeAttachResult(dir, id, result, log)
 }
 
 func recoverProcessing(dir string, log core.Logger) {
@@ -124,12 +170,33 @@ func recoverProcessing(dir string, log core.Logger) {
 		if id == name {
 			continue
 		}
+		kind := core.ControlKindAttach
+		if data, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
+			var envelope struct {
+				Kind string `json:"kind"`
+			}
+			if json.Unmarshal(data, &envelope) == nil && envelope.Kind != "" {
+				kind = envelope.Kind
+			}
+		}
 		resultPath := filepath.Join(dir, id+".result.json")
 		if _, err := os.Lstat(resultPath); errors.Is(err, os.ErrNotExist) {
-			writeAttachResult(dir, id, core.AttachResult{
-				State: core.AdoptionUncertain,
-				Error: "上一次认领处理中断，结果未确认；请检查飞书是否已出现话题，不会自动重发。",
-			}, log)
+			switch kind {
+			case core.ControlKindNotify:
+				writeControlResult(dir, id, core.NotifyResult{
+					State: core.AdoptionUncertain,
+					Error: &core.AdoptError{Code: core.NotifyErrorUncertain, Message: "上一次通知处理中断，结果未确认；请检查飞书，不会自动重发。"},
+				}, log)
+			case core.ControlKindReply:
+				writeControlResult(dir, id, core.TopicReplyResult{
+					Error: &core.AdoptError{Code: core.NotifyErrorUncertain, Message: "上一次回复处理中断，结果未确认；请检查飞书，不会自动重发。"},
+				}, log)
+			default:
+				writeControlResult(dir, id, core.AttachResult{
+					State: core.AdoptionUncertain,
+					Error: "上一次认领处理中断，结果未确认；请检查飞书是否已出现话题，不会自动重发。",
+				}, log)
+			}
 		}
 		_ = os.Remove(filepath.Join(dir, name))
 	}
@@ -146,7 +213,18 @@ func readLimited(file *os.File, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func writeAttachResult(dir, id string, result core.AttachResult, log core.Logger) {
+func writeControlError(dir, id, kind, message string, log core.Logger) {
+	switch kind {
+	case core.ControlKindNotify:
+		writeControlResult(dir, id, core.NotifyResult{Error: &core.AdoptError{Code: core.NotifyErrorInvalidRequest, Message: message}}, log)
+	case core.ControlKindReply:
+		writeControlResult(dir, id, core.TopicReplyResult{Error: &core.AdoptError{Code: core.NotifyErrorInvalidRequest, Message: message}}, log)
+	default:
+		writeControlResult(dir, id, core.AttachResult{Error: message}, log)
+	}
+}
+
+func writeControlResult(dir, id string, result any, log core.Logger) {
 	if dir == "" || id == "" {
 		return
 	}
