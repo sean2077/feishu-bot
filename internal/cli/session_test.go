@@ -260,3 +260,26 @@ func TestLocalSessionStartFailureAfterCommitRestoresSelection(t *testing.T) {
 		t.Fatalf("a start that never ran left local usage marked unknown: %d %v", unknown, err)
 	}
 }
+
+func TestAdoptedSessionHeldIdentity(t *testing.T) {
+	if adoptedSessionHeld(store.AdoptedTopic{HolderPID: 0}) {
+		t.Fatal("zero holder reported held")
+	}
+	pid := os.Getpid()
+	started, ok := process.StartTime(pid)
+	if !ok {
+		t.Skip("process start time is unavailable")
+	}
+	if !adoptedSessionHeld(store.AdoptedTopic{HolderPID: pid, HolderStarted: started}) {
+		t.Fatal("live matching holder reported released")
+	}
+	if adoptedSessionHeld(store.AdoptedTopic{HolderPID: pid, HolderStarted: started + 1}) {
+		t.Fatal("PID reuse was reported as held")
+	}
+	if !adoptedSessionHeld(store.AdoptedTopic{HolderPID: pid}) {
+		t.Fatal("unreadable start time must stay conservative")
+	}
+	if adoptedSessionHeld(store.AdoptedTopic{HolderPID: 1 << 30}) {
+		t.Fatal("dead holder reported held")
+	}
+}

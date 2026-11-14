@@ -83,6 +83,21 @@ func runLocalSession(ctx context.Context, c core.Config, o Options, out, errOut 
 	})
 }
 
+// adoptedSessionHeld reports whether a local terminal still owns the adopted
+// native session. An unreadable start time stays conservative: only a
+// confirmed different start time proves PID reuse.
+func adoptedSessionHeld(record store.AdoptedTopic) bool {
+	if record.HolderPID <= 0 || !process.Alive(record.HolderPID) {
+		return false
+	}
+	if record.HolderStarted != 0 {
+		if started, ok := process.StartTime(record.HolderPID); ok && started != record.HolderStarted {
+			return false
+		}
+	}
+	return true
+}
+
 // The existing data-directory lock is the handoff lease. There is never a live
 // gateway plus a terminal writer, and unconfirmed descendants retain the lock.
 func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer, run localSessionRunner) (result error) {
@@ -127,6 +142,9 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 		record, found, e := st.AdoptedTopicByRoom(s.RoomKey)
 		if e != nil || !found || record.Root != r.Thread || record.State != store.AdoptedOpen {
 			return errors.New("adopted topic session is no longer open or recorded")
+		}
+		if record.HolderPID > 0 && adoptedSessionHeld(record) {
+			return fmt.Errorf("adopted session is still held by local terminal PID %d; exit it or /stop the topic before local handoff", record.HolderPID)
 		}
 		work, e := workspace.PhysicalDirectory(record.Work)
 		if e != nil || !c.AdoptWorkAllowed(r.DMUser, work) {
