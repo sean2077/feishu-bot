@@ -57,6 +57,24 @@ func TestAdoptEndpointPersistsAndRestores(t *testing.T) {
 	}
 }
 
+func TestAdoptEndpointRewriteReplacesFile(t *testing.T) {
+	f, _, native, _ := relayFixture(t)
+	record, _, _ := f.s.AdoptedTopicByNative(native)
+	path := endpointPathFor(t, f.g, native)
+	f.g.setAdoptEndpoint(record.Room, adoptEndpoint{Socket: `\\.\pipe\second`, Token: "second-token", ConfigPath: "C:/second.json", Native: native})
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored storedAdoptEndpoint
+	if err = json.Unmarshal(data, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Socket != `\\.\pipe\second` || stored.Token != "second-token" || stored.ConfigPath != "C:/second.json" {
+		t.Fatalf("rewritten endpoint: %+v", stored)
+	}
+}
+
 func TestAdoptEndpointRestoreRejectsDeadHolder(t *testing.T) {
 	f, _, native, _ := relayFixture(t)
 	record, _, _ := f.s.AdoptedTopicByNative(native)
