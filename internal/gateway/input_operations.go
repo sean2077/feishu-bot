@@ -60,7 +60,7 @@ func (g *Gateway) operationCommand(ctx context.Context, r core.Room, m core.Mess
 }
 
 func (g *Gateway) cancelInput(ctx context.Context, r core.Room, id, actor string) ([]store.InputRecord, error) {
-	current, ok := RoomFromKey(g.config, r.Key)
+	current, ok := g.roomFromKey(r.Key)
 	if !ok || !AuthorizedAuthor(current, actor) {
 		return nil, store.ErrInputNotOwned
 	}

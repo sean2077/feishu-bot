@@ -21,6 +21,11 @@ type Options struct {
 	Mentioned, SenderBot               bool
 	SessionID                          string
 
+	AttachUser, AttachTitle, AttachSummaryFile string
+	AttachNative                               string
+	AttachHolderPID                            int
+	AttachHolderSet                            bool
+
 	EnvFile  string
 	LogFile  string
 	WorkDir  string
@@ -113,6 +118,9 @@ func Parse(args []string) (Options, error) {
 			return o, errors.New("unknown config command; use feishu-bot config --help")
 		}
 		return parseConfig(args[2:], o)
+	}
+	if o.Command == "attach" {
+		return parseAttach(args[1:], o)
 	}
 	switch o.Command {
 	case "help", "init", "doctor", "run":
@@ -275,6 +283,79 @@ func parseTop(args []string, o Options) (Options, error) {
 	}
 	if o.Service && o.LogFile == "" {
 		return o, errors.New("--service requires --log-file")
+	}
+	return resolveOptions(&o)
+}
+
+func parseAttach(args []string, o Options) (Options, error) {
+	seen := map[string]bool{}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--help" || arg == "-h" {
+			o.Command = "help"
+			o.Subcommand = "attach"
+			return o, nil
+		}
+		matched := false
+		for name, dst := range map[string]*string{"--config": &o.ConfigPath, "--user": &o.AttachUser, "--title": &o.AttachTitle, "--native": &o.AttachNative} {
+			if arg == name || strings.HasPrefix(arg, name+"=") {
+				if err := mark(seen, name); err != nil {
+					return o, err
+				}
+				value, _, err := takeValue(args, &i, arg, name)
+				if err != nil {
+					return o, err
+				}
+				*dst = value
+				if name == "--config" {
+					o.ConfigExplicit = true
+				}
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+		switch {
+		case arg == "--summary-file" || strings.HasPrefix(arg, "--summary-file="):
+			if err := mark(seen, "--summary-file"); err != nil {
+				return o, err
+			}
+			value := strings.TrimPrefix(arg, "--summary-file=")
+			if arg == "--summary-file" {
+				i++
+				if i >= len(args) {
+					return o, errors.New("--summary-file requires a path or -")
+				}
+				value = args[i]
+			}
+			if value == "" || strings.ContainsRune(value, 0) || value != "-" && strings.TrimSpace(value) == "" {
+				return o, errors.New("--summary-file requires a path or -")
+			}
+			o.AttachSummaryFile = value
+		case arg == "--holder-pid" || strings.HasPrefix(arg, "--holder-pid="):
+			if err := mark(seen, "--holder-pid"); err != nil {
+				return o, err
+			}
+			value, _, err := takeValue(args, &i, arg, "--holder-pid")
+			if err != nil {
+				return o, err
+			}
+			pid, err := strconv.Atoi(value)
+			if err != nil || pid < 0 {
+				return o, errors.New("--holder-pid requires a non-negative process ID")
+			}
+			o.AttachHolderPID = pid
+			o.AttachHolderSet = true
+		case arg == "--json":
+			if o.JSON {
+				return o, errors.New("--json may only be specified once")
+			}
+			o.JSON = true
+		default:
+			return o, errors.New("unexpected option; see feishu-bot attach --help")
+		}
 	}
 	return resolveOptions(&o)
 }

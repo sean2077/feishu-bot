@@ -1,0 +1,304 @@
+package gateway
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/native"
+	"github.com/sean2077/feishu-bot/internal/store"
+	"github.com/sean2077/feishu-bot/internal/workspace"
+)
+
+const adoptRequestTTL = 5 * time.Minute
+
+// Attach adopts one running local Claude Code session into a Feishu DM topic.
+// It persists intent before the first external write and never replays an
+// unconfirmed write. Work is derived from the transcript below the gateway's
+// inherited Claude configuration directory, never from the caller's shell.
+func (g *Gateway) Attach(ctx context.Context, req core.AttachRequest) core.AttachResult {
+	if !g.beginCall() {
+		return core.AttachResult{Error: "网关正在关闭，未处理认领请求"}
+	}
+	defer g.wg.Done()
+	result, err := g.attach(ctx, req)
+	if err != nil {
+		result.OK = false
+		if result.Error == "" {
+			result.Error = core.Redact(err.Error(), g.secrets)
+		}
+	}
+	return result
+}
+
+func deliveryUncertain(err error) bool {
+	var failure core.DeliveryFailure
+	return errors.As(err, &failure) && failure.DeliveryUncertain()
+}
+
+func (g *Gateway) gatewayModel(project core.Project) string {
+	if project.ModelProfile != "" && project.ModelProfile != "default" {
+		if profile, ok := g.config.ModelProfiles[project.ModelProfile]; ok && profile.Model != "" {
+			return profile.Model
+		}
+	}
+	return g.config.Model.Model
+}
+
+func attachCard(title, work, nativeID string) core.Args {
+	short := nativeID
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	body := "工作目录：" + work + "\n会话：" + short + "\n终端退出后，在此消息的话题内继续对话。"
+	return core.Args{
+		"config": core.Args{"wide_screen_mode": true},
+		"header": core.Args{"title": core.Args{"tag": "plain_text", "content": title}},
+		"elements": []any{
+			core.Args{"tag": "div", "text": core.Args{"tag": "plain_text", "content": body}},
+		},
+	}
+}
+
+func attachSummary(summary string) string {
+	if strings.TrimSpace(summary) == "" {
+		return "已接管本地 Claude Code 会话。终端退出后，直接在话题内发消息即可继续。"
+	}
+	return "已接管本地 Claude Code 会话。终端退出后，直接在话题内发消息即可继续。\n\n交接摘要：\n" + summary
+}
+
+func cleanAttachText(value string, limit int) string {
+	value = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case unicode.IsControl(r):
+			return -1
+		default:
+			return r
+		}
+	}, value)
+	value = strings.TrimSpace(value)
+	if utf8.RuneCountInString(value) > limit {
+		value = cut(value, limit)
+	}
+	return value
+}
+
+func adoptedChatID(room string) string {
+	chat, _, _, ok := core.ParseRoomKey(room)
+	if !ok {
+		return ""
+	}
+	return chat
+}
+
+func existingAdoptionResult(record store.AdoptedTopic, holderPID int, holderStarted int64) (core.AttachResult, error) {
+	result := core.AttachResult{State: record.State, Room: record.Room, RootMessageID: record.Root, ThreadID: record.Thread, ChatID: adoptedChatID(record.Room)}
+	switch record.State {
+	case store.AdoptedOpen:
+		result.OK = true
+		return result, nil
+	case store.AdoptedPending:
+		if time.Since(time.UnixMilli(record.Created)) > adoptedPendingTTL {
+			record.State = store.AdoptedUncertain
+			result.State = record.State
+			result.Error = "本地会话认领停留在未完成状态；请检查飞书是否出现话题与根消息 " + record.Root + "，不会自动重发。"
+			return result, nil
+		}
+		result.Error = "本地会话认领正在处理中；请稍后在飞书查看，不要重复发送。"
+		return result, nil
+	case store.AdoptedUncertain:
+		result.Error = "本地会话认领结果未确认；请检查飞书是否出现话题与根消息 " + record.Root + "，不会自动重发。"
+		return result, nil
+	default:
+		return result, errors.New("本地会话认领状态无效")
+	}
+}
+
+func (g *Gateway) existingAdoption(req core.AttachRequest, record store.AdoptedTopic) (core.AttachResult, error) {
+	if record.User != req.User {
+		return core.AttachResult{}, errors.New("该原生会话属于其他私聊，不能在此认领")
+	}
+	if record.State == store.AdoptedOpen {
+		chat, dm, _, ok := core.ParseRoomKey(record.Room)
+		if !ok || dm != req.User || chat == "" {
+			return core.AttachResult{}, errors.New("该原生会话已绑定到其他私聊话题")
+		}
+		work, ok := g.adoptedWork(req.User, record.Work)
+		if !ok {
+			return core.AttachResult{}, errors.New("认领记录的工作目录已不可用或不在 adoptRoots 内")
+		}
+		if req.CWD != "" {
+			expected, err := workspace.PhysicalDirectory(req.CWD)
+			if err != nil || !core.SamePath(expected, work) {
+				return core.AttachResult{}, errors.New("本地会话工作目录与认领记录不一致")
+			}
+		}
+		current, found, err := g.store.CurrentSession(record.Room)
+		if err != nil {
+			return core.AttachResult{}, err
+		}
+		if !found || current.ID != record.Session {
+			return core.AttachResult{}, errors.New("该话题已切换到其他会话；请在话题内用 /resume 选择原会话后再认领")
+		}
+		if err = g.store.UpdateAdoptionHolder(record.Native, req.HolderPID, req.HolderStarted); err != nil {
+			return core.AttachResult{}, err
+		}
+		record.HolderPID, record.HolderStarted = req.HolderPID, req.HolderStarted
+		result, err := existingAdoptionResult(record, req.HolderPID, req.HolderStarted)
+		if err == nil {
+			g.audit(record.Room, "adopt_reattached", core.Args{"native": record.Native, "user": req.User, "pid": req.HolderPID})
+		}
+		return result, err
+	}
+	// Pending or uncertain: report only. A retry must never resend the card.
+	if record.State == store.AdoptedPending && time.Since(time.UnixMilli(record.Created)) > adoptedPendingTTL {
+		if err := g.store.MarkAdoptionUncertain(record.Native); err != nil {
+			return core.AttachResult{}, err
+		}
+		record.State = store.AdoptedUncertain
+	}
+	result, err := existingAdoptionResult(record, req.HolderPID, req.HolderStarted)
+	if err != nil {
+		return result, err
+	}
+	g.audit(record.Room, "adopt_status_reported", core.Args{"native": record.Native, "user": req.User, "state": record.State})
+	return result, nil
+}
+
+func (g *Gateway) attach(ctx context.Context, req core.AttachRequest) (core.AttachResult, error) {
+	if ctx.Err() != nil {
+		return core.AttachResult{}, ctx.Err()
+	}
+	if req.ID == "" || len(req.ID) > 64 {
+		return core.AttachResult{}, errors.New("认领请求缺少有效 ID")
+	}
+	if req.At > 0 && time.Since(time.UnixMilli(req.At)) > adoptRequestTTL {
+		return core.AttachResult{}, errors.New("认领请求已过期，请重新发起")
+	}
+	if !core.ValidThreadRoot(req.Native) {
+		return core.AttachResult{}, errors.New("本地会话 ID 无效")
+	}
+	if req.HolderPID < 0 || req.HolderStarted < 0 {
+		return core.AttachResult{}, errors.New("本地终端进程信息无效")
+	}
+	if _, ok := g.config.DM(req.User); !ok || !g.config.AdoptEnabled(req.User) {
+		return core.AttachResult{}, errors.New("该私聊未启用本地会话认领")
+	}
+	dm, _ := g.config.DM(req.User)
+	project, ok := g.config.Project(dm.ProjectID)
+	if !ok || project.NativeConfig != "inherit" {
+		return core.AttachResult{}, errors.New("认领要求项目的 nativeConfig 为 inherit")
+	}
+	title := strings.Join(strings.Fields(cleanAttachText(req.Title, core.AdoptTitleRunes)), " ")
+	if title == "" {
+		title = "本地会话认领"
+	}
+	summary := cleanAttachText(req.Summary, core.AdoptSummaryRunes)
+
+	// Serialize one native ID at a time. The unique key remains the durable
+	// guard; this avoids two concurrent requests both observing "not found".
+	unlock, err := g.adoptLocks.lockContext(ctx, req.Native)
+	if err != nil {
+		return core.AttachResult{}, err
+	}
+	defer unlock()
+
+	record, found, err := g.store.AdoptedTopicByNative(req.Native)
+	if err != nil {
+		return core.AttachResult{}, err
+	}
+	if found {
+		return g.existingAdoption(req, record)
+	}
+	_, configDir, override, err := workspace.InheritedConfig()
+	if err != nil {
+		return core.AttachResult{}, err
+	}
+	transcript, err := native.LocateTranscript(configDir, req.Native)
+	if err != nil {
+		return core.AttachResult{}, err
+	}
+	work, err := workspace.PhysicalDirectory(transcript.CWD)
+	if err != nil {
+		return core.AttachResult{}, errors.New("本地会话工作目录不可用")
+	}
+	if req.CWD != "" {
+		expected, e := workspace.PhysicalDirectory(req.CWD)
+		if e != nil || !core.SamePath(expected, work) {
+			return core.AttachResult{}, errors.New("本地会话工作目录与网关记录不一致")
+		}
+	}
+	if !g.config.AdoptWorkAllowed(req.User, work) {
+		return core.AttachResult{}, errors.New("本地会话工作目录不在 adoptRoots 内")
+	}
+	warnings := []string{}
+	if warning := adoptedModelWarning(g.gatewayModel(project), transcript.Model); warning != "" {
+		warnings = append(warnings, warning)
+	}
+
+	record, created, err := g.store.BeginAdoption(req.Native, req.User, work, req.HolderPID, req.HolderStarted)
+	if err != nil {
+		return core.AttachResult{}, err
+	}
+	if !created {
+		return g.existingAdoption(req, record)
+	}
+	sender, ok := g.transport.(core.UserCardSender)
+	if !ok {
+		_ = g.store.DeleteUnsentAdoption(req.Native)
+		return core.AttachResult{}, errors.New("当前传输不支持认领卡片")
+	}
+	rootID, chatID, err := sender.SendUserCard(core.WithDeliveryID(ctx, "attach:"+req.ID+":root"), req.User, attachCard(title, work, req.Native))
+	if err != nil {
+		if deliveryUncertain(err) {
+			_ = g.store.MarkAdoptionUncertain(req.Native)
+			return core.AttachResult{State: store.AdoptedUncertain, Error: "根卡片发送结果未确认；请检查私聊中的根消息，不会自动重发。"}, nil
+		}
+		_ = g.store.DeleteUnsentAdoption(req.Native)
+		return core.AttachResult{}, err
+	}
+	room, ok := g.config.AdoptedTopicRoom(chatID, req.User, rootID)
+	if !ok {
+		_ = g.store.MarkAdoptionUncertain(req.Native)
+		return core.AttachResult{State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, Error: "根卡片已发送，但话题房间配置校验失败；请核查根消息 " + rootID + "。"}, nil
+	}
+	sessionID := core.NewID()
+	now := time.Now().UnixMilli()
+	if err = g.store.BindAdoptionRoot(req.Native, room.Key, rootID, sessionID, configDir, override, now); err != nil {
+		_ = g.store.MarkAdoptionUncertain(req.Native)
+		return core.AttachResult{State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, Error: "根卡片已发送，但会话记录写入失败；请核查根消息 " + rootID + "。"}, nil
+	}
+	replyID, err := g.transport.Send(core.WithDeliveryID(ctx, "attach:"+req.ID+":thread"), room, attachSummary(summary), rootID, "")
+	if err != nil {
+		_ = g.store.MarkAdoptionUncertain(req.Native)
+		return core.AttachResult{State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, Error: "根卡片已发送，但话题回复失败；请核查根消息 " + rootID + "。"}, nil
+	}
+	message, err := g.transport.Fetch(ctx, replyID, room)
+	if err != nil || message == nil || message.ThreadID == "" || message.RootID != rootID {
+		_ = g.store.MarkAdoptionUncertain(req.Native)
+		return core.AttachResult{State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, Error: "根卡片已发送，但话题 ID 未能确认；请核查根消息 " + rootID + "。"}, nil
+	}
+	if err = g.store.OpenAdoption(req.Native, message.ThreadID); err != nil {
+		_ = g.store.MarkAdoptionUncertain(req.Native)
+		return core.AttachResult{State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, Error: "根卡片已发送且话题已建立，但状态写入失败；请核查根消息 " + rootID + "。"}, nil
+	}
+	g.audit(room.Key, "adopt", core.Args{
+		"native": req.Native, "user": req.User, "work": work,
+		"root": rootID, "thread": message.ThreadID, "holderPid": req.HolderPID,
+	})
+	return core.AttachResult{
+		OK:            true,
+		State:         store.AdoptedOpen,
+		Room:          room.Key,
+		ChatID:        chatID,
+		RootMessageID: rootID,
+		ThreadID:      message.ThreadID,
+		Warnings:      warnings,
+	}, nil
+}

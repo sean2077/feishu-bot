@@ -7,8 +7,26 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 )
+
+// SamePath compares two paths as the platform's filesystem normally does:
+// case-insensitively on Windows and macOS, exactly elsewhere.
+func SamePath(a, b string) bool {
+	aa, err := filepath.Abs(a)
+	if err != nil {
+		return false
+	}
+	bb, err := filepath.Abs(b)
+	if err != nil {
+		return false
+	}
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return strings.EqualFold(aa, bb)
+	}
+	return aa == bb
+}
 
 func NewID() string {
 	b := make([]byte, 16)

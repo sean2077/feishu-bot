@@ -30,6 +30,8 @@ feishu-bot run [--config path] [--env-file path] [--log-file path]
 feishu-bot daemon install|uninstall|start|stop|restart|status|logs
 feishu-bot config path|example|format|explain
 feishu-bot session run --session FULL_SESSION_ID [--config path] [--env-file path]
+feishu-bot attach --config path [--user OPEN_ID] [--title TEXT]
+                  [--summary-file path|-] [--native ID] [--holder-pid PID] [--json]
 feishu-bot action <operation> '<parameters-json>'
 feishu-bot context
 feishu-bot feedback export [--config path] [--value useless|useful|all]
@@ -77,6 +79,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			}
 			if o.Subcommand == "session" {
 				text = sessionHelp
+			}
+			if o.Subcommand == "attach" {
+				text = attachHelp
 			}
 			if o.Subcommand == "feedback" {
 				text = feedbackHelp
@@ -128,6 +133,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		secrets = config.Secrets(c)
 		if o.Command == "session" {
 			return runLocalSession(ctx, c, o, stdout, stderr)
+		}
+		if o.Command == "attach" {
+			return runAttach(ctx, c, o, stdout)
 		}
 		if o.Command == "doctor" {
 			report := RunDoctor(ctx, c, o.Probe, o.ProbeFeishu)
@@ -316,6 +324,9 @@ func runService(parent context.Context, c core.Config, log core.Logger, makeServ
 	}
 	if ctx.Err() != nil {
 		return nil
+	}
+	if attaches, ok := g.(attachGateway); ok {
+		go watchAttach(ctx, attaches, c.DataDir, log)
 	}
 	log("starting", core.Args{"runtime": "go", "groups": len(c.Groups), "dms": len(c.DMs), "maxWorkers": c.Runtime.MaxWorkers})
 	err = channel.Start(ctx, g.Message, g.ActionResponse)

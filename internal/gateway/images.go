@@ -97,7 +97,7 @@ func (g *Gateway) sealImages(room string) error {
 var errInboxFull = errors.New("chat pending input limit reached")
 
 func (g *Gateway) queueInput(ctx context.Context, d core.Delivery, now int64) error {
-	r, ok := RoomFromKey(g.config, d.RoomKey)
+	r, ok := g.roomFromKey(d.RoomKey)
 	if !ok {
 		return errors.New("input room is no longer authorized")
 	}

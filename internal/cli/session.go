@@ -123,6 +123,17 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
 	if !ok {
 		return errors.New("session room is no longer authorized by this configuration")
 	}
+	if r.DMUser != "" && r.Thread != "" {
+		record, found, e := st.AdoptedTopicByRoom(s.RoomKey)
+		if e != nil || !found || record.Root != r.Thread || record.State != store.AdoptedOpen {
+			return errors.New("adopted topic session is no longer open or recorded")
+		}
+		work, e := workspace.PhysicalDirectory(record.Work)
+		if e != nil || !c.AdoptWorkAllowed(r.DMUser, work) {
+			return errors.New("adopted session working directory is no longer allowed")
+		}
+		r.WorkspaceCWD = work
+	}
 	var outstanding, uncertain int
 	if err = st.DB.QueryRowContext(ctx, `SELECT
  (SELECT count(*) FROM inbox WHERE room=? AND status IN ('queued','sent','consumed'))+

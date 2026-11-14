@@ -433,6 +433,7 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 	}
 	g.retainCards(ctx, now)
 	g.reconcileOrphanedInputs(ctx)
+	g.sweepAdoptions(now)
 	g.retryUsage(ctx)
 	g.retryReceipts()
 	g.mu.Lock()
@@ -457,7 +458,7 @@ func (g *Gateway) Sweep(ctx context.Context, now int64) {
 		return
 	}
 	for _, key := range keys {
-		r, ok := RoomFromKey(g.config, key)
+		r, ok := g.roomFromKey(key)
 		if !ok {
 			continue
 		}

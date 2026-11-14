@@ -322,7 +322,7 @@ func (g *Gateway) quickAction(ctx context.Context, a core.CardAction) (string, b
 	if !valid {
 		return "此快捷操作已失效，请使用最新卡片或命令。", true, nil
 	}
-	r, allowed := RoomFromKey(g.config, p.Room)
+	r, allowed := g.roomFromKey(p.Room)
 	if !allowed || a.ChatID != r.ChatID || a.MessageID == "" || !AuthorizedAuthor(r, a.UserID) {
 		return "", true, nil
 	}

@@ -11,7 +11,7 @@ import (
 // same-group chat paths untouched and adds the explicitly configured DM
 // cross-chat path, sharing historyChatTarget/expandChatHistory with both.
 func (g *Gateway) historyRequest(ctx context.Context, r core.Room, session string, input core.Args, requester *core.RequestContext) (core.Args, historyAccess, error) {
-	current, ok := RoomFromKey(g.config, r.Key)
+	current, ok := g.roomFromKey(r.Key)
 	if !ok || ctx.Err() != nil {
 		return nil, historyAccess{}, errors.New("history scope is no longer available")
 	}

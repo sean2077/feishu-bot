@@ -26,7 +26,7 @@ func historyCardTextMissing(text string) bool {
 }
 
 func (g *Gateway) history(ctx context.Context, r core.Room, session string, input core.Args) (core.Args, error) {
-	current, ok := RoomFromKey(g.config, r.Key)
+	current, ok := g.roomFromKey(r.Key)
 	if !ok || ctx.Err() != nil {
 		return nil, errors.New("history scope is no longer available")
 	}
@@ -161,7 +161,7 @@ func (g *Gateway) history(ctx context.Context, r core.Room, session string, inpu
 	if e != nil {
 		return nil, e
 	}
-	latest, ok := RoomFromKey(g.config, r.Key)
+	latest, ok := g.roomFromKey(r.Key)
 	if ctx.Err() != nil || !ok {
 		return nil, errors.New("history request cancelled")
 	}

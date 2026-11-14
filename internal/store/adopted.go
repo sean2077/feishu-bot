@@ -24,10 +24,27 @@ const (
 // gateway session or another adoption.
 var ErrNativeClaimed = errors.New("native session is already claimed")
 
+// SQLite extended constraint codes that prove one row already owns the key.
+// modernc.org/sqlite returns extended codes from Error.Code().
+const (
+	sqliteConstraintPrimaryKey = 1555
+	sqliteConstraintUnique     = 2067
+)
+
+func nativeClaimConflictCode(code int) bool {
+	return code == sqliteConstraintPrimaryKey || code == sqliteConstraintUnique
+}
+
+func nativeClaimConflict(err error) bool {
+	var failure *sqlite.Error
+	return errors.As(err, &failure) && nativeClaimConflictCode(failure.Code())
+}
+
 // AdoptedTopic is one locally adopted Claude Code session bound to a Feishu
 // DM topic. Room, Root, Session and Thread are empty until the corresponding
 // durable step completes.
 type AdoptedTopic struct {
+	User          string
 	Room          string
 	Session       string
 	Native        string
@@ -41,16 +58,20 @@ type AdoptedTopic struct {
 	Updated       int64
 }
 
-const adoptedCols = "native,coalesce(room,''),coalesce(session,''),thread,coalesce(root,''),work,holder_pid,holder_started,state,created,updated"
+const adoptedCols = "native,user,coalesce(room,''),coalesce(session,''),thread,coalesce(root,''),work,holder_pid,holder_started,state,created,updated"
 
 func adoptedRow(r scanner) (AdoptedTopic, error) {
 	var a AdoptedTopic
-	err := r.Scan(&a.Native, &a.Room, &a.Session, &a.Thread, &a.Root, &a.Work, &a.HolderPID, &a.HolderStarted, &a.State, &a.Created, &a.Updated)
+	err := r.Scan(&a.Native, &a.User, &a.Room, &a.Session, &a.Thread, &a.Root, &a.Work, &a.HolderPID, &a.HolderStarted, &a.State, &a.Created, &a.Updated)
 	return a, err
 }
 
-func (s *Store) adoptedBy(column, value string) (AdoptedTopic, bool, error) {
-	a, err := adoptedRow(s.DB.QueryRow("SELECT "+adoptedCols+" FROM adopted_topics WHERE "+column+"=?", value))
+type rowQueryer interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func adoptedBy(q rowQueryer, column, value string) (AdoptedTopic, bool, error) {
+	a, err := adoptedRow(q.QueryRow("SELECT "+adoptedCols+" FROM adopted_topics WHERE "+column+"=?", value))
 	if errors.Is(err, sql.ErrNoRows) {
 		return AdoptedTopic{}, false, nil
 	}
@@ -59,12 +80,12 @@ func (s *Store) adoptedBy(column, value string) (AdoptedTopic, bool, error) {
 
 // AdoptedTopicByNative returns the adoption record for one native session ID.
 func (s *Store) AdoptedTopicByNative(native string) (AdoptedTopic, bool, error) {
-	return s.adoptedBy("native", native)
+	return adoptedBy(s.DB, "native", native)
 }
 
 // AdoptedTopicByRoom returns the adoption record for one DM topic room key.
 func (s *Store) AdoptedTopicByRoom(room string) (AdoptedTopic, bool, error) {
-	return s.adoptedBy("room", room)
+	return adoptedBy(s.DB, "room", room)
 }
 
 // AdoptedTopicByThread returns the adoption record for one Feishu thread ID.
@@ -72,7 +93,7 @@ func (s *Store) AdoptedTopicByThread(thread string) (AdoptedTopic, bool, error) 
 	if thread == "" {
 		return AdoptedTopic{}, false, nil
 	}
-	return s.adoptedBy("thread", thread)
+	return adoptedBy(s.DB, "thread", thread)
 }
 
 // AdoptedTopicByRoot returns the adoption record for one root message ID.
@@ -80,7 +101,41 @@ func (s *Store) AdoptedTopicByRoot(root string) (AdoptedTopic, bool, error) {
 	if root == "" {
 		return AdoptedTopic{}, false, nil
 	}
-	return s.adoptedBy("root", root)
+	return adoptedBy(s.DB, "root", root)
+}
+
+// AdoptedTopicByRoomDB is the transport-side variant for callers that hold the
+// shared *sql.DB rather than a Store.
+func AdoptedTopicByRoomDB(db *sql.DB, room string) (AdoptedTopic, bool, error) {
+	if db == nil || room == "" {
+		return AdoptedTopic{}, false, nil
+	}
+	return adoptedBy(db, "room", room)
+}
+
+// AdoptedTopicByThreadDB is the transport-side thread lookup.
+func AdoptedTopicByThreadDB(db *sql.DB, thread string) (AdoptedTopic, bool, error) {
+	if db == nil || thread == "" {
+		return AdoptedTopic{}, false, nil
+	}
+	return adoptedBy(db, "thread", thread)
+}
+
+// AdoptedTopicByRootDB is the transport-side root lookup.
+func AdoptedTopicByRootDB(db *sql.DB, root string) (AdoptedTopic, bool, error) {
+	if db == nil || root == "" {
+		return AdoptedTopic{}, false, nil
+	}
+	return adoptedBy(db, "root", root)
+}
+
+// CurrentSession returns the room's open session without creating one.
+func (s *Store) CurrentSession(room string) (core.Session, bool, error) {
+	r, err := sessionRow(s.DB.QueryRow("SELECT "+sessionCols+" FROM sessions WHERE room=? AND state='open'", room))
+	if errors.Is(err, sql.ErrNoRows) {
+		return core.Session{}, false, nil
+	}
+	return r, err == nil, err
 }
 
 // AdoptedTopics lists every adoption record, oldest first.
@@ -111,7 +166,7 @@ func (s *Store) NativeClaimed(native string) (bool, error) {
 
 // BeginAdoption persists the intent before any external write. It is
 // idempotent: an existing record is returned unchanged.
-func (s *Store) BeginAdoption(native, work string, holderPID int, holderStarted int64) (AdoptedTopic, bool, error) {
+func (s *Store) BeginAdoption(native, user, work string, holderPID int, holderStarted int64) (AdoptedTopic, bool, error) {
 	now := time.Now().UnixMilli()
 	var result AdoptedTopic
 	created := false
@@ -131,13 +186,13 @@ func (s *Store) BeginAdoption(native, work string, holderPID int, holderStarted 
 		if claimed > 0 {
 			return ErrNativeClaimed
 		}
-		if _, err = tx.Exec("INSERT INTO adopted_topics(native,room,session,thread,root,work,holder_pid,holder_started,state,created,updated) VALUES(?,NULL,NULL,'',NULL,?,?,?,?,?,?)",
-			native, work, holderPID, holderStarted, AdoptedPending, now, now); err != nil {
+		if _, err = tx.Exec("INSERT INTO adopted_topics(native,user,room,session,thread,root,work,holder_pid,holder_started,state,created,updated) VALUES(?,?,NULL,NULL,'',NULL,?,?,?,?,?,?)",
+			native, user, work, holderPID, holderStarted, AdoptedPending, now, now); err != nil {
 			// Only a primary-key or unique-constraint conflict means another
 			// adoption or gateway session already owns this native identity.
-			// Disk, locking and schema failures must reach the caller unchanged.
-			var failure *sqlite.Error
-			if errors.As(err, &failure) && failure.Code() == 19 {
+			// Disk, locking, trigger and schema failures must reach the caller
+			// unchanged. modernc.org/sqlite reports extended result codes here.
+			if nativeClaimConflict(err) {
 				return ErrNativeClaimed
 			}
 			return err
@@ -186,7 +241,7 @@ func (s *Store) BindAdoptionRoot(native, room, root, session, configDir string, 
 		if _, err := tx.Exec("INSERT INTO session_launch_identity(session,work,native_config,config_dir,config_override) VALUES(?,?,'inherit',?,?)", session, work, configDir, override); err != nil {
 			return err
 		}
-		if _, err := tx.Exec("INSERT INTO usage_coverage(session,room,started,prior_unknown) VALUES(?,?,?,0)", session, room, created); err != nil {
+		if _, err := tx.Exec("INSERT INTO usage_coverage(session,room,started,prior_unknown) VALUES(?,?,?,1)", session, room, created); err != nil {
 			return err
 		}
 		result, err := tx.Exec("UPDATE adopted_topics SET room=?,root=?,session=?,updated=? WHERE native=? AND state=? AND room IS NULL AND root IS NULL AND session IS NULL", room, root, session, time.Now().UnixMilli(), native, AdoptedPending)

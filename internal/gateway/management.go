@@ -7,12 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/store"
 	"strings"
 	"time"
 	"unicode"
 )
 
-var phases = map[string]string{"not_started": "尚未启动", "suspended": "已暂停运行，保留会话", "starting": "正在启动原生会话", "stopping": "正在停止，等待退出确认", "termination_unconfirmed": "停止未确认，需要维护者检查", "compacting": "正在整理原生上下文", "awaiting_answer": "等待审批或回答", "working": "处理中", "delivery_pending": "有输出尚未完整送达", "queued": "输入已保存，等待运行", "background": "原生后台工作或监控中", "connected_unknown": "已连接，后台状态尚未确认", "idle": "空闲，可继续对话"}
+var phases = map[string]string{"not_started": "尚未启动", "suspended": "已暂停运行，保留会话", "starting": "正在启动原生会话", "stopping": "正在停止，等待退出确认", "termination_unconfirmed": "停止未确认，需要维护者检查", "compacting": "正在整理原生上下文", "awaiting_answer": "等待审批或回答", "working": "处理中", "delivery_pending": "有输出尚未完整送达", "queued": "输入已保存，等待运行", "background": "原生后台工作或监控中", "connected_unknown": "已连接，后台状态尚未确认", "idle": "空闲，可继续对话", "awaiting_terminal_exit": "本地终端仍在使用该会话，退出后自动继续", "adoption_pending": "本地会话认领处理中", "adoption_uncertain": "本地会话认领结果未确认"}
 
 func jsonPretty(v any) string { b, _ := json.MarshalIndent(v, "", "  "); return string(b) }
 func (g *Gateway) statusView(r core.Room) (core.Args, error) {
@@ -139,6 +140,17 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 	if r.Thread != "" {
 		view["threadRoot"] = r.Thread
 		view["workspaceBinding"] = r.WorkspaceCWD
+		if r.DMUser != "" {
+			if record, found, err := g.store.AdoptedTopicByRoom(r.Key); err == nil && found {
+				holder := record.State == store.AdoptedOpen && saved != nil && saved.ID == record.Session && g.holderAlive(record)
+				view["adoption"] = core.Args{"state": record.State, "native": record.Native, "root": record.Root, "thread": record.Thread, "holderActive": holder}
+				if holder {
+					view["phase"] = "awaiting_terminal_exit"
+				} else if record.State != store.AdoptedOpen {
+					view["phase"] = "adoption_" + record.State
+				}
+			}
+		}
 	}
 	view["outboxStates"] = outboxStates
 	view["cardSnapshots"] = core.Args{"count": snapshotCount, "bytes": snapshotBytes}

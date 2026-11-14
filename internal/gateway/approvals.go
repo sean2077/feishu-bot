@@ -608,13 +608,13 @@ func (g *Gateway) ActionResponse(ctx context.Context, a core.CardAction) (core.A
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		r, ok := RoomFromKey(g.config, key)
+		r, ok := g.roomFromKey(key)
 		if e == nil && ok && r.ChatID == a.ChatID && AuthorizedAuthor(r, a.UserID) {
 			return actionToast("请求已结束或过期"), nil
 		}
 		return core.Args{}, nil
 	}
-	current, ok := RoomFromKey(g.config, p.room.Key)
+	current, ok := g.roomFromKey(p.room.Key)
 	if !ok {
 		g.approvalMu.Unlock()
 		return core.Args{}, nil
@@ -701,7 +701,7 @@ func (g *Gateway) answer(r core.Room, actor, id, text string) string {
 		g.approvalMu.Unlock()
 		return "问题不存在或已过期"
 	}
-	current, ok := RoomFromKey(g.config, r.Key)
+	current, ok := g.roomFromKey(r.Key)
 	if !ok || !AuthorizedAuthor(current, actor) {
 		g.approvalMu.Unlock()
 		return ""

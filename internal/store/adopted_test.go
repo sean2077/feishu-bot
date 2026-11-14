@@ -21,14 +21,14 @@ func adoptionFixture(t *testing.T) *Store {
 func TestAdoptionLifecycle(t *testing.T) {
 	s := adoptionFixture(t)
 	native := "11111111-2222-3333-4444-555555555555"
-	a, created, err := s.BeginAdoption(native, t.TempDir(), 4242, 99)
+	a, created, err := s.BeginAdoption(native, "member", t.TempDir(), 4242, 99)
 	if err != nil || !created {
 		t.Fatalf("begin: %+v %v %v", a, created, err)
 	}
-	if a.State != AdoptedPending || a.Room != "" || a.Root != "" || a.Session != "" || a.Thread != "" {
+	if a.State != AdoptedPending || a.Room != "" || a.Root != "" || a.Session != "" || a.Thread != "" || a.User != "member" {
 		t.Fatalf("pending record: %+v", a)
 	}
-	again, created, err := s.BeginAdoption(native, a.Work, 4242, 99)
+	again, created, err := s.BeginAdoption(native, "member", a.Work, 4242, 99)
 	if err != nil || created || again.Native != native {
 		t.Fatalf("idempotent begin: %+v %v %v", again, created, err)
 	}
@@ -57,6 +57,10 @@ func TestAdoptionLifecycle(t *testing.T) {
 	if byRoom, found, err := s.AdoptedTopicByRoom(room); err != nil || !found || byRoom.Thread != "omt_thread" {
 		t.Fatalf("room lookup: %+v %v %v", byRoom, found, err)
 	}
+	var prior int
+	if err := s.DB.QueryRow("SELECT prior_unknown FROM usage_coverage WHERE session='session-adopted'").Scan(&prior); err != nil || prior != 1 {
+		t.Fatalf("adopted session must mark prior usage unknown: %d %v", prior, err)
+	}
 }
 
 func TestAdoptionRejectsClaimedNative(t *testing.T) {
@@ -64,7 +68,7 @@ func TestAdoptionRejectsClaimedNative(t *testing.T) {
 	if _, err := s.DB.Exec("INSERT INTO sessions(id,room,cc,state,created) VALUES('existing','room:existing','native-taken','open',1)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.BeginAdoption("native-taken", t.TempDir(), 1, 0); err != ErrNativeClaimed {
+	if _, _, err := s.BeginAdoption("native-taken", "member", t.TempDir(), 1, 0); err != ErrNativeClaimed {
 		t.Fatalf("claimed native accepted: %v", err)
 	}
 }
@@ -72,7 +76,7 @@ func TestAdoptionRejectsClaimedNative(t *testing.T) {
 func TestAdoptionStepsAreOrdered(t *testing.T) {
 	s := adoptionFixture(t)
 	native := "native-order"
-	if _, _, err := s.BeginAdoption(native, t.TempDir(), 0, 0); err != nil {
+	if _, _, err := s.BeginAdoption(native, "member", t.TempDir(), 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.OpenAdoption(native, "omt_early"); err == nil {
@@ -96,7 +100,7 @@ func TestAdoptionStepsAreOrdered(t *testing.T) {
 func TestUncertainAdoptionPreservesEvidenceWithoutDowngrade(t *testing.T) {
 	s := adoptionFixture(t)
 	native := "native-uncertain"
-	if _, _, err := s.BeginAdoption(native, t.TempDir(), 7, 8); err != nil {
+	if _, _, err := s.BeginAdoption(native, "member", t.TempDir(), 7, 8); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.MarkAdoptionUncertain(native); err != nil {
@@ -108,7 +112,7 @@ func TestUncertainAdoptionPreservesEvidenceWithoutDowngrade(t *testing.T) {
 	}
 	// An open topic is never downgraded by a late failure.
 	other := "native-open"
-	if _, _, err := s.BeginAdoption(other, t.TempDir(), 0, 0); err != nil {
+	if _, _, err := s.BeginAdoption(other, "member", t.TempDir(), 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	room := `["tenant","app","project","p2p","oc_dm","member","om_root2"]`
@@ -129,7 +133,7 @@ func TestUncertainAdoptionPreservesEvidenceWithoutDowngrade(t *testing.T) {
 func TestDeleteUnsentAdoptionOnlyBeforeRoot(t *testing.T) {
 	s := adoptionFixture(t)
 	native := "native-delete"
-	if _, _, err := s.BeginAdoption(native, t.TempDir(), 0, 0); err != nil {
+	if _, _, err := s.BeginAdoption(native, "member", t.TempDir(), 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteUnsentAdoption(native); err != nil {
@@ -139,7 +143,7 @@ func TestDeleteUnsentAdoptionOnlyBeforeRoot(t *testing.T) {
 		t.Fatal("unsent adoption was not deleted")
 	}
 	kept := "native-kept"
-	if _, _, err := s.BeginAdoption(kept, t.TempDir(), 0, 0); err != nil {
+	if _, _, err := s.BeginAdoption(kept, "member", t.TempDir(), 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	room := `["tenant","app","project","p2p","oc_dm","member","om_root3"]`
@@ -157,7 +161,7 @@ func TestDeleteUnsentAdoptionOnlyBeforeRoot(t *testing.T) {
 func TestAdoptionHolderClearsOnlyOnMatch(t *testing.T) {
 	s := adoptionFixture(t)
 	native := "native-holder"
-	if _, _, err := s.BeginAdoption(native, t.TempDir(), 100, 200); err != nil {
+	if _, _, err := s.BeginAdoption(native, "member", t.TempDir(), 100, 200); err != nil {
 		t.Fatal(err)
 	}
 	if cleared, err := s.ClearAdoptionHolder(native, 100, 201); err != nil || cleared {
@@ -181,7 +185,7 @@ func TestAdoptionHolderClearsOnlyOnMatch(t *testing.T) {
 func TestExpirePendingAdoptions(t *testing.T) {
 	s := adoptionFixture(t)
 	native := "native-expire"
-	a, _, err := s.BeginAdoption(native, t.TempDir(), 0, 0)
+	a, _, err := s.BeginAdoption(native, "member", t.TempDir(), 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +201,7 @@ func TestAdoptionThreadIsUnique(t *testing.T) {
 	s := adoptionFixture(t)
 	first, second := "native-first", "native-second"
 	for _, native := range []string{first, second} {
-		if _, _, err := s.BeginAdoption(native, t.TempDir(), 0, 0); err != nil {
+		if _, _, err := s.BeginAdoption(native, "member", t.TempDir(), 0, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -220,8 +224,24 @@ func TestBeginAdoptionReportsNonConstraintStorageError(t *testing.T) {
 	if _, err := s.DB.Exec(`CREATE TRIGGER fail_adoption BEFORE INSERT ON adopted_topics WHEN NEW.native='native-fail' BEGIN SELECT RAISE(FAIL,'storage probe'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.BeginAdoption("native-fail", t.TempDir(), 0, 0); err == nil || err == ErrNativeClaimed {
+	if _, _, err := s.BeginAdoption("native-fail", "member", t.TempDir(), 0, 0); err == nil || err == ErrNativeClaimed {
 		t.Fatalf("storage failure was misreported: %v", err)
+	}
+}
+
+func TestNativeClaimConflictCodes(t *testing.T) {
+	cases := map[int]bool{
+		1555: true,  // SQLITE_CONSTRAINT_PRIMARYKEY
+		2067: true,  // SQLITE_CONSTRAINT_UNIQUE
+		19:   false, // primary constraint code, not proof of one owner
+		1811: false, // trigger RAISE(FAIL)
+		0:    false,
+		2068: false, // SQLITE_CONSTRAINT_CHECK
+	}
+	for code, want := range cases {
+		if got := nativeClaimConflictCode(code); got != want {
+			t.Fatalf("code %d: got %v, want %v", code, got, want)
+		}
 	}
 }
 

@@ -52,7 +52,22 @@ type fakeTransport struct {
 	fetchHook         func(context.Context, string, core.Room) (*core.Message, error)
 	fileHook          func(context.Context, string) (string, error)
 	receiptHook       func(context.Context, string, string, string) error
+	userCards         []sentCard
+	userCardHook      func(context.Context, string, core.Args) (string, string, error)
 	thinkingKey       string
+}
+
+func (t *fakeTransport) SendUserCard(ctx context.Context, user string, card core.Args) (string, string, error) {
+	t.mu.Lock()
+	t.next++
+	id := fmt.Sprintf("root-%d", t.next)
+	t.userCards = append(t.userCards, sentCard{id: id, room: core.Room{ChatID: "oc_adopted", DMUser: user}, card: argsOfCopy(card)})
+	hook := t.userCardHook
+	t.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, user, card)
+	}
+	return id, "oc_adopted", nil
 }
 
 func (t *fakeTransport) UploadImage(_ context.Context, data []byte) (string, error) {

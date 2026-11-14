@@ -159,31 +159,42 @@ func ownDirectory(path, expected string) error {
 	return nil
 }
 
-func inherited(w core.Workspace) (core.Workspace, error) {
-	home, err := os.UserHomeDir()
+// InheritedConfig returns the live user home and Claude configuration
+// directory used by nativeConfig "inherit". override reports whether
+// CLAUDE_CONFIG_DIR selected the directory explicitly.
+func InheritedConfig() (home, dir string, override bool, err error) {
+	home, err = os.UserHomeDir()
 	if err != nil {
-		return w, err
+		return "", "", false, err
 	}
 	home, err = physicalDirectory(home)
 	if err != nil {
-		return w, err
+		return "", "", false, err
 	}
-	dir := os.Getenv("CLAUDE_CONFIG_DIR")
-	override := strings.TrimSpace(dir) != ""
+	dir = os.Getenv("CLAUDE_CONFIG_DIR")
+	override = strings.TrimSpace(dir) != ""
 	if !override {
 		dir = filepath.Join(home, ".claude")
 	}
 	dir, err = filepath.Abs(dir)
 	if err != nil {
-		return w, err
+		return "", "", false, err
 	}
 	dir, err = filepath.EvalSymlinks(dir)
 	if err != nil {
-		return w, errors.New("Claude config directory must exist for inherited configuration")
+		return "", "", false, errors.New("Claude config directory must exist for inherited configuration")
 	}
 	st, err := os.Stat(dir)
 	if err != nil || !st.IsDir() {
-		return w, errors.New("Claude config directory must be a directory")
+		return "", "", false, errors.New("Claude config directory must be a directory")
+	}
+	return home, dir, override, nil
+}
+
+func inherited(w core.Workspace) (core.Workspace, error) {
+	home, dir, override, err := InheritedConfig()
+	if err != nil {
+		return w, err
 	}
 	w.Home = home
 	w.ConfigDir = dir
@@ -191,6 +202,10 @@ func inherited(w core.Workspace) (core.Workspace, error) {
 	w.ConfigDirOverride = override
 	return w, nil
 }
+
+// PhysicalDirectory resolves an existing path to its physical form. Callers
+// use it before comparing an adopted working directory with configured roots.
+func PhysicalDirectory(path string) (string, error) { return physicalDirectory(path) }
 
 var prepareLocks sync.Map
 
