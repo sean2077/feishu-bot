@@ -441,6 +441,24 @@ func absolute(base, path string) string {
 	p, _ := filepath.Abs(filepath.Join(base, path))
 	return p
 }
+
+// physicalPath resolves an existing path, or the deepest existing ancestor
+// followed by the remaining components when the full path does not exist yet.
+// It is used only for path-identity checks, never for storing configuration.
+func physicalPath(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+		return resolved
+	}
+	parent := filepath.Dir(absolute)
+	if parent == absolute {
+		return absolute
+	}
+	return filepath.Join(physicalPath(parent), filepath.Base(absolute))
+}
 func validate(c *core.Config, base string) error {
 	if err := validateProfiles(c); err != nil {
 		return err
@@ -815,6 +833,7 @@ func validate(c *core.Config, base string) error {
 				return errors.New("dms[].adoptRoots requires a project with nativeConfig inherit")
 			}
 			rooms := filepath.Join(c.DataDir, "rooms")
+			physicalRooms := physicalPath(rooms)
 			roots := map[string]bool{}
 			for j, root := range dm.AdoptRoots {
 				if !nonempty(root) {
@@ -829,7 +848,8 @@ func validate(c *core.Config, base string) error {
 				if err != nil || !info.IsDir() {
 					return fmt.Errorf("dms[%d].adoptRoots[%d] must be an existing directory", i, j)
 				}
-				if core.Inside(rooms, root) || core.Inside(root, rooms) {
+				if core.Inside(rooms, root) || core.Inside(root, rooms) ||
+					core.Inside(physicalRooms, root) || core.Inside(root, physicalRooms) {
 					return fmt.Errorf("dms[%d].adoptRoots[%d] must not overlap the dataDir room tree", i, j)
 				}
 				key := root

@@ -107,3 +107,24 @@ func TestAdoptRootsRejectEmptyAndDuplicateEntries(t *testing.T) {
 		t.Fatalf("duplicate adopt roots accepted: %v", err)
 	}
 }
+
+func TestAdoptRootsRejectOverlapThroughSymlinkedDataDir(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	nested := filepath.Join(real, "state", "rooms", "nested")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("directory symlinks are unavailable: %v", err)
+	}
+	v := fixture(t)
+	v["dataDir"] = "link/state"
+	v["projects"].([]any)[0].(map[string]any)["nativeConfig"] = "inherit"
+	v["dms"].([]any)[0].(map[string]any)["adoptRoots"] = []any{nested}
+	err := parseAdoptFixture(t, v, base)
+	if err == nil || !strings.Contains(err.Error(), "overlap") {
+		t.Fatalf("symlinked dataDir overlap accepted: %v", err)
+	}
+}
