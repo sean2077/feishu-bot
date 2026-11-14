@@ -88,6 +88,7 @@ func relayFixture(t *testing.T) (*fixture, string, string, core.AttachResult) {
 	t.Helper()
 	f, work, native := adoptFixture(t)
 	req := attachRequest(native, work)
+	req.SessionName = "fixture-session"
 	req.HolderPID = os.Getpid()
 	if started, ok := process.StartTime(req.HolderPID); ok {
 		req.HolderStarted = started

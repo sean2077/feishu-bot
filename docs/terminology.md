@@ -335,6 +335,12 @@ _英文_: local terminal handoff
 _英文_: adopted topic
 _避免_: 把认领话题称为普通话题会话或群话题；它只存在于私聊
 
+**本地会话名**
+
+认领话题绑定的本机 Claude Code 会话显示名，来自 `sessions/<PID>.json` 的 `name`（其中 `sessionId` 必须与 native ID 一致）或显式 `--name`，读不到时用 native ID 前 8 位。用于根卡片标题、回复页脚、`/status` 和 `topics` 展示，不替代 native ID，也不重命名原生会话。
+_英文_: local session name
+_避免_: 与「会话名称」（网关聊天内的会话标签）混用
+
 **终端占用**
 
 认领话题登记的本机 Claude Code 进程身份（PID 与可得时的启动时间）。进程仍存活时，话题消息只排队并提示等待，网关不启动第二个原生进程；进程退出或启动时间确认不同后释放。`/new` 通过切换到新会话解除当前占用，不结束本机进程。

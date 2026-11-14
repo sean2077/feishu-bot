@@ -31,10 +31,13 @@ feishu-bot daemon install|uninstall|start|stop|restart|status|logs
 feishu-bot config path|example|format|explain
 feishu-bot session run --session FULL_SESSION_ID [--config path] [--env-file path]
 feishu-bot attach --config path [--user OPEN_ID] [--title TEXT]
-                  [--summary-file path|-] [--native ID] [--holder-pid PID] [--json]
+                  [--summary-file path|-] [--native ID] [--holder-pid PID]
+                  [--name NAME] [--json]
 feishu-bot notify --config path --summary-file path|- [--title TEXT]
-                  [--native ID] [--holder-pid PID] [--user OPEN_ID] [--json]
+                  [--native ID] [--holder-pid PID] [--user OPEN_ID]
+                  [--name NAME] [--json]
 feishu-bot topic reply --config path --native ID --message-id om_xxx --text-file - [--json]
+feishu-bot topics [--config path] [--native ID] [--json]
 feishu-bot action <operation> '<parameters-json>'
 feishu-bot context
 feishu-bot feedback export [--config path] [--value useless|useful|all]
@@ -106,6 +109,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			if o.Subcommand == "topic" {
 				text = topicHelp
 			}
+			if o.Subcommand == "topics" {
+				text = topicsHelp
+			}
 			if o.Subcommand == "feedback" {
 				text = feedbackHelp
 			}
@@ -168,6 +174,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		if o.Command == "topic" {
 			return runTopicReply(ctx, c, o, stdout)
+		}
+		if o.Command == "topics" {
+			return runTopics(c, o, stdout)
 		}
 		if o.Command == "doctor" {
 			report := RunDoctor(ctx, c, o.Probe, o.ProbeFeishu)

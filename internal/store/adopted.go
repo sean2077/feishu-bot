@@ -51,6 +51,8 @@ type AdoptedTopic struct {
 	Thread        string
 	Root          string
 	Work          string
+	SessionName   string
+	Title         string
 	HolderPID     int
 	HolderStarted int64
 	State         string
@@ -58,11 +60,11 @@ type AdoptedTopic struct {
 	Updated       int64
 }
 
-const adoptedCols = "native,user,coalesce(room,''),coalesce(session,''),thread,coalesce(root,''),work,holder_pid,holder_started,state,created,updated"
+const adoptedCols = "native,user,coalesce(room,''),coalesce(session,''),thread,coalesce(root,''),work,coalesce(session_name,''),coalesce(title,''),holder_pid,holder_started,state,created,updated"
 
 func adoptedRow(r scanner) (AdoptedTopic, error) {
 	var a AdoptedTopic
-	err := r.Scan(&a.Native, &a.User, &a.Room, &a.Session, &a.Thread, &a.Root, &a.Work, &a.HolderPID, &a.HolderStarted, &a.State, &a.Created, &a.Updated)
+	err := r.Scan(&a.Native, &a.User, &a.Room, &a.Session, &a.Thread, &a.Root, &a.Work, &a.SessionName, &a.Title, &a.HolderPID, &a.HolderStarted, &a.State, &a.Created, &a.Updated)
 	return a, err
 }
 
@@ -202,6 +204,22 @@ func (s *Store) BeginAdoption(native, user, work string, holderPID int, holderSt
 		return err
 	})
 	return result, created, err
+}
+
+// SetAdoptionIdentity records the local session display name and root card
+// title with the pending intent, before any external write.
+func (s *Store) SetAdoptionIdentity(native, sessionName, title string) error {
+	_, err := s.DB.Exec("UPDATE adopted_topics SET session_name=?,title=?,updated=? WHERE native=?",
+		sessionName, title, time.Now().UnixMilli(), native)
+	return err
+}
+
+// SetAdoptionSessionName updates the display name shown for one adoption. It is
+// used when a later attach or notify observes a renamed local session.
+func (s *Store) SetAdoptionSessionName(native, sessionName string) error {
+	_, err := s.DB.Exec("UPDATE adopted_topics SET session_name=?,updated=? WHERE native=?",
+		sessionName, time.Now().UnixMilli(), native)
+	return err
 }
 
 // SetAdoptionRootEvidence records a delivered root message and its room before

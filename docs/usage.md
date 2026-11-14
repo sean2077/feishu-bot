@@ -33,6 +33,8 @@
 
 把 [skills/feishu](../skills/feishu/SKILL.md) 从仓库的 GitHub URL 全局安装到 `~/.claude/skills/feishu/`（或手动复制该目录）。之后在终端里说“转到飞书继续”“开个飞书话题聊”“通知我飞书”或运行 `/feishu`，技能会总结目标、已完成和待决问题，调用 `feishu-bot attach`，并在私聊里创建一张根卡片和话题。摘要显示在话题首条回复里。
 
+根卡片标题显示 `<会话名> · <标题>`，正文给出完整 native ID、工作目录和 `claude --resume <ID>` 命令；会话名自动取本机 Claude Code 的会话名，也可用 `--name` 覆盖。之后可用 `feishu-bot topics --native "$CLAUDE_CODE_SESSION_ID" --json` 反查该会话绑定的话题。
+
 - 终端还开着时，话题内消息会排队并提示“本地终端仍在使用该会话”；不会启动第二个进程。`/status` 显示等待原因，`/stop` 正常可用。
 - 退出终端后，网关在下一次定期检查（默认约 30 秒）发现占用释放，并在同一轮处理排队消息；之后在话题里直接发消息即可用原 native ID 和原工作目录继续。原上下文、工具和权限规则不变。想让话题从头开始，在话题内发送 `/new`。
 - 对已认领的话题再次认领前，如果话题里还有运行中的任务、待处理输入、未完成输出或审批，会拒绝并要求先 `/stop`。在本机执行 `claude --resume` 前也要先在话题里 `/stop`，否则可能两个写入方同时续接同一会话；网关无法阻止本地直接恢复。
@@ -53,7 +55,7 @@ feishu-bot notify --config /srv/feishu-bot/config.json \
 EOF
 ```
 
-第一次调用会在 owner 私聊创建话题，之后追加到同一话题。`notify` 的 `--summary-file` 是 Agent 写的任务摘要；也可以由 harness 在任务结束时调用。结果错误码见[部署与配置](deployment.md#任务通知与话题内交互)。
+第一次调用会在 owner 私聊创建话题，之后追加到同一话题。`notify` 的 `--summary-file` 是 Agent 写的任务摘要；也可以由 harness 在任务结束时调用。追加回复末尾带 `<会话名> · <ID 前 8 位>` 页脚，JSON 结果包含 `session_name` 和 `topic_url`。结果错误码见[部署与配置](deployment.md#任务通知与话题内交互)。
 
 终端还开着时，话题里的普通文本消息会转递给这个正在运行的本地会话，会话可以用包装消息里的 `feishu-bot topic reply --native ... --message-id ... --text-file -` 回复；不需要等终端退出。网关命令（`/status`、`/stop`、`/new` 等）仍由网关处理。转递消息按 owner 本人输入处理，可以批准门控操作；只接受 owner 的消息，未回复的消息不重放。socket 不可用或写入失败时，消息退回排队，终端退出后由网关继续。图片／文件本期只转递文本占位并说明未携带附件；Codex 会话不支持。
 

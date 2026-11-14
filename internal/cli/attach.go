@@ -22,11 +22,15 @@ const attachHelp = `Adopt the current local Claude Code session into a Feishu DM
 
 Usage:
   feishu-bot attach --config PATH [--user OPEN_ID] [--title TEXT]
-                    [--summary-file PATH|-] [--native ID] [--holder-pid PID] [--json]
+                    [--summary-file PATH|-] [--native ID] [--holder-pid PID]
+                    [--name NAME] [--json]
 
 Defaults come from the running Claude Code environment:
   --native     $CLAUDE_CODE_SESSION_ID
   --holder-pid $CLAUDE_PID
+The session display name is read from
+$CLAUDE_CONFIG_DIR/sessions/<holder-pid>.json only when its sessionId matches
+the native ID; --name overrides it.
 The working directory is read from the native transcript below the inherited
 Claude configuration directory, never from the shell's current directory. The
 gateway must already be running; this command never starts it.
@@ -150,6 +154,12 @@ func printAttachResult(out io.Writer, o Options, result core.AttachResult) error
 	} else {
 		if result.OK {
 			_, _ = fmt.Fprintf(out, "Adopted into a Feishu DM topic.\nChat: %s\nRoot message: %s\nThread: %s\n", result.ChatID, result.RootMessageID, result.ThreadID)
+			if result.SessionName != "" {
+				_, _ = fmt.Fprintf(out, "Session: %s\n", result.SessionName)
+			}
+			if result.TopicURL != "" {
+				_, _ = fmt.Fprintf(out, "Topic: %s\n", result.TopicURL)
+			}
 		} else {
 			_, _ = fmt.Fprintf(out, "Adoption not confirmed (state: %s).\n", valueOr(result.State, "unknown"))
 			if result.ChatID != "" {
@@ -233,6 +243,7 @@ func runAttach(ctx context.Context, c core.Config, o Options, out io.Writer) err
 	if err != nil {
 		return err
 	}
+	name := adoptSessionName(o.AttachName, configDir, holderPID, nativeID)
 	req := core.AttachRequest{
 		Kind:            core.ControlKindAttach,
 		ID:              core.NewID(),
@@ -243,6 +254,7 @@ func runAttach(ctx context.Context, c core.Config, o Options, out io.Writer) err
 		HolderPID:       holderPID,
 		HolderStarted:   holderStarted,
 		Title:           strings.Join(strings.Fields(o.AttachTitle), " "),
+		SessionName:     name,
 		Summary:         clipRunes(summary, core.AdoptSummaryRunes),
 		ConfigPath:      o.ConfigPath,
 		MessagingSocket: strings.TrimSpace(os.Getenv("CLAUDE_CODE_MESSAGING_SOCKET")),

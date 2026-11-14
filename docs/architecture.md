@@ -35,9 +35,9 @@ flowchart TD
 
 [房间键](terminology.md)由 tenant、app、project、聊天类型、chat ID 和私聊用户 ID 组成，整群范围不包含线程；`sessionScope: "thread"` 的群在同样字段后追加话题根消息 ID，每个话题独立排队、执行和恢复，默认共用该群的工作目录。`threadWorkspaces` 只覆盖指定话题的原生 cwd，房间键、聊天级状态和原生 HOME 的布局不变，附件仍按话题分开；网关启动与本地终端交接均核对已有 `session_launch_identity`，不会把历史会话悄悄搬到新目录（见[话题会话](conversation-contract.md#话题会话)）。项目是资源／权限配置单元，不必是代码仓库。首次任务准备工作区并启动 Claude，热进程在后续消息中复用；没有每会话一个的 Node 宿主。
 
-本地认领话题使用同样字段后追加根消息 ID 的七段**私聊**键。`adopted_topics` 保存 room、session、native ID、thread ID、根消息、登记 cwd、终端 holder 与 `pending|open|uncertain` 状态；房间的 `WorkspaceCWD` 只从该记录补全，并在每次解析时重新校验 adoptRoots。入站、恢复、outbox、卡片回调、历史读取和 `session run` 都经过同一个 adopted-aware 解析 helper；键形状合法但没有记录、记录不是 open 或工作目录失效时拒绝，不把七段键当作普通私聊。认领的本地控制通道沿用数据目录下的请求文件（临时文件 + rename），结果写回同一目录，不引入 socket 或命名管道；网关启动、本地终端交接和认领共用同一条原生会话身份与启动身份核对路径。
+本地认领话题使用同样字段后追加根消息 ID 的七段**私聊**键。`adopted_topics` 保存 room、session、native ID、thread ID、根消息、登记 cwd、终端 holder、本地会话显示名和根卡片标题及 `pending|open|uncertain` 状态；房间的 `WorkspaceCWD` 只从该记录补全，并在每次解析时重新校验 adoptRoots。入站、恢复、outbox、卡片回调、历史读取和 `session run` 都经过同一个 adopted-aware 解析 helper；键形状合法但没有记录、记录不是 open 或工作目录失效时拒绝，不把七段键当作普通私聊。认领的本地控制通道沿用数据目录下的请求文件（临时文件 + rename），结果写回同一目录，不引入 socket 或命名管道；网关启动、本地终端交接和认领共用同一条原生会话身份与启动身份核对路径。
 
-任务通知复用 `adopted_topics` 和同一控制通道：`notify` 首次创建话题、之后追加回复；`topic reply` 把本地会话的答案写回话题。终端仍存活时，网关把 owner 的普通话题消息通过 CC 原生跨会话收件箱转递给 holder 进程，转递输入使用独立的 `forwarded` 收件状态，不进入网关的原生输入队列，也不启动第二个进程。收件箱 endpoint 只在内存中保存，token 不写 SQLite、日志或审计；holder 释放、`/new`、重新认领和重启后重新注册。未回复的转递消息标 uncertain、不重放。
+任务通知复用 `adopted_topics` 和同一控制通道：`notify` 首次创建话题、之后追加回复；`topic reply` 把本地会话的答案写回话题。根卡片、`/status` 和回复页脚使用登记的本地会话显示名与 native ID 标识绑定关系；`feishu-bot topics` 以只读连接反查。终端仍存活时，网关把 owner 的普通话题消息通过 CC 原生跨会话收件箱转递给 holder 进程，转递输入使用独立的 `forwarded` 收件状态，不进入网关的原生输入队列，也不启动第二个进程。收件箱 endpoint 只在内存中保存，token 不写 SQLite、日志或审计；holder 释放、`/new`、重新认领和重启后重新注册。未回复的转递消息标 uncertain、不重放。
 
 授权在保存正文、下载、回执和模型调用之前完成，规则见[授权与触发](conversation-contract.md#授权与触发)。同一授权检查复用于恢复、历史、引用、附件、审批和输出重试。其他机器人的入站只由显式群 `allowOtherBots` 开启，仍要求明确 @，并受同一话题连续轮数限制；它们的内容是不可信输入，不能借 `mention_bot` 获得 action、审批或维护者身份。
 

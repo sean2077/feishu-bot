@@ -17,18 +17,37 @@ import (
 )
 
 func TestParseAttach(t *testing.T) {
-	o, err := Parse([]string{"attach", "--config", "cfg.json", "--user", "ou_dm", "--title", "hello", "--summary-file", "-", "--native", "native-id", "--holder-pid", "42", "--json"})
+	o, err := Parse([]string{"attach", "--config", "cfg.json", "--user", "ou_dm", "--title", "hello", "--summary-file", "-", "--native", "native-id", "--holder-pid", "42", "--name", "demo", "--json"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.Command != "attach" || o.AttachUser != "ou_dm" || o.AttachTitle != "hello" || o.AttachSummaryFile != "-" || o.AttachNative != "native-id" || o.AttachHolderPID != 42 || !o.AttachHolderSet || !o.JSON {
+	if o.Command != "attach" || o.AttachUser != "ou_dm" || o.AttachTitle != "hello" || o.AttachSummaryFile != "-" || o.AttachNative != "native-id" || o.AttachHolderPID != 42 || !o.AttachHolderSet || o.AttachName != "demo" || !o.JSON {
 		t.Fatalf("options: %+v", o)
 	}
 	for _, args := range [][]string{
 		{"attach", "--summary-file"},
 		{"attach", "--holder-pid", "-1"},
 		{"attach", "--json", "--json"},
+		{"attach", "--name", "--json"},
 		{"attach", "--unknown"},
+	} {
+		if _, err := Parse(args); err == nil {
+			t.Fatalf("accepted %q", args)
+		}
+	}
+}
+
+func TestParseTopics(t *testing.T) {
+	o, err := Parse([]string{"topics", "--config", "cfg.json", "--native", "native-id", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Command != "topics" || o.TopicsNative != "native-id" || !o.JSON || !o.ConfigExplicit {
+		t.Fatalf("options: %+v", o)
+	}
+	for _, args := range [][]string{
+		{"topics", "--json", "--json"},
+		{"topics", "--unknown"},
 	} {
 		if _, err := Parse(args); err == nil {
 			t.Fatalf("accepted %q", args)

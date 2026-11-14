@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 	"github.com/sean2077/feishu-bot/internal/native"
@@ -21,15 +22,20 @@ func notifyFailure(code, message string) core.NotifyResult {
 	return core.NotifyResult{OK: false, Error: notifyError(code, message)}
 }
 
-func notifyBody(title, summary string) string {
+func notifyBody(title, summary, footer string) string {
+	var text string
 	switch {
 	case title != "" && summary != "":
-		return "**" + title + "**\n\n" + summary
+		text = "**" + title + "**\n\n" + summary
 	case summary != "":
-		return summary
+		text = summary
 	default:
-		return title
+		text = title
 	}
+	if footer != "" {
+		text += "\n\n— " + footer
+	}
+	return text
 }
 
 func (g *Gateway) notifyValidation(req core.NotifyRequest) (core.Project, *core.AdoptError) {
@@ -88,6 +94,8 @@ func existingNotifyResult(record store.AdoptedTopic) core.NotifyResult {
 		ChatID:        adoptedChatID(record.Room),
 		RootMessageID: record.Root,
 		ThreadID:      record.Thread,
+		SessionName:   record.SessionName,
+		TopicURL:      topicAppLink(adoptedChatID(record.Room), record.Thread),
 		Created:       false,
 	}
 	switch record.State {
@@ -158,7 +166,9 @@ func (g *Gateway) Notify(ctx context.Context, req core.NotifyRequest) core.Notif
 		if !ok || room.Key != record.Room {
 			return notifyFailure(core.NotifyErrorInvalidRequest, "认领话题配置已失效")
 		}
-		messageID, err := g.transport.Send(ctx, room, notifyBody(title, summary), room.Thread, "")
+		name := chosenAdoptName(req.SessionName, record.SessionName, record.Native)
+		warnings := g.syncAdoptionName(ctx, &record, req.SessionName)
+		messageID, err := g.transport.Send(ctx, room, notifyBody(title, summary, adoptFooter(name, record.Native)), room.Thread, "")
 		if err != nil {
 			g.audit(room.Key, "notify_failed", core.Args{"native": req.Native, "uncertain": deliveryUncertain(err)})
 			return core.NotifyResult{
@@ -167,7 +177,10 @@ func (g *Gateway) Notify(ctx context.Context, req core.NotifyRequest) core.Notif
 				ChatID:        room.ChatID,
 				RootMessageID: record.Root,
 				ThreadID:      record.Thread,
+				SessionName:   name,
+				TopicURL:      topicAppLink(room.ChatID, record.Thread),
 				Created:       false,
+				Warnings:      warnings,
 				Error:         notifyError(core.NotifyErrorTransportFailure, "通知写入话题失败"),
 			}
 		}
@@ -175,7 +188,7 @@ func (g *Gateway) Notify(ctx context.Context, req core.NotifyRequest) core.Notif
 			g.setAdoptEndpoint(room.Key, adoptEndpoint{Socket: req.MessagingSocket, Token: req.MessagingToken, ConfigPath: req.ConfigPath, Native: req.Native})
 		}
 		g.audit(room.Key, "notify", core.Args{"native": req.Native, "message": messageID, "created": false})
-		return core.NotifyResult{OK: true, State: store.AdoptedOpen, ChatID: room.ChatID, RootMessageID: record.Root, ThreadID: record.Thread, MessageID: messageID, Created: false}
+		return core.NotifyResult{OK: true, State: store.AdoptedOpen, ChatID: room.ChatID, RootMessageID: record.Root, ThreadID: record.Thread, MessageID: messageID, SessionName: name, TopicURL: topicAppLink(room.ChatID, record.Thread), Created: false, Warnings: warnings}
 	}
 	return g.notifyCreate(ctx, req, title, summary)
 }
@@ -187,6 +200,7 @@ func (g *Gateway) notifyCreate(ctx context.Context, req core.NotifyRequest, titl
 	}
 	dm, _ := g.config.DM(req.User)
 	project, _ := g.config.Project(dm.ProjectID)
+	name := adoptDisplayName(req.SessionName, req.Native)
 	warnings := []string{}
 	if warning := adoptedModelWarning(g.gatewayModel(project), model); warning != "" {
 		warnings = append(warnings, warning)
@@ -201,12 +215,16 @@ func (g *Gateway) notifyCreate(ctx context.Context, req core.NotifyRequest, titl
 	if !created {
 		return existingNotifyResult(record)
 	}
+	if err = g.store.SetAdoptionIdentity(req.Native, name, title); err != nil {
+		_ = g.store.DeleteUnsentAdoption(req.Native)
+		return notifyFailure(core.NotifyErrorInvalidRequest, "认领意图写入失败")
+	}
 	sender, ok := g.transport.(core.UserCardSender)
 	if !ok {
 		_ = g.store.DeleteUnsentAdoption(req.Native)
 		return notifyFailure(core.NotifyErrorTransportFailure, "当前传输不支持认领卡片")
 	}
-	rootID, chatID, err := sender.SendUserCard(core.WithDeliveryID(ctx, "notify:"+req.ID+":root"), req.User, attachCard(title, work, req.Native))
+	rootID, chatID, err := sender.SendUserCard(core.WithDeliveryID(ctx, "notify:"+req.ID+":root"), req.User, attachCard(name, title, work, req.Native))
 	recordEvidence := func() {
 		if rootID == "" || chatID == "" {
 			return
@@ -219,7 +237,7 @@ func (g *Gateway) notifyCreate(ctx context.Context, req core.NotifyRequest, titl
 		if deliveryUncertain(err) {
 			recordEvidence()
 			_ = g.store.MarkAdoptionUncertain(req.Native)
-			return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, Error: notifyError(core.NotifyErrorTransportFailure, "根卡片发送结果未确认；请检查私聊中的根消息，不会自动重发")}
+			return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, SessionName: name, Error: notifyError(core.NotifyErrorTransportFailure, "根卡片发送结果未确认；请检查私聊中的根消息，不会自动重发")}
 		}
 		_ = g.store.DeleteUnsentAdoption(req.Native)
 		return notifyFailure(core.NotifyErrorTransportFailure, "根卡片发送失败")
@@ -227,37 +245,37 @@ func (g *Gateway) notifyCreate(ctx context.Context, req core.NotifyRequest, titl
 	room, ok := g.config.AdoptedTopicRoom(chatID, req.User, rootID)
 	if !ok {
 		_ = g.store.MarkAdoptionUncertain(req.Native)
-		return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, Error: notifyError(core.NotifyErrorTransportFailure, "根卡片已发送，但话题房间配置校验失败")}
+		return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, SessionName: name, Error: notifyError(core.NotifyErrorTransportFailure, "根卡片已发送，但话题房间配置校验失败")}
 	}
 	_ = g.store.SetAdoptionRootEvidence(req.Native, room.Key, rootID)
 	_, configDir, override, configErr := workspace.InheritedConfig()
 	if configErr != nil {
 		_ = g.store.MarkAdoptionUncertain(req.Native)
-		return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, Error: notifyError(core.NotifyErrorNotConfigured, "继承 Claude 配置目录不可用")}
+		return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, SessionName: name, Error: notifyError(core.NotifyErrorNotConfigured, "继承 Claude 配置目录不可用")}
 	}
 	sessionID := core.NewID()
 	now := time.Now().UnixMilli()
 	if err = g.store.BindAdoptionRoot(req.Native, room.Key, rootID, sessionID, configDir, override, now); err != nil {
 		_ = g.store.MarkAdoptionUncertain(req.Native)
-		return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, Error: notifyError(core.NotifyErrorTransportFailure, "根卡片已发送，但会话记录写入失败")}
+		return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, SessionName: name, Error: notifyError(core.NotifyErrorTransportFailure, "根卡片已发送，但会话记录写入失败")}
 	}
 	replyID, err := g.transport.Send(core.WithDeliveryID(ctx, "notify:"+req.ID+":thread"), room, summary, rootID, "")
 	if err != nil {
 		_ = g.store.MarkAdoptionUncertain(req.Native)
-		return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, Error: notifyError(core.NotifyErrorTransportFailure, "根卡片已发送，但话题回复失败")}
+		return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, SessionName: name, Error: notifyError(core.NotifyErrorTransportFailure, "根卡片已发送，但话题回复失败")}
 	}
 	message, err := g.transport.Fetch(ctx, replyID, room)
 	if err != nil || message == nil || message.ThreadID == "" || message.RootID != rootID {
 		_ = g.store.MarkAdoptionUncertain(req.Native)
-		return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, Error: notifyError(core.NotifyErrorTransportFailure, "根卡片已发送，但话题 ID 未能确认")}
+		return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, SessionName: name, Error: notifyError(core.NotifyErrorTransportFailure, "根卡片已发送，但话题 ID 未能确认")}
 	}
 	if err = g.store.OpenAdoption(req.Native, message.ThreadID); err != nil {
 		_ = g.store.MarkAdoptionUncertain(req.Native)
-		return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, ThreadID: message.ThreadID, Error: notifyError(core.NotifyErrorTransportFailure, "根卡片已发送且话题已建立，但状态写入失败")}
+		return core.NotifyResult{OK: false, State: store.AdoptedUncertain, ChatID: chatID, RootMessageID: rootID, ThreadID: message.ThreadID, SessionName: name, TopicURL: topicAppLink(chatID, message.ThreadID), Error: notifyError(core.NotifyErrorTransportFailure, "根卡片已发送且话题已建立，但状态写入失败")}
 	}
 	g.setAdoptEndpoint(room.Key, adoptEndpoint{Socket: req.MessagingSocket, Token: req.MessagingToken, ConfigPath: req.ConfigPath, Native: req.Native})
 	g.audit(room.Key, "notify", core.Args{"native": req.Native, "root": rootID, "thread": message.ThreadID, "message": replyID, "created": true})
-	return core.NotifyResult{OK: true, State: store.AdoptedOpen, ChatID: chatID, RootMessageID: rootID, ThreadID: message.ThreadID, MessageID: replyID, Created: true, Warnings: warnings}
+	return core.NotifyResult{OK: true, State: store.AdoptedOpen, ChatID: chatID, RootMessageID: rootID, ThreadID: message.ThreadID, MessageID: replyID, SessionName: name, TopicURL: topicAppLink(chatID, message.ThreadID), Created: true, Warnings: warnings}
 }
 
 func (g *Gateway) TopicReply(ctx context.Context, req core.TopicReplyRequest) core.TopicReplyResult {
@@ -290,7 +308,9 @@ func (g *Gateway) TopicReply(ctx context.Context, req core.TopicReplyRequest) co
 	if status != store.InputForwarded && status != "uncertain" {
 		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "该消息没有成功转递给本机会话")}
 	}
-	replyID, err := g.transport.Send(ctx, room, text, room.Thread, "")
+	replyFooter := "\n\n— " + adoptFooter(record.SessionName, record.Native)
+	replyText := cut(text, g.config.Limits.TextChars-utf8.RuneCountInString(replyFooter)) + replyFooter
+	replyID, err := g.transport.Send(ctx, room, replyText, room.Thread, "")
 	if err != nil {
 		if deliveryUncertain(err) {
 			_, _ = g.store.MarkForwarded(room.Key, req.MessageID, "uncertain")
