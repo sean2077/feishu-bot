@@ -162,7 +162,7 @@ func (g *Gateway) Notify(ctx context.Context, req core.NotifyRequest) core.Notif
 				_ = g.store.UpdateAdoptionHolder(record.Native, req.HolderPID, req.HolderStarted)
 			}
 		} else {
-			g.clearAdoptEndpoint(record.Room)
+			g.removeAdoptEndpoint(record.Room)
 		}
 		room, ok := g.config.AdoptedTopicRoom(adoptedChatID(record.Room), req.User, record.Root)
 		if !ok || room.Key != record.Room {

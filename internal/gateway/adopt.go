@@ -189,6 +189,7 @@ func (g *Gateway) holderFor(room core.Room, sessionID string) (store.AdoptedTopi
 	if record.HolderPID > 0 {
 		_, _ = g.store.ClearAdoptionHolder(record.Native, record.HolderPID, record.HolderStarted)
 		g.clearAdoptNotice(room.Key)
+		g.removeAdoptEndpoint(room.Key)
 		g.failForwarded(room, "holder_released")
 	}
 	return record, false
@@ -327,6 +328,7 @@ func (g *Gateway) sweepAdoptions(now int64) {
 		}
 		g.clearAdoptNotice(record.Room)
 		g.audit(record.Room, "adopted_holder_released", core.Args{"native": record.Native, "pid": record.HolderPID})
+		g.removeAdoptEndpoint(record.Room)
 		if room, ok := g.roomFromKey(record.Room); ok {
 			g.failForwarded(room, "holder_released")
 		} else {

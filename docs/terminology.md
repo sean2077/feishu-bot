@@ -354,6 +354,6 @@ _英文_: task notification
 
 **话题转递**
 
-终端仍存活时，网关把 owner 在认领话题里发送的普通消息通过 Claude Code 原生跨会话收件箱提交给该本地会话。转递输入使用独立的 `forwarded` 状态，不进入网关原生输入队列、不重放；包装消息标注网关已校验为 owner 本人，因此按 owner 本人输入处理。回复通过 `feishu-bot topic reply` 回到话题。socket 不可用或提交失败时退回排队；终端退出或 `/new` 后未回复的转递标 uncertain。
+终端仍存活时，网关把 owner 在认领话题里发送的普通消息通过 Claude Code 原生跨会话收件箱提交给该本地会话。转递输入使用独立的 `forwarded` 状态，不进入网关原生输入队列、不重放；包装消息标注网关已校验为 owner 本人，因此按 owner 本人输入处理。回复通过 `feishu-bot topic reply` 回到话题。socket 不可用或提交失败时退回排队；endpoint 以每个 native 一个 0600 文件暂存以便重启恢复，holder 释放、`/new` 或恢复后首次失败时删除。终端退出或 `/new` 后未回复的转递标 uncertain。
 _英文_: topic relay
 _避免_: 把话题转递称为远程控制、第二个会话或群聊转发
