@@ -18,6 +18,11 @@ func TestStartIdentityExcludesWallClock(t *testing.T) {
 	if startIdentity("", 12345) != 12345 {
 		t.Fatal("missing boot ID must leave raw ticks intact")
 	}
+	for _, boot := range []string{"boot-a", "boot-b", ""} {
+		if startIdentity(boot, 12345) < 0 {
+			t.Fatalf("start identity is negative for boot %q", boot)
+		}
+	}
 }
 
 // startIdentity has no wall-clock input. This test documents the invariant that

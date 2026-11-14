@@ -53,5 +53,7 @@ func startIdentity(bootID string, ticks int64) int64 {
 	}
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(bootID))
-	return int64(hash.Sum64()) ^ ticks
+	// Keep the identity non-negative: holder_started is validated and stored as
+	// a non-negative integer on every platform.
+	return (int64(hash.Sum64()) ^ ticks) & 0x7fffffffffffffff
 }
