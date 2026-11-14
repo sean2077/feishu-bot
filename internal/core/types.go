@@ -60,6 +60,10 @@ type Room struct {
 	WorkspaceCWD string `json:"workspaceCwd,omitempty"`
 	// TopicHistory is the group setting that permits scope=chat history reads.
 	TopicHistory string `json:"topicHistory,omitempty"`
+	// AdoptedState is the durable adoption state of a DM topic room. It is set
+	// by the gateway from the adopted_topics record and is never trusted from
+	// chat input. Empty means the room is not an adopted DM topic.
+	AdoptedState string `json:"adoptedState,omitempty"`
 }
 type Session struct {
 	ID        string `json:"id"`
@@ -278,6 +282,10 @@ type DM struct {
 	UserID       string        `json:"userId"`
 	ProjectID    string        `json:"projectId"`
 	HistoryChats []HistoryChat `json:"historyChats,omitempty"`
+	// AdoptRoots enables local Claude Code session adoption into this DM. Only
+	// directories below these roots may be adopted, and only when the bound
+	// project inherits the live Claude configuration.
+	AdoptRoots []string `json:"adoptRoots,omitempty"`
 }
 type Limits struct {
 	BackgroundMessages  int   `json:"backgroundMessages"`

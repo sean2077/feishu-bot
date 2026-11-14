@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -777,7 +778,8 @@ func validate(c *core.Config, base string) error {
 		}
 	}
 	seen = map[string]bool{}
-	for _, dm := range c.DMs {
+	for i := range c.DMs {
+		dm := &c.DMs[i]
 		if !idPattern.MatchString(dm.UserID) || seen[dm.UserID] || !projects[dm.ProjectID] {
 			return errors.New("invalid DM binding")
 		}
@@ -806,6 +808,40 @@ func validate(c *core.Config, base string) error {
 			}
 			names[h.ChatID] = true
 			names[h.Name] = true
+		}
+		if len(dm.AdoptRoots) > 0 {
+			project, _ := c.Project(dm.ProjectID)
+			if project.NativeConfig != "inherit" {
+				return errors.New("dms[].adoptRoots requires a project with nativeConfig inherit")
+			}
+			rooms := filepath.Join(c.DataDir, "rooms")
+			roots := map[string]bool{}
+			for j, root := range dm.AdoptRoots {
+				if !nonempty(root) {
+					return fmt.Errorf("dms[%d].adoptRoots[%d] must be a nonempty directory", i, j)
+				}
+				root = absolute(base, root)
+				root, err = filepath.EvalSymlinks(root)
+				if err != nil {
+					return fmt.Errorf("dms[%d].adoptRoots[%d] must be an existing directory", i, j)
+				}
+				info, err := os.Stat(root)
+				if err != nil || !info.IsDir() {
+					return fmt.Errorf("dms[%d].adoptRoots[%d] must be an existing directory", i, j)
+				}
+				if core.Inside(rooms, root) || core.Inside(root, rooms) {
+					return fmt.Errorf("dms[%d].adoptRoots[%d] must not overlap the dataDir room tree", i, j)
+				}
+				key := root
+				if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+					key = strings.ToLower(key)
+				}
+				if roots[key] {
+					return fmt.Errorf("dms[%d].adoptRoots[%d] duplicates another root", i, j)
+				}
+				roots[key] = true
+				dm.AdoptRoots[j] = root
+			}
 		}
 	}
 	checks := []struct {
