@@ -9,8 +9,11 @@ runs:
   steps:
     - name: Verify Go source
       shell: bash
-      # Windows race runs of internal/gateway take about 130-180 s.
-      run: go test -race -count=1 -timeout 360s ./...
+      # Windows race runs of internal/gateway take about 130-180 s; slow shared
+      # runners have pushed the whole race suite past 360 s. Keep headroom over
+      # the per-package default so a slow runner fails on a real test, not the
+      # package deadline.
+      run: go test -race -count=1 -timeout 720s ./...
     - name: Vet Go source
       shell: bash
       run: go vet ./...

@@ -394,6 +394,36 @@ func TestReattachIsRejectedWhileRoomHasPendingInput(t *testing.T) {
 	}
 }
 
+func TestAdoptedStopNoticePointsToTerminal(t *testing.T) {
+	f, work, native := adoptFixture(t)
+	pid := os.Getpid()
+	started, ok := process.StartTime(pid)
+	if !ok {
+		t.Skip("process start time is unavailable")
+	}
+	req := attachRequest(native, work)
+	req.HolderPID, req.HolderStarted = pid, started
+	result := f.g.Attach(context.Background(), req)
+	if !result.OK {
+		t.Fatalf("attach failed: %+v", result)
+	}
+	room, ok := f.g.roomFromKey(result.Room)
+	if !ok {
+		t.Fatal("adopted room did not resolve")
+	}
+	f.send(core.Message{ID: "om_stop", ChatID: "oc_adopted", ChatType: "p2p", SenderID: "member", ThreadID: "omt_fixture", RootID: room.Thread, Text: "/stop", Time: time.Now().UnixMilli(), Resources: []core.Resource{}})
+	waitFor(t, "terminal stop notice", func() bool {
+		f.tr.mu.Lock()
+		defer f.tr.mu.Unlock()
+		for _, notice := range f.tr.notices {
+			if strings.Contains(notice, "本地终端仍持有该会话") && strings.Contains(notice, "需要在本地终端停止") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
 func TestHolderQueuesWithoutStartingAndResumesAfterExit(t *testing.T) {
 	f, work, native := adoptFixture(t)
 	pid := os.Getpid()

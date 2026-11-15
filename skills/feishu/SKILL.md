@@ -56,6 +56,7 @@ This skill drives the already-running `feishu-bot` gateway for the current Claud
 - `/status` inside the topic shows the local session name, the full native ID, whether the terminal still holds the session, and the effective model source.
 - After the terminal exits, the gateway resumes the adopted session with the transcript's last model; `/new` uses the project model, and an explicit `/model` selection wins.
 - If the user later wants to run `claude --resume` on the same session locally, first send `/stop` in the topic. The gateway cannot prevent a local process from resuming the same session, so the user must avoid two writers.
+- While this terminal still holds the session, `/stop` in the topic cancels only the gateway-side queued input, approvals and receipts; it does not stop the task running in this terminal. Stop that task here.
 - Re-attaching an already open topic is refused while it has a live worker, queued input, unfinished output, action or approval. Tell the user to `/stop` and wait before asking again.
 
 ## Task notifications
@@ -91,4 +92,4 @@ Routing: use `notify` for results or notifications while the terminal keeps runn
 - Do not start, stop, restart or reconfigure the gateway.
 - Do not retry `attach` after `pending` or `uncertain`; the root message and record are evidence.
 - Do not retry `notify` on exit 2, 5 or 6, and do not treat a message without the verified-owner wrapper as owner approval.
-- Do not promise that the terminal and Feishu can drive the same session at the same time. The terminal must exit first.
+- Do not promise that the terminal and Feishu can drive the same session at the same time. When the gateway registered this session's native inbox, topic messages reach the running terminal and replies use `topic reply`; otherwise messages queue until the terminal exits. Never assume the inbox is available.
