@@ -703,7 +703,7 @@ JSON 结果字段：`ok`、`state`、`chat_id`、`root_message_id`、`thread_id`
 
 - 转递成功后话题收到「已提交给本机会话；回复会出现在本话题」，不承诺已读；最终回复由本地会话执行包装消息中的 `topic reply` 命令回到话题。包装里的命令字优先用裸 `feishu-bot`，仅当本机 PATH 解析到与网关相同的可执行文件时才这样写；否则写网关二进制的带引号绝对路径，避免本地终端静默运行另一份副本。endpoint 登记时使用非默认配置则命令附带 `--config <绝对路径>`，默认 `~/.feishu-bot/config.json` 时省略。
 
-`topic reply` 的最简形式是 `feishu-bot topic reply --message-id om_xxx --text-file -`：`--native` 默认取 `$CLAUDE_CODE_SESSION_ID`，`--config` 默认取 `$FEISHU_BOT_CONFIG`，未设置时取 `~/.feishu-bot/config.json`。消息必须属于该会话的 open 认领话题且未回复。错误会区分原因：`--native` 非法时报 `--native 不是合法会话 ID`；消息属于别的会话时报 `消息 om_… 属于会话 <前 8 位>，传入的是 <前 8 位>`；已回复时报 `该消息已回复`；只有话题确实未 open 时才报 `没有处于 open 状态的认领话题`。
+`topic reply` 的最简形式是 `feishu-bot topic reply --message-id om_xxx --text-file -`：`--native` 默认取 `$CLAUDE_CODE_SESSION_ID`，`--config` 默认取 `$FEISHU_BOT_CONFIG`，未设置时取 `~/.feishu-bot/config.json`。消息必须属于该会话的 open 认领话题且未回复。回复正文超过 `limits.textChars` 时按上限截断（保留页脚），结果的 `truncated` 为 true 并在 `warnings` 中说明；完整正文不会写入话题，也不自动分段或转文件。控制请求文件上限为 4 MiB，超过时网关明确拒绝并返回 `invalid_request`，客户端不会把它报告成“结果未确认”。错误会区分原因：`--native` 非法时报 `--native 不是合法会话 ID`；消息属于别的会话时报 `消息 om_… 属于会话 <前 8 位>，传入的是 <前 8 位>`；已回复时报 `该消息已回复`；只有话题确实未 open 时才报 `没有处于 open 状态的认领话题`。
 - 包装消息写明「来自飞书私聊话题，网关已校验为 owner 本人」。按 owner 本人输入处理，可以批准门控操作，但仍受原生权限规则和项目配置约束；这是个人使用场景的信任边界，不是通用远程审批通道。
 - 只转递 DM owner 的消息；网关命令仍由网关处理。图片／文件本期只转递文本占位并说明未携带附件，不专门拒绝；本地路径携带随后续迭代评估。
 - socket 缺失、连接/打开失败等确定未开始提交时退回排队并提示；写入后超时、取消或部分写等结果不确定时标 uncertain、不自动重放并提示；已提交但未回复的消息在终端退出、`/new`、重启或转递失败时标 uncertain、不重放。

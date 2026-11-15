@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sean2077/feishu-bot/internal/core"
 	nativepkg "github.com/sean2077/feishu-bot/internal/native"
@@ -212,6 +213,37 @@ func relayFixture(t *testing.T) (*fixture, string, string, core.AttachResult) {
 
 func relayMessage(f *fixture, id, text, root string) core.Message {
 	return core.Message{ID: id, ChatID: "oc_adopted", ChatType: "p2p", SenderID: "member", ThreadID: "omt_fixture", RootID: root, Text: text, Time: time.Now().UnixMilli(), Resources: []core.Resource{}}
+}
+
+func TestTopicReplyTruncatesLongText(t *testing.T) {
+	f, _, native, result := relayFixture(t)
+	f.g.adoptSender = func(context.Context, string, string, string) (nativepkg.InboxOutcome, error) {
+		return nativepkg.InboxSubmitted, nil
+	}
+	f.send(relayMessage(f, "om_long_reply", "hello", result.RootMessageID))
+	record, _, _ := f.s.AdoptedTopicByNative(native)
+	waitFor(t, "forwarded row", func() bool {
+		_, _, found, err := f.s.Forwarded(record.Room, "om_long_reply")
+		return err == nil && found
+	})
+	f.g.config.Limits.TextChars = 80
+	long := strings.Repeat("长", 200)
+	reply := f.g.TopicReply(context.Background(), core.TopicReplyRequest{Kind: core.ControlKindReply, ID: core.NewID(), At: time.Now().UnixMilli(), Native: native, MessageID: "om_long_reply", Text: long})
+	if !reply.OK || !reply.Truncated || len(reply.Warnings) != 1 {
+		t.Fatalf("long reply: %+v", reply)
+	}
+	f.tr.mu.Lock()
+	last := f.tr.notices[len(f.tr.notices)-1]
+	f.tr.mu.Unlock()
+	if got := utf8.RuneCountInString(last); got > 80 {
+		t.Fatalf("delivered %d runes over the 80 rune limit: %q", got, last)
+	}
+	if !strings.Contains(last, "— ") {
+		t.Fatalf("truncated reply lost its footer: %q", last)
+	}
+	if !strings.HasPrefix(last, strings.Repeat("长", 20)) {
+		t.Fatalf("truncated reply did not keep the answer prefix: %q", last)
+	}
 }
 
 func TestTopicRelayAndReply(t *testing.T) {

@@ -266,6 +266,37 @@ func TestRunNotifyEndToEnd(t *testing.T) {
 	}
 }
 
+func TestRunTopicReplyRejectsUnreadableRequest(t *testing.T) {
+	c, _, _, _ := notifySuccessFixture(t)
+	text := filepath.Join(t.TempDir(), "reply.txt")
+	if err := os.WriteFile(text, []byte("answer"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := workspace.Lock(c.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	answer := make(chan error, 1)
+	go func() {
+		// The gateway could not read the request and wrote an attach-shaped
+		// error result; the reply client must report invalid_request, not an
+		// unconfirmed write.
+		answer <- answerControlRequest(c.DataDir, core.AttachResult{Error: "控制请求无法读取"})
+	}()
+	var out bytes.Buffer
+	err = runTopicReply(context.Background(), c, Options{AttachNative: "native", TopicMessageID: "om_x", TopicTextFile: text, JSON: true}, &out)
+	if code := exitCodeOf(t, err); code != 5 {
+		t.Fatalf("code = %d, output %s", code, out.String())
+	}
+	if e := <-answer; e != nil {
+		t.Fatal(e)
+	}
+	if !strings.Contains(out.String(), "网关拒绝") || !strings.Contains(out.String(), `"invalid_request"`) {
+		t.Fatalf("output: %s", out.String())
+	}
+}
+
 func TestRunTopicReplyEndToEnd(t *testing.T) {
 	c, _, _, _ := notifySuccessFixture(t)
 	text := filepath.Join(t.TempDir(), "reply.txt")

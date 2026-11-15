@@ -76,6 +76,7 @@ The first call creates the topic; later calls append to it. Appended replies end
 - Reply with the exact `topic reply` command in the wrapper; the command word may be a quoted absolute path when PATH does not point at the gateway binary, and a non-default config adds `--config`. `--native` defaults to `$CLAUDE_CODE_SESSION_ID` and `--config` to `$FEISHU_BOT_CONFIG` or `~/.feishu-bot/config.json`. Do not rewrite the command or substitute a remembered session ID. Pipe the final answer through stdin. The gateway reports which session owns a mismatched message and distinguishes an already-replied message from a closed topic. Do not call `lark-cli` or send messages as the user.
 - Answer each forwarded message separately; do not merge several wrappers into one reply. Attachments are not carried in this phase; the wrapper says so. If the wrapper is absent, do not assume a message came from Feishu.
 - If the topic reports `转递结果未确认`, do not resend automatically; the local terminal may have received it. Tell the user to check the terminal or re-send explicitly.
+- If the `topic reply` result reports `truncated`, tell the user the gateway shortened the reply to the configured limit; do not resend to make it longer.
 - If the terminal exits or the topic switches with `/new`, forwarded messages that were not answered are not replayed. Do not resend them automatically.
 
 ## Natural language

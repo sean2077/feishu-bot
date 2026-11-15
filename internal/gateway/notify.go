@@ -330,9 +330,14 @@ func (g *Gateway) TopicReply(ctx context.Context, req core.TopicReplyRequest) co
 	if !core.ValidThreadRoot(req.Native) {
 		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "--native 不是合法会话 ID")}
 	}
-	text := strings.TrimSpace(cleanAttachText(req.Text, g.config.Limits.TextChars))
+	text := cleanAttachText(req.Text, len(req.Text)+1)
 	if text == "" {
 		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "回复正文为空")}
+	}
+	truncated := false
+	if utf8.RuneCountInString(text) > g.config.Limits.TextChars {
+		text = cut(text, g.config.Limits.TextChars)
+		truncated = true
 	}
 	// Resolve the message first so a wrong --native reports the session that
 	// actually owns the message instead of claiming the topic is closed.
@@ -383,11 +388,23 @@ func (g *Gateway) TopicReply(ctx context.Context, req core.TopicReplyRequest) co
 		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "该消息没有成功转递给本机会话")}
 	}
 	replyFooter := "\n\n— " + adoptFooter(record.SessionName, record.Native)
-	replyText := cut(text, g.config.Limits.TextChars-utf8.RuneCountInString(replyFooter)) + replyFooter
-	if g.config.Limits.TextChars <= utf8.RuneCountInString(replyFooter) {
+	answer := text
+	replyText := text
+	if budget := g.config.Limits.TextChars - utf8.RuneCountInString(replyFooter); budget > 0 {
 		// Keep the answer when the configured text budget is too small for a
 		// footer; a truncated reply is worse than a missing attribution.
-		replyText = cut(text, g.config.Limits.TextChars)
+		answer = cut(text, budget)
+		replyText = answer + replyFooter
+	} else {
+		answer = cut(text, g.config.Limits.TextChars)
+		replyText = answer
+	}
+	if answer != text {
+		truncated = true
+	}
+	warnings := []string{}
+	if truncated {
+		warnings = append(warnings, "回复超过长度上限，已截断；完整正文未发送。")
 	}
 	replyID, err := g.transport.Send(ctx, room, replyText, room.Thread, "")
 	if err != nil {
@@ -402,5 +419,5 @@ func (g *Gateway) TopicReply(ctx context.Context, req core.TopicReplyRequest) co
 	}
 	g.settleReceipts(room.Key, record.Session, origin(message), true)
 	g.audit(room.Key, "topic_reply", core.Args{"message": req.MessageID, "native": req.Native, "reply": replyID})
-	return core.TopicReplyResult{OK: true, MessageID: replyID}
+	return core.TopicReplyResult{OK: true, MessageID: replyID, Truncated: truncated, Warnings: warnings}
 }
