@@ -1,11 +1,11 @@
 ---
 name: feishu
-description: "Adopt the current local Claude Code session into the owner's Feishu DM topic, send task-result notifications to it, and reply to forwarded topic messages while the terminal stays open. Use when the user types /feishu, says 转到飞书继续、开个飞书话题聊、通知我飞书、把结果发到飞书、把当前会话交给飞书, or asks to continue this conversation on Feishu/Lark."
+description: "Send this Claude Code session's results or questions to the owner's Feishu DM topic, adopt or continue the session in Feishu, and reply to forwarded topic messages. Use when the user types /feishu, says 私发我、完成后通知我, or asks to notify them of results or continue this conversation on Feishu/Lark. Use notify/attach instead of lark-cli im +messages-send for messages addressed to the user."
 ---
 
 # Hand this session to Feishu
 
-This skill performs one local action: it asks the already-running `feishu-bot` gateway to adopt the current Claude Code session into the owner's Feishu DM as a topic. It does not start the gateway, edit configuration, or run Feishu API calls itself.
+This skill drives the already-running `feishu-bot` gateway for the current Claude Code session: send the owner a task-result notification, adopt or continue the session in a Feishu DM topic, and reply to forwarded topic messages. It does not start the gateway, edit configuration, or call Feishu APIs directly; for unrelated Feishu/Lark operations use the `lark-cli` skill.
 
 ## Before running
 
@@ -79,7 +79,9 @@ The first call creates the topic; later calls append to it. Appended replies end
 
 ## Natural language
 
-The user does not need to type `/feishu`. Treat phrases such as “转到飞书继续”, “开个飞书话题聊”, “通知我飞书”, “把当前会话交给飞书”, or “continue this on Feishu” as the same request. Confirm the destination DM if more than one is configured; otherwise proceed with the single enabled DM.
+The user does not need to type `/feishu`. Treat a request to notify them on Feishu, send a result or question, ask them to decide, or continue this conversation in Feishu as this skill; confirm the destination DM if more than one is configured.
+
+Routing: use `notify` for results or notifications while the terminal keeps running; use `attach` to continue in Feishu; do not send messages addressed to the user with `lark-cli im +messages-send` (`lark-cli` is for other Feishu operations).
 
 ## Do not
 
