@@ -2,6 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
+- CI 的 `go test -race` 整包时限从 360 秒提高到 720 秒，避免慢共享 runner 上 `internal/gateway` 因整包超时误报；真实用例失败仍会报错。
 - 认领话题的本地终端仍存活时，`/stop` 的回执改为说明网关只取消了待交付输入、审批和回执，正在运行的任务需要在本地终端停止；不再声称已停止本聊天运行。
 - `topic reply` 正文超过 `limits.textChars` 时按上限截断（保留页脚），结果增加 `truncated` 和 `warnings`；控制请求文件上限提高到 4 MiB。网关明确拒绝或返回无法套用的结果时，客户端报 `invalid_request` 而不是“结果未确认”。
 - 认领话题的定期 holder 清理与 attach/notify 的登记按 native 串行：旧 holder 清理不会删除并发重新登记的新 endpoint。
