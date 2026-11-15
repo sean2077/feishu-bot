@@ -11,7 +11,7 @@ func TestValidModelIdentifier(t *testing.T) {
 			t.Fatalf("rejected valid model %q", model)
 		}
 	}
-	for _, model := range []string{"", "has space", "line\nbreak", "tab\tmodel", "control\x01model"} {
+	for _, model := range []string{"", "has space", "line\nbreak", "tab\tmodel", "control\x01model", "-oops"} {
 		if ValidModelIdentifier(model) {
 			t.Fatalf("accepted invalid model %q", model)
 		}

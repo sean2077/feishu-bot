@@ -81,7 +81,7 @@ type Session struct {
 // native --model argument. The value must be printable, free of whitespace and
 // at most 200 bytes.
 func ValidModelIdentifier(model string) bool {
-	if model == "" || len(model) > 200 {
+	if model == "" || len(model) > 200 || model[0] == '-' {
 		return false
 	}
 	for _, r := range model {
