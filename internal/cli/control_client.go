@@ -14,6 +14,12 @@ func controlDir(dataDir string) string {
 	return filepath.Join(dataDir, "control", attachRequestDir)
 }
 
+// errInvalidControlResult marks a result file the gateway wrote explicitly but
+// this client cannot apply, for example because the request was rejected as
+// unreadable and the result has a different shape. Callers report a definite
+// invalid request, not an unconfirmed write.
+var errInvalidControlResult = errors.New("invalid control result")
+
 func writeControlRequest(dataDir, id string, value any) (string, error) {
 	dir := controlDir(dataDir)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -75,11 +81,14 @@ func waitControlResult(ctx context.Context, dataDir, id string, target any) (boo
 			file.Close()
 			_ = os.Remove(resultPath)
 			_ = os.Remove(requestPath)
-			if err != nil || len(data) > attachResultLimit {
-				return false, errors.New("invalid control result")
+			if err != nil {
+				return false, errors.New("cannot read the control result")
+			}
+			if len(data) > attachResultLimit {
+				return false, errInvalidControlResult
 			}
 			if err = json.Unmarshal(data, target); err != nil {
-				return false, errors.New("invalid control result")
+				return false, errInvalidControlResult
 			}
 			return true, nil
 		}

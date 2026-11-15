@@ -264,6 +264,9 @@ func runAttach(ctx context.Context, c core.Config, o Options, out io.Writer) err
 		return err
 	}
 	result, confirmed, err := waitAttachResult(ctx, c.DataDir, req.ID)
+	if errors.Is(err, errInvalidControlResult) {
+		return errors.New("adoption request was rejected by the gateway: the control result could not be applied; do not resend")
+	}
 	if err != nil {
 		return err
 	}

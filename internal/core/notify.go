@@ -77,5 +77,7 @@ type TopicReplyRequest struct {
 type TopicReplyResult struct {
 	OK        bool        `json:"ok"`
 	MessageID string      `json:"message_id,omitempty"`
+	Truncated bool        `json:"truncated,omitempty"`
+	Warnings  []string    `json:"warnings,omitempty"`
 	Error     *AdoptError `json:"error,omitempty"`
 }

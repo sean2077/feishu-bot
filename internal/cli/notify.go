@@ -214,6 +214,10 @@ func runNotify(ctx context.Context, c core.Config, o Options, out io.Writer) err
 	}
 	var result core.NotifyResult
 	confirmed, err := waitControlResult(ctx, c.DataDir, req.ID, &result)
+	if errors.Is(err, errInvalidControlResult) {
+		printNotifyResult(out, o, notifyErrorResult(core.NotifyErrorInvalidRequest, "网关拒绝了通知请求：请求格式或大小无效；未发送"))
+		return &exitCodeError{code: 5}
+	}
 	if err != nil {
 		printNotifyResult(out, o, notifyErrorResult(core.NotifyErrorTransportFailure, err.Error()))
 		return &exitCodeError{code: 6}
@@ -286,6 +290,9 @@ func runTopicReply(ctx context.Context, c core.Config, o Options, out io.Writer)
 	}
 	var result core.TopicReplyResult
 	confirmed, err := waitControlResult(ctx, c.DataDir, req.ID, &result)
+	if errors.Is(err, errInvalidControlResult) {
+		return fail(5, "网关拒绝了回复请求：请求格式或大小无效；未重发")
+	}
 	if err != nil || !confirmed {
 		return fail(6, "reply result unconfirmed; check the topic and do not resend")
 	}
@@ -294,6 +301,9 @@ func runTopicReply(ctx context.Context, c core.Config, o Options, out io.Writer)
 		_, _ = fmt.Fprintln(out, string(data))
 	} else if result.OK {
 		_, _ = fmt.Fprintf(out, "Reply delivered: %s\n", result.MessageID)
+		for _, warning := range result.Warnings {
+			_, _ = fmt.Fprintf(out, "Warning: %s\n", warning)
+		}
 	} else if result.Error != nil {
 		_, _ = fmt.Fprintf(out, "Reply not confirmed: %s\n", result.Error.Message)
 	}

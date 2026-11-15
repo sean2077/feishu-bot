@@ -2,6 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
+- `topic reply` 正文超过 `limits.textChars` 时按上限截断（保留页脚），结果增加 `truncated` 和 `warnings`；控制请求文件上限提高到 4 MiB。网关明确拒绝或返回无法套用的结果时，客户端报 `invalid_request` 而不是“结果未确认”。
 - 认领话题的定期 holder 清理与 attach/notify 的登记按 native 串行：旧 holder 清理不会删除并发重新登记的新 endpoint。
 - 转递包装里的 `topic reply` 命令补齐配置与二进制上下文：命令字仅在 PATH 解析到网关同一可执行文件时用裸 `feishu-bot`，否则用网关二进制的带引号绝对路径；endpoint 登记使用非默认配置时附带 `--config <绝对路径>`。`feishu-bot topics` 省略 `--config` 时与 `topic reply` 一致，取 `$FEISHU_BOT_CONFIG` 或 `~/.feishu-bot/config.json`。
 - 话题转递区分写入结果：原生收件箱连接／打开失败等确定未开始提交时退回排队并提示；完整写入后提交成功；写入后超时、取消或部分写入标为 uncertain、不自动重放，并提示检查本地终端或重新发送。Windows 命名管道在打开超时或取消后才到达的句柄会被关闭，不再泄漏。

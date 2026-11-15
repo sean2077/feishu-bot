@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	attachControlPoll = 250 * time.Millisecond
-	attachRequestTTL  = 5 * time.Minute
+	attachControlPoll   = 250 * time.Millisecond
+	attachRequestTTL    = 5 * time.Minute
+	controlRequestLimit = 4 << 20
 )
 
 type attachGateway interface {
@@ -88,7 +89,7 @@ func processAttachFile(ctx context.Context, gateway attachGateway, dir, path str
 	if err != nil {
 		return
 	}
-	data, err := readLimited(file, 64<<10)
+	data, err := readLimited(file, controlRequestLimit)
 	file.Close()
 	if err != nil {
 		writeControlError(dir, id, core.ControlKindAttach, "控制请求无法读取", log)
