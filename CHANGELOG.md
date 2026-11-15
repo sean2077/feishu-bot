@@ -2,6 +2,8 @@
 
 ## Unreleased — Go 原生网关
 
+- 认领话题的定期 holder 清理与 attach/notify 的登记按 native 串行：旧 holder 清理不会删除并发重新登记的新 endpoint。
+- 转递包装里的 `topic reply` 命令补齐配置与二进制上下文：命令字仅在 PATH 解析到网关同一可执行文件时用裸 `feishu-bot`，否则用网关二进制的带引号绝对路径；endpoint 登记使用非默认配置时附带 `--config <绝对路径>`。`feishu-bot topics` 省略 `--config` 时与 `topic reply` 一致，取 `$FEISHU_BOT_CONFIG` 或 `~/.feishu-bot/config.json`。
 - 话题转递区分写入结果：原生收件箱连接／打开失败等确定未开始提交时退回排队并提示；完整写入后提交成功；写入后超时、取消或部分写入标为 uncertain、不自动重放，并提示检查本地终端或重新发送。Windows 命名管道在打开超时或取消后才到达的句柄会被关闭，不再泄漏。
 - `notify` 不再绕过认领话题的忙时与 ownership 保护：网关正在使用该话题时仍追加通知，但不更新本地 holder／endpoint，并在 warnings 中说明；提交通知后再登记本地转递，登记写入失败只产生 warning，不影响已发送的通知。
 - `topic reply` 的 `--native` 改为默认取 `$CLAUDE_CODE_SESSION_ID`，`--config` 默认取 `$FEISHU_BOT_CONFIG` 或 `~/.feishu-bot/config.json`；转发消息附带最简命令 `feishu-bot topic reply --message-id ... --text-file -`。错误区分非法 native、消息属于另一会话（含双方前 8 位）、已回复和话题未 open。

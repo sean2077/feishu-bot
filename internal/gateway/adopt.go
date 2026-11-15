@@ -323,26 +323,54 @@ func (g *Gateway) sweepAdoptions(now int64) {
 		if g.holderAlive(record) {
 			continue
 		}
-		cleared, err := g.store.ClearAdoptionHolder(record.Native, record.HolderPID, record.HolderStarted)
-		if err != nil {
-			if g.logger != nil {
-				g.logger("adopt_holder_clear_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
-			}
+		released, ok := g.releaseDeadHolder(record.Native)
+		if !ok {
 			continue
 		}
-		if !cleared {
-			// A newer holder replaced this snapshot; leave its endpoint intact.
-			continue
-		}
-		g.clearAdoptNotice(record.Room)
-		g.audit(record.Room, "adopted_holder_released", core.Args{"native": record.Native, "pid": record.HolderPID})
-		g.removeAdoptEndpoint(record.Room)
-		if room, ok := g.roomFromKey(record.Room); ok {
+		if room, ok := g.roomFromKey(released); ok {
 			g.failForwarded(room, "holder_released")
 		} else {
-			g.clearAdoptEndpoint(record.Room)
+			g.clearAdoptEndpoint(released)
 		}
 	}
+}
+
+// releaseDeadHolder clears one dead terminal holder and its relay endpoint
+// under the per-native adoption lock. attach and notify hold the same lock
+// while they replace a holder and register a new endpoint, so a sweep working
+// from a stale snapshot can never delete a registration that was just
+// refreshed. Callers notify affected forwards after the lock is released.
+func (g *Gateway) releaseDeadHolder(native string) (string, bool) {
+	unlock, err := g.adoptLocks.lockContext(g.ctx, native)
+	if err != nil {
+		return "", false
+	}
+	defer unlock()
+	record, found, err := g.store.AdoptedTopicByNative(native)
+	if err != nil {
+		if g.logger != nil {
+			g.logger("adopt_holder_clear_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+		}
+		return "", false
+	}
+	if !found || record.State != store.AdoptedOpen || record.HolderPID <= 0 || g.holderAlive(record) {
+		return "", false
+	}
+	cleared, err := g.store.ClearAdoptionHolder(record.Native, record.HolderPID, record.HolderStarted)
+	if err != nil {
+		if g.logger != nil {
+			g.logger("adopt_holder_clear_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+		}
+		return "", false
+	}
+	if !cleared {
+		// A newer holder replaced this snapshot; leave its endpoint intact.
+		return "", false
+	}
+	g.clearAdoptNotice(record.Room)
+	g.audit(record.Room, "adopted_holder_released", core.Args{"native": record.Native, "pid": record.HolderPID})
+	g.removeAdoptEndpoint(record.Room)
+	return record.Room, true
 }
 
 // adoptedModelWarning explains the model the gateway will use after the local

@@ -490,6 +490,13 @@ func parseTopics(args []string, o Options) (Options, error) {
 		}
 		return o, errors.New("unexpected option; see feishu-bot topics --help")
 	}
+	if !o.ConfigExplicit {
+		if env := strings.TrimSpace(os.Getenv("FEISHU_BOT_CONFIG")); env != "" {
+			o.ConfigPath = env
+		} else if home, err := os.UserHomeDir(); err == nil {
+			o.ConfigPath = filepath.Join(home, ".feishu-bot", "config.json")
+		}
+	}
 	return resolveOptions(&o)
 }
 

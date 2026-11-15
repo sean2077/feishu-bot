@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -194,6 +195,8 @@ type Gateway struct {
 	adoptLocks                                                   keyedLocks
 	adoptEndpoints                                               map[string]adoptEndpoint
 	adoptSender                                                  func(context.Context, string, string, string) (native.InboxOutcome, error)
+	selfExe                                                      string
+	exeLookup                                                    func(string) (string, error)
 	retryConfirmMu                                               sync.Mutex
 	retryConfirm                                                 map[string]int64
 	thinkingIconMu                                               sync.Mutex
@@ -208,6 +211,10 @@ func New(c core.Config, st *store.Store, tr core.Transport, factory core.WorkerF
 	g := &Gateway{config: c, store: st, transport: tr, factory: factory, logger: log, ctx: ctx, cancel: cancel,
 		actions: map[string]*actionExecution{}, actionRunner: runActionCommand, slots: map[string]*slot{}, rates: map[string][]int64{}, waiting: map[string]bool{}, profileWait: map[string]string{}, launchFailure: map[string]map[string]bool{}, wakes: map[string]*dispatchWake{}, imageTimers: map[string]imageWake{}, outActive: map[string]bool{}, outCursor: map[string]outputCursor{}, stopBlocked: map[string]bool{}, identityLost: map[string]bool{}, stopHeld: map[string]int{}, receiptActive: map[string]*dispatchWake{}, approvals: map[string]*approval{}, otherBotRounds: map[string]otherBotRound{}, adoptNotice: map[string]bool{}, adoptEndpoints: map[string]adoptEndpoint{}, retryConfirm: map[string]int64{}, exportFailures: map[string]string{}}
 	g.adoptSender = native.SendInbox
+	g.exeLookup = exec.LookPath
+	if exe, err := os.Executable(); err == nil {
+		g.selfExe = exe
+	}
 	if _, err := rand.Read(g.historyKey[:]); err != nil {
 		panic("cannot initialize history cursor authentication")
 	}

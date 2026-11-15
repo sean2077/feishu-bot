@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -175,6 +176,15 @@ func TestNotifyNotConfigured(t *testing.T) {
 	}
 }
 
+func fixtureConfigPath(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("user home is unavailable")
+	}
+	return filepath.Join(home, ".feishu-bot", "config.json")
+}
+
 func relayFixture(t *testing.T) (*fixture, string, string, core.AttachResult) {
 	t.Helper()
 	f, work, native := adoptFixture(t)
@@ -186,11 +196,17 @@ func relayFixture(t *testing.T) (*fixture, string, string, core.AttachResult) {
 	}
 	req.MessagingSocket = `\\.\pipe\fixture-inbox`
 	req.MessagingToken = "secret-token-value"
-	req.ConfigPath = "C:/config/config.json"
+	req.ConfigPath = fixtureConfigPath(t)
 	result := f.g.Attach(context.Background(), req)
 	if !result.OK {
 		t.Fatalf("attach failed: %+v", result)
 	}
+	exe := filepath.Join(t.TempDir(), "feishu-bot.exe")
+	if err := os.WriteFile(exe, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.g.selfExe = exe
+	f.g.exeLookup = func(string) (string, error) { return exe, nil }
 	return f, work, native, result
 }
 
