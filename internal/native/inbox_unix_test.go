@@ -32,8 +32,9 @@ func TestSendInboxUnix(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err = SendInbox(ctx, socket, "token-value", "topic message"); err != nil {
-		t.Fatal(err)
+	outcome, err := SendInbox(ctx, socket, "token-value", "topic message")
+	if err != nil || outcome != InboxSubmitted {
+		t.Fatalf("send: %v %v", outcome, err)
 	}
 	select {
 	case data := <-received:

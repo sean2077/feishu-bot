@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
+	nativepkg "github.com/sean2077/feishu-bot/internal/native"
 	"github.com/sean2077/feishu-bot/internal/process"
 	"github.com/sean2077/feishu-bot/internal/store"
 )
@@ -166,10 +167,10 @@ func TestRestoredFailureKeepsRefreshedEndpoint(t *testing.T) {
 	record, _, _ := f.s.AdoptedTopicByNative(native)
 	f.g.clearAdoptEndpoint(record.Room)
 	f.g.restoreAdoptEndpoints()
-	f.g.adoptSender = func(context.Context, string, string, string) error {
+	f.g.adoptSender = func(context.Context, string, string, string) (nativepkg.InboxOutcome, error) {
 		// A notify refreshes the endpoint while the stale submission is in flight.
 		f.g.setAdoptEndpoint(record.Room, adoptEndpoint{Socket: `\\.\pipe\fresh`, Token: "fresh-token", ConfigPath: "C:/fresh.json", Native: native})
-		return os.ErrClosed
+		return nativepkg.InboxNotSent, os.ErrClosed
 	}
 	f.send(relayMessage(f, "om_refresh_race", "hello", result.RootMessageID))
 	endpoint, ok := f.g.endpointFor(record.Room)
@@ -207,7 +208,9 @@ func TestRestoredEndpointFailureRemovesFileAndQueues(t *testing.T) {
 	if endpoint, ok := f.g.endpointFor(record.Room); !ok || !endpoint.Restored {
 		t.Fatalf("restored endpoint: %+v %v", endpoint, ok)
 	}
-	f.g.adoptSender = func(context.Context, string, string, string) error { return os.ErrClosed }
+	f.g.adoptSender = func(context.Context, string, string, string) (nativepkg.InboxOutcome, error) {
+		return nativepkg.InboxNotSent, os.ErrClosed
+	}
 	f.send(relayMessage(f, "om_restored_fail", "hello", result.RootMessageID))
 	waitFor(t, "restored endpoint removal", func() bool {
 		_, ok := f.g.endpointFor(record.Room)
@@ -237,12 +240,12 @@ func TestRestoredEndpointRelays(t *testing.T) {
 	f.g.clearAdoptEndpoint(record.Room)
 	f.g.restoreAdoptEndpoints()
 	var socket, token string
-	f.g.adoptSender = func(_ context.Context, s, tok, text string) error {
+	f.g.adoptSender = func(_ context.Context, s, tok, text string) (nativepkg.InboxOutcome, error) {
 		socket, token = s, tok
 		if !strings.Contains(text, "hello restored") {
 			t.Fatalf("relay text: %s", text)
 		}
-		return nil
+		return nativepkg.InboxSubmitted, nil
 	}
 	f.send(relayMessage(f, "om_restored_ok", "hello restored", result.RootMessageID))
 	waitFor(t, "restored relay", func() bool { return socket != "" })

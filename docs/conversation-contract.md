@@ -125,13 +125,13 @@ MOMO 回复其他机器人时不自动 @ 对方；由 `mention_bot` 发出消息
 
 ### 任务通知与话题转递
 
-本地会话可以用 `feishu-bot notify` 把任务结果发到自己的认领话题：第一次调用创建话题（根卡片加摘要回复），之后都在同一话题追加回复，不新开话题。`notify` 复用 `adopted_topics`；`state`、`created`、`message_id` 和错误码见[部署与配置](deployment.md#任务通知与话题内交互)。pending／uncertain 只报告，不重发。追加回复和 `topic reply` 的正文末尾带 `— <会话名> · <ID 前 8 位>` 页脚；`attach`／`notify` 的 JSON 同时返回会话名和话题 AppLink。`feishu-bot topics --native ID --json` 只读列出本机登记会话的 `name`、`native`、`thread`、`root`、`state` 和 `holder_alive`。
+本地会话可以用 `feishu-bot notify` 把任务结果发到自己的认领话题：第一次调用创建话题（根卡片加摘要回复），之后都在同一话题追加回复，不新开话题。`notify` 复用 `adopted_topics`；`state`、`created`、`message_id` 和错误码见[部署与配置](deployment.md#任务通知与话题内交互)。pending／uncertain 只报告，不重发。网关正在使用该话题时，`notify` 仍追加通知，但不更新本地 holder/endpoint，并在 warnings 中说明。追加回复和 `topic reply` 的正文末尾带 `— <会话名> · <ID 前 8 位>` 页脚；`attach`／`notify` 的 JSON 同时返回会话名和话题 AppLink。`feishu-bot topics --native ID --json` 只读列出本机登记会话的 `name`、`native`、`thread`、`root`、`state` 和 `holder_alive`。
 
 终端仍存活时，话题内 owner 的普通文本消息由网关转递给正在运行的本地 Claude Code 进程，而不是排队等终端退出：
 
-- **通道。** 只使用 CC 原生跨会话收件箱 socket/token；不启动第二个原生进程。endpoint 保存在网关内存，并以每个 native 一个 0600 文件暂存到 `dataDir/endpoints`（原子写入）；attach/notify 时刷新，网关重启时只有 holder PID 与启动时间仍匹配、且话题仍选择该会话才恢复。holder 释放、重新认领未携带新 endpoint、`/new` 或恢复后首次转递失败时删除文件并退回排队。token 不写 SQLite、日志或审计。
+- **通道。** 只使用 CC 原生跨会话收件箱 socket/token；不启动第二个原生进程。endpoint 保存在网关内存，并以每个 native 一个 0600 文件暂存到 `dataDir/endpoints`（原子写入）；attach/notify 时刷新，网关重启时只有 holder PID 与启动时间仍匹配、且话题仍选择该会话才恢复。holder 释放、重新认领未携带新 endpoint、`/new` 或恢复后确定未开始提交的失败会删除文件并退回排队；写入结果不确定时保留 endpoint，消息标 uncertain、不重放。token 不写 SQLite、日志或审计。
 - **范围。** 只接受该 DM owner 的消息；网关命令（`/status`、`/stop`、`/new` 等）仍由网关处理，不转递。每条消息按到达顺序单独提交，不合并。
-- **回执与失败。** 提交成功后加处理回执并回复一次「已提交给本机会话；回复会出现在本话题」，不承诺已读。socket 缺失或写入失败时退回 #124 的排队行为，并在话题中说明。
+- **回执与失败。** 完整写入成功后加处理回执并回复一次「已提交给本机会话；回复会出现在本话题」，不承诺已读。连接/打开失败等确定未开始提交时退回 #124 的排队行为，并在话题中说明；写入后超时、取消或部分写等结果不确定时标 uncertain、不自动重放，并提示检查本地终端或重新发送。
 - **权限语义。** 包装消息写明「来自飞书私聊话题，网关已校验为 owner 本人」。该消息按 owner 本人输入处理，可以用于批准门控操作（设备写、合入、部署、权限变更等），但仍受原生权限规则和项目配置约束；这是个人使用场景的信任边界，不是通用远程审批通道，也不能扩大成其他用户或群聊的能力。
 - **回复与清理。** 本地会话用包装里的 `feishu-bot topic reply --message-id ... --text-file -` 把最终回复发回话题；`--native` 默认取 `$CLAUDE_CODE_SESSION_ID`，`--config` 默认取 `$FEISHU_BOT_CONFIG` 或 `~/.feishu-bot/config.json`。消息必须属于该会话的 open 认领话题；错误会区分非法 native、消息属于别的会话、已回复和话题未 open。已提交但未回复的消息在终端退出、`/new`、网关重启或转递失败时标为 uncertain，不重放，并提示重新发送。图片／文件本期只转递文本占位并说明未携带附件；不专门拒绝，后续再评估本地路径携带。
 - **限制。** 原生收件箱协议是 CC 内部实现派生的实验性接口，升级可能变化；Codex 会话不在本期范围。

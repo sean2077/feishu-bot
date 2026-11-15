@@ -40,24 +40,49 @@ func TestInboxFramesRejectNUL(t *testing.T) {
 	}
 }
 
-func TestSendInboxValidatesTarget(t *testing.T) {
-	if err := SendInbox(context.Background(), "", "", "text"); err == nil {
-		t.Fatal("empty socket was accepted")
-	}
-	if runtime.GOOS == "windows" {
-		if err := SendInbox(context.Background(), `\\.\pipe\missing`, "", "text"); err == nil {
-			t.Fatal("missing Windows token was accepted")
+func TestInboxWriteOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		n, total int
+		err      error
+		want     InboxOutcome
+	}{
+		{5, 5, nil, InboxSubmitted},
+		{5, 5, context.Canceled, InboxSubmitted},
+		{3, 5, context.DeadlineExceeded, InboxUncertain},
+		{0, 5, context.DeadlineExceeded, InboxNotSent},
+		{0, 5, nil, InboxNotSent},
+	} {
+		got, err := inboxWriteOutcome(tc.n, tc.total, tc.err)
+		if got != tc.want {
+			t.Fatalf("outcome(%d/%d, %v) = %v, want %v", tc.n, tc.total, tc.err, got, tc.want)
+		}
+		if got == InboxSubmitted && err != nil {
+			t.Fatalf("submitted outcome returned error %v", err)
+		}
+		if got != InboxSubmitted && err == nil {
+			t.Fatalf("unsent/uncertain outcome returned no error")
 		}
 	}
-	if err := SendInbox(context.Background(), filepath.Join(t.TempDir(), "missing.sock"), "token", "text"); err == nil {
-		t.Fatal("missing inbox socket was accepted")
+}
+
+func TestSendInboxValidatesTarget(t *testing.T) {
+	if outcome, err := SendInbox(context.Background(), "", "", "text"); err == nil || outcome != InboxNotSent {
+		t.Fatalf("empty socket: %v %v", outcome, err)
+	}
+	if runtime.GOOS == "windows" {
+		if outcome, err := SendInbox(context.Background(), `\\.\pipe\missing`, "", "text"); err == nil || outcome != InboxNotSent {
+			t.Fatalf("missing Windows token: %v %v", outcome, err)
+		}
+	}
+	if outcome, err := SendInbox(context.Background(), filepath.Join(t.TempDir(), "missing.sock"), "token", "text"); err == nil || outcome != InboxNotSent {
+		t.Fatalf("missing inbox socket: %v %v", outcome, err)
 	}
 }
 
 func TestSendInboxErrorsDoNotContainToken(t *testing.T) {
-	err := SendInbox(context.Background(), filepath.Join(t.TempDir(), "missing.sock"), "secret-token-value", "text")
-	if err == nil {
-		t.Fatal("missing socket was accepted")
+	outcome, err := SendInbox(context.Background(), filepath.Join(t.TempDir(), "missing.sock"), "secret-token-value", "text")
+	if err == nil || outcome != InboxNotSent {
+		t.Fatalf("missing socket: %v %v", outcome, err)
 	}
 	if strings.Contains(err.Error(), "secret-token-value") {
 		t.Fatalf("error leaked the token: %v", err)

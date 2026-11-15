@@ -16,6 +16,39 @@ const inboxWriteTimeout = 5 * time.Second
 
 const errInboxSubmission = "native inbox submission failed"
 
+// InboxOutcome classifies a native inbox submission. The receiver does not
+// acknowledge acceptance, so a complete write is submitted rather than
+// processed, and a write interrupted after it started is uncertain.
+type InboxOutcome int
+
+const (
+	InboxNotSent InboxOutcome = iota
+	InboxSubmitted
+	InboxUncertain
+)
+
+func inboxWriteOutcome(n, total int, err error) (InboxOutcome, error) {
+	if n >= total {
+		return InboxSubmitted, nil
+	}
+	if n > 0 {
+		return InboxUncertain, errors.New(errInboxSubmission)
+	}
+	return InboxNotSent, errors.New(errInboxSubmission)
+}
+
+type inboxOpenResult struct {
+	file *os.File
+	err  error
+}
+
+func closeLateInboxFile(opened <-chan inboxOpenResult) {
+	result := <-opened
+	if result.file != nil {
+		_ = result.file.Close()
+	}
+}
+
 // inboxFrames builds the two newline-delimited JSON frames used by the native
 // Claude Code cross-session inbox. The token is optional on Unix and required
 // on native Windows.
@@ -41,21 +74,22 @@ func inboxFrames(token, text string) ([]byte, error) {
 }
 
 // SendInbox submits one ordinary user message to the live Claude Code process
-// identified by socket. It reports submission only: the receiver does not
+// identified by socket. It reports whether no bytes were written, a complete
+// frame was submitted, or the outcome is uncertain. The receiver does not
 // acknowledge acceptance. The token is never included in returned errors.
-func SendInbox(ctx context.Context, socket, token, text string) error {
+func SendInbox(ctx context.Context, socket, token, text string) (InboxOutcome, error) {
 	if strings.TrimSpace(socket) == "" {
-		return errors.New("native inbox socket is missing")
+		return InboxNotSent, errors.New("native inbox socket is missing")
 	}
 	if runtime.GOOS == "windows" && token == "" {
-		return errors.New("native inbox token is missing")
+		return InboxNotSent, errors.New("native inbox token is missing")
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return InboxNotSent, err
 	}
 	wire, err := inboxFrames(token, text)
 	if err != nil {
-		return err
+		return InboxNotSent, err
 	}
 	if runtime.GOOS == "windows" {
 		return sendInboxPipe(ctx, socket, wire)
@@ -63,28 +97,25 @@ func SendInbox(ctx context.Context, socket, token, text string) error {
 	dialer := net.Dialer{Timeout: inboxWriteTimeout}
 	conn, err := dialer.DialContext(ctx, "unix", socket)
 	if err != nil {
-		return errors.New(errInboxSubmission)
+		return InboxNotSent, errors.New(errInboxSubmission)
 	}
 	defer conn.Close()
-	_ = conn.SetWriteDeadline(time.Now().Add(inboxWriteTimeout))
-	if _, err = conn.Write(wire); err != nil {
-		return errors.New(errInboxSubmission)
+	if err = conn.SetWriteDeadline(time.Now().Add(inboxWriteTimeout)); err != nil {
+		return InboxNotSent, errors.New(errInboxSubmission)
 	}
-	return nil
+	n, err := conn.Write(wire)
+	return inboxWriteOutcome(n, len(wire), err)
 }
 
 // sendInboxPipe opens a native Windows named pipe with CreateFile semantics.
 // Both CreateFile and the write can block until a server instance accepts, so
-// a watchdog bounds each phase.
-func sendInboxPipe(ctx context.Context, socket string, wire []byte) error {
-	type openResult struct {
-		file *os.File
-		err  error
-	}
-	opened := make(chan openResult, 1)
+// a watchdog bounds each phase. A handle that arrives after the caller gave up
+// is owned and closed by closeLateInboxFile.
+func sendInboxPipe(ctx context.Context, socket string, wire []byte) (InboxOutcome, error) {
+	opened := make(chan inboxOpenResult, 1)
 	go func() {
 		file, err := os.OpenFile(socket, os.O_RDWR, 0)
-		opened <- openResult{file: file, err: err}
+		opened <- inboxOpenResult{file: file, err: err}
 	}()
 	var file *os.File
 	openTimer := time.NewTimer(inboxWriteTimeout)
@@ -92,36 +123,38 @@ func sendInboxPipe(ctx context.Context, socket string, wire []byte) error {
 	case result := <-opened:
 		openTimer.Stop()
 		if result.err != nil {
-			return errors.New(errInboxSubmission)
+			return InboxNotSent, errors.New(errInboxSubmission)
 		}
 		file = result.file
 	case <-ctx.Done():
 		openTimer.Stop()
-		return ctx.Err()
+		go closeLateInboxFile(opened)
+		return InboxNotSent, ctx.Err()
 	case <-openTimer.C:
-		return fmt.Errorf("native inbox open timed out after %s", inboxWriteTimeout)
+		go closeLateInboxFile(opened)
+		return InboxNotSent, fmt.Errorf("native inbox open timed out after %s", inboxWriteTimeout)
 	}
-	done := make(chan error, 1)
+	type writeResult struct {
+		n        int
+		writeErr error
+	}
+	done := make(chan writeResult, 1)
 	go func() {
-		_, writeErr := file.Write(wire)
-		closeErr := file.Close()
-		if writeErr != nil {
-			writeErr = errors.New(errInboxSubmission)
-		} else if closeErr != nil {
-			writeErr = errors.New(errInboxSubmission)
-		}
-		done <- writeErr
+		n, writeErr := file.Write(wire)
+		// A complete write is submitted even if close reports an error.
+		_ = file.Close()
+		done <- writeResult{n: n, writeErr: writeErr}
 	}()
 	timer := time.NewTimer(inboxWriteTimeout)
 	defer timer.Stop()
 	select {
-	case err := <-done:
-		return err
+	case result := <-done:
+		return inboxWriteOutcome(result.n, len(wire), result.writeErr)
 	case <-ctx.Done():
 		_ = file.Close()
-		return ctx.Err()
+		return InboxUncertain, ctx.Err()
 	case <-timer.C:
 		_ = file.Close()
-		return fmt.Errorf("native inbox write timed out after %s", inboxWriteTimeout)
+		return InboxUncertain, fmt.Errorf("native inbox write timed out after %s", inboxWriteTimeout)
 	}
 }

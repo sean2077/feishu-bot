@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/native"
 	"github.com/sean2077/feishu-bot/internal/store"
 )
 
@@ -142,11 +143,23 @@ func (g *Gateway) relayTopicMessage(ctx context.Context, room core.Room, m core.
 		return true, nil
 	}
 	text := relayWrapper(m)
-	if err = g.adoptSender(ctx, endpoint.Socket, endpoint.Token, text); err != nil {
+	outcome, err := g.adoptSender(ctx, endpoint.Socket, endpoint.Token, text)
+	switch outcome {
+	case native.InboxSubmitted:
+		// A complete frame was submitted; delivery to the model is not
+		// acknowledged and is not inferred here.
+	case native.InboxUncertain:
+		// The frame may have reached the terminal. Never replay it through the
+		// ordinary queue; leave it as evidence and let the owner re-send.
+		_, _ = g.store.MarkForwarded(room.Key, m.ID, "uncertain")
+		g.audit(room.Key, "topic_forward_uncertain", core.Args{"message": m.ID, "native": record.Native})
+		g.notifyAdoptOnce("relay-uncertain:"+room.Key, room, "转递结果未确认；消息不会自动重放，请检查本地终端或重新发送。", &m)
+		return true, nil
+	default:
 		if endpoint.Restored {
-			// A restored endpoint that fails once is stale; do not keep trusting
-			// its persisted socket/token after a restart. Only remove this exact
-			// registration: a concurrent notify may have refreshed it already.
+			// A restored endpoint that definitely failed is stale; do not keep
+			// trusting its persisted socket/token after a restart. Only remove
+			// this exact registration: a concurrent notify may have refreshed it.
 			g.removeAdoptEndpointIfCurrent(room.Key, endpoint)
 		}
 		_, _ = g.store.MarkForwarded(room.Key, m.ID, "cancelled")

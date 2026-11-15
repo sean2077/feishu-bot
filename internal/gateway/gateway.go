@@ -193,7 +193,7 @@ type Gateway struct {
 	adoptNotice                                                  map[string]bool
 	adoptLocks                                                   keyedLocks
 	adoptEndpoints                                               map[string]adoptEndpoint
-	adoptSender                                                  func(context.Context, string, string, string) error
+	adoptSender                                                  func(context.Context, string, string, string) (native.InboxOutcome, error)
 	retryConfirmMu                                               sync.Mutex
 	retryConfirm                                                 map[string]int64
 	thinkingIconMu                                               sync.Mutex
