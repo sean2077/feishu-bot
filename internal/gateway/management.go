@@ -174,6 +174,12 @@ func (g *Gateway) statusView(r core.Room) (core.Args, error) {
 		selection := profileSelection(g.config, project, p.Profile)
 		view["profile"] = selection.Profile
 		view["profileSource"] = selection.Source
+		if adoption, ok := view["adoption"].(core.Args); ok {
+			if model, source := g.roomModelSelection(r, project, saved.ID, p.Profile); model != "" {
+				adoption["model"] = model
+				adoption["modelSource"] = source
+			}
+		}
 		view["sessionName"] = p.Name
 		if p.Name == "" {
 			view["sessionName"] = p.NativeTitle
@@ -279,6 +285,7 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 			}
 			text += fmt.Sprintf("\n话题根消息：`%s`\n话题工作区绑定：%s", r.Thread, binding)
 		}
+		adoptionModel := ""
 		if v["adoption"] != nil {
 			adoption := argsOf(v["adoption"])
 			name := stringArg(adoption, "name")
@@ -294,6 +301,10 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 				}
 			}
 			text += "\n终端占用：" + holder
+			if model := stringArg(adoption, "model"); model != "" {
+				adoptionModel = model
+				text += "\n模型：" + model + "（来源：" + modelSourceLabel(stringArg(adoption, "modelSource")) + "）"
+			}
 		}
 		if name := stringArg(v, "sessionName"); name != "" {
 			text += "\n会话名称：" + name
@@ -305,7 +316,7 @@ func (g *Gateway) management(cmd, arg string, r core.Room, actor string) (string
 				text += "\n原生标题同步：" + label
 			}
 		}
-		if profile := stringArg(v, "profile"); profile != "" {
+		if profile := stringArg(v, "profile"); profile != "" && adoptionModel == "" {
 			text += "\n模型配置：" + profile + "（" + profileSourceLabel(stringArg(v, "profileSource")) + "）"
 		}
 		if profile := stringArg(v, "requestedProfile"); profile != "" {

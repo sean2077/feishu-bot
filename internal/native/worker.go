@@ -131,6 +131,21 @@ func (w *worker) exitLogArgs(code int, reason string, inTurn bool) args {
 	return detail
 }
 
+// workerConfig resolves the model profile and applies an adopted session's
+// runtime transcript model. An explicit profile selection always wins.
+func workerConfig(c core.Config, project core.Project, session core.Session) (core.Config, error) {
+	selected, _, err := config.ResolveProjectModel(c, project, session.Profile)
+	if err != nil {
+		return core.Config{}, err
+	}
+	if strings.TrimSpace(session.Profile) == "" {
+		if model := strings.TrimSpace(session.ModelOverride); core.ValidModelIdentifier(model) {
+			selected.Model.Model = model
+		}
+	}
+	return selected, nil
+}
+
 // NewFactory creates one persistent native Claude process for each admitted
 // conversation. Workspace policy and lifecycle admission remain in the host.
 func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
@@ -142,11 +157,10 @@ func NewFactory(c core.Config, log core.Logger) core.WorkerFactory {
 		if !ok {
 			return nil, fmt.Errorf("unknown conversation project")
 		}
-		selected, _, err := config.ResolveProjectModel(c, project, session.Profile)
+		c, err := workerConfig(c, project, session)
 		if err != nil {
 			return nil, err
 		}
-		c := selected
 		token := os.Getenv(c.Model.TokenEnv)
 		if token == "" {
 			return nil, fmt.Errorf("missing model credential %s", c.Model.TokenEnv)

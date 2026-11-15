@@ -275,7 +275,7 @@ _英文_: model profile
 
 **项目默认模型配置**
 
-项目通过 `projects[].modelProfile` 指定的命名模型配置或 `default`。只对从未显式选择配置的会话生效；会话显式选择（包括显式 `default`）优先。改变项目默认不改变原生会话 ID，未选中配置的会话在下次原生进程启动或续接时使用新模型。
+项目通过 `projects[].modelProfile` 指定的命名模型配置或 `default`。只对从未显式选择配置的会话生效；会话显式选择（包括显式 `default`）优先。认领话题在未显式选择时使用 transcript 最近的模型，项目默认只作为读取失败时的回退。改变项目默认不改变原生会话 ID，未选中配置的会话在下次原生进程启动或续接时使用新模型。
 _英文_: project default model profile
 
 **会话名称**
@@ -331,7 +331,7 @@ _英文_: local terminal handoff
 
 **认领话题**
 
-用户在本地 Claude Code 终端显式发起、由 `dms[].adoptRoots` 允许并绑定到本人私聊的飞书话题。一张 `adopted_topics` 记录保存房间键、原生 session、`thread_id`、根消息、登记工作目录和状态。只有 open 状态且 `thread_id` 与根消息同时精确匹配的入站进入该话题；pending／uncertain 只报告状态，不启动原生进程、不重放外部写入。工作目录取自本地 transcript 并每次按 adoptRoots 重新校验。
+用户在本地 Claude Code 终端显式发起、由 `dms[].adoptRoots` 允许并绑定到本人私聊的飞书话题。一张 `adopted_topics` 记录保存房间键、原生 session、`thread_id`、根消息、登记工作目录和状态。只有 open 状态且 `thread_id` 与根消息同时精确匹配的入站进入该话题；pending／uncertain 只报告状态，不启动原生进程、不重放外部写入。工作目录取自本地 transcript 并每次按 adoptRoots 重新校验。终端退出后默认沿用 transcript 最近的模型，显式 `/model` 选择优先；`/new` 新建的会话使用项目模型。
 _英文_: adopted topic
 _避免_: 把认领话题称为普通话题会话或群话题；它只存在于私聊
 
