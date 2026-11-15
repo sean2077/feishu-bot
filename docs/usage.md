@@ -39,7 +39,7 @@
 - 退出终端后，网关在下一次定期检查（默认约 30 秒）发现占用释放，并在同一轮处理排队消息；之后在话题里直接发消息即可用原 native ID 和原工作目录继续。原上下文、工具和权限规则不变。想让话题从头开始，在话题内发送 `/new`。
 - 对已认领的话题再次认领前，如果话题里还有运行中的任务、待处理输入、未完成输出或审批，会拒绝并要求先 `/stop`。在本机执行 `claude --resume` 前也要先在话题里 `/stop`，否则可能两个写入方同时续接同一会话；网关无法阻止本地直接恢复。
 - 结果 state 为 `open` 才表示认领完成；`pending`／`uncertain` 只提示状态并保留根消息 ID，不自动重发。遇到时先检查私聊是否已有话题或根消息，不要反复发起认领。
-- 本地 transcript 最近使用的 model 与网关配置不同时会警告；跨模型续接可能失败。
+- 终端退出后默认沿用本地 transcript 最近的模型续接；显式 `/model` 选择优先，`/new` 新建会话使用项目模型，`/resume` 回到原会话时恢复 transcript 模型。attach／notify 会提示将沿用的模型。
 - 想回到本地终端，仍需先停止服务并使用 `session run`；认领话题不会让终端和飞书同时驱动同一个进程。
 
 完整配置、命令、Windows Git Bash 的 `MSYS_NO_PATHCONV=1` 说明和限制见[认领本地会话到飞书私聊话题](deployment.md#认领本地会话到飞书私聊话题)。
@@ -153,7 +153,7 @@ EOF
 
 在当前聊天发送 `/model careful` 选择配置，`/model default` 固定使用部署默认值，不再跟随项目默认。选择持久化到本会话，其他聊天不受影响；新建或从未显式选择过的既有会话使用所属项目的默认配置。项目默认改变后，未选中配置的会话在下次原生进程启动或按同一原生 ID 续接时使用新的 `--model`，已有对话历史保留。切换在当前工作安全结束后生效，下一条输入才启动使用新配置的原生进程；权限、等待边界和配置被移除时的处理见[会话配置与快捷操作](conversation-contract.md#会话配置与快捷操作)。
 
-项目默认只改变模型标识和 effort；凭据、`baseUrl`、权限规则和目录仍来自部署配置。`/status` 显示生效的模型配置及来源（会话选择、项目默认或部署默认），`/sessions --json` 的每个会话带 `profile` 和 `profileSource`，`/model` 同时显示项目默认。`doctor` 和 `config explain` 显示项目默认配置名，不显示凭据。
+项目默认只改变模型标识和 effort；凭据、`baseUrl`、权限规则和目录仍来自部署配置。`/status` 显示生效的模型配置及来源（会话选择、项目默认或部署默认）；认领话题在未显式选择时显示 transcript 模型及「本地会话 transcript」来源，读取不到 transcript 模型时回到项目默认。`/sessions --json` 的每个会话带 `profile` 和 `profileSource`，`/model` 同时显示项目默认。`doctor` 和 `config explain` 显示项目默认配置名，不显示凭据。
 
 模型通过原生 `--model` 参数与对应环境变量选择；effort 使用原生 `CLAUDE_CODE_EFFORT_LEVEL`，允许 `auto`、`low`、`medium`、`high`、`xhigh`、`max`。这些是请求值；各模型支持的档位、组织限制和兼容服务的行为由 Claude Code 与服务决定，网关不模拟额外推理循环。原生选项依据 [Claude Code 模型配置](https://code.claude.com/docs/en/model-config)，当前协议回归版本见[验证与验收](validation.md)。`/model --json` 报告当前选择、来源、项目默认和可用配置；`/usage` 的模型字段只报告实际收到的原生模型标识。
 

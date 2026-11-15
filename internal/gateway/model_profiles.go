@@ -41,6 +41,28 @@ func profileSourceLabel(source string) string {
 	}
 }
 
+func modelSourceLabel(source string) string {
+	if source == "transcript" {
+		return "本地会话 transcript"
+	}
+	return profileSourceLabel(source)
+}
+
+// roomModelSelection reports the model the next launch would use and where it
+// comes from. Only an adopted session without an explicit profile uses the
+// transcript's last assistant model.
+func (g *Gateway) roomModelSelection(r core.Room, project core.Project, sessionID, profile string) (string, string) {
+	if model, ok := g.adoptedTranscriptModel(r, sessionID, profile); ok {
+		return model, "transcript"
+	}
+	selected, selection, err := config.ResolveProjectModel(g.config, project, profile)
+	if err != nil {
+		selection = profileSelection(g.config, project, profile)
+		return "", selection.Source
+	}
+	return selected.Model.Model, selection.Source
+}
+
 func (g *Gateway) sessionProfile(s *core.Session) error {
 	p, err := g.store.Preferences(s.RoomKey, s.ID)
 	if err != nil {

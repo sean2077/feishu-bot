@@ -194,7 +194,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 
 `model.baseUrl` 使用 Claude Code 可调用的 Anthropic Messages 兼容地址（对应 `ANTHROPIC_BASE_URL`），`model`／`smallModel` 填实际模型 ID。可直连服务商或兼容网关；不做协议转换，不保证任意兼容模型都具备同样的工具与多模态能力。地址支持路径前缀，末尾 `/v1` 去重，不能包含凭据、查询串或片段。默认要求 HTTPS；`allowHttp` 仅用于明确选择的本地测试。`extraHeaders` 可引用 `env:VARIABLE_NAME`，缺失引用和头注入在运行前拒绝。模型额度与限流由上游控制，`runtime.maxWorkers` 只限制活跃原生进程数。
 
-可选 `model.effort` 指定原生默认 effort；`modelProfiles` 是管理员定义的命名模型配置，只允许 `model`、`smallModel`、`effort`，不能覆盖端点、凭据或工具权限。`projects[].modelProfile` 可指定该项目未显式选择配置时的默认项，值须引用已声明的配置或 `default`，否则配置加载失败；会话显式选择 `default` 会固定使用部署默认，不跟随项目默认。项目默认改变后，未选中配置的会话在下次原生进程启动或续接时切换模型并保留历史。聊天内 `/model` 查看并选择，`/profile` 同义；选择按会话保存，等待安全轮次边界后生效并保持原生 ID。未配置时使用默认模型。effort 支持由原生 CLI／模型服务决定，不用额外提示词模拟推理控制。[配置与行为](usage.md#会话模型配置)
+可选 `model.effort` 指定原生默认 effort；`modelProfiles` 是管理员定义的命名模型配置，只允许 `model`、`smallModel`、`effort`，不能覆盖端点、凭据或工具权限。`projects[].modelProfile` 可指定该项目未显式选择配置时的默认项，值须引用已声明的配置或 `default`，否则配置加载失败；会话显式选择 `default` 会固定使用部署默认，不跟随项目默认。认领话题在未显式选择且可读取 transcript 时使用其最近模型，不跟随项目默认；读取失败才回退。项目默认改变后，未选中配置的会话在下次原生进程启动或续接时切换模型并保留历史。聊天内 `/model` 查看并选择，`/profile` 同义；选择按会话保存，等待安全轮次边界后生效并保持原生 ID。未配置时使用默认模型。effort 支持由原生 CLI／模型服务决定，不用额外提示词模拟推理控制。[配置与行为](usage.md#会话模型配置)
 
 Go 飞书 HTTP／WebSocket 客户端使用系统证书及 Go 的代理环境规则（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`）；原生 Claude 还接收获准的代理和证书环境。为 Go 服务安装的系统 CA 与 Claude 的 `NODE_EXTRA_CA_CERTS` 等配置需要分别验证，不能以一方连接成功推断另一方成功。不要关闭证书校验。
 
@@ -651,7 +651,7 @@ feishu-bot attach --config /srv/feishu-bot/config.json \
 
 认领结果中的 state 为 `open` 时才表示话题已建立；`pending` 表示处理中，`uncertain` 表示外部写入结果未确认。后两者不会自动重发，成功发出的根消息 ID 会保留用于核查。终端仍存活时，话题内消息排队并提示等待；退出终端后网关用原 native ID 和登记 cwd 续接。`/status` 会显示 `awaiting_terminal_exit`，`/new` 可在话题内新建会话并解除原终端占用。
 
-话题内 `/status` 另外显示本地会话名、完整原生会话 ID 和终端占用状态（仍占用时带 PID）；`/status --json` 的 `adoption` 对象包含 `state`、`native`、`root`、`thread`、`name`、`holderActive` 和 `holderPid`。`attach --json` 结果增加 `session_name` 和 `topic_url`。
+话题内 `/status` 另外显示本地会话名、完整原生会话 ID、终端占用状态（仍占用时带 PID）和生效模型及其来源；`/status --json` 的 `adoption` 对象包含 `state`、`native`、`root`、`thread`、`name`、`holderActive`、`holderPid`、`model` 和 `modelSource`。`attach --json` 结果增加 `session_name` 和 `topic_url`。
 
 Windows 注意：**Git Bash 会把以 `/` 开头的参数改写成 Windows 路径**。在 Git Bash 中运行技能或手动调用时先设置 `MSYS_NO_PATHCONV=1`，尤其是标题等以 `/` 开头的文本：
 
@@ -668,7 +668,7 @@ PowerShell 不做该转换，但调用本地程序时使用 `&`；路径仍建�
 - `attach` 等待 30 秒仍未收到结果时会尝试撤回本地请求；撤回成功表示网关尚未开始处理，没有创建话题。若网关已经取走请求（`processing`）则撤回失败，结果仍未确认，按提示核查飞书，不要重复发送。
 - 对已经认领的会话，重新发起认领前必须确认话题空闲。话题里仍有运行中的原生进程、排队／已交出的输入、未完成输出、运行中的操作或审批时，重新认领会被拒绝，需先在话题内 `/stop`。在本机执行 `claude --resume` 之前也必须先 `/stop`；这是本地绕过网关的操作，网关无法阻止两个写入方同时续接同一原生会话。
 - 反向交接回本地终端仍需先停止服务并使用 `session run`；认领话题的会话会按登记 cwd 核对，目录失效时拒绝。
-- 本地 transcript 最近使用的 model 与网关将启动的 model 不同时会警告；跨模型或跨供应商续接可能因 thinking 签名等失败。
+- 终端退出后，认领会话默认沿用 transcript 最近一条 assistant 消息的 model 续接；用户显式 `/model`（包括显式 `default`）优先，`/new` 新建的会话使用项目模型，`/resume` 回到原会话时恢复 transcript 模型。transcript 模型读取不到时退回项目模型。attach／notify 在模型不一致时只提示「终端退出后将沿用 <model> 续接」。
 - 如果 transcript 记录的启动路径经过符号链接、目录联接或大小写差异，物理工作目录编码出的项目目录会与 transcript 所在目录不同，`--resume` 将找不到会话；认领在 attach 阶段直接拒绝，需从该目录的原始物理路径重启 Claude Code。
 - 认领前的本地用量未经过网关观测，`/usage` 会把这部分标记为未知。
 - 认领话题不参与 `dms[].historyChats`，也不能被其他会话读取；同一系统账户下的目录和进程不是多租户沙箱。

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
+	"github.com/sean2077/feishu-bot/internal/native"
 	"github.com/sean2077/feishu-bot/internal/process"
 	"github.com/sean2077/feishu-bot/internal/store"
 	"github.com/sean2077/feishu-bot/internal/workspace"
@@ -344,8 +345,9 @@ func (g *Gateway) sweepAdoptions(now int64) {
 	}
 }
 
-// adoptedModelWarning compares the transcript's last model with the model the
-// gateway will launch. It is advisory only.
+// adoptedModelWarning explains the model the gateway will use after the local
+// holder exits. It stays silent when the transcript has no model or matches the
+// gateway's model.
 func adoptedModelWarning(gatewayModel, transcriptModel string) string {
 	if transcriptModel == "" {
 		return ""
@@ -359,5 +361,32 @@ func adoptedModelWarning(gatewayModel, transcriptModel string) string {
 	if normalize(gatewayModel) == normalize(transcriptModel) {
 		return ""
 	}
-	return "本地会话最近使用模型 " + transcriptModel + "，网关将使用 " + gatewayModel + "；跨模型续接可能失败。"
+	return "终端退出后将沿用 " + transcriptModel + " 续接。"
+}
+
+// adoptedTranscriptModel returns the last assistant model recorded in the
+// adopted session's transcript. It applies only when the room still selects
+// that adopted session and the user has not explicitly selected a model
+// profile; every other launch keeps the project/deployment model.
+func (g *Gateway) adoptedTranscriptModel(r core.Room, sessionID, profile string) (string, bool) {
+	if r.DMUser == "" || r.Thread == "" || r.AdoptedState != store.AdoptedOpen || sessionID == "" || strings.TrimSpace(profile) != "" {
+		return "", false
+	}
+	record, found, err := g.store.AdoptedTopicByRoom(r.Key)
+	if err != nil || !found || record.State != store.AdoptedOpen || record.Session != sessionID {
+		return "", false
+	}
+	_, configDir, _, err := workspace.InheritedConfig()
+	if err != nil {
+		return "", false
+	}
+	transcript, err := native.LocateTranscript(configDir, record.Native)
+	if err != nil {
+		return "", false
+	}
+	model := strings.TrimSpace(transcript.Model)
+	if !core.ValidModelIdentifier(model) {
+		return "", false
+	}
+	return model, true
 }

@@ -72,7 +72,26 @@ type Session struct {
 	State     string `json:"state"`
 	Profile   string `json:"profile,omitempty"`
 	CreatedAt int64  `json:"createdAt"`
+	// ModelOverride is a runtime-only launch model for an adopted local session.
+	// It is not persisted and is ignored when the user selected a profile.
+	ModelOverride string `json:"-"`
 }
+
+// ValidModelIdentifier reports whether a model string can be passed as one
+// native --model argument. The value must be printable, free of whitespace and
+// at most 200 bytes.
+func ValidModelIdentifier(model string) bool {
+	if model == "" || len(model) > 200 {
+		return false
+	}
+	for _, r := range model {
+		if r <= ' ' || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 type ImageBatch struct {
 	ID        string `json:"id"`
 	Deadline  int64  `json:"deadline"`

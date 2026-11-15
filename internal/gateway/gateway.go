@@ -985,6 +985,9 @@ func (g *Gateway) reserve(r core.Room) (*slot, error) {
 	if e = g.sessionProfile(&ss); e != nil {
 		return nil, e
 	}
+	if model, ok := g.adoptedTranscriptModel(r, ss.ID, ss.Profile); ok {
+		ss.ModelOverride = model
+	}
 	ctx, cancel := context.WithCancel(g.ctx)
 	s := &slot{room: r, session: ss, ctx: ctx, cancel: cancel, live: true, workerReady: make(chan struct{}), background: -1, lastActivity: time.Now().UnixMilli(), deliveries: map[string]core.Delivery{}, inputGroups: map[string][]string{}, accepted: map[string]bool{}, renders: map[string]*render{}, replyAnchors: map[string]core.Delivery{}, requests: map[string]bool{}}
 	g.mu.Lock()
