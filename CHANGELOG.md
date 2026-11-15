@@ -2,6 +2,8 @@
 
 ## Unreleased — Go 原生网关
 
+- `/feishu` 技能补充 `私发我`、`通知我`、`完成后告诉我`、`做完叫我`、`有结果发我`、`需要我拍板时找我`、`到飞书跟我说` 等触发词，并写明分流规则：终端继续运行时用 `notify`，接管会话用 `attach`，不要用 `lark-cli im +messages-send` 给 owner 发消息。
+
 ## 0.7.0 — 2026-11-15
 
 - 认领话题终端退出后续接默认使用 transcript 最近一条 assistant 消息的 model（读取不到时退回项目模型）；显式 `/model`（包括显式 `default`）始终优先，`/new` 新建的会话使用项目模型，`/resume` 回到原认领会话时恢复 transcript 模型。话题内 `/status` 显示生效模型及来源（本地会话 transcript／会话选择／项目默认／部署默认）。attach／notify 的模型不一致提示改为「终端退出后将沿用 <model> 续接」。
