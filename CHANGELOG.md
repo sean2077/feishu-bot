@@ -2,6 +2,8 @@
 
 ## Unreleased — Go 原生网关
 
+## 0.7.0 — 2026-11-15
+
 - 认领话题终端退出后续接默认使用 transcript 最近一条 assistant 消息的 model（读取不到时退回项目模型）；显式 `/model`（包括显式 `default`）始终优先，`/new` 新建的会话使用项目模型，`/resume` 回到原认领会话时恢复 transcript 模型。话题内 `/status` 显示生效模型及来源（本地会话 transcript／会话选择／项目默认／部署默认）。attach／notify 的模型不一致提示改为「终端退出后将沿用 <model> 续接」。
 - 话题转递 endpoint（socket/token）按 native 持久化到 `dataDir/endpoints/<native>.json`（文件 0600、目录 0700、原子写入），不写 SQLite、日志或审计。网关重启后仅在 holder PID 与启动时间仍匹配、且话题仍选择该会话时恢复；holder 释放、重新认领未携带新 endpoint 或 `/new` 删除对应文件。恢复后的 endpoint 首次转递失败即删除、退回排队并在话题提示。
 - 认领话题增加会话身份显示：根卡片标题为 `<会话名> · <标题>`，正文显示工作目录、完整 native ID 和 `claude --resume <ID>`；会话名优先取显式 `--name`，否则读取 `sessions/<holder-pid>.json` 的 `name`（仅当 `sessionId` 与 native ID 一致），读不到时退回 native ID 前 8 位。attach／notify 观察到名称变化时刷新根卡片标题；notify 追加和 `topic reply` 末尾带 `<会话名> · <ID 前 8 位>` 页脚；话题内 `/status` 显示本地会话名、完整 ID 和终端占用；`attach`／`notify` 的 JSON 均增加 `session_name` 和 `topic_url`；新增只读 `feishu-bot topics [--native ID] [--json]`。`adopted_topics` 增加 `session_name` 和 `title` 列，旧库启动时自动补列。
