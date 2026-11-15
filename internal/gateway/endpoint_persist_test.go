@@ -43,7 +43,7 @@ func TestAdoptEndpointPersistsAndRestores(t *testing.T) {
 	if err = json.Unmarshal(data, &stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.Socket != `\\.\pipe\fixture-inbox` || stored.Token != "secret-token-value" || stored.ConfigPath != "C:/config/config.json" {
+	if stored.Socket != `\\.\pipe\fixture-inbox` || stored.Token != "secret-token-value" || stored.ConfigPath != fixtureConfigPath(t) {
 		t.Fatalf("stored endpoint: %+v", stored)
 	}
 	if stored.HolderPID != record.HolderPID || stored.HolderStarted != record.HolderStarted {

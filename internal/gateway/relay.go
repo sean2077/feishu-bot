@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/sean2077/feishu-bot/internal/core"
@@ -142,7 +144,7 @@ func (g *Gateway) relayTopicMessage(ctx context.Context, room core.Room, m core.
 	if !inserted {
 		return true, nil
 	}
-	text := relayWrapper(m)
+	text := g.relayWrapper(m, endpoint)
 	outcome, err := g.adoptSender(ctx, endpoint.Socket, endpoint.Token, text)
 	switch outcome {
 	case native.InboxSubmitted:
@@ -173,7 +175,7 @@ func (g *Gateway) relayTopicMessage(ctx context.Context, room core.Room, m core.
 	return true, nil
 }
 
-func relayWrapper(m core.Message) string {
+func (g *Gateway) relayWrapper(m core.Message, endpoint adoptEndpoint) string {
 	var builder strings.Builder
 	builder.WriteString("[来自飞书私聊话题，网关已校验为 owner 本人]\n")
 	builder.WriteString("消息ID: ")
@@ -184,8 +186,66 @@ func relayWrapper(m core.Message) string {
 	if len(m.Resources) > 0 {
 		builder.WriteString("[这条消息包含附件；本期转递未携带附件]\n")
 	}
-	builder.WriteString("回复方式: feishu-bot topic reply --message-id ")
+	builder.WriteString("回复方式: ")
+	builder.WriteString(g.replyCommand())
+	builder.WriteString(" topic reply --message-id ")
 	builder.WriteString(m.ID)
+	if flag := replyConfigFlag(endpoint.ConfigPath); flag != "" {
+		builder.WriteString(flag)
+	}
 	builder.WriteString(" --text-file -\n")
 	return builder.String()
+}
+
+// replyCommand returns the command word for the reply instruction. A bare
+// feishu-bot is written only when PATH resolves to this gateway binary, so the
+// local terminal can never silently run a different copy; otherwise the
+// gateway's own absolute path is quoted.
+func (g *Gateway) replyCommand() string {
+	if g.selfExe != "" && g.exeLookup != nil {
+		if found, err := g.exeLookup("feishu-bot"); err == nil && sameExecutable(found, g.selfExe) {
+			return "feishu-bot"
+		}
+	}
+	if g.selfExe == "" {
+		return "feishu-bot"
+	}
+	return shellQuote(g.selfExe)
+}
+
+func sameExecutable(a, b string) bool {
+	left, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	right, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(left, right)
+}
+
+// replyConfigFlag includes --config only when the endpoint was registered with
+// a config outside the home default; the local terminal may carry no
+// FEISHU_BOT_CONFIG, so an explicit path is always safe.
+func replyConfigFlag(configPath string) string {
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		return ""
+	}
+	if home, err := os.UserHomeDir(); err == nil &&
+		core.SamePath(configPath, filepath.Join(home, ".feishu-bot", "config.json")) {
+		return ""
+	}
+	return " --config " + shellQuote(configPath)
+}
+
+// shellQuote keeps a single command word literal for the local terminal's
+// POSIX shell. Claude Code runs commands through Git Bash on Windows, where
+// single quotes preserve backslashes in native paths.
+func shellQuote(value string) string {
+	if value != "" && !strings.ContainsAny(value, " \t\n'\"\\$`&|;()<>*?[]{}!#~") {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }

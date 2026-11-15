@@ -58,6 +58,39 @@ func TestParseTopicReplyDefaults(t *testing.T) {
 	}
 }
 
+func TestParseTopicsConfigDefaults(t *testing.T) {
+	envConfig := filepath.Join(t.TempDir(), "env-config.json")
+	t.Setenv("FEISHU_BOT_CONFIG", envConfig)
+	o, err := Parse([]string{"topics"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.Abs(envConfig)
+	if o.ConfigPath != want {
+		t.Fatalf("env config = %q, want %q", o.ConfigPath, want)
+	}
+	explicit := filepath.Join(t.TempDir(), "explicit.json")
+	o, err = Parse([]string{"topics", "--config", explicit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want, _ = filepath.Abs(explicit); o.ConfigPath != want {
+		t.Fatalf("explicit config = %q, want %q", o.ConfigPath, want)
+	}
+	t.Setenv("FEISHU_BOT_CONFIG", "")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("user home is unavailable")
+	}
+	o, err = Parse([]string{"topics"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want = filepath.Join(home, ".feishu-bot", "config.json"); o.ConfigPath != want {
+		t.Fatalf("home config = %q, want %q", o.ConfigPath, want)
+	}
+}
+
 func TestTopicReplyNative(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "env-native")
 	if got, err := topicReplyNative(Options{}); err != nil || got != "env-native" {

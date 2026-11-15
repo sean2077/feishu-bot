@@ -699,9 +699,9 @@ JSON 结果字段：`ok`、`state`、`chat_id`、`root_message_id`、`thread_id`
 
 只有 3 和 4 适合回落到旧的单聊通知；2、5、6 重发可能重复。
 
-终端仍存活时，话题内 owner 的普通文本消息会通过 Claude Code 原生跨会话收件箱转递给运行中的本地会话。本地 CLI 在 attach/notify 时读取 `CLAUDE_CODE_MESSAGING_SOCKET` 和 `CLAUDE_CODE_MESSAGING_TOKEN`；网关把完整的 socket/token 暂存为 `dataDir/endpoints/<native>.json`（文件 0600、目录 0700、原子写入），不写 SQLite、日志或审计。网关重启后仅在登记的 holder PID 与启动时间仍匹配、且话题仍选择该会话时恢复；holder 释放、重新认领未携带新 endpoint 或 `/new` 时删除对应文件。恢复后的 endpoint 在确定未开始提交的失败时删除文件并退回排队；写入结果不确定时保留 endpoint，消息标 uncertain、不自动重放。
+终端仍存活时，话题内 owner 的普通文本消息会通过 Claude Code 原生跨会话收件箱转递给运行中的本地会话。本地 CLI 在 attach/notify 时读取 `CLAUDE_CODE_MESSAGING_SOCKET` 和 `CLAUDE_CODE_MESSAGING_TOKEN`；网关把完整的 socket/token 暂存为 `dataDir/endpoints/<native>.json`（文件 0600、目录 0700、原子写入），不写 SQLite、日志或审计。网关重启后仅在登记的 holder PID 与启动时间仍匹配、且话题仍选择该会话时恢复；holder 释放、重新认领未携带新 endpoint 或 `/new` 时删除对应文件。清理与 attach/notify 的登记按 native 串行，旧 holder 的定期清理不会删除刚登记的 endpoint。恢复后的 endpoint 在确定未开始提交的失败时删除文件并退回排队；写入结果不确定时保留 endpoint，消息标 uncertain、不自动重放。
 
-- 转递成功后话题收到「已提交给本机会话；回复会出现在本话题」，不承诺已读；最终回复由本地会话执行包装消息中的 `feishu-bot topic reply --message-id ... --text-file -` 回到话题。
+- 转递成功后话题收到「已提交给本机会话；回复会出现在本话题」，不承诺已读；最终回复由本地会话执行包装消息中的 `topic reply` 命令回到话题。包装里的命令字优先用裸 `feishu-bot`，仅当本机 PATH 解析到与网关相同的可执行文件时才这样写；否则写网关二进制的带引号绝对路径，避免本地终端静默运行另一份副本。endpoint 登记时使用非默认配置则命令附带 `--config <绝对路径>`，默认 `~/.feishu-bot/config.json` 时省略。
 
 `topic reply` 的最简形式是 `feishu-bot topic reply --message-id om_xxx --text-file -`：`--native` 默认取 `$CLAUDE_CODE_SESSION_ID`，`--config` 默认取 `$FEISHU_BOT_CONFIG`，未设置时取 `~/.feishu-bot/config.json`。消息必须属于该会话的 open 认领话题且未回复。错误会区分原因：`--native` 非法时报 `--native 不是合法会话 ID`；消息属于别的会话时报 `消息 om_… 属于会话 <前 8 位>，传入的是 <前 8 位>`；已回复时报 `该消息已回复`；只有话题确实未 open 时才报 `没有处于 open 状态的认领话题`。
 - 包装消息写明「来自飞书私聊话题，网关已校验为 owner 本人」。按 owner 本人输入处理，可以批准门控操作，但仍受原生权限规则和项目配置约束；这是个人使用场景的信任边界，不是通用远程审批通道。
@@ -716,6 +716,8 @@ JSON 结果字段：`ok`、`state`、`chat_id`、`root_message_id`、`thread_id`
 ```sh
 feishu-bot topics --config /srv/feishu-bot/config.json [--native ID] [--json]
 ```
+
+省略 `--config` 时的默认值与 `topic reply` 一致：先取 `$FEISHU_BOT_CONFIG`，未设置时取 `~/.feishu-bot/config.json`。
 
 `--json` 输出 `{"topics":[{"name","native","thread","root","state","holder_alive","topic_url"}]}`；`name` 读不到时用 native ID 前 8 位，`holder_alive` 表示登记的本机终端进程仍持有该会话，`topic_url` 在话题 ID 未确认时省略。`--native` 按完整 native ID 过滤；没有匹配时输出空列表。
 
