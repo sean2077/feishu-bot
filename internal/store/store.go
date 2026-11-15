@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS session_launch_identity(session TEXT PRIMARY KEY REFE
 CREATE UNIQUE INDEX IF NOT EXISTS one_active ON sessions(room) WHERE state='open';
 CREATE TABLE IF NOT EXISTS inbox(room TEXT NOT NULL, id TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL, at INTEGER NOT NULL, uuid TEXT, session TEXT, payload TEXT, PRIMARY KEY(room,id));
 CREATE INDEX IF NOT EXISTS inbox_status ON inbox(room,status,at);
+CREATE INDEX IF NOT EXISTS inbox_message_id ON inbox(id);
 CREATE TABLE IF NOT EXISTS outputs(id TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS feishu_cards(message TEXT PRIMARY KEY, card TEXT NOT NULL, room TEXT NOT NULL, sequence INTEGER NOT NULL DEFAULT 0, snapshot TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS status_cards(room TEXT PRIMARY KEY, message TEXT NOT NULL, updated_at INTEGER NOT NULL);

@@ -122,6 +122,12 @@ func TestTopicRelayAndReply(t *testing.T) {
 	if len(sent) != 1 || !strings.Contains(sent[0], "网关已校验为 owner 本人") || !strings.Contains(sent[0], "om_relay_1") || !strings.Contains(sent[0], "topic reply") {
 		t.Fatalf("wrapper: %v", sent)
 	}
+	if !strings.Contains(sent[0], "feishu-bot topic reply --message-id om_relay_1 --text-file -") {
+		t.Fatalf("wrapper command: %v", sent)
+	}
+	if strings.Contains(sent[0], "--native") || strings.Contains(sent[0], "--config") {
+		t.Fatalf("wrapper asked for redundant flags: %v", sent)
+	}
 	record, _, _ := f.s.AdoptedTopicByNative(native)
 	if _, status, found, err := f.s.Forwarded(record.Room, "om_relay_1"); err != nil || !found || status != store.InputForwarded {
 		t.Fatalf("forwarded row: %q %v %v", status, found, err)
@@ -150,8 +156,54 @@ func TestTopicRelayAndReply(t *testing.T) {
 		t.Fatalf("reply not delivered: %s", notices)
 	}
 	again := f.g.TopicReply(context.Background(), core.TopicReplyRequest{Kind: core.ControlKindReply, ID: core.NewID(), At: time.Now().UnixMilli(), Native: native, MessageID: "om_relay_1", Text: "duplicate"})
-	if again.OK || again.Error == nil || again.Error.Code != core.NotifyErrorInvalidRequest {
+	if again.OK || again.Error == nil || again.Error.Code != core.NotifyErrorInvalidRequest || !strings.Contains(again.Error.Message, "已回复") {
 		t.Fatalf("duplicate reply: %+v", again)
+	}
+}
+
+func TestTopicReplyRejectsInvalidNative(t *testing.T) {
+	f, _, _, _ := relayFixture(t)
+	reply := f.g.TopicReply(context.Background(), core.TopicReplyRequest{Kind: core.ControlKindReply, ID: core.NewID(), At: time.Now().UnixMilli(), Native: "[not-a-session]", MessageID: "om_x", Text: "answer"})
+	if reply.OK || reply.Error == nil || reply.Error.Code != core.NotifyErrorInvalidRequest || reply.Error.Message != "--native 不是合法会话 ID" {
+		t.Fatalf("invalid native reply: %+v", reply)
+	}
+}
+
+func TestTopicReplyReportsOwningSession(t *testing.T) {
+	f, work, native, result := relayFixture(t)
+	f.g.adoptSender = func(context.Context, string, string, string) error { return nil }
+	f.send(relayMessage(f, "om_other_owner", "hello", result.RootMessageID))
+	other := "22222222-3333-4444-5555-666666666666"
+	room, ok := f.c.AdoptedTopicRoom("oc_adopted", "member", "om_other_root")
+	if !ok {
+		t.Fatal("second adopted room did not resolve")
+	}
+	if _, _, err := f.s.BeginAdoption(other, "member", work, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.BindAdoptionRoot(other, room.Key, "om_other_root", "session-other", "/config", false, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.OpenAdoption(other, "omt_other"); err != nil {
+		t.Fatal(err)
+	}
+	reply := f.g.TopicReply(context.Background(), core.TopicReplyRequest{Kind: core.ControlKindReply, ID: core.NewID(), At: time.Now().UnixMilli(), Native: other, MessageID: "om_other_owner", Text: "answer"})
+	want := "消息 om_other_owner 属于会话 " + core.ShortNative(native) + "，传入的是 " + core.ShortNative(other)
+	if reply.OK || reply.Error == nil || reply.Error.Code != core.NotifyErrorInvalidRequest || reply.Error.Message != want {
+		t.Fatalf("owner mismatch reply: %+v, want %q", reply, want)
+	}
+}
+
+func TestTopicReplyReportsClosedTopic(t *testing.T) {
+	f, _, native, result := relayFixture(t)
+	f.g.adoptSender = func(context.Context, string, string, string) error { return nil }
+	f.send(relayMessage(f, "om_closed_topic", "hello", result.RootMessageID))
+	if _, err := f.s.DB.Exec("UPDATE adopted_topics SET state='uncertain' WHERE native=?", native); err != nil {
+		t.Fatal(err)
+	}
+	reply := f.g.TopicReply(context.Background(), core.TopicReplyRequest{Kind: core.ControlKindReply, ID: core.NewID(), At: time.Now().UnixMilli(), Native: native, MessageID: "om_closed_topic", Text: "answer"})
+	if reply.OK || reply.Error == nil || reply.Error.Code != core.NotifyErrorInvalidRequest || reply.Error.Message != "没有处于 open 状态的认领话题" {
+		t.Fatalf("closed topic reply: %+v", reply)
 	}
 }
 

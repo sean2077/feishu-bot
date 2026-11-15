@@ -141,7 +141,7 @@ func (g *Gateway) relayTopicMessage(ctx context.Context, room core.Room, m core.
 	if !inserted {
 		return true, nil
 	}
-	text := relayWrapper(record, endpoint, m)
+	text := relayWrapper(m)
 	if err = g.adoptSender(ctx, endpoint.Socket, endpoint.Token, text); err != nil {
 		if endpoint.Restored {
 			// A restored endpoint that fails once is stale; do not keep trusting
@@ -160,7 +160,7 @@ func (g *Gateway) relayTopicMessage(ctx context.Context, room core.Room, m core.
 	return true, nil
 }
 
-func relayWrapper(record store.AdoptedTopic, endpoint adoptEndpoint, m core.Message) string {
+func relayWrapper(m core.Message) string {
 	var builder strings.Builder
 	builder.WriteString("[来自飞书私聊话题，网关已校验为 owner 本人]\n")
 	builder.WriteString("消息ID: ")
@@ -171,15 +171,7 @@ func relayWrapper(record store.AdoptedTopic, endpoint adoptEndpoint, m core.Mess
 	if len(m.Resources) > 0 {
 		builder.WriteString("[这条消息包含附件；本期转递未携带附件]\n")
 	}
-	builder.WriteString("回复方式: feishu-bot topic reply")
-	if endpoint.ConfigPath != "" {
-		builder.WriteString(" --config \"")
-		builder.WriteString(strings.ReplaceAll(endpoint.ConfigPath, "\"", "\\\""))
-		builder.WriteString("\"")
-	}
-	builder.WriteString(" --native ")
-	builder.WriteString(record.Native)
-	builder.WriteString(" --message-id ")
+	builder.WriteString("回复方式: feishu-bot topic reply --message-id ")
 	builder.WriteString(m.ID)
 	builder.WriteString(" --text-file -\n")
 	return builder.String()
