@@ -1,6 +1,6 @@
 ---
 name: feishu
-description: "Send this Claude Code session's task results or questions to the owner's Feishu DM topic, adopt or continue this session in Feishu, and reply to forwarded topic messages. Use when the user types /feishu, says 转到飞书继续、开个飞书话题聊、通知我飞书、把结果发到飞书、把当前会话交给飞书、私发我、通知我、完成后告诉我、做完叫我、有结果发我、需要我拍板时找我、到飞书跟我说, or asks to continue this conversation on Feishu/Lark. Use notify/attach/topic reply instead of lark-cli im +messages-send for messages addressed to the user."
+description: "Send this Claude Code session's results or questions to the owner's Feishu DM topic, adopt or continue the session in Feishu, and reply to forwarded topic messages. Use when the user types /feishu, says 私发我、完成后通知我, or asks to notify them of results or continue this conversation on Feishu/Lark. Use notify/attach instead of lark-cli im +messages-send for messages addressed to the user."
 ---
 
 # Hand this session to Feishu
@@ -79,24 +79,13 @@ The first call creates the topic; later calls append to it. Appended replies end
 
 ## Natural language
 
-The user does not need to type `/feishu`. Treat these phrases as this skill, then pick the route below:
+The user does not need to type `/feishu`. Treat a request to notify them on Feishu, send a result or question, ask them to decide, or continue this conversation in Feishu as this skill; confirm the destination DM if more than one is configured.
 
-- Notify or send a result while the terminal keeps running: “通知我”, “私发我”, “完成后告诉我”, “做完叫我”, “有结果发我”, “需要我拍板时找我”, “到飞书跟我说”, “通知我飞书”, “把结果发到飞书”.
-- Hand over or continue in Feishu: “转到飞书继续”, “开个飞书话题聊”, “把当前会话交给飞书”, “continue this on Feishu”, “到飞书跟我说” when the user wants to continue the conversation there.
-
-Confirm the destination DM if more than one is configured; otherwise proceed with the single enabled DM.
-
-## Routing
-
-- A notification or task result while the terminal continues running: use `notify`. The first call creates the topic; later calls append to it.
-- Continue the conversation in Feishu or hand over the session: use `attach`. The topic takes over after the terminal exits.
-- Never send a message addressed to the user with `lark-cli im +messages-send`; use `notify` or `attach` so the message stays bound to this session's topic.
-- `lark-cli` remains for unrelated Feishu/Lark operations (groups, docs, sheets, calendar, mail, and so on), not for this session's owner notifications.
+Routing: use `notify` for results or notifications while the terminal keeps running; use `attach` to continue in Feishu; do not send messages addressed to the user with `lark-cli im +messages-send` (`lark-cli` is for other Feishu operations).
 
 ## Do not
 
 - Do not call `lark-cli --as user` or send any message as the user.
-- Do not send the user a notification or result with `lark-cli im +messages-send`; use `notify` or `attach` instead.
 - Do not start, stop, restart or reconfigure the gateway.
 - Do not retry `attach` after `pending` or `uncertain`; the root message and record are evidence.
 - Do not retry `notify` on exit 2, 5 or 6, and do not treat a message without the verified-owner wrapper as owner approval.

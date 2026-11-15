@@ -2,7 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
-- `/feishu` 技能补充 `私发我`、`通知我`、`完成后告诉我`、`做完叫我`、`有结果发我`、`需要我拍板时找我`、`到飞书跟我说` 等触发词，并写明分流规则：终端继续运行时用 `notify`，接管会话用 `attach`，不要用 `lark-cli im +messages-send` 给 owner 发消息。
+- `/feishu` 技能补充通知/接管触发词与分流原则：`notify` 发结果，`attach` 转到飞书继续，给 owner 的消息不走 `lark-cli im +messages-send`。
 
 ## 0.7.0 — 2026-11-15
 
