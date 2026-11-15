@@ -25,6 +25,57 @@ func exitCodeOf(t *testing.T, err error) int {
 	return coded.code
 }
 
+func TestParseTopicReplyDefaults(t *testing.T) {
+	envConfig := filepath.Join(t.TempDir(), "env-config.json")
+	t.Setenv("FEISHU_BOT_CONFIG", envConfig)
+	o, err := Parse([]string{"topic", "reply", "--message-id", "om_x", "--text-file", "-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.Abs(envConfig)
+	if o.ConfigPath != want {
+		t.Fatalf("env config = %q, want %q", o.ConfigPath, want)
+	}
+	explicit := filepath.Join(t.TempDir(), "explicit.json")
+	o, err = Parse([]string{"topic", "reply", "--config", explicit, "--message-id", "om_x", "--text-file", "-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want, _ = filepath.Abs(explicit); o.ConfigPath != want {
+		t.Fatalf("explicit config = %q, want %q", o.ConfigPath, want)
+	}
+	t.Setenv("FEISHU_BOT_CONFIG", "")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("user home is unavailable")
+	}
+	o, err = Parse([]string{"topic", "reply", "--message-id", "om_x", "--text-file", "-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want = filepath.Join(home, ".feishu-bot", "config.json"); o.ConfigPath != want {
+		t.Fatalf("home config = %q, want %q", o.ConfigPath, want)
+	}
+}
+
+func TestTopicReplyNative(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "env-native")
+	if got, err := topicReplyNative(Options{}); err != nil || got != "env-native" {
+		t.Fatalf("env native = %q %v", got, err)
+	}
+	if got, err := topicReplyNative(Options{AttachNative: "explicit-native"}); err != nil || got != "explicit-native" {
+		t.Fatalf("explicit native = %q %v", got, err)
+	}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "[not-a-session]")
+	if _, err := topicReplyNative(Options{}); err == nil || err.Error() != "--native 不是合法会话 ID" {
+		t.Fatalf("invalid env native error = %v", err)
+	}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	if _, err := topicReplyNative(Options{}); err == nil || !strings.Contains(err.Error(), "CLAUDE_CODE_SESSION_ID") {
+		t.Fatalf("missing native error = %v", err)
+	}
+}
+
 func TestParseNotifyAndTopicReply(t *testing.T) {
 	o, err := Parse([]string{"notify", "--config", "c.json", "--summary-file", "-", "--title", "t", "--user", "ou_dm", "--native", "n", "--holder-pid", "7", "--json"})
 	if err != nil {

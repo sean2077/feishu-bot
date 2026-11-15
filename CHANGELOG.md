@@ -2,6 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
+- `topic reply` 的 `--native` 改为默认取 `$CLAUDE_CODE_SESSION_ID`，`--config` 默认取 `$FEISHU_BOT_CONFIG` 或 `~/.feishu-bot/config.json`；转发消息附带最简命令 `feishu-bot topic reply --message-id ... --text-file -`。错误区分非法 native、消息属于另一会话（含双方前 8 位）、已回复和话题未 open。
 - `/feishu` 技能补充通知/接管触发词与分流原则：`notify` 发结果，`attach` 转到飞书继续，给 owner 的消息不走 `lark-cli im +messages-send`。
 
 ## 0.7.0 — 2026-11-15

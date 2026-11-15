@@ -230,6 +230,20 @@ func runNotify(ctx context.Context, c core.Config, o Options, out io.Writer) err
 	return &exitCodeError{code: notifyResultExit(result)}
 }
 
+func topicReplyNative(o Options) (string, error) {
+	nativeID := strings.TrimSpace(o.AttachNative)
+	if nativeID == "" {
+		nativeID = strings.TrimSpace(os.Getenv("CLAUDE_CODE_SESSION_ID"))
+	}
+	if nativeID == "" {
+		return "", errors.New("topic reply 需要 --native 或 CLAUDE_CODE_SESSION_ID")
+	}
+	if !core.ValidThreadRoot(nativeID) {
+		return "", errors.New("--native 不是合法会话 ID")
+	}
+	return nativeID, nil
+}
+
 func runTopicReply(ctx context.Context, c core.Config, o Options, out io.Writer) error {
 	fail := func(code int, message string) error {
 		result := core.TopicReplyResult{Error: &core.AdoptError{Code: messageCode(code), Message: message}}
@@ -241,8 +255,12 @@ func runTopicReply(ctx context.Context, c core.Config, o Options, out io.Writer)
 		}
 		return &exitCodeError{code: code}
 	}
-	if o.AttachNative == "" || o.TopicMessageID == "" {
-		return fail(5, "topic reply requires --native and --message-id")
+	if o.TopicMessageID == "" {
+		return fail(5, "topic reply 需要 --message-id")
+	}
+	nativeID, err := topicReplyNative(o)
+	if err != nil {
+		return fail(5, err.Error())
 	}
 	text, err := readTopicText(o.TopicTextFile)
 	if err != nil {
@@ -258,7 +276,7 @@ func runTopicReply(ctx context.Context, c core.Config, o Options, out io.Writer)
 		Kind:       core.ControlKindReply,
 		ID:         core.NewID(),
 		At:         time.Now().UnixMilli(),
-		Native:     o.AttachNative,
+		Native:     nativeID,
 		MessageID:  o.TopicMessageID,
 		Text:       text,
 		ConfigPath: o.ConfigPath,
@@ -334,8 +352,12 @@ native inbox for interactive topic relay while this terminal remains open.
 const topicHelp = `Reply to a forwarded Feishu topic message from the local session.
 
 Usage:
-  feishu-bot topic reply --config PATH --native ID --message-id om_xxx
-                         --text-file -|PATH [--json]
+  feishu-bot topic reply --message-id om_xxx --text-file -|PATH
+                         [--native ID] [--config PATH] [--json]
+
+--native defaults to $CLAUDE_CODE_SESSION_ID. --config defaults to
+$FEISHU_BOT_CONFIG, then ~/.feishu-bot/config.json. The shortest form is
+feishu-bot topic reply --message-id om_xxx --text-file -.
 
 Use the command included in the forwarded topic message. The gateway verifies
 that the message belongs to this adopted topic and that it has not been replied

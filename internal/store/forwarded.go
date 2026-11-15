@@ -29,6 +29,26 @@ func (s *Store) InsertForwarded(room string, m core.Message) (bool, error) {
 	return n == 1, err
 }
 
+// InboxRoomsByMessageID returns every room holding one message ID. The rows
+// are closed before returning so a single-connection store can issue more
+// queries.
+func (s *Store) InboxRoomsByMessageID(id string) ([]string, error) {
+	rows, err := s.DB.Query("SELECT room FROM inbox WHERE id=?", id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []string{}
+	for rows.Next() {
+		var room string
+		if err := rows.Scan(&room); err != nil {
+			return nil, err
+		}
+		result = append(result, room)
+	}
+	return result, rows.Err()
+}
+
 // Forwarded returns the stored input and its current status.
 func (s *Store) Forwarded(room, id string) (core.Message, string, bool, error) {
 	var raw, status string

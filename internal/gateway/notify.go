@@ -298,15 +298,48 @@ func (g *Gateway) TopicReply(ctx context.Context, req core.TopicReplyRequest) co
 		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorGatewayUnavailable, "网关正在关闭")}
 	}
 	defer g.wg.Done()
-	if req.ID == "" || !core.ValidThreadRoot(req.Native) || req.MessageID == "" {
+	if req.ID == "" || req.MessageID == "" {
 		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "topic reply 参数无效")}
+	}
+	if !core.ValidThreadRoot(req.Native) {
+		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "--native 不是合法会话 ID")}
 	}
 	text := strings.TrimSpace(cleanAttachText(req.Text, g.config.Limits.TextChars))
 	if text == "" {
 		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "回复正文为空")}
 	}
-	record, found, err := g.store.AdoptedTopicByNative(req.Native)
-	if err != nil || !found || record.State != store.AdoptedOpen {
+	// Resolve the message first so a wrong --native reports the session that
+	// actually owns the message instead of claiming the topic is closed.
+	refs, err := g.store.InboxRoomsByMessageID(req.MessageID)
+	if err != nil {
+		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "消息归属读取失败")}
+	}
+	var record store.AdoptedTopic
+	var mismatch store.AdoptedTopic
+	selected, hasMismatch := false, false
+	for _, roomKey := range refs {
+		candidate, found, lookupErr := g.store.AdoptedTopicByRoom(roomKey)
+		if lookupErr != nil {
+			return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "消息归属读取失败")}
+		}
+		if !found {
+			continue
+		}
+		if candidate.Native == req.Native {
+			record, selected = candidate, true
+			break
+		}
+		if !hasMismatch {
+			mismatch, hasMismatch = candidate, true
+		}
+	}
+	if !selected {
+		if hasMismatch {
+			return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "消息 "+req.MessageID+" 属于会话 "+core.ShortNative(mismatch.Native)+"，传入的是 "+core.ShortNative(req.Native))}
+		}
+		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "该消息不是本话题已转递的输入")}
+	}
+	if record.State != store.AdoptedOpen {
 		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "没有处于 open 状态的认领话题")}
 	}
 	room, ok := g.config.AdoptedTopicRoom(adoptedChatID(record.Room), record.User, record.Root)
@@ -318,7 +351,7 @@ func (g *Gateway) TopicReply(ctx context.Context, req core.TopicReplyRequest) co
 		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "该消息不是本话题已转递的输入")}
 	}
 	if status == "done" {
-		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "该消息已经回复")}
+		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "该消息已回复")}
 	}
 	if status != store.InputForwarded && status != "uncertain" {
 		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorInvalidRequest, "该消息没有成功转递给本机会话")}

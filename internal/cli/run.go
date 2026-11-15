@@ -36,7 +36,7 @@ feishu-bot attach --config path [--user OPEN_ID] [--title TEXT]
 feishu-bot notify --config path --summary-file path|- [--title TEXT]
                   [--native ID] [--holder-pid PID] [--user OPEN_ID]
                   [--name NAME] [--json]
-feishu-bot topic reply --config path --native ID --message-id om_xxx --text-file - [--json]
+feishu-bot topic reply [--config path] [--native ID] --message-id om_xxx --text-file - [--json]
 feishu-bot topics [--config path] [--native ID] [--json]
 feishu-bot action <operation> '<parameters-json>'
 feishu-bot context

@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -438,6 +439,13 @@ func parseTopicReply(args []string, o Options) (Options, error) {
 			o.JSON = true
 		default:
 			return o, errors.New("unexpected option; see feishu-bot topic reply --help")
+		}
+	}
+	if !o.ConfigExplicit {
+		if env := strings.TrimSpace(os.Getenv("FEISHU_BOT_CONFIG")); env != "" {
+			o.ConfigPath = env
+		} else if home, err := os.UserHomeDir(); err == nil {
+			o.ConfigPath = filepath.Join(home, ".feishu-bot", "config.json")
 		}
 	}
 	return resolveOptions(&o)

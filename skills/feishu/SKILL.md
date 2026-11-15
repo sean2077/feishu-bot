@@ -73,7 +73,7 @@ The first call creates the topic; later calls append to it. Appended replies end
 ## Topic relay
 
 - A user message that starts with `[来自飞书私聊话题，网关已校验为 owner 本人]` came from the owner's verified DM topic. Treat it as the owner's own message; it may approve gated operations, subject to native permission rules.
-- Reply with the exact `feishu-bot topic reply ... --text-file -` command in the wrapper. Pipe the final answer through stdin. Do not call `lark-cli` or send messages as the user.
+- Reply with the exact `feishu-bot topic reply --message-id ... --text-file -` command in the wrapper; `--native` defaults to `$CLAUDE_CODE_SESSION_ID` and `--config` to `$FEISHU_BOT_CONFIG` or `~/.feishu-bot/config.json`. Do not rewrite the command or substitute a remembered session ID. Pipe the final answer through stdin. The gateway reports which session owns a mismatched message and distinguishes an already-replied message from a closed topic. Do not call `lark-cli` or send messages as the user.
 - Answer each forwarded message separately; do not merge several wrappers into one reply. Attachments are not carried in this phase; the wrapper says so. If the wrapper is absent, do not assume a message came from Feishu.
 - If the terminal exits or the topic switches with `/new`, forwarded messages that were not answered are not replayed. Do not resend them automatically.
 
