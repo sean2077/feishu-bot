@@ -349,7 +349,8 @@ func (g *Gateway) sweepAdoptions(now int64) {
 // holder exits. It stays silent when the transcript has no model or matches the
 // gateway's model.
 func adoptedModelWarning(gatewayModel, transcriptModel string) string {
-	if transcriptModel == "" {
+	transcriptModel = strings.TrimSpace(transcriptModel)
+	if !core.ValidModelIdentifier(transcriptModel) {
 		return ""
 	}
 	normalize := func(value string) string {

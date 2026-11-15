@@ -173,4 +173,7 @@ func TestAdoptedModelWarningDescribesTakeover(t *testing.T) {
 	if got := adoptedModelWarning("project-model", ""); got != "" {
 		t.Fatalf("empty transcript warning = %q", got)
 	}
+	if got := adoptedModelWarning("project-model", "bad model"); got != "" {
+		t.Fatalf("invalid transcript warning = %q", got)
+	}
 }
