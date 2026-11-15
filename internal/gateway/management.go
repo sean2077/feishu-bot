@@ -530,7 +530,28 @@ func (g *Gateway) command(ctx context.Context, r core.Room, m core.Message) erro
 		g.clearProfileWait(r.Key)
 		g.notify(r, "已新建本聊天会话，旧运行未交付的补充已取消。", &m)
 	case "/stop":
-		g.notify(r, "已停止本聊天运行、后台进程和待交付输入；未交付的补充已取消。上下文和会话 ID 保留，下条消息继续原会话；只有 /new 新建会话。", &m)
+		text := "已停止本聊天运行、后台进程和待交付输入；未交付的补充已取消。上下文和会话 ID 保留，下条消息继续原会话；只有 /new 新建会话。"
+		if notice := g.adoptedTerminalStopNotice(r); notice != "" {
+			text = notice
+		}
+		g.notify(r, text, &m)
 	}
 	return nil
+}
+
+// adoptedTerminalStopNotice replaces the ordinary stop receipt while a live
+// local terminal still owns the adopted session. The gateway has no worker to
+// stop in that case; only the terminal's task keeps running.
+func (g *Gateway) adoptedTerminalStopNotice(r core.Room) string {
+	if r.AdoptedState != store.AdoptedOpen || r.DMUser == "" || r.Thread == "" {
+		return ""
+	}
+	current, found, err := g.store.CurrentSession(r.Key)
+	if err != nil || !found {
+		return ""
+	}
+	if _, held := g.holderFor(r, current.ID); !held {
+		return ""
+	}
+	return "已取消网关侧的待交付输入、审批和回执；本地终端仍持有该会话，正在运行的任务需要在本地终端停止。会话和原生上下文保留。"
 }
