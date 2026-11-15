@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sean2077/feishu-bot/internal/core"
+	nativepkg "github.com/sean2077/feishu-bot/internal/native"
 	"github.com/sean2077/feishu-bot/internal/process"
 	"github.com/sean2077/feishu-bot/internal/store"
 )
@@ -49,6 +50,96 @@ func TestNotifyCreatesThenAppends(t *testing.T) {
 	f.tr.mu.Unlock()
 	if !strings.Contains(notices, "second result") {
 		t.Fatalf("append text missing: %s", notices)
+	}
+}
+
+func TestNotifyBusyRoomKeepsGatewayHolder(t *testing.T) {
+	f, work, native := adoptFixture(t)
+	if result := f.g.Attach(context.Background(), attachRequest(native, work)); !result.OK {
+		t.Fatalf("attach: %+v", result)
+	}
+	record, _, _ := f.s.AdoptedTopicByNative(native)
+	room, ok := f.g.roomFromKey(record.Room)
+	if !ok {
+		t.Fatal("adopted room did not resolve")
+	}
+	slot, err := f.g.reserve(room)
+	if err != nil || slot == nil {
+		t.Fatalf("reserve: %+v %v", slot, err)
+	}
+	defer func() {
+		slot.cancel()
+		f.g.mu.Lock()
+		delete(f.g.slots, room.Key)
+		f.g.mu.Unlock()
+	}()
+	req := notifyRequest(native, work, "busy notification")
+	req.HolderPID = os.Getpid()
+	if started, ok := process.StartTime(req.HolderPID); ok {
+		req.HolderStarted = started
+	}
+	req.MessagingSocket = `\\.\pipe\fixture-inbox`
+	req.MessagingToken = "secret-token-value"
+	result := f.g.Notify(context.Background(), req)
+	if !result.OK || !strings.Contains(strings.Join(result.Warnings, "\n"), "未登记本地转递") {
+		t.Fatalf("busy notify: %+v", result)
+	}
+	record, _, _ = f.s.AdoptedTopicByNative(native)
+	if record.HolderPID != 0 {
+		t.Fatalf("busy notify took the holder: %d", record.HolderPID)
+	}
+	if _, ok := f.g.endpointFor(record.Room); ok {
+		t.Fatal("busy notify registered an endpoint")
+	}
+}
+
+func TestNotifyIdleRoomTakesHolder(t *testing.T) {
+	f, work, native := adoptFixture(t)
+	if result := f.g.Attach(context.Background(), attachRequest(native, work)); !result.OK {
+		t.Fatalf("attach: %+v", result)
+	}
+	req := notifyRequest(native, work, "idle notification")
+	req.HolderPID = os.Getpid()
+	if started, ok := process.StartTime(req.HolderPID); ok {
+		req.HolderStarted = started
+	}
+	req.MessagingSocket = `\\.\pipe\fixture-inbox`
+	req.MessagingToken = "secret-token-value"
+	result := f.g.Notify(context.Background(), req)
+	if !result.OK {
+		t.Fatalf("idle notify: %+v", result)
+	}
+	record, _, _ := f.s.AdoptedTopicByNative(native)
+	if record.HolderPID != req.HolderPID || record.HolderStarted != req.HolderStarted {
+		t.Fatalf("holder = %d/%d, want %d/%d", record.HolderPID, record.HolderStarted, req.HolderPID, req.HolderStarted)
+	}
+	if _, ok := f.g.endpointFor(record.Room); !ok {
+		t.Fatal("idle notify did not register the endpoint")
+	}
+}
+
+func TestNotifyHolderWriteFailureKeepsNotification(t *testing.T) {
+	f, work, native := adoptFixture(t)
+	if result := f.g.Attach(context.Background(), attachRequest(native, work)); !result.OK {
+		t.Fatalf("attach: %+v", result)
+	}
+	if _, err := f.s.DB.Exec(`CREATE TRIGGER fixture_holder_failure BEFORE UPDATE OF holder_pid ON adopted_topics BEGIN SELECT RAISE(ABORT,'fixture holder failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	req := notifyRequest(native, work, "holder failure notification")
+	req.HolderPID = os.Getpid()
+	req.MessagingSocket = `\\.\pipe\fixture-inbox`
+	req.MessagingToken = "secret-token-value"
+	result := f.g.Notify(context.Background(), req)
+	if !result.OK || !strings.Contains(strings.Join(result.Warnings, "\n"), "本地持有者写入失败") {
+		t.Fatalf("holder failure notify: %+v", result)
+	}
+	record, _, _ := f.s.AdoptedTopicByNative(native)
+	if record.HolderPID != 0 {
+		t.Fatalf("holder write failure changed holder: %d", record.HolderPID)
+	}
+	if _, ok := f.g.endpointFor(record.Room); ok {
+		t.Fatal("holder write failure registered an endpoint")
 	}
 }
 
@@ -110,12 +201,12 @@ func relayMessage(f *fixture, id, text, root string) core.Message {
 func TestTopicRelayAndReply(t *testing.T) {
 	f, _, native, result := relayFixture(t)
 	var sent []string
-	f.g.adoptSender = func(_ context.Context, socket, token, text string) error {
+	f.g.adoptSender = func(_ context.Context, socket, token, text string) (nativepkg.InboxOutcome, error) {
 		if socket != `\\.\pipe\fixture-inbox` || token != "secret-token-value" {
 			t.Fatalf("endpoint = %q %q", socket, token)
 		}
 		sent = append(sent, text)
-		return nil
+		return nativepkg.InboxSubmitted, nil
 	}
 	msg := relayMessage(f, "om_relay_1", "hello from Feishu", result.RootMessageID)
 	f.send(msg)
@@ -171,7 +262,9 @@ func TestTopicReplyRejectsInvalidNative(t *testing.T) {
 
 func TestTopicReplyReportsOwningSession(t *testing.T) {
 	f, work, native, result := relayFixture(t)
-	f.g.adoptSender = func(context.Context, string, string, string) error { return nil }
+	f.g.adoptSender = func(context.Context, string, string, string) (nativepkg.InboxOutcome, error) {
+		return nativepkg.InboxSubmitted, nil
+	}
 	f.send(relayMessage(f, "om_other_owner", "hello", result.RootMessageID))
 	other := "22222222-3333-4444-5555-666666666666"
 	room, ok := f.c.AdoptedTopicRoom("oc_adopted", "member", "om_other_root")
@@ -196,7 +289,9 @@ func TestTopicReplyReportsOwningSession(t *testing.T) {
 
 func TestTopicReplyReportsClosedTopic(t *testing.T) {
 	f, _, native, result := relayFixture(t)
-	f.g.adoptSender = func(context.Context, string, string, string) error { return nil }
+	f.g.adoptSender = func(context.Context, string, string, string) (nativepkg.InboxOutcome, error) {
+		return nativepkg.InboxSubmitted, nil
+	}
 	f.send(relayMessage(f, "om_closed_topic", "hello", result.RootMessageID))
 	if _, err := f.s.DB.Exec("UPDATE adopted_topics SET state='uncertain' WHERE native=?", native); err != nil {
 		t.Fatal(err)
@@ -207,9 +302,31 @@ func TestTopicReplyReportsClosedTopic(t *testing.T) {
 	}
 }
 
+func TestTopicRelayUncertainDoesNotQueue(t *testing.T) {
+	f, _, native, result := relayFixture(t)
+	f.g.adoptSender = func(context.Context, string, string, string) (nativepkg.InboxOutcome, error) {
+		return nativepkg.InboxUncertain, os.ErrDeadlineExceeded
+	}
+	f.send(relayMessage(f, "om_relay_uncertain", "hello", result.RootMessageID))
+	record, _, _ := f.s.AdoptedTopicByNative(native)
+	if _, status, found, err := f.s.Forwarded(record.Room, "om_relay_uncertain"); err != nil || !found || status != "uncertain" {
+		t.Fatalf("forwarded row: %q %v %v", status, found, err)
+	}
+	var status string
+	if err := f.s.DB.QueryRow("SELECT status FROM inbox WHERE room=? AND id=?", record.Room, "om_relay_uncertain").Scan(&status); err != nil || status != "uncertain" {
+		t.Fatalf("inbox status: %q %v", status, err)
+	}
+	if f.starts.Load() != 0 {
+		t.Fatal("uncertain relay started a worker or queued input")
+	}
+	waitFor(t, "uncertain notice", func() bool { return noticeContains(f, "不会自动重放") })
+}
+
 func TestTopicRelayFallsBackWhenInboxFails(t *testing.T) {
 	f, _, native, result := relayFixture(t)
-	f.g.adoptSender = func(context.Context, string, string, string) error { return os.ErrClosed }
+	f.g.adoptSender = func(context.Context, string, string, string) (nativepkg.InboxOutcome, error) {
+		return nativepkg.InboxNotSent, os.ErrClosed
+	}
 	msg := relayMessage(f, "om_relay_fail", "hello", result.RootMessageID)
 	f.send(msg)
 	record, _, _ := f.s.AdoptedTopicByNative(native)
@@ -237,7 +354,9 @@ func TestTopicRelayFallsBackWhenInboxFails(t *testing.T) {
 
 func TestTopicRelayUnansweredBecomesUncertainOnExit(t *testing.T) {
 	f, _, native, result := relayFixture(t)
-	f.g.adoptSender = func(context.Context, string, string, string) error { return nil }
+	f.g.adoptSender = func(context.Context, string, string, string) (nativepkg.InboxOutcome, error) {
+		return nativepkg.InboxSubmitted, nil
+	}
 	msg := relayMessage(f, "om_relay_pending", "hello", result.RootMessageID)
 	f.send(msg)
 	record, _, _ := f.s.AdoptedTopicByNative(native)
@@ -266,7 +385,10 @@ func TestTopicRelayUnansweredBecomesUncertainOnExit(t *testing.T) {
 func TestTopicRelayIgnoresNonOwner(t *testing.T) {
 	f, _, _, result := relayFixture(t)
 	called := false
-	f.g.adoptSender = func(context.Context, string, string, string) error { called = true; return nil }
+	f.g.adoptSender = func(context.Context, string, string, string) (nativepkg.InboxOutcome, error) {
+		called = true
+		return nativepkg.InboxSubmitted, nil
+	}
 	msg := relayMessage(f, "om_other", "hello", result.RootMessageID)
 	msg.SenderID = "stranger"
 	f.send(msg)
@@ -282,7 +404,9 @@ func TestTopicRelayTokenNeverAudited(t *testing.T) {
 		data, _ := json.Marshal(detail)
 		logs = append(logs, event+" "+string(data))
 	}
-	f.g.adoptSender = func(context.Context, string, string, string) error { return nil }
+	f.g.adoptSender = func(context.Context, string, string, string) (nativepkg.InboxOutcome, error) {
+		return nativepkg.InboxSubmitted, nil
+	}
 	msg := relayMessage(f, "om_relay_token", "hello", result.RootMessageID)
 	f.send(msg)
 	record, _, _ := f.s.AdoptedTopicByNative(native)
@@ -335,9 +459,9 @@ func TestNotifyRejectsDifferentLiveHolder(t *testing.T) {
 func TestTopicRelayPreservesOrder(t *testing.T) {
 	f, _, _, result := relayFixture(t)
 	var sent []string
-	f.g.adoptSender = func(_ context.Context, _, _, text string) error {
+	f.g.adoptSender = func(_ context.Context, _, _, text string) (nativepkg.InboxOutcome, error) {
 		sent = append(sent, text)
-		return nil
+		return nativepkg.InboxSubmitted, nil
 	}
 	f.send(relayMessage(f, "om_order_1", "first", result.RootMessageID))
 	f.send(relayMessage(f, "om_order_2", "second", result.RootMessageID))

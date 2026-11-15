@@ -2,6 +2,8 @@
 
 ## Unreleased — Go 原生网关
 
+- 话题转递区分写入结果：原生收件箱连接／打开失败等确定未开始提交时退回排队并提示；完整写入后提交成功；写入后超时、取消或部分写入标为 uncertain、不自动重放，并提示检查本地终端或重新发送。Windows 命名管道在打开超时或取消后才到达的句柄会被关闭，不再泄漏。
+- `notify` 不再绕过认领话题的忙时与 ownership 保护：网关正在使用该话题时仍追加通知，但不更新本地 holder／endpoint，并在 warnings 中说明；提交通知后再登记本地转递，登记写入失败只产生 warning，不影响已发送的通知。
 - `topic reply` 的 `--native` 改为默认取 `$CLAUDE_CODE_SESSION_ID`，`--config` 默认取 `$FEISHU_BOT_CONFIG` 或 `~/.feishu-bot/config.json`；转发消息附带最简命令 `feishu-bot topic reply --message-id ... --text-file -`。错误区分非法 native、消息属于另一会话（含双方前 8 位）、已回复和话题未 open。
 - `/feishu` 技能补充通知/接管触发词与分流原则：`notify` 发结果，`attach` 转到飞书继续，给 owner 的消息不走 `lark-cli im +messages-send`。
 

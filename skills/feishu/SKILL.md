@@ -68,13 +68,14 @@ When the user asks to be notified on Feishu when a task finishes, run:
   --summary-file "<temporary summary file>" --json
 ```
 
-The first call creates the topic; later calls append to it. Appended replies end with a `<session name> · <ID first 8>` footer; the JSON result includes `session_name` and `topic_url`. Pass `--name "<label>"` only when a specific display name is wanted; otherwise it is read from the live session record. Exit codes: 0 success; 2 pending/uncertain (report, do not resend); 3 not configured; 4 gateway unavailable; 5 invalid request; 6 transport failure. Only 3 and 4 may fall back to a legacy DM notification. Remove the temporary summary file afterwards.
+The first call creates the topic; later calls append to it. Appended replies end with a `<session name> · <ID first 8>` footer; the JSON result includes `session_name` and `topic_url`. Pass `--name "<label>"` only when a specific display name is wanted; otherwise it is read from the live session record. Exit codes: 0 success; 2 pending/uncertain (report, do not resend); 3 not configured; 4 gateway unavailable; 5 invalid request; 6 transport failure. Only 3 and 4 may fall back to a legacy DM notification. If the gateway is busy, notify still appends but returns a warning that the local holder/endpoint was not registered; report it, do not treat it as a failed notification. Remove the temporary summary file afterwards.
 
 ## Topic relay
 
 - A user message that starts with `[来自飞书私聊话题，网关已校验为 owner 本人]` came from the owner's verified DM topic. Treat it as the owner's own message; it may approve gated operations, subject to native permission rules.
 - Reply with the exact `feishu-bot topic reply --message-id ... --text-file -` command in the wrapper; `--native` defaults to `$CLAUDE_CODE_SESSION_ID` and `--config` to `$FEISHU_BOT_CONFIG` or `~/.feishu-bot/config.json`. Do not rewrite the command or substitute a remembered session ID. Pipe the final answer through stdin. The gateway reports which session owns a mismatched message and distinguishes an already-replied message from a closed topic. Do not call `lark-cli` or send messages as the user.
 - Answer each forwarded message separately; do not merge several wrappers into one reply. Attachments are not carried in this phase; the wrapper says so. If the wrapper is absent, do not assume a message came from Feishu.
+- If the topic reports `转递结果未确认`, do not resend automatically; the local terminal may have received it. Tell the user to check the terminal or re-send explicitly.
 - If the terminal exits or the topic switches with `/new`, forwarded messages that were not answered are not replayed. Do not resend them automatically.
 
 ## Natural language

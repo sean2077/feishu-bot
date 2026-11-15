@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sean2077/feishu-bot/internal/core"
+	nativepkg "github.com/sean2077/feishu-bot/internal/native"
 	"github.com/sean2077/feishu-bot/internal/process"
 	"github.com/sean2077/feishu-bot/internal/store"
 )
@@ -141,7 +142,9 @@ func TestTopicStatusShowsLocalSessionIdentity(t *testing.T) {
 
 func TestTopicReplyEndsWithSessionFooter(t *testing.T) {
 	f, _, native, result := relayFixture(t)
-	f.g.adoptSender = func(context.Context, string, string, string) error { return nil }
+	f.g.adoptSender = func(context.Context, string, string, string) (nativepkg.InboxOutcome, error) {
+		return nativepkg.InboxSubmitted, nil
+	}
 	f.send(relayMessage(f, "om_footer", "hello", result.RootMessageID))
 	reply := f.g.TopicReply(context.Background(), core.TopicReplyRequest{Kind: core.ControlKindReply, ID: core.NewID(), Native: native, MessageID: "om_footer", Text: "answer"})
 	if !reply.OK {

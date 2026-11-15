@@ -158,9 +158,6 @@ func (g *Gateway) Notify(ctx context.Context, req core.NotifyRequest) core.Notif
 				(record.HolderPID != req.HolderPID || record.HolderStarted != req.HolderStarted) {
 				return notifyFailure(core.NotifyErrorInvalidRequest, "该会话仍由另一个本地终端持有")
 			}
-			if req.HolderPID > 0 {
-				_ = g.store.UpdateAdoptionHolder(record.Native, req.HolderPID, req.HolderStarted)
-			}
 		} else {
 			g.removeAdoptEndpoint(record.Room)
 		}
@@ -187,25 +184,54 @@ func (g *Gateway) Notify(ctx context.Context, req core.NotifyRequest) core.Notif
 			}
 		}
 		if sameSession {
-			// Re-check under the room input lock: /new or /resume can rotate the
-			// session while this notify is sending, and only the current holder
-			// may register the relay endpoint.
-			if unlock, lockErr := g.inputLocks.lockContext(ctx, room.Key); lockErr == nil {
-				current, currentFound, currentErr := g.store.CurrentSession(room.Key)
-				fresh, freshFound, freshErr := g.store.AdoptedTopicByNative(req.Native)
-				switch {
-				case currentErr != nil || !currentFound || current.ID != record.Session:
-					g.removeAdoptEndpoint(room.Key)
-				case freshErr == nil && freshFound && req.HolderPID > 0 && fresh.HolderPID == req.HolderPID:
-					g.setAdoptEndpoint(room.Key, adoptEndpoint{Socket: req.MessagingSocket, Token: req.MessagingToken, ConfigPath: req.ConfigPath, Native: req.Native})
-				}
-				unlock()
-			}
+			warnings = append(warnings, g.registerNotifyHolder(ctx, record, room, req)...)
 		}
 		g.audit(room.Key, "notify", core.Args{"native": req.Native, "message": messageID, "created": false})
 		return core.NotifyResult{OK: true, State: store.AdoptedOpen, ChatID: room.ChatID, RootMessageID: record.Root, ThreadID: record.Thread, MessageID: messageID, SessionName: name, TopicURL: topicAppLink(room.ChatID, record.Thread), Created: false, Warnings: warnings}
 	}
 	return g.notifyCreate(ctx, req, title, summary)
+}
+
+// registerNotifyHolder takes local ownership only when the gateway room is
+// idle. A busy room still receives the notification; the warning asks the owner
+// to /stop before a local terminal takes over.
+func (g *Gateway) registerNotifyHolder(ctx context.Context, record store.AdoptedTopic, room core.Room, req core.NotifyRequest) []string {
+	if req.HolderPID <= 0 {
+		return nil
+	}
+	inputUnlock, err := g.inputLocks.lockContext(ctx, room.Key)
+	if err != nil {
+		return []string{"未登记本地转递：等待话题输入锁失败"}
+	}
+	defer inputUnlock()
+	dispatchUnlock, err := g.dispatchLocks.lockContext(ctx, room.Key)
+	if err != nil {
+		return []string{"未登记本地转递：等待话题派发锁失败"}
+	}
+	defer dispatchUnlock()
+	if reason, busyErr := g.adoptedRoomBusy(record); busyErr != nil {
+		return []string{"未登记本地转递：话题状态读取失败"}
+	} else if reason != "" {
+		return []string{"网关正在使用该话题，未登记本地转递；如需本机接管，请先在话题内 /stop 后重新 notify"}
+	}
+	current, found, err := g.store.CurrentSession(room.Key)
+	if err != nil || !found || current.ID != record.Session {
+		g.removeAdoptEndpoint(room.Key)
+		return []string{"话题会话已切换，未登记本地转递"}
+	}
+	fresh, found, err := g.store.AdoptedTopicByNative(req.Native)
+	if err != nil || !found {
+		return []string{"认领记录读取失败，未登记本地转递"}
+	}
+	if fresh.HolderPID > 0 && g.holderAlive(fresh) &&
+		(fresh.HolderPID != req.HolderPID || fresh.HolderStarted != req.HolderStarted) {
+		return []string{"该会话仍由另一个本地终端持有，未登记本地转递"}
+	}
+	if err = g.store.UpdateAdoptionHolder(req.Native, req.HolderPID, req.HolderStarted); err != nil {
+		return []string{"本地持有者写入失败，未登记本地转递"}
+	}
+	g.setAdoptEndpoint(room.Key, adoptEndpoint{Socket: req.MessagingSocket, Token: req.MessagingToken, ConfigPath: req.ConfigPath, Native: req.Native})
+	return nil
 }
 
 func (g *Gateway) notifyCreate(ctx context.Context, req core.NotifyRequest, title, summary string) core.NotifyResult {
