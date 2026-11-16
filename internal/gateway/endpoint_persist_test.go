@@ -219,9 +219,8 @@ func TestRestoredEndpointFailureRemovesFileAndQueues(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("failed restored endpoint kept its file: %v", err)
 	}
-	if !noticeContains(f, "转递失败") {
-		t.Fatal("relay failure notice missing")
-	}
+	// g.notify schedules delivery, so wait for the notice instead of racing it.
+	waitFor(t, "relay failure notice", func() bool { return noticeContains(f, "转递失败") })
 	if _, status, found, err := f.s.Forwarded(record.Room, "om_restored_fail"); err != nil || !found || status != "queued" {
 		t.Fatalf("forwarded row after restored failure: %q %v %v", status, found, err)
 	}
