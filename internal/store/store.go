@@ -145,6 +145,7 @@ func (s *Store) initialize() error {
 			{"outbox", "delivery_key", "TEXT"}, {"outbox", "initial_card", "TEXT"}, {"outbox", "retry_count", "INTEGER NOT NULL DEFAULT 0"}, {"outbox", "retry_after", "INTEGER NOT NULL DEFAULT 0"},
 			{"outbox", "file_target", "TEXT"}, {"outbox", "file_state", "TEXT NOT NULL DEFAULT 'none'"}, {"outbox", "delivery_error", "TEXT"}, {"outbox", "kind", "TEXT NOT NULL DEFAULT 'reply'"},
 			{"session_preferences", "native_title", "TEXT NOT NULL DEFAULT ''"},
+			{"session_preferences", "context_hint_sent", "INTEGER NOT NULL DEFAULT 0"},
 			{"adopted_topics", "session_name", "TEXT NOT NULL DEFAULT ''"}, {"adopted_topics", "title", "TEXT NOT NULL DEFAULT ''"},
 			{"adopted_topics", "last_active", "INTEGER NOT NULL DEFAULT 0"},
 			{"action_runs", "requester", "TEXT"}, {"action_runs", "request_context", "TEXT"},

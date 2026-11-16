@@ -208,6 +208,12 @@ _英文_: pending usage observation
 一轮回复使用的同一张飞书卡片，包含思考、答案和状态栏。工具轨迹默认不展示，审批和追问仍可交互。
 _英文_: reply card
 
+**上下文提示**
+
+`projects[].contextHintTokens` 配置的回复卡底部一次性提示。原生结果报告的输入侧 token（`input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens`）达到阈值（默认 400000）时显示「上下文约 N 万 token，建议 /compact 或 /new」；同一会话只提示一次并持久记录，`/compact` 或 `/new` 后才可能再次提示。它只提示，不自动 compact，也不改变会话；与 auto 模式安全提示使用独立卡片元素，可同时显示。
+_英文_: context hint
+_避免_: 把提示当作自动压缩或上下文占用测量
+
 **回复反馈**
 
 在最终 Done [回复卡](#回复卡)上记录的「有用」「无用」投票。按 room、回复输出和 open_id 记录，每人每回复只能一票，不能改票；按钮显示实时计数，点击只记录、提示并按元素更新两个按钮，不重写整张卡片。快照存于 `feedback` 表，保留 90 天，可导出为评估集候选。

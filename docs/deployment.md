@@ -120,6 +120,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `projects[].feedback.enabled` | `false` | 在最终 Done 回复卡上显示「有用／无用」反馈，见[回复反馈](#回复反馈) |
 | `feedback.export.enabled`、`feedback.export.dir` | `false`、空 | 维护前按项目、UTC 日期归档反馈；开启时 `dir` 必填且目录须已存在，见[回复反馈](#回复反馈) |
 | `projects[].displayWorkspace` | 空 | 回复卡工作目录显示：`full`、`basename`、`project`、`hidden`；空时群聊显示项目 id，私聊显示完整路径 |
+| `projects[].contextHintTokens` | 400000 | 原生结果报告的本轮输入 token 达到该值时，最终回复卡底部提示上下文规模并建议 `/compact` 或 `/new`；范围 10000–5000000，0 或缺省使用默认。同一会话只提示一次，`/compact` 或 `/new` 后可再次提示 |
 | `groups[]`、`dms[]` | 空 | 群与私聊授权，见[飞书应用与授权](#飞书应用与授权) |
 | `groups[].topicHistory` | `"topic"` | `"topic"` 默认只读当前话题；`"chat"` 允许 `read_chat_history` 的 `scope: "chat"` 读取同群时间线和其他话题。只适用于 `sessionScope: "thread"`，其他群配置会在加载时拒绝 |
 | `dms[].historyChats` | 空 | 私聊跨群读取白名单：`[{"chatId","name"}]`，目标必须是显式 `groups[]` 绑定；发起人须为目标群 maintainer 或显式 member（`allowAllMembers` 不算），只读文本并审计；读取后本轮写操作改为 DM 用户审批（`approval: "none"`／`"open"` 的固定操作除外，仍直接执行并记 `tainted=true`） |

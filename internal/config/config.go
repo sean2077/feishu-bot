@@ -26,6 +26,11 @@ var headerPattern = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 var parameterPattern = regexp.MustCompile(`\{\{([^}]+)\}\}`)
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// DefaultContextHintTokens is the per-project input-token threshold at which
+// the final reply card shows the context hint. A project may omit
+// contextHintTokens or set it to zero to keep this default.
+const DefaultContextHintTokens int64 = 400000
+
 // ProjectEnvError reports an invalid projects[].env or envPassthrough entry.
 // It never carries a value, so it is safe to print before secret redaction.
 type ProjectEnvError struct {
@@ -569,6 +574,11 @@ func validate(c *core.Config, base string) error {
 		case "", "full", "basename", "project", "hidden":
 		default:
 			return errors.New("displayWorkspace must be full, basename, project or hidden")
+		}
+		if p.ContextHintTokens == 0 {
+			p.ContextHintTokens = DefaultContextHintTokens
+		} else if p.ContextHintTokens < 10000 || p.ContextHintTokens > 5000000 {
+			return errors.New("contextHintTokens must be between 10000 and 5000000")
 		}
 		if err := validateProjectEnvironment(p, derivedEnv); err != nil {
 			return err

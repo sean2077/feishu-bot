@@ -36,6 +36,7 @@ type render struct {
 	legacy                                                   int
 	messageID, finalID, replyTo, threadID, status, last      string
 	notice                                                   string
+	hint                                                     string
 	started                                                  int64
 	details                                                  replyDetails
 	createUncertain, createRejected, closed, flushing, dirty bool
@@ -128,6 +129,28 @@ func (r *render) setNotice(text string) {
 	r.urgent = true
 	r.scheduleLocked()
 }
+
+// setHint adds the once-per-session context-size hint. It keeps its own card
+// slot so the auto-mode safety notice remains visible.
+func (r *render) setHint(text string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || r.ctx.Err() != nil || text == "" || r.hint != "" {
+		return
+	}
+	r.hint = text
+	r.urgent = true
+	r.scheduleLocked()
+}
+
+// contextHintThreshold returns the project's configured threshold, falling
+// back to the documented default when a project omits or zeroes the value.
+func (g *Gateway) contextHintThreshold(projectID string) int64 {
+	if project, ok := g.config.Project(projectID); ok && project.ContextHintTokens > 0 {
+		return project.ContextHintTokens
+	}
+	return config.DefaultContextHintTokens
+}
 func (r *render) update(text string, partial bool, kind, key string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -204,6 +227,9 @@ func (r *render) cardFitLocked(title, answer string, final, success bool) (core.
 	card, needsFile := boundedReplyCardTitle(r.g.cardTitle(), title, answer, r.thinkingLocked(), r.thinkingCount, final, d, time.Duration(max(int64(0), time.Now().UnixMilli()-r.started))*time.Millisecond, success, r.g.quickTurnControls(r.room, r.session, r.turn, r.finalID, r.requester))
 	if r.notice != "" {
 		card = fitCardBudget(appendReplyNotice(card, r.notice), core.CardPayloadLimit, "…")
+	}
+	if r.hint != "" {
+		card = fitCardBudget(appendReplyHint(card, r.hint), core.CardPayloadLimit, "…")
 	}
 	if r.waiting > 0 && !final {
 		cfg := argsOf(card["config"])

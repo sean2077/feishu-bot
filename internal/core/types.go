@@ -231,13 +231,16 @@ type PreContext struct {
 }
 
 type Project struct {
-	ID                     string             `json:"id"`
-	Maintainers            []string           `json:"maintainers"`
-	Owners                 []string           `json:"owners,omitempty"`
-	Approvals              ProjectApprovals   `json:"approvals,omitempty"`
-	Bash                   ProjectBash        `json:"bash,omitempty"`
-	Feedback               FeedbackConfig     `json:"feedback,omitempty"`
-	DisplayWorkspace       string             `json:"displayWorkspace,omitempty"`
+	ID               string           `json:"id"`
+	Maintainers      []string         `json:"maintainers"`
+	Owners           []string         `json:"owners,omitempty"`
+	Approvals        ProjectApprovals `json:"approvals,omitempty"`
+	Bash             ProjectBash      `json:"bash,omitempty"`
+	Feedback         FeedbackConfig   `json:"feedback,omitempty"`
+	DisplayWorkspace string           `json:"displayWorkspace,omitempty"`
+	// ContextHintTokens is the native-result input-token threshold for the
+	// reply-card hint. Zero uses the configuration default.
+	ContextHintTokens      int64              `json:"contextHintTokens,omitempty"`
 	SeedDir                string             `json:"seedDir,omitempty"`
 	TrustedConfigDir       string             `json:"trustedConfigDir,omitempty"`
 	CWD                    string             `json:"cwd,omitempty"`

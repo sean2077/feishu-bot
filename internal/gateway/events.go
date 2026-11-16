@@ -487,6 +487,11 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 		model = strings.Join(ev.Models, " / ")
 	}
 	r.setDetails(replyDetails{Model: model, ProjectPath: g.workspaceLabel(s.room, s.room.ProjectID, s.workspace.Work), Context: ev.Context, Usage: ev.Usage, ThinkingIconKey: g.thinkingIcon()})
+	if excerpt == nil {
+		// A background fragment folded into a still-running foreground card
+		// does not end that reply; its own result will evaluate the hint.
+		g.updateContextHint(s, r, ev)
+	}
 	answer := ev.Text
 	compact := map[string]string{"compacted": "上下文已由 Claude Code 原生压缩，会话保持不变。", "not_needed": "原生压缩未执行（例如历史不足），会话保持不变。", "failed": "原生压缩失败，未新建或重置会话。"}[ev.Compact]
 	if compact != "" {
@@ -569,6 +574,53 @@ func (g *Gateway) resultEvent(s *slot, ev core.WorkerEvent) {
 		g.finishFragment(s, p)
 	}
 	g.kickWaiting()
+}
+
+// contextInputTokens sums the input side of one native result's reported
+// usage. A field the native CLI omitted counts as zero; a present but
+// malformed value makes the observation unusable instead of guessing.
+func contextInputTokens(usage core.Args) (int64, bool) {
+	var total int64
+	for _, key := range []string{"input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"} {
+		if _, present := usage[key]; !present {
+			continue
+		}
+		n, ok := numberArg(usage, key)
+		if !ok {
+			return 0, false
+		}
+		total += n
+	}
+	return total, true
+}
+
+// updateContextHint shows the reply-card context hint at most once per
+// session. A /compact result clears the durable marker so a later oversized
+// turn may hint again; /new starts a session that has no marker.
+func (g *Gateway) updateContextHint(s *slot, r *render, ev core.WorkerEvent) {
+	if ev.Compact != "" {
+		if err := g.store.ClearContextHintSent(s.room.Key, s.session.ID); err != nil {
+			g.audit(s.room.Key, "context_hint_clear_failed", core.Args{"session": s.session.ID, "error": core.Redact(err.Error(), g.secrets)})
+		}
+		return
+	}
+	tokens, ok := contextInputTokens(ev.Usage)
+	if !ok || tokens < g.contextHintThreshold(s.room.ProjectID) {
+		return
+	}
+	sent, err := g.store.ContextHintSent(s.room.Key, s.session.ID)
+	if err != nil {
+		g.audit(s.room.Key, "context_hint_failed", core.Args{"session": s.session.ID, "error": core.Redact(err.Error(), g.secrets)})
+		return
+	}
+	if sent {
+		return
+	}
+	if err := g.store.MarkContextHintSent(s.room.Key, s.session.ID); err != nil {
+		g.audit(s.room.Key, "context_hint_failed", core.Args{"session": s.session.ID, "error": core.Redact(err.Error(), g.secrets)})
+		return
+	}
+	r.setHint(contextHintText(tokens))
 }
 
 // finishFragment finalizes a detached render whose native turn was answered

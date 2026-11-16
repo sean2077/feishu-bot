@@ -13,7 +13,7 @@ import (
 
 func initializeConvenience(tx *sql.Tx) error {
 	_, err := tx.Exec(`
-CREATE TABLE IF NOT EXISTS session_preferences(session TEXT PRIMARY KEY REFERENCES sessions(id), room TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', name_key TEXT NOT NULL DEFAULT '', profile TEXT NOT NULL DEFAULT '', requested_profile TEXT, revision TEXT NOT NULL DEFAULT '', native_title TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS session_preferences(session TEXT PRIMARY KEY REFERENCES sessions(id), room TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', name_key TEXT NOT NULL DEFAULT '', profile TEXT NOT NULL DEFAULT '', requested_profile TEXT, revision TEXT NOT NULL DEFAULT '', native_title TEXT NOT NULL DEFAULT '', context_hint_sent INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS session_name_room ON session_preferences(room,name_key) WHERE name_key!='';
 CREATE TABLE IF NOT EXISTS card_controls(message TEXT PRIMARY KEY, room TEXT NOT NULL, session TEXT NOT NULL, revision TEXT NOT NULL, expires INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS card_control_expiry ON card_controls(expires);
@@ -45,6 +45,29 @@ func (s *Store) Preferences(room, session string) (SessionPreferences, error) {
 // RenameSession it never participates in chat-local name lookup.
 func (s *Store) SetNativeTitle(room, session, title string) error {
 	_, err := s.DB.Exec(`INSERT INTO session_preferences(session,room,native_title) VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET native_title=excluded.native_title WHERE session_preferences.room=excluded.room`, session, room, title)
+	return err
+}
+
+// ContextHintSent reports whether the reply-card context hint was already
+// shown for this session. The marker survives a restart; a new session or an
+// explicit /compact clears it.
+func (s *Store) ContextHintSent(room, session string) (bool, error) {
+	var sent int
+	err := s.DB.QueryRow(`SELECT coalesce((SELECT context_hint_sent FROM session_preferences WHERE session=? AND room=?),0)`, session, room).Scan(&sent)
+	return sent == 1, err
+}
+
+// MarkContextHintSent remembers that the once-per-session context hint has
+// been shown. It never creates a preference row for another room.
+func (s *Store) MarkContextHintSent(room, session string) error {
+	_, err := s.DB.Exec(`INSERT INTO session_preferences(session,room,context_hint_sent) VALUES(?,?,1) ON CONFLICT(session) DO UPDATE SET context_hint_sent=1 WHERE session_preferences.room=excluded.room`, session, room)
+	return err
+}
+
+// ClearContextHintSent allows one later hint in the same session, for example
+// after /compact. Other session preferences are left untouched.
+func (s *Store) ClearContextHintSent(room, session string) error {
+	_, err := s.DB.Exec(`UPDATE session_preferences SET context_hint_sent=0 WHERE room=? AND session=?`, room, session)
 	return err
 }
 

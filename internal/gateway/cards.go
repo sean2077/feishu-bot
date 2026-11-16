@@ -158,6 +158,34 @@ func appendReplyNotice(card core.Args, notice string) core.Args {
 	return card
 }
 
+// replyContextHintElementID identifies the context-size hint. It is separate
+// from reply_auto_notice so a safety notice and the hint can share one card.
+const replyContextHintElementID = "reply_ctx_hint"
+
+// contextHintText rounds the reported input size to ten-thousand-token units.
+func contextHintText(tokens int64) string {
+	return fmt.Sprintf("上下文约 %d 万 token，建议 /compact 或 /new", (tokens+5000)/10000)
+}
+
+// appendReplyHint adds or replaces the context-size hint at the bottom of the
+// reply card without touching the auto-mode safety notice.
+func appendReplyHint(card core.Args, hint string) core.Args {
+	body := argsOf(card["body"])
+	if body == nil || hint == "" {
+		return card
+	}
+	elements, _ := body["elements"].([]any)
+	kept := elements[:0]
+	for _, item := range elements {
+		if stringArg(argsOf(item), "element_id") != replyContextHintElementID {
+			kept = append(kept, item)
+		}
+	}
+	body["elements"] = append(kept, core.Args{"tag": "markdown", "element_id": replyContextHintElementID, "text_size": "notation", "content": hint})
+	card["body"] = body
+	return card
+}
+
 const defaultCardTitle = "飞书助手"
 
 // cardTitle returns the configured bot name with the legacy default fallback.

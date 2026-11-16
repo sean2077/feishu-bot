@@ -2,6 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
+- 新增 `projects[].contextHintTokens`（默认 400000，范围 10000–5000000；0 或缺省使用默认）：原生结果报告的本轮输入 token（`input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens`）达到阈值时，在最终回复卡底部追加一行淡色提示「上下文约 N 万 token，建议 `/compact` 或 `/new`」，N 按四舍五入到万。同一会话只提示一次，`/compact` 或 `/new` 后才可再次提示，重启不重复；提示使用独立卡片元素，可与 auto 模式安全提示同时显示，只提示、不自动 compact。
 - 新增 `groups[].idleNewSessionMs`／`dms[].idleNewSessionMs`：聊天范围会话闲置超过阈值后，下一条普通人类输入自动新建会话（等同 `/new`，旧会话保留），回复卡提示 `/resume`。管理命令、补充、机器人消息、thread 话题和认领话题不触发；`/resume` 刷新活动时间，切回旧会话后不会被立即新建。
 - 新增认领话题自动归档：holder 已不存活且超过 `adoptedArchiveMs`（默认 7 天）无入站或出站活动时，定期清理把话题标为 `archived` 并删除 endpoint 文件；owner 在话题内发消息或再次 `notify`／`attach` 会原地恢复为 `open` 并续接原会话。`adopted_topics` 增加 `last_active` 列；`feishu-bot topics` 增加 `last_active` 字段和 `--all`（默认隐藏归档话题）。
 - CI 的 `go test -race` 整包时限从 360 秒提高到 720 秒，避免慢共享 runner 上 `internal/gateway` 因整包超时误报；真实用例失败仍会报错。
