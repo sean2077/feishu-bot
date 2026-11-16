@@ -1,0 +1,64 @@
+name: Verify pull request
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: verify-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  cross-platform:
+    name: PR fast lane
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            go: '1.27.x'
+            native-platform: linux-x64
+          - os: windows-latest
+            go: '1.27.x'
+            native-platform: win32-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+      - uses: ./.github/actions/verify
+        with:
+          native-platform: ${{ matrix.native-platform }}
+
+  release-tools:
+    name: Check release tooling and workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Test release tooling without publishing
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py'
+      - name: Check GitHub Actions workflows
+        shell: bash
+        run: |
+          actionlint_dir="$RUNNER_TEMP/actionlint"
+          mkdir -p "$actionlint_dir"
+          curl --fail --silent --show-error --location \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$actionlint_dir/actionlint.tar.gz"
+          printf '%s  %s\n' \
+            8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 \
+            "$actionlint_dir/actionlint.tar.gz" | sha256sum --check -
+          tar -xzf "$actionlint_dir/actionlint.tar.gz" -C "$actionlint_dir" actionlint
+          "$actionlint_dir/actionlint" -color
