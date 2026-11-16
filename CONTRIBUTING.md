@@ -43,6 +43,16 @@ go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 
 `CHANGELOG.md` 是版本记录权威，`Unreleased` 汇总尚未打标签的变更；行为变更在同一变更中更新其所属文档（归属见[文档索引](docs/README.md)）。版本以 CHANGELOG 和 `vMAJOR.MINOR.PATCH` 标签为准，Go 模块没有单独的版本文件。只有推送稳定版本 tag 才会发布，合并 PR 不等于已发布新版本；步骤和完成证据见[版本发布](docs/releasing.md)。
 
+## PR 合并后的 worktree 收尾
+
+通过 GitHub PR 合并的分支，本地主检出收尾必须按以下顺序，避免 `done` 把已经合并的分支再合并一次并造成远端分叉：
+
+1. 在主检出执行 `git fetch origin && git merge --ff-only origin/main`。快进失败就停下来报告，不要绕过。
+2. 确认分支已在 trunk 中：`git merge-base --is-ancestor <branch> main` 成立。
+3. 再执行 `bash .agents/tools/worktree.sh done --dir <absolute-wt> --no-push`。此时分支已是 main 的祖先，脚本会跳过合并，只做清理。
+
+`done` 是为“本地 `--no-ff` 合并后再推送”的流程准备的；它不会先拉取远端，也无法判断分支是否已通过 PR 合并。因此不要在已由 PR 合并的分支上执行会推送的 `done`，也不要让本地 trunk 停留在旧提交时运行它。
+
 ## 可公开的内容
 
 示例使用占位 ID、保留的示例域名和环境变量引用，不记录个人路径、内部地址或需求访谈。提交前检查 diff、文档链接、示例配置及新增文件；PR 描述、评论、日志和附件同样属于公开内容。完整范围见[公开发布检查](docs/publication.md)。
