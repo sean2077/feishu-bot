@@ -2,7 +2,6 @@ name: Verify Go gateway
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
     inputs:
       candidate_sdk_version:
