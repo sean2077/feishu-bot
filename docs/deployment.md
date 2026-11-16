@@ -465,7 +465,7 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 
 ## 未确认记录与确认入口
 
-结果未知的输入和交付不会自动重放，也不会因为长期存在而自行消失。`doctor` 的 `pendingUncertain` 和 `/status --json` 的同名字段都会汇总两类记录：inbox `status='uncertain'`，以及 outbox `state` 为 `uncertain` 或 `blocked`。每类给出数量、最早时间（Unix 毫秒）、去重后的房间（最多 20 个）和少量脱敏 ID 样本；不读取消息或输出正文。`/status --json` 只统计当前聊天，`doctor` 统计整个状态库；`doctor` 的这项是 info 观察项，`status` 为 `observed`、`absent` 或 `unavailable` 时都不改变 `ready`。
+结果未知的输入和交付不会自动重放，也不会因为长期存在而自行消失。`doctor` 的 `pendingUncertain` 和 `/status --json` 的同名字段都会汇总两类记录：inbox `status='uncertain'`，以及 outbox `state` 为 `uncertain` 或 `blocked`。每类给出数量、最早时间（Unix 毫秒）、去重后的房间（最多 20 个）和少量脱敏 ID 样本；不读取消息或输出正文。`doctor` 另以 `deliveryStepsUncertain` 和 `actionRunsUncertain` 只报告 `feishu_deliveries` 与 `action_runs` 中 `uncertain` 的数量，不列房间或样本，也没有确认入口。`/status --json` 只统计当前聊天，`doctor` 统计整个状态库；`doctor` 的这项是 info 观察项，`status` 为 `observed`、`absent` 或 `unavailable` 时都不改变 `ready`。
 
 确认前应先核实远端结果。确认命令默认只读 dry-run：
 

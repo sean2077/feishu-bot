@@ -101,6 +101,23 @@ func (s *Store) uncertainBucket(ctx context.Context, table, predicate, room stri
 	return bucket, rows.Err()
 }
 
+// UncertainRelatedCounts reports counts only for stuck delivery steps and
+// action runs. Delivery-step storage is created lazily by the Feishu transport,
+// so an absent table counts as zero. No IDs, rooms or bodies are returned.
+func (s *Store) UncertainRelatedCounts(ctx context.Context) (deliverySteps, actionRuns int64, err error) {
+	var present int
+	if err = s.DB.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='feishu_deliveries'").Scan(&present); err != nil {
+		return
+	}
+	if present > 0 {
+		if err = s.DB.QueryRowContext(ctx, "SELECT count(*) FROM feishu_deliveries WHERE state='uncertain'").Scan(&deliverySteps); err != nil {
+			return
+		}
+	}
+	err = s.DB.QueryRowContext(ctx, "SELECT count(*) FROM action_runs WHERE state='uncertain'").Scan(&actionRuns)
+	return
+}
+
 // uncertainSample keeps enough of an ID for an operator to correlate a record
 // without exposing a full message or output identifier in shared diagnostics.
 func uncertainSample(id string) string {

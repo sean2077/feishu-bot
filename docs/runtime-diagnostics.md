@@ -19,7 +19,7 @@
 - **`verification`** 按项记录 `passed`／`failed`／`blocked`／`not_checked`：`local`、`configuration`、`nativeExecutable`、`nativeProtocol`、`model`、`modelStreaming`、`modelTools`、`feishuAuth`、`feishuIdentity`、`messageDelivery`、`cardCallbacks`、`fileDelivery`、`nativeTools`、`feishuReconnect`、`storageRows`。本地检查只设置 `local`、`configuration`、`nativeExecutable`；`--probe` 设置 `model`，`--probe-feishu` 设置 `feishuAuth`／`feishuIdentity`，`--verify-chat` 再写入 `incomingMessage`、`messageDelivery`、`fileDelivery`、`cardCallbacks` 和 `fileDownload`。`nativeProtocol`、`modelStreaming`、`modelTools`、`nativeTools`、`feishuReconnect`、`storageRows` 始终是 `not_checked`。不能把任意一个 `passed` 推广成完整验收；`ready` 只表示本次请求的检查全部通过。
 - **`checks`** 中每个失败项带 `remedy`；`nextSteps` 按当前结果提示下一步。
 - **`storage`** 是磁盘占用观察：数据库、WAL、SHM 的字节数，以及 `exports` 的文件数和总字节数。它只读文件元数据，不打开生产 SQLite、不做 checkpoint、不扫描聊天内容、不删除文件。导出目录最多扫描 10,000 项、不跟随符号链接；权限、上限或扫描不完整时标明 `partial`／`unavailable`。这些数字不能证明进程 RSS 泄漏；服务运行时文件大小可能变化，应视为一次快照。
-- **`pendingUncertain`** 是未确认记录的信息项（`status` 为 `observed`、`absent`、`unavailable` 或 `skipped`）：汇总 inbox `uncertain` 与 outbox `uncertain`／`blocked` 的数量、最早时间、去重房间和脱敏样本 ID，不读取正文。它使用只读连接打开现有 `gateway.sqlite`，不迁移、不写入，也不改变 `ready`；确认入口见[未确认记录与确认入口](deployment.md#未确认记录与确认入口)。
+- **`pendingUncertain`** 是未确认记录的信息项（`status` 为 `observed`、`absent`、`unavailable` 或 `skipped`）：汇总 inbox `uncertain` 与 outbox `uncertain`／`blocked` 的数量、最早时间、去重房间和脱敏样本 ID，不读取正文。`doctor` 另以 `deliveryStepsUncertain`、`actionRunsUncertain` 只报告 `feishu_deliveries` 与 `action_runs` 中 `uncertain` 的数量（无房间、样本或确认入口）。它使用只读连接打开现有 `gateway.sqlite`，不迁移、不写入，也不改变 `ready`；确认入口见[未确认记录与确认入口](deployment.md#未确认记录与确认入口)。
 
 | 现象 | 下一步 |
 |---|---|

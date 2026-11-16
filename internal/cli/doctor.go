@@ -53,6 +53,10 @@ type PendingUncertainReport struct {
 	Status string                `json:"status"`
 	Inbox  store.UncertainBucket `json:"inbox"`
 	Outbox store.UncertainBucket `json:"outbox"`
+	// Counts only for stuck delivery steps and action runs; neither has an
+	// acknowledgement entry point.
+	DeliveryStepsUncertain int64 `json:"deliveryStepsUncertain"`
+	ActionRunsUncertain    int64 `json:"actionRunsUncertain"`
 }
 
 var placeholderPattern = regexp.MustCompile(`(?i)^(your[-_ ]|replace[-_ ]with[-_ ]|<[^>]+>$|(tenant|cli|oc|ou)_example(_|$))`)
@@ -394,7 +398,13 @@ func pendingUncertainReport(ctx context.Context, c core.Config) (PendingUncertai
 	}
 	report.Status = "observed"
 	report.Inbox, report.Outbox = summary.Inbox, summary.Outbox
-	check.Detail = uncertainSummaryDetail(summary)
+	deliverySteps, actionRuns, relatedErr := st.UncertainRelatedCounts(queryCtx)
+	if relatedErr != nil {
+		check.Detail = uncertainSummaryDetail(summary) + " Related counts unavailable."
+		return report, check
+	}
+	report.DeliveryStepsUncertain, report.ActionRunsUncertain = deliverySteps, actionRuns
+	check.Detail = uncertainSummaryDetail(summary) + fmt.Sprintf(" Related: %d uncertain delivery step(s), %d uncertain action run(s); counts only.", deliverySteps, actionRuns)
 	return report, check
 }
 

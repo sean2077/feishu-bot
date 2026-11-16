@@ -202,6 +202,13 @@ func TestDoctorReportsPendingUncertainReadOnly(t *testing.T) {
 	if _, err = st.DB.Exec(`INSERT INTO outbox(id,room,session,text,success,state,at) VALUES('out-stuck','room-a','s','private',0,'blocked',200)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = st.DB.Exec(`INSERT INTO action_runs(id,room,session,action,digest,state,at) VALUES('act-stuck','room-a','s','deploy','digest','uncertain',200)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DB.Exec(`CREATE TABLE feishu_deliveries(id TEXT NOT NULL,step TEXT NOT NULL,room TEXT NOT NULL,fingerprint TEXT NOT NULL,payload TEXT NOT NULL,uuid TEXT NOT NULL,state TEXT NOT NULL,result TEXT NOT NULL DEFAULT '',first_attempt INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL,message TEXT NOT NULL DEFAULT '',status INTEGER NOT NULL DEFAULT 0,code INTEGER NOT NULL DEFAULT 0,request_id TEXT NOT NULL DEFAULT '',retry_at INTEGER NOT NULL DEFAULT 0,attempt TEXT NOT NULL DEFAULT '',PRIMARY KEY(id,step));
+INSERT INTO feishu_deliveries(id,step,room,fingerprint,payload,uuid,state,updated_at) VALUES('del-stuck','send','room-a','fp','{}','uuid','uncertain',200)`); err != nil {
+		t.Fatal(err)
+	}
 	if err = st.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -213,11 +220,14 @@ func TestDoctorReportsPendingUncertainReadOnly(t *testing.T) {
 	if report.PendingUncertain.Status != "observed" || report.PendingUncertain.Inbox.Count != 2 || report.PendingUncertain.Outbox.Count != 1 {
 		t.Fatalf("pending uncertain report = %#v", report.PendingUncertain)
 	}
+	if report.PendingUncertain.DeliveryStepsUncertain != 1 || report.PendingUncertain.ActionRunsUncertain != 1 {
+		t.Fatalf("related uncertain counts = %#v", report.PendingUncertain)
+	}
 	found := false
 	for _, check := range report.Checks {
 		if check.Name == "pending uncertain records" {
 			found = true
-			if !check.OK || !strings.Contains(check.Detail, "2 uncertain inbox") {
+			if !check.OK || !strings.Contains(check.Detail, "2 uncertain inbox") || !strings.Contains(check.Detail, "1 uncertain delivery step") || !strings.Contains(check.Detail, "1 uncertain action run") {
 				t.Fatalf("pending uncertain check = %#v", check)
 			}
 		}
