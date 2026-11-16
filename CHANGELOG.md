@@ -2,6 +2,8 @@
 
 ## Unreleased — Go 原生网关
 
+- CI 快慢分离：PR 只跑 Ubuntu 与 Windows 各一个 Go 1.27 job 的精简矩阵，缩短等待；push `main` 和手动运行保留完整平台矩阵，部署前仍要求 main 全矩阵全绿。
+
 - 新增 `projects[].autoCompactWindow`（100000–1000000 token，0/缺省保持原生默认）：网关在启动该项目的原生 Claude Code 进程时注入 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`，让原生自动压缩在更低窗口触发；网关不实现自己的压缩策略，也不放宽 `projects[].env` 的保留名规则。
 
 - 新增未确认记录可见性与清理入口：`doctor` 的 `pendingUncertain` 和 `/status --json` 同名字段汇总 inbox `uncertain` 与 outbox `uncertain`／`blocked` 的数量、最早时间、去重房间和脱敏样本 ID（不读取正文；`doctor` 只读打开状态库，信息项不影响 `ready`）；`doctor` 另以 `deliveryStepsUncertain`、`actionRunsUncertain` 只报告交付步骤和 action 的 uncertain 数量。新增 `feishu-bot maintenance ack-uncertain --config PATH --before RFC3339|Unix毫秒 [--apply] [--json]`，默认 dry-run 只读展示，`--apply` 在单个事务内把截止前的记录标为 `acknowledged`；该终态不再计入待处理、不阻塞交付或移交，也不会自动重试。

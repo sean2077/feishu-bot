@@ -52,7 +52,7 @@ go build -trimpath -o ./bin/feishu-bot ./cmd/feishu-bot
 
 ## 平台 CI
 
-工作流定义在 `.github/workflows/`；三个工作流共用组合 action [`.github/actions/verify`](../.github/actions/verify/action.yml)：`go test -race -count=1 -timeout 720s ./...`、`go vet ./...`、进程监督器单测，以及安装并核对固定原生 CLI 后的[协议回归](#真实-claude-协议-fixture)。720 秒的整包上限给慢共享 runner 留出余量；此前 360 秒曾在 Windows／macOS x64 上因整包超时误报。
+工作流定义在 `.github/workflows/`；三个工作流共用组合 action [`.github/actions/verify`](../.github/actions/verify/action.yml)：`go test -race -count=1 -timeout 720s ./...`、`go vet ./...`、进程监督器单测，以及安装并核对固定原生 CLI 后的[协议回归](#真实-claude-协议-fixture)。720 秒的整包上限给慢共享 runner 留出余量；此前 360 秒曾在 Windows／macOS x64 上因整包超时误报。PR 只跑精简矩阵（Ubuntu 与 Windows 各一个 Go 1.27 job）以缩短等待；push `main` 和手动运行保留完整矩阵（Ubuntu／Windows 的 Go 1.25／1.27、Linux arm64、macOS arm64／x64），部署前仍要求 main 的完整矩阵全绿。
 
 | 工作流（名称） | 触发 | 内容 |
 |---|---|---|

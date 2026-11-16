@@ -45,6 +45,13 @@ jobs:
             native-platform: darwin-arm64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    # Pull requests use a fast lane: one Ubuntu and one Windows job on Go 1.27.
+    # Push to main and manual runs keep the full platform/Go matrix; deployment
+    # still requires that full main matrix to pass.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (matrix.os == 'ubuntu-latest' && matrix.go == '1.27.x') ||
+      (matrix.os == 'windows-latest' && matrix.go == '1.27.x')
     env:
       # On these disposable macOS VMs, administrator trust lives until job
       # teardown. Per-test keychain/search-list cleanup remains mandatory.
