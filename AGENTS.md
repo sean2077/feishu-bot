@@ -59,7 +59,7 @@ Honor the user's session entry; prefer task-local implementation/review. Resolve
 
 Never edit the primary worktree, including docs. Reuse an assigned linked worktree; otherwise, if the scaffold owns creation, run `bash .agents/tools/worktree.sh new <name>`.
 
-Keep one lifecycle owner. `done --dir <absolute-wt>` merges, ff-only pushes, and removes the worktree; it requires explicit authorization and scaffold ownership, runs outside that worktree, and is not a PR/MR handoff. Leave externally managed worktrees to their owner instead of merging or cleaning them up. Bypass the trunk guard only with explicit user approval.
+Keep one lifecycle owner. `done --dir <absolute-wt>` merges, ff-only pushes, and removes the worktree; it requires explicit authorization and scaffold ownership, runs outside that worktree, and is not a PR/MR handoff. Leave externally managed worktrees to their owner instead of merging or cleaning them up. Bypass the trunk guard only with explicit user approval. For a branch already merged through a PR, follow the cleanup order in [CONTRIBUTING](CONTRIBUTING.md#pr-合并后的-worktree-收尾); never run a pushing `done` on it.
 
 ### Authority documents (hard rules)
 
