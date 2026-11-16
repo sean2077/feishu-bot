@@ -19,6 +19,10 @@ type renderBlock struct {
 	chars int
 }
 
+// renderRetryBase is the first preview retry delay; tests shorten it while
+// keeping the exponential retry path.
+var renderRetryBase = time.Second
+
 // A render has at most one provider request and one dirty snapshot. Slow card
 // updates cannot accumulate closures or copies of every streamed token.
 type render struct {
@@ -363,7 +367,7 @@ func (r *render) flush() {
 			retry = false
 		}
 		if retry && r.failures <= 4 && !r.createUncertain {
-			delay := time.Duration(1<<min(r.failures-1, 5)) * time.Second
+			delay := time.Duration(1<<min(r.failures-1, 5)) * renderRetryBase
 			if classified && failure.DeliveryRetryAfter() > delay {
 				delay = failure.DeliveryRetryAfter()
 			}

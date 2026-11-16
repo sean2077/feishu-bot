@@ -317,7 +317,12 @@ func newFixture(t *testing.T, mutate func(*core.Config), loggers ...core.Logger)
 	if mutate != nil {
 		mutate(&c)
 	}
-	st, e := store.Open(filepath.Join(c.DataDir, "state.sqlite"))
+	statePath := filepath.Join(c.DataDir, "state.sqlite")
+	// Reuse the initialized schema instead of running the full DDL per fixture.
+	if err := copyStoreTemplate(t, statePath); err != nil {
+		t.Fatal(err)
+	}
+	st, e := store.OpenExisting(statePath)
 	if e != nil {
 		t.Fatal(e)
 	}

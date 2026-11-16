@@ -11,6 +11,9 @@ import (
 )
 
 func TestStopStateFailureStillReleasesTheSlot(t *testing.T) {
+	savedRetry := stopStateRetry
+	stopStateRetry = []time.Duration{time.Millisecond}
+	t.Cleanup(func() { stopStateRetry = savedRetry })
 	f := newFixture(t, nil)
 	f.send(f.message("first", "work", "member"))
 	w := f.worker()
