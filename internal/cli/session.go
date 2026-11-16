@@ -157,7 +157,7 @@ func runSessionWith(ctx context.Context, c core.Config, o Options, out io.Writer
  (SELECT count(*) FROM inbox WHERE room=? AND status IN ('queued','sent','consumed'))+
  (SELECT count(*) FROM requests WHERE room=? AND state='pending')+
  (SELECT count(*) FROM action_runs WHERE room=? AND state NOT IN ('done','failed','uncertain'))+
- (SELECT count(*) FROM outbox WHERE room=? AND state NOT IN ('done','cancelled')),
+ (SELECT count(*) FROM outbox WHERE room=? AND state NOT IN ('done','cancelled','acknowledged')),
  (SELECT count(*) FROM inbox WHERE room=? AND status='uncertain')+
  (SELECT count(*) FROM action_runs WHERE room=? AND state='uncertain')`, r.Key, r.Key, r.Key, r.Key, r.Key, r.Key).Scan(&outstanding, &uncertain); err != nil {
 		return err

@@ -230,6 +230,12 @@ _英文_: status card
 已发起但结果未确认的外部写操作。不得自动重放；需人工核对或显式 `/retry-output`。
 _英文_: uncertain write
 
+**未确认记录确认**
+
+维护者在核实远端结果后，用 `feishu-bot maintenance ack-uncertain --before ... --apply` 把截止前的 inbox `uncertain` 或 outbox `uncertain`／`blocked` 记录标为 `acknowledged` 的本地操作。默认 dry-run 只读；`acknowledged` 是终态，不再计入待处理、阻塞交付或自动重试，记录本身保留为证据。确认不代表远端已收到，也不重新执行任务。
+_英文_: uncertain acknowledgement
+_避免_: 把确认称为重试、补发或删除
+
 **背景预注入**
 
 非 @ 群消息作为下一条提问隐藏前缀的行为。默认关闭（`limits.backgroundMessages = 0`）；需要前文时通过 `read_chat_history` 按需读取。

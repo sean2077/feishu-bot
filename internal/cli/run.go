@@ -29,6 +29,8 @@ feishu-bot run [--config path] [--env-file path] [--log-file path]
                [--log-max-size MB] [--log-max-backups N] [--service]
 feishu-bot daemon install|uninstall|start|stop|restart|status|logs
 feishu-bot config path|example|format|explain
+feishu-bot maintenance ack-uncertain [--config path] --before RFC3339|unix-ms
+                           [--apply] [--json]
 feishu-bot session run --session FULL_SESSION_ID [--config path] [--env-file path]
 feishu-bot attach --config path [--user OPEN_ID] [--title TEXT]
                   [--summary-file path|-] [--native ID] [--holder-pid PID]
@@ -115,6 +117,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			if o.Subcommand == "feedback" {
 				text = feedbackHelp
 			}
+			if o.Subcommand == "maintenance" {
+				text = maintenanceHelp
+			}
 			_, err = io.WriteString(stdout, text)
 			return err
 		case "version":
@@ -177,6 +182,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		if o.Command == "topics" {
 			return runTopics(c, o, stdout)
+		}
+		if o.Command == "maintenance" {
+			return runMaintenance(ctx, c, o, stdout)
 		}
 		if o.Command == "doctor" {
 			report := RunDoctor(ctx, c, o.Probe, o.ProbeFeishu)

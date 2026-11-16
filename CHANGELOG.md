@@ -2,6 +2,7 @@
 
 ## Unreleased — Go 原生网关
 
+- 新增未确认记录可见性与清理入口：`doctor` 的 `pendingUncertain` 和 `/status --json` 同名字段汇总 inbox `uncertain` 与 outbox `uncertain`／`blocked` 的数量、最早时间、去重房间和脱敏样本 ID（不读取正文；`doctor` 只读打开状态库，信息项不影响 `ready`）；`doctor` 另以 `deliveryStepsUncertain`、`actionRunsUncertain` 只报告交付步骤和 action 的 uncertain 数量。新增 `feishu-bot maintenance ack-uncertain --config PATH --before RFC3339|Unix毫秒 [--apply] [--json]`，默认 dry-run 只读展示，`--apply` 在单个事务内把截止前的记录标为 `acknowledged`；该终态不再计入待处理、不阻塞交付或移交，也不会自动重试。
 - 新增 `groups[].idleNewSessionMs`／`dms[].idleNewSessionMs`：聊天范围会话闲置超过阈值后，下一条普通人类输入自动新建会话（等同 `/new`，旧会话保留），回复卡提示 `/resume`。管理命令、补充、机器人消息、thread 话题和认领话题不触发；`/resume` 刷新活动时间，切回旧会话后不会被立即新建。
 - 新增认领话题自动归档：holder 已不存活且超过 `adoptedArchiveMs`（默认 7 天）无入站或出站活动时，定期清理把话题标为 `archived` 并删除 endpoint 文件；owner 在话题内发消息或再次 `notify`／`attach` 会原地恢复为 `open` 并续接原会话。`adopted_topics` 增加 `last_active` 列；`feishu-bot topics` 增加 `last_active` 字段和 `--all`（默认隐藏归档话题）。
 - CI 的 `go test -race` 整包时限从 360 秒提高到 720 秒，避免慢共享 runner 上 `internal/gateway` 因整包超时误报；真实用例失败仍会报错。

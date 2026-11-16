@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Options struct {
@@ -43,6 +44,10 @@ type Options struct {
 	LogSize  int
 	LogKeep  int
 	LogLines int
+
+	MaintenanceBefore    int64
+	MaintenanceBeforeSet bool
+	Apply                bool
 }
 
 func Parse(args []string) (Options, error) {
@@ -122,6 +127,18 @@ func Parse(args []string) (Options, error) {
 			return o, errors.New("unknown config command; use feishu-bot config --help")
 		}
 		return parseConfig(args[2:], o)
+	}
+	if o.Command == "maintenance" {
+		if len(args) < 2 || args[1] == "--help" || args[1] == "-h" {
+			o.Command = "help"
+			o.Subcommand = "maintenance"
+			return o, nil
+		}
+		o.Subcommand = args[1]
+		if o.Subcommand != "ack-uncertain" {
+			return o, errors.New("unknown maintenance command; use feishu-bot maintenance --help")
+		}
+		return parseMaintenance(args[2:], o)
 	}
 	if o.Command == "attach" {
 		return parseAdoptFlags(args[1:], o, "attach")
@@ -709,4 +726,69 @@ func parseConfig(args []string, o Options) (Options, error) {
 		}
 	}
 	return resolveOptions(&o)
+}
+
+func parseMaintenance(args []string, o Options) (Options, error) {
+	seen := map[string]bool{}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--help" || arg == "-h" {
+			o.Command = "help"
+			o.Subcommand = "maintenance"
+			return o, nil
+		}
+		switch {
+		case arg == "--config" || strings.HasPrefix(arg, "--config="):
+			if err := mark(seen, "--config"); err != nil {
+				return o, errors.New("--config may only be specified once")
+			}
+			value, _, err := takeValue(args, &i, arg, "--config")
+			if err != nil {
+				return o, errors.New("--config requires a file path")
+			}
+			o.ConfigPath = value
+			o.ConfigExplicit = true
+		case arg == "--before" || strings.HasPrefix(arg, "--before="):
+			if err := mark(seen, "--before"); err != nil {
+				return o, err
+			}
+			value, _, err := takeValue(args, &i, arg, "--before")
+			if err != nil {
+				return o, errors.New("--before requires RFC3339 or Unix milliseconds")
+			}
+			before, err := parseBefore(value)
+			if err != nil {
+				return o, err
+			}
+			o.MaintenanceBefore = before
+			o.MaintenanceBeforeSet = true
+		case arg == "--apply":
+			if o.Apply {
+				return o, errors.New("--apply may only be specified once")
+			}
+			o.Apply = true
+		case arg == "--json":
+			if o.JSON {
+				return o, errors.New("--json may only be specified once")
+			}
+			o.JSON = true
+		default:
+			return o, errors.New("unexpected option; see feishu-bot maintenance ack-uncertain --help")
+		}
+	}
+	if !o.MaintenanceBeforeSet {
+		return o, errors.New("maintenance ack-uncertain requires --before")
+	}
+	return resolveOptions(&o)
+}
+
+func parseBefore(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if at, err := time.Parse(time.RFC3339, value); err == nil {
+		return at.UnixMilli(), nil
+	}
+	if milliseconds, err := strconv.ParseInt(value, 10, 64); err == nil && milliseconds >= 0 {
+		return milliseconds, nil
+	}
+	return 0, errors.New("--before requires RFC3339 or Unix milliseconds")
 }

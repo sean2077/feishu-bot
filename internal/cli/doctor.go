@@ -33,16 +33,30 @@ type Diagnostic struct {
 	Remedy  string `json:"remedy,omitempty"`
 }
 type DoctorReport struct {
-	Platform     string                      `json:"platform"`
-	Runtime      string                      `json:"runtime"`
-	Ready        bool                        `json:"ready"`
-	Scope        string                      `json:"scope"`
-	Checks       []Diagnostic                `json:"checks"`
-	Verification map[string]string           `json:"verification"`
-	NextSteps    []string                    `json:"nextSteps"`
-	Native       native.VersionCompatibility `json:"native"`
-	Storage      StorageDiagnostic           `json:"storage"`
-	LiveChat     *ChatVerification           `json:"liveChat,omitempty"`
+	Platform         string                      `json:"platform"`
+	Runtime          string                      `json:"runtime"`
+	Ready            bool                        `json:"ready"`
+	Scope            string                      `json:"scope"`
+	Checks           []Diagnostic                `json:"checks"`
+	Verification     map[string]string           `json:"verification"`
+	NextSteps        []string                    `json:"nextSteps"`
+	Native           native.VersionCompatibility `json:"native"`
+	Storage          StorageDiagnostic           `json:"storage"`
+	PendingUncertain PendingUncertainReport      `json:"pendingUncertain"`
+	LiveChat         *ChatVerification           `json:"liveChat,omitempty"`
+}
+
+// PendingUncertainReport is an informational, content-free view of stuck
+// records. Status is observed, absent, unavailable or skipped; it never makes
+// doctor fail by itself.
+type PendingUncertainReport struct {
+	Status string                `json:"status"`
+	Inbox  store.UncertainBucket `json:"inbox"`
+	Outbox store.UncertainBucket `json:"outbox"`
+	// Counts only for stuck delivery steps and action runs; neither has an
+	// acknowledgement entry point.
+	DeliveryStepsUncertain int64 `json:"deliveryStepsUncertain"`
+	ActionRunsUncertain    int64 `json:"actionRunsUncertain"`
 }
 
 var placeholderPattern = regexp.MustCompile(`(?i)^(your[-_ ]|replace[-_ ]with[-_ ]|<[^>]+>$|(tenant|cli|oc|ou)_example(_|$))`)
@@ -338,6 +352,78 @@ func feedbackExportChecks(c core.Config) []Diagnostic {
 	return []Diagnostic{{Name: name, OK: true, Detail: "Existing writable directory; archive contents are not inspected."}}
 }
 
+// pendingUncertainReport opens an existing state database read-only. The
+// report cannot read message bodies and is informational: an unavailable or
+// malformed database does not make the rest of doctor fail.
+func pendingUncertainReport(ctx context.Context, c core.Config) (PendingUncertainReport, Diagnostic) {
+	empty := store.UncertainBucket{Rooms: []string{}, Samples: []string{}}
+	report := PendingUncertainReport{Status: "absent", Inbox: empty, Outbox: empty}
+	check := Diagnostic{Name: "pending uncertain records", OK: true}
+	if ctx.Err() != nil {
+		report.Status = "skipped"
+		check.Skipped = true
+		check.Detail = "Diagnostic cancelled."
+		return report, check
+	}
+	path := filepath.Join(c.DataDir, "gateway.sqlite")
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			check.Detail = "No existing gateway.sqlite; no uncertain records observed."
+		} else {
+			report.Status = "unavailable"
+			check.Detail = "Existing gateway state metadata is unavailable."
+		}
+		return report, check
+	}
+	if !info.Mode().IsRegular() {
+		report.Status = "unavailable"
+		check.Detail = "Existing gateway state is not a regular file."
+		return report, check
+	}
+	st, err := store.OpenReadOnly(path)
+	if err != nil {
+		report.Status = "unavailable"
+		check.Detail = "State database could not be opened read-only: " + core.Redact(err.Error(), config.Secrets(c))
+		return report, check
+	}
+	defer st.Close()
+	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	summary, err := st.UncertainSummary(queryCtx, "", nil)
+	if err != nil {
+		report.Status = "unavailable"
+		check.Detail = "Uncertain-record summary failed: " + core.Redact(err.Error(), config.Secrets(c))
+		return report, check
+	}
+	report.Status = "observed"
+	report.Inbox, report.Outbox = summary.Inbox, summary.Outbox
+	deliverySteps, actionRuns, relatedErr := st.UncertainRelatedCounts(queryCtx)
+	if relatedErr != nil {
+		check.Detail = uncertainSummaryDetail(summary) + " Related counts unavailable."
+		return report, check
+	}
+	report.DeliveryStepsUncertain, report.ActionRunsUncertain = deliverySteps, actionRuns
+	check.Detail = uncertainSummaryDetail(summary) + fmt.Sprintf(" Related: %d uncertain delivery step(s), %d uncertain action run(s); counts only.", deliverySteps, actionRuns)
+	return report, check
+}
+
+func uncertainSummaryDetail(summary store.UncertainSummary) string {
+	total := summary.Inbox.Count + summary.Outbox.Count
+	if total == 0 {
+		return "No uncertain inbox or uncertain/blocked outbox records observed."
+	}
+	oldest := func(bucket store.UncertainBucket) string {
+		if bucket.OldestAt == nil {
+			return "unknown"
+		}
+		return time.UnixMilli(*bucket.OldestAt).UTC().Format(time.RFC3339)
+	}
+	return fmt.Sprintf("Observed %d uncertain inbox input(s) in %d room(s), oldest %s; %d uncertain/blocked outbox output(s) in %d room(s), oldest %s. Informational only; use `feishu-bot maintenance ack-uncertain` after verifying results.",
+		summary.Inbox.Count, summary.Inbox.RoomCount, oldest(summary.Inbox),
+		summary.Outbox.Count, summary.Outbox.RoomCount, oldest(summary.Outbox))
+}
+
 type cappedWriter struct {
 	bytes.Buffer
 	limit int
@@ -379,7 +465,9 @@ func RunDoctor(ctx context.Context, c core.Config, probe, probeFeishu bool) Doct
 	checks = append(checks, projectModelProfileChecks(c)...)
 	checks = append(checks, projectPromptChecks(c)...)
 	checks = append(checks, feedbackExportChecks(c)...)
-	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: checks, Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made.", Native: native.Compatibility("")}
+	pendingUncertain, pendingCheck := pendingUncertainReport(ctx, c)
+	checks = append(checks, pendingCheck)
+	r := DoctorReport{Platform: runtime.GOOS, Runtime: "native-go", Checks: checks, Verification: map[string]string{}, Scope: "Local checks only; no Feishu or model requests were made.", Native: native.Compatibility(""), PendingUncertain: pendingUncertain}
 	add := func(name string, fn func() (string, error)) {
 		if ctx.Err() != nil {
 			r.Checks = append(r.Checks, Diagnostic{Name: name, Skipped: true, Detail: "Diagnostic cancelled."})
