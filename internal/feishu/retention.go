@@ -92,7 +92,7 @@ func outboxProtects(ctx context.Context, db queryRowContext, columns outboxColum
 		return false, nil
 	}
 	var count int
-	err := db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM outbox WHERE state NOT IN ('done','cancelled') AND ("+strings.Join(clauses, " OR ")+"))", args...).Scan(&count)
+	err := db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM outbox WHERE state NOT IN ('done','cancelled','acknowledged') AND ("+strings.Join(clauses, " OR ")+"))", args...).Scan(&count)
 	return count > 0, err
 }
 

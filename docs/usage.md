@@ -126,6 +126,7 @@ EOF
 诊断脚本可使用 `/status --json`、`/sessions --json`、`/outputs --json`、`/inputs --json`、`/usage --json`；旧版依赖默认 JSON 的脚本应加上该参数。
 
 - `status.inputs` 分开报告四种输入状态，`pendingOrUnconfirmed` 包含结果未知的输入。
+- `/status --json` 的 `pendingUncertain` 汇总当前聊天的卡住记录：`inbox` 为 `status=uncertain`，`outbox` 为 `state=uncertain|blocked`；每类包含 `count`、`oldestAt`（UTC 毫秒，空为 null）、`roomCount`、`rooms`（去重，最多 20 个）和 `samples`（脱敏短 ID）。不读取或返回正文，也不统计其他聊天；查询失败时提供 `pendingUncertainError`，不影响原有字段。纯文本 `/status` 不增加该行。确认与清理入口见[未确认记录与确认入口](deployment.md#未确认记录与确认入口)。
 - `/status --json` 的 `outboxStates` 按状态统计本聊天的交付记录；`cardSnapshots.count` 与 `cardSnapshots.bytes` 统计本聊天保存的卡片快照条数和 UTF-8 字节数。这些是逻辑记录大小，不是数据库／WAL 文件大小或进程内存；部署整体大小由 `doctor` 报告。
 - `/outputs` 区分明确拒绝、自动重试预算耗尽、限流等待和模型已结束但文件待交付。维护者可见脱敏并截短的诊断（含可用的错误码和 request ID）、失败次数与最早自动重试时间；普通成员只看概括原因。JSON 字段为 `reason`、`retryCount`、`retryAfter`、`nativeTurnEnded` 和 `filePending`，`retryAfter` 为 UTC 毫秒时间戳，0 表示没有已保存期限。`outputs --json` 不提供回答正文或任意错误原文；空列表只表示没有待交付记录，不代表所有输入都已完成。
 

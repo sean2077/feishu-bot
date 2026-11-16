@@ -108,10 +108,10 @@ func (g *Gateway) discardOutput(ctx context.Context, r core.Room, id, actor stri
 			}
 			return err
 		}
-		if state == "done" || state == "cancelled" {
+		if state == "done" || state == "cancelled" || state == "acknowledged" {
 			return errOutputNotFound
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT id,kind,state,COALESCE(target,''),origins FROM outbox WHERE room=? AND session=? AND state NOT IN ('done','cancelled') AND kind!='mention' ORDER BY at,id LIMIT 201`, r.Key, session)
+		rows, err := tx.QueryContext(ctx, `SELECT id,kind,state,COALESCE(target,''),origins FROM outbox WHERE room=? AND session=? AND state NOT IN ('done','cancelled','acknowledged') AND kind!='mention' ORDER BY at,id LIMIT 201`, r.Key, session)
 		if err != nil {
 			return err
 		}

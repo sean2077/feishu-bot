@@ -151,7 +151,7 @@ func (g *Gateway) auditTurnDelivery(id string, o outgoing, attempt int, started 
 		}
 	}
 	g.audit(o.Room, "turn_delivery", args)
-	if state == "done" || state == "cancelled" {
+	if state == "done" || state == "cancelled" || state == "acknowledged" {
 		g.forgetTurnDelivery(id)
 	}
 }

@@ -19,6 +19,7 @@
 - **`verification`** 按项记录 `passed`／`failed`／`blocked`／`not_checked`：`local`、`configuration`、`nativeExecutable`、`nativeProtocol`、`model`、`modelStreaming`、`modelTools`、`feishuAuth`、`feishuIdentity`、`messageDelivery`、`cardCallbacks`、`fileDelivery`、`nativeTools`、`feishuReconnect`、`storageRows`。本地检查只设置 `local`、`configuration`、`nativeExecutable`；`--probe` 设置 `model`，`--probe-feishu` 设置 `feishuAuth`／`feishuIdentity`，`--verify-chat` 再写入 `incomingMessage`、`messageDelivery`、`fileDelivery`、`cardCallbacks` 和 `fileDownload`。`nativeProtocol`、`modelStreaming`、`modelTools`、`nativeTools`、`feishuReconnect`、`storageRows` 始终是 `not_checked`。不能把任意一个 `passed` 推广成完整验收；`ready` 只表示本次请求的检查全部通过。
 - **`checks`** 中每个失败项带 `remedy`；`nextSteps` 按当前结果提示下一步。
 - **`storage`** 是磁盘占用观察：数据库、WAL、SHM 的字节数，以及 `exports` 的文件数和总字节数。它只读文件元数据，不打开生产 SQLite、不做 checkpoint、不扫描聊天内容、不删除文件。导出目录最多扫描 10,000 项、不跟随符号链接；权限、上限或扫描不完整时标明 `partial`／`unavailable`。这些数字不能证明进程 RSS 泄漏；服务运行时文件大小可能变化，应视为一次快照。
+- **`pendingUncertain`** 是未确认记录的信息项（`status` 为 `observed`、`absent`、`unavailable` 或 `skipped`）：汇总 inbox `uncertain` 与 outbox `uncertain`／`blocked` 的数量、最早时间、去重房间和脱敏样本 ID，不读取正文。它使用只读连接打开现有 `gateway.sqlite`，不迁移、不写入，也不改变 `ready`；确认入口见[未确认记录与确认入口](deployment.md#未确认记录与确认入口)。
 
 | 现象 | 下一步 |
 |---|---|
@@ -98,7 +99,7 @@ auto 权限模式补充：
 
 每 30 秒的 `feishu_transport_metrics` 包含 HTTP 活动／等待／拒绝／共享退避，以及 WS 连接次数、最后入站时间、队列深度／观察峰值、拒绝、ACK 次数／失败／累计及最大耗时。维度使用固定端点组和消息 lane，不以 chat ID、message ID 或 URL 建立指标标签，不记录正文。ACK 指标描述适配层对回调的回复，不表示模型完成或最终文件送达。
 
-`/status --json` 的 `storage` 仅统计当前聊天：表名、行数、最早时间、该时间列的含义与保留说明。空表或旧卡片缺少可用时间字段时 `oldestAt` 为 null；查询最多 2 秒，超时返回已完成的部分和 `storageError`，不伪造 0。维护者还可见客户端整体的 `transport` 指标；普通成员不能通过本聊天状态查看其他聊天共用的客户端负载。离线 `doctor` 只读文件元数据，不打开生产数据库。
+`/status --json` 的 `storage` 仅统计当前聊天：表名、行数、最早时间、该时间列的含义与保留说明。空表或旧卡片缺少可用时间字段时 `oldestAt` 为 null；查询最多 2 秒，超时返回已完成的部分和 `storageError`，不伪造 0。同一响应中的 `pendingUncertain` 也只统计当前聊天，只含数量、时间、房间和脱敏 ID，不读正文；查询失败时提供 `pendingUncertainError`。维护者还可见客户端整体的 `transport` 指标；普通成员不能通过本聊天状态查看其他聊天共用的客户端负载。离线 `doctor` 的 `storage` 只读文件元数据，`pendingUncertain` 以只读连接查询状态库，不执行迁移、写入或 checkpoint。
 
 服务每 30 秒执行一次 `Sweep`。其中普通数据库维护总截止 500 ms，每种策略最多检查 128 个候选、修改 64 行，游标和下一种策略持久保存。受保护的旧记录不会堵住其后的可清理记录；失败回滚该策略的变更与游标，已提交的前序策略仍计入报告。超时是单轮软上限：已提交游标保留，下一轮从被中断的策略继续，`store_maintenance` 以 `deadline` 和 `progress` 记录；只有连续多轮没有任何策略提交时才写 `maintenance_stalled` 审计。`/status` 显示最近一次所有策略按顺序完成一整圈的时间（可跨多个 500 ms 轮次）。已清空的正文不再重复 UPDATE。`store_maintenance` 记录持续时间、候选、修改数、各策略及脱敏错误；它不保证数据库文件立即缩小，也不等于 RSS 回收。
 

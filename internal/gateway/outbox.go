@@ -158,7 +158,7 @@ func (g *Gateway) filesPendingFor(o outgoing) (bool, error) {
 	if o.Kind != "reply" || !o.Success {
 		return false, nil
 	}
-	rows, err := g.store.DB.Query(`SELECT origins FROM outbox WHERE room=? AND session=? AND kind='file' AND state NOT IN ('done','cancelled')`, o.Room, o.Session)
+	rows, err := g.store.DB.Query(`SELECT origins FROM outbox WHERE room=? AND session=? AND kind='file' AND state NOT IN ('done','cancelled','acknowledged')`, o.Room, o.Session)
 	if err != nil {
 		return false, err
 	}
@@ -213,7 +213,7 @@ func (g *Gateway) deliverOutput(ctx context.Context, id string, r core.Room, exp
 	if err != nil {
 		return false, err
 	}
-	if o.Room != r.Key || o.State == "done" || o.State == "cancelled" || o.Kind == "mention" || !g.permittedOutput(o, r) {
+	if o.Room != r.Key || o.State == "done" || o.State == "cancelled" || o.State == "acknowledged" || o.Kind == "mention" || !g.permittedOutput(o, r) {
 		return false, nil
 	}
 	if (o.State != "pending" && o.State != "uncertain" && o.State != "blocked") || ((o.State == "uncertain" || o.State == "blocked") && !explicit) || (o.FileState == "uncertain" && !explicit) {
@@ -710,7 +710,7 @@ func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 		o.Card = fitCardBudget(card, budget, suffix)
 	}
 	if o.Kind == "status" {
-		_, err = g.store.DB.Exec("UPDATE outbox SET card=? WHERE id=? AND state NOT IN ('done','cancelled')", jsonText(o.Card), o.ID)
+		_, err = g.store.DB.Exec("UPDATE outbox SET card=? WHERE id=? AND state NOT IN ('done','cancelled','acknowledged')", jsonText(o.Card), o.ID)
 		return err
 	}
 	if o.FilePath == "" {
@@ -718,7 +718,7 @@ func (g *Gateway) budgetOutput(o *outgoing, room core.Room) error {
 		o.FilePath = filepath.Join(g.config.DataDir, "exports", core.Hash(o.Room)[:32], core.NewID()+".md")
 		o.FileState = "pending"
 	}
-	_, err = g.store.DB.Exec("UPDATE outbox SET card=?,file_name=?,file_path=?,file_state=? WHERE id=? AND state NOT IN ('done','cancelled')", jsonText(o.Card), o.FileName, o.FilePath, o.FileState, o.ID)
+	_, err = g.store.DB.Exec("UPDATE outbox SET card=?,file_name=?,file_path=?,file_state=? WHERE id=? AND state NOT IN ('done','cancelled','acknowledged')", jsonText(o.Card), o.FileName, o.FilePath, o.FileState, o.ID)
 	return err
 }
 

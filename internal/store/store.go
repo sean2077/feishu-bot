@@ -91,6 +91,30 @@ func sqliteFileURI(path string) string {
 
 func New(path string) (*Store, error) { return Open(path) }
 
+// OpenWritable opens an existing state database for an explicit maintenance
+// transaction. It never runs migrations and never creates a missing database.
+func OpenWritable(path string) (*Store, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(abs)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("existing gateway state is required for maintenance")
+	}
+	dsn := sqliteFileURI(filepath.ToSlash(abs)) + "?mode=rw&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Store{DB: db}, nil
+}
+
 // OpenReadOnly opens an existing state database without running migrations or
 // taking the service lock. WAL readers can run while the gateway is writing.
 func OpenReadOnly(path string) (*Store, error) {

@@ -221,7 +221,7 @@ func (g *Gateway) adoptedRoomBusy(record store.AdoptedTopic) (string, error) {
 	var queued, outputs, actions int
 	err := g.store.DB.QueryRow(`SELECT
  (SELECT count(*) FROM inbox WHERE room=? AND status IN ('queued','sent','consumed')),
- (SELECT count(*) FROM outbox WHERE room=? AND state NOT IN ('done','cancelled')),
+ (SELECT count(*) FROM outbox WHERE room=? AND state NOT IN ('done','cancelled','acknowledged')),
  (SELECT count(*) FROM action_runs WHERE room=? AND state NOT IN ('done','failed','uncertain'))`,
 		record.Room, record.Room, record.Room).Scan(&queued, &outputs, &actions)
 	if err != nil {

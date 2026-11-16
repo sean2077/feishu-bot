@@ -65,7 +65,10 @@ func TestInvalidJSONDoesNotExposeSource(t *testing.T) {
 		t.Fatal(code, errs.String())
 	}
 }
-func TestDoctorOfflineDoesNotOpenProductionDatabase(t *testing.T) {
+
+// Doctor observes an existing state database only through a read-only
+// uncertain-record summary; it must not migrate or otherwise modify it.
+func TestDoctorDoesNotModifyProductionDatabase(t *testing.T) {
 	c := config.Defaults()
 	c.DataDir = t.TempDir()
 	c.Model.BaseURL = "https://model.example"
@@ -76,6 +79,9 @@ func TestDoctorOfflineDoesNotOpenProductionDatabase(t *testing.T) {
 	data, _ := os.ReadFile(state)
 	if string(data) != "deployment database must not be touched" {
 		t.Fatal("doctor changed production state")
+	}
+	if report.PendingUncertain.Status != "unavailable" {
+		t.Fatalf("invalid state database reported as %q", report.PendingUncertain.Status)
 	}
 	for _, key := range []string{"model", "feishuAuth", "feishuIdentity", "messageDelivery", "cardCallbacks", "fileDelivery", "nativeTools"} {
 		if report.Verification[key] != "not_checked" {

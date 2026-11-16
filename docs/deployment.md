@@ -456,12 +456,27 @@ isolated 模式仍会加载 cwd 下的 `.claude/settings.json` project settings�
 `doctor` 默认离线，检查本地配置和运行条件；`ready: true` 只表示报告列出的检查通过，不代表已验证飞书身份、模型工具调用或真实协作。逐层联网检查和测试聊天验证见[首次连接](first-connection.md)。
 
 - 使用独立配置时传完整参数，例如 `doctor --config ./config.local.json`；`--env-file <KEY=VALUE 文件>` 可在检查前载入凭据。
-- 数据目录检查使用独立临时 SQLite 文件，结束后删除，不打开现有 `gateway.sqlite`，也不留下固定 `doctor.sqlite`。目录不可写或配置的资料目录不存在时仍输出其余检查项；先处理报告中的失败项，再启动。
+- 数据目录可写性检查使用独立临时 SQLite 文件，结束后删除，也不留下固定 `doctor.sqlite`。未确认记录汇总另以只读连接打开现有 `gateway.sqlite`，不执行迁移、checkpoint 或写入；目录不可写或配置的资料目录不存在时仍输出其余检查项；先处理报告中的失败项，再启动。
 - 开启 `feedback.export` 时，`doctor` 还检查归档目录是否存在、是否为符号链接、是否可写；只创建并删除临时探针文件，不读取归档内容。
-- `native` 字段报告实际版本、固定已测版本与 `tested`／`untested` 状态；未知版本不被伪装成已验证，也不单凭版本不同阻止启动。`storage` 只读取数据库、WAL、SHM 和导出目录文件元数据，不打开生产 SQLite 或执行 checkpoint。
+- `native` 字段报告实际版本、固定已测版本与 `tested`／`untested` 状态；未知版本不被伪装成已验证，也不单凭版本不同阻止启动。`storage` 字段只读取数据库、WAL、SHM 和导出目录文件元数据；`pendingUncertain` 只查询记录数量、时间、房间和脱敏 ID，不读取正文，也不影响 `ready`。两者都不执行 checkpoint。
 - Windows 上 CC 找不到 Git Bash 时，可设置 `CLAUDE_CODE_GIT_BASH_PATH` 指向实际 `bash.exe`；`doctor` 会执行该程序并检查版本，不只凭文件存在判断就绪。未显式设置时不强制要求 Git Bash，原生工具支持情况仍需实际验证。JSON 中的 Windows 路径使用正斜杠或转义反斜杠。
 - 显式 `--probe-feishu` 只查询应用认证与机器人身份；显式 `--probe` 发送一个可能计费的基础模型请求，未完成配置时跳过，HTTP 200 的登录页或非 Messages JSON 不算通过，只检查基础连接，不代表流式、工具、子代理、图片或长上下文已验收。诊断不打印模型回复或凭据。
 - 显式 `--verify-chat <已配置群ID>` 或 `--verify-chat dm:<已配置用户ID>` 验证入站、卡片、回调与小文件；须先停止同一数据目录的服务，不添加成员、不启动模型。
+
+## 未确认记录与确认入口
+
+结果未知的输入和交付不会自动重放，也不会因为长期存在而自行消失。`doctor` 的 `pendingUncertain` 和 `/status --json` 的同名字段都会汇总两类记录：inbox `status='uncertain'`，以及 outbox `state` 为 `uncertain` 或 `blocked`。每类给出数量、最早时间（Unix 毫秒）、去重后的房间（最多 20 个）和少量脱敏 ID 样本；不读取消息或输出正文。`/status --json` 只统计当前聊天，`doctor` 统计整个状态库；`doctor` 的这项是 info 观察项，`status` 为 `observed`、`absent` 或 `unavailable` 时都不改变 `ready`。
+
+确认前应先核实远端结果。确认命令默认只读 dry-run：
+
+```sh
+./bin/feishu-bot maintenance ack-uncertain --config ~/.feishu-bot/config.json \
+  --before 2026-11-16T00:00:00Z
+./bin/feishu-bot maintenance ack-uncertain --config ~/.feishu-bot/config.json \
+  --before 1763270400000 --apply --json
+```
+
+`--before` 接受 RFC3339 或 Unix 毫秒，只处理 `at` 早于该时间的记录；缺少或无法解析时直接报错。dry-run 使用只读连接列出将被标记的数量、最早时间、房间和样本，绝不写库。`--apply` 使用带 `busy_timeout` 的读写连接（不运行迁移），在单个事务内把 inbox `uncertain` 更新为 `acknowledged`，把 outbox `uncertain`／`blocked` 更新为 `acknowledged`，并报告更新条数。`acknowledged` 是终态：不再计入待处理或 `/outputs`，不阻塞会话移交、认领或同轮交付，也不会被自动重试；记录本身保留为证据。确认不证明远端已收到，也不代表重新执行。
 
 ## 内置 daemon 服务
 
