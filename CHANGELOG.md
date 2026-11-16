@@ -2,6 +2,8 @@
 
 ## Unreleased — Go 原生网关
 
+- 新增 `projects[].autoCompactWindow`（100000–1000000 token，0/缺省保持原生默认）：网关在启动该项目的原生 Claude Code 进程时注入 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`，让原生自动压缩在更低窗口触发；网关不实现自己的压缩策略，也不放宽 `projects[].env` 的保留名规则。
+
 - 新增未确认记录可见性与清理入口：`doctor` 的 `pendingUncertain` 和 `/status --json` 同名字段汇总 inbox `uncertain` 与 outbox `uncertain`／`blocked` 的数量、最早时间、去重房间和脱敏样本 ID（不读取正文；`doctor` 只读打开状态库，信息项不影响 `ready`）；`doctor` 另以 `deliveryStepsUncertain`、`actionRunsUncertain` 只报告交付步骤和 action 的 uncertain 数量。新增 `feishu-bot maintenance ack-uncertain --config PATH --before RFC3339|Unix毫秒 [--apply] [--json]`，默认 dry-run 只读展示，`--apply` 在单个事务内把截止前的记录标为 `acknowledged`；该终态不再计入待处理、不阻塞交付或移交，也不会自动重试。
 - 测试基建：`internal/gateway` 的 fixture 改为复制一次初始化好的 SQLite 模板（新增 `store.OpenExisting`，生产 `store.Open` 行为不变），并将 stop 状态重试与预览卡重试的固定等待改为可注入；测试语义不变，本机 `internal/gateway` 套件从 45.2s 降到 16.0s。
 - 新增 `groups[].idleNewSessionMs`／`dms[].idleNewSessionMs`：聊天范围会话闲置超过阈值后，下一条普通人类输入自动新建会话（等同 `/new`，旧会话保留），回复卡提示 `/resume`。管理命令、补充、机器人消息、thread 话题和认领话题不触发；`/resume` 刷新活动时间，切回旧会话后不会被立即新建。

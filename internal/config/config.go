@@ -570,6 +570,9 @@ func validate(c *core.Config, base string) error {
 		default:
 			return errors.New("displayWorkspace must be full, basename, project or hidden")
 		}
+		if p.AutoCompactWindow != 0 && (p.AutoCompactWindow < 100000 || p.AutoCompactWindow > 1000000) {
+			return errors.New("autoCompactWindow must be between 100000 and 1000000")
+		}
 		if err := validateProjectEnvironment(p, derivedEnv); err != nil {
 			return err
 		}

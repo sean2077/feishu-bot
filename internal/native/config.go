@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/sean2077/feishu-bot/internal/config"
@@ -104,6 +105,11 @@ func applyProjectEnvironment(env map[string]string, p core.Project, foldCase boo
 		if value := os.Getenv(name); strings.TrimSpace(value) != "" {
 			set(name, value)
 		}
+	}
+	if p.AutoCompactWindow > 0 {
+		// The gateway owns this variable so projects cannot override other
+		// reserved CLAUDE_CODE_ deployment settings through projects[].env.
+		set("CLAUDE_CODE_AUTO_COMPACT_WINDOW", strconv.FormatInt(p.AutoCompactWindow, 10))
 	}
 }
 func environmentList(m map[string]string) []string {

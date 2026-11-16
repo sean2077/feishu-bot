@@ -250,6 +250,11 @@ type Project struct {
 	PermissionMode         string             `json:"permissionMode"`
 	AllowedTools           []string           `json:"allowedTools"`
 	Actions                []ActionSpec       `json:"actions"`
+	// AutoCompactWindow lowers the native Claude Code auto-compact window for
+	// this project's native processes (100000–1000000 tokens). Zero keeps the
+	// native default. The gateway injects CLAUDE_CODE_AUTO_COMPACT_WINDOW and
+	// does not compact on its own.
+	AutoCompactWindow int64 `json:"autoCompactWindow,omitempty"`
 	// Env holds non-secret literal values for the native process and its
 	// descendants. EnvPassthrough names variables copied from the service
 	// environment; absent or empty values are not injected.
