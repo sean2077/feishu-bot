@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS usage_coverage(session TEXT PRIMARY KEY, room TEXT NO
 CREATE TABLE IF NOT EXISTS usage_results(session TEXT NOT NULL, result_id TEXT NOT NULL, room TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL, success INTEGER NOT NULL, models TEXT NOT NULL,
  input_tokens INTEGER, output_tokens INTEGER, cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER, PRIMARY KEY(session,result_id));
 CREATE INDEX IF NOT EXISTS usage_room_session ON usage_results(room,session,at);
-CREATE TABLE IF NOT EXISTS adopted_topics(native TEXT PRIMARY KEY, user TEXT NOT NULL, room TEXT UNIQUE, session TEXT REFERENCES sessions(id), thread TEXT NOT NULL DEFAULT '', root TEXT UNIQUE, work TEXT NOT NULL, holder_pid INTEGER NOT NULL DEFAULT 0, holder_started INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, session_name TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, updated INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS adopted_topics(native TEXT PRIMARY KEY, user TEXT NOT NULL, room TEXT UNIQUE, session TEXT REFERENCES sessions(id), thread TEXT NOT NULL DEFAULT '', root TEXT UNIQUE, work TEXT NOT NULL, holder_pid INTEGER NOT NULL DEFAULT 0, holder_started INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, session_name TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', last_active INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS adopted_topics_thread_unique ON adopted_topics(thread) WHERE thread!='';
 CREATE INDEX IF NOT EXISTS adopted_topics_state ON adopted_topics(state,updated);
 `
@@ -146,6 +146,7 @@ func (s *Store) initialize() error {
 			{"outbox", "file_target", "TEXT"}, {"outbox", "file_state", "TEXT NOT NULL DEFAULT 'none'"}, {"outbox", "delivery_error", "TEXT"}, {"outbox", "kind", "TEXT NOT NULL DEFAULT 'reply'"},
 			{"session_preferences", "native_title", "TEXT NOT NULL DEFAULT ''"},
 			{"adopted_topics", "session_name", "TEXT NOT NULL DEFAULT ''"}, {"adopted_topics", "title", "TEXT NOT NULL DEFAULT ''"},
+			{"adopted_topics", "last_active", "INTEGER NOT NULL DEFAULT 0"},
 			{"action_runs", "requester", "TEXT"}, {"action_runs", "request_context", "TEXT"},
 			{"action_runs", "request", "TEXT"}, {"action_runs", "approver", "TEXT"}, {"action_runs", "taint_request", "TEXT"}, {"action_runs", "approval", "TEXT"},
 			{"requests", "requester", "TEXT"}, {"requests", "request_context", "TEXT"},
@@ -283,6 +284,11 @@ func (s *Store) Resume(room, id string) (core.Session, error) {
 			return e
 		}
 		if _, e = tx.Exec("UPDATE sessions SET state='open' WHERE room=? AND id=?", room, id); e != nil {
+			return e
+		}
+		// An explicit resume refreshes activity so the next input is not treated
+		// as an idle continuation of the session the user just chose.
+		if e = RecordSessionActivity(tx, room, id, time.Now().UnixMilli()); e != nil {
 			return e
 		}
 		r.State = "open"

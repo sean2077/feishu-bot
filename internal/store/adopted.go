@@ -18,6 +18,10 @@ const (
 	AdoptedPending   = "pending"
 	AdoptedOpen      = "open"
 	AdoptedUncertain = "uncertain"
+	// AdoptedArchived is an open topic whose terminal is gone and that has had
+	// no activity for the configured retention. An inbound owner message,
+	// notify or attach restores it to open in place.
+	AdoptedArchived = "archived"
 )
 
 // ErrNativeClaimed reports that a native session ID already belongs to a
@@ -58,13 +62,16 @@ type AdoptedTopic struct {
 	State         string
 	Created       int64
 	Updated       int64
+	// LastActive is the last inbound or outbound topic activity. Zero on rows
+	// written before the column existed; callers fall back to Updated/Created.
+	LastActive int64
 }
 
-const adoptedCols = "native,user,coalesce(room,''),coalesce(session,''),thread,coalesce(root,''),work,coalesce(session_name,''),coalesce(title,''),holder_pid,holder_started,state,created,updated"
+const adoptedCols = "native,user,coalesce(room,''),coalesce(session,''),thread,coalesce(root,''),work,coalesce(session_name,''),coalesce(title,''),holder_pid,holder_started,state,created,updated,last_active"
 
 func adoptedRow(r scanner) (AdoptedTopic, error) {
 	var a AdoptedTopic
-	err := r.Scan(&a.Native, &a.User, &a.Room, &a.Session, &a.Thread, &a.Root, &a.Work, &a.SessionName, &a.Title, &a.HolderPID, &a.HolderStarted, &a.State, &a.Created, &a.Updated)
+	err := r.Scan(&a.Native, &a.User, &a.Room, &a.Session, &a.Thread, &a.Root, &a.Work, &a.SessionName, &a.Title, &a.HolderPID, &a.HolderStarted, &a.State, &a.Created, &a.Updated, &a.LastActive)
 	return a, err
 }
 
@@ -188,8 +195,8 @@ func (s *Store) BeginAdoption(native, user, work string, holderPID int, holderSt
 		if claimed > 0 {
 			return ErrNativeClaimed
 		}
-		if _, err = tx.Exec("INSERT INTO adopted_topics(native,user,room,session,thread,root,work,holder_pid,holder_started,state,created,updated) VALUES(?,?,NULL,NULL,'',NULL,?,?,?,?,?,?)",
-			native, user, work, holderPID, holderStarted, AdoptedPending, now, now); err != nil {
+		if _, err = tx.Exec("INSERT INTO adopted_topics(native,user,room,session,thread,root,work,holder_pid,holder_started,state,last_active,created,updated) VALUES(?,?,NULL,NULL,'',NULL,?,?,?,?,?,?,?)",
+			native, user, work, holderPID, holderStarted, AdoptedPending, now, now, now); err != nil {
 			// Only a primary-key or unique-constraint conflict means another
 			// adoption or gateway session already owns this native identity.
 			// Disk, locking, trigger and schema failures must reach the caller
@@ -300,8 +307,8 @@ func (s *Store) BindAdoptionRoot(native, room, root, session, configDir string, 
 		if _, err := tx.Exec("INSERT INTO usage_coverage(session,room,started,prior_unknown) VALUES(?,?,?,1)", session, room, created); err != nil {
 			return err
 		}
-		result, err := tx.Exec("UPDATE adopted_topics SET room=?,root=?,session=?,updated=? WHERE native=? AND state=? AND session IS NULL AND (room IS NULL OR room=?) AND (root IS NULL OR root=?)",
-			room, root, session, time.Now().UnixMilli(), native, AdoptedPending, room, root)
+		result, err := tx.Exec("UPDATE adopted_topics SET room=?,root=?,session=?,last_active=?,updated=? WHERE native=? AND state=? AND session IS NULL AND (room IS NULL OR room=?) AND (root IS NULL OR root=?)",
+			room, root, session, time.Now().UnixMilli(), time.Now().UnixMilli(), native, AdoptedPending, room, root)
 		if err != nil {
 			return err
 		}
@@ -318,8 +325,8 @@ func (s *Store) OpenAdoption(native, thread string) error {
 	if native == "" || thread == "" {
 		return errors.New("incomplete adoption topic")
 	}
-	result, err := s.DB.Exec("UPDATE adopted_topics SET thread=?,state=?,updated=? WHERE native=? AND state=? AND room IS NOT NULL AND root IS NOT NULL AND thread=''",
-		thread, AdoptedOpen, time.Now().UnixMilli(), native, AdoptedPending)
+	result, err := s.DB.Exec("UPDATE adopted_topics SET thread=?,state=?,last_active=?,updated=? WHERE native=? AND state=? AND room IS NOT NULL AND root IS NOT NULL AND thread=''",
+		thread, AdoptedOpen, time.Now().UnixMilli(), time.Now().UnixMilli(), native, AdoptedPending)
 	if err != nil {
 		return err
 	}
@@ -354,8 +361,8 @@ func (s *Store) ExpirePendingAdoptions(before int64, now int64) error {
 // UpdateAdoptionHolder records the local terminal process currently owning
 // the adopted native session.
 func (s *Store) UpdateAdoptionHolder(native string, pid int, started int64) error {
-	_, err := s.DB.Exec("UPDATE adopted_topics SET holder_pid=?,holder_started=?,updated=? WHERE native=? AND state IN (?,?)",
-		pid, started, time.Now().UnixMilli(), native, AdoptedPending, AdoptedOpen)
+	_, err := s.DB.Exec("UPDATE adopted_topics SET holder_pid=?,holder_started=?,last_active=?,updated=? WHERE native=? AND state IN (?,?)",
+		pid, started, time.Now().UnixMilli(), time.Now().UnixMilli(), native, AdoptedPending, AdoptedOpen)
 	return err
 }
 
@@ -364,6 +371,50 @@ func (s *Store) UpdateAdoptionHolder(native string, pid int, started int64) erro
 func (s *Store) ClearAdoptionHolder(native string, pid int, started int64) (bool, error) {
 	result, err := s.DB.Exec("UPDATE adopted_topics SET holder_pid=0,holder_started=0,updated=? WHERE native=? AND holder_pid=? AND holder_started=?",
 		time.Now().UnixMilli(), native, pid, started)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
+// TouchAdoptionByRoom records inbound activity for the topic room. It is
+// monotonic and ignores unknown rooms.
+func (s *Store) TouchAdoptionByRoom(room string, at int64) error {
+	if room == "" {
+		return nil
+	}
+	_, err := s.DB.Exec("UPDATE adopted_topics SET last_active=MAX(last_active,?) WHERE room=?", at, room)
+	return err
+}
+
+// TouchAdoptionByNative records outbound activity (a notify or topic reply).
+func (s *Store) TouchAdoptionByNative(native string, at int64) error {
+	if native == "" {
+		return nil
+	}
+	_, err := s.DB.Exec("UPDATE adopted_topics SET last_active=MAX(last_active,?) WHERE native=?", at, native)
+	return err
+}
+
+// RestoreAdoption returns an archived topic to open in place. It reports
+// whether this call performed the transition; the topic keeps its room,
+// thread, root and session so continuation resumes the same native session.
+func (s *Store) RestoreAdoption(native string, now int64) (bool, error) {
+	result, err := s.DB.Exec("UPDATE adopted_topics SET state=?,last_active=?,updated=? WHERE native=? AND state=?",
+		AdoptedOpen, now, now, native, AdoptedArchived)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
+// ArchiveAdoption marks an inactive open topic archived. The conditional
+// update keeps a concurrent restore or a new holder from being overwritten.
+func (s *Store) ArchiveAdoption(native string, now int64) (bool, error) {
+	result, err := s.DB.Exec("UPDATE adopted_topics SET state=?,holder_pid=0,holder_started=0,updated=? WHERE native=? AND state=?",
+		AdoptedArchived, now, native, AdoptedOpen)
 	if err != nil {
 		return false, err
 	}

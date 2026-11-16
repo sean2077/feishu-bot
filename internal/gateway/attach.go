@@ -186,6 +186,9 @@ func existingAdoptionResult(record store.AdoptedTopic, holderPID int, holderStar
 	case store.AdoptedUncertain:
 		result.Error = "本地会话认领结果未确认；请检查飞书是否出现话题与根消息 " + record.Root + "，不会自动重发。"
 		return result, nil
+	case store.AdoptedArchived:
+		result.Error = "该话题已归档；在话题内发送消息或再次 attach/notify 会恢复它。"
+		return result, nil
 	default:
 		return result, errors.New("本地会话认领状态无效")
 	}
@@ -194,6 +197,23 @@ func existingAdoptionResult(record store.AdoptedTopic, holderPID int, holderStar
 func (g *Gateway) existingAdoption(ctx context.Context, req core.AttachRequest, record store.AdoptedTopic) (core.AttachResult, error) {
 	if record.User != req.User {
 		return core.AttachResult{}, errors.New("该原生会话属于其他私聊，不能在此认领")
+	}
+	if record.State == store.AdoptedArchived {
+		// attach continues in the original topic: restore the archived record
+		// in place instead of creating a new one.
+		restored, restoreErr := g.store.RestoreAdoption(record.Native, time.Now().UnixMilli())
+		if restoreErr != nil {
+			return core.AttachResult{}, restoreErr
+		}
+		if restored {
+			g.clearAdoptNotice(record.Room)
+			g.audit(record.Room, "adopted_topic_restored", core.Args{"native": record.Native, "cause": "attach"})
+		}
+		fresh, found, readErr := g.store.AdoptedTopicByNative(req.Native)
+		if readErr != nil || !found {
+			return core.AttachResult{}, errors.New("认领记录读取失败")
+		}
+		record = fresh
 	}
 	if record.State == store.AdoptedOpen {
 		chat, dm, _, ok := core.ParseRoomKey(record.Room)

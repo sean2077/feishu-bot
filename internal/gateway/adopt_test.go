@@ -26,6 +26,11 @@ func (e *fakeDeliveryFailure) DeliveryRetryAfter() time.Duration { return 0 }
 
 func adoptFixture(t *testing.T) (*fixture, string, string) {
 	t.Helper()
+	return adoptFixtureWith(t, nil)
+}
+
+func adoptFixtureWith(t *testing.T, mutate func(*core.Config)) (*fixture, string, string) {
+	t.Helper()
 	work, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -48,6 +53,10 @@ func adoptFixture(t *testing.T) (*fixture, string, string) {
 	f := newFixture(t, func(c *core.Config) {
 		c.Projects[0].NativeConfig = "inherit"
 		c.DMs[0].AdoptRoots = []string{work}
+		c.AdoptedArchiveMS = 7 * 86400000
+		if mutate != nil {
+			mutate(c)
+		}
 	})
 	f.tr.fetchHook = func(_ context.Context, id string, room core.Room) (*core.Message, error) {
 		return &core.Message{ID: id, ChatID: room.ChatID, ChatType: "p2p", SenderID: "app", SenderIsSelf: true, ThreadID: "omt_fixture", RootID: room.Thread}, nil

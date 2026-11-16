@@ -28,6 +28,7 @@ type Options struct {
 	AttachHolderSet                            bool
 	TopicMessageID, TopicTextFile              string
 	TopicsNative                               string
+	TopicsAll                                  bool
 
 	EnvFile  string
 	LogFile  string
@@ -486,6 +487,13 @@ func parseTopics(args []string, o Options) (Options, error) {
 				return o, errors.New("--json may only be specified once")
 			}
 			o.JSON = true
+			continue
+		}
+		if arg == "--all" {
+			if o.TopicsAll {
+				return o, errors.New("--all may only be specified once")
+			}
+			o.TopicsAll = true
 			continue
 		}
 		return o, errors.New("unexpected option; see feishu-bot topics --help")

@@ -36,6 +36,12 @@ _避免_: 把“线程”泛指为会话
 `groups[].topicHistory` 控制 `read_chat_history` 在话题会话中能读什么：默认 `topic` 只读当前话题；`chat` 允许读取本群时间线或其他已观察到的同群话题，仍绝不跨群。群时间线只返回话题根消息和顶层消息，展开其他话题需要逐个读取话题容器；其他话题内容在结果中标为背景。
 _英文_: topic history scope
 
+**闲置新会话**
+
+`groups[].idleNewSessionMs`／`dms[].idleNewSessionMs` 开启的聊天范围行为：会话超过阈值没有接收人类输入时，下一条普通消息自动建立新会话，等同 `/new`，旧会话保留。管理命令、补充、机器人消息、thread 话题和认领话题不触发；`/resume` 刷新活动时间后不会被立即新建。
+_英文_: idle new session
+_避免_: 把自动新建称为上下文过期或自动压缩
+
 **跨群历史**
 
 私聊通过显式 `dms[].historyChats` 白名单读取目标群的历史。目标必须是 `groups[]` 中显式绑定的群；发起人必须是该 DM 用户，并且是目标群 maintainer 或显式 member，`allowAllMembers` 不算授权。第一版只读文本、不提供附件，每次读取都审计；私聊永远不能被其他会话读取。
@@ -334,6 +340,12 @@ _英文_: local terminal handoff
 用户在本地 Claude Code 终端显式发起、由 `dms[].adoptRoots` 允许并绑定到本人私聊的飞书话题。一张 `adopted_topics` 记录保存房间键、原生 session、`thread_id`、根消息、登记工作目录和状态。只有 open 状态且 `thread_id` 与根消息同时精确匹配的入站进入该话题；pending／uncertain 只报告状态，不启动原生进程、不重放外部写入。工作目录取自本地 transcript 并每次按 adoptRoots 重新校验。终端退出后默认沿用 transcript 最近的模型，显式 `/model` 选择优先；`/new` 新建的会话使用项目模型。
 _英文_: adopted topic
 _避免_: 把认领话题称为普通话题会话或群话题；它只存在于私聊
+
+**归档认领话题**
+
+holder 已不存活、且超过 `adoptedArchiveMs`（默认 7 天）没有入站或出站活动的认领话题状态。归档删除 endpoint 文件，保留话题、原生会话、根消息和登记工作目录；owner 在话题内发消息或再次 `notify`／`attach` 时原地恢复为 open 并续接原会话。`topics` 默认隐藏归档话题，`--all` 才列出。
+_英文_: archived adopted topic
+_避免_: 把归档称为删除话题或删除会话历史
 
 **本地会话名**
 

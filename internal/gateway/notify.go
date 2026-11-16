@@ -140,6 +140,22 @@ func (g *Gateway) Notify(ctx context.Context, req core.NotifyRequest) core.Notif
 		if record.User != req.User {
 			return notifyFailure(core.NotifyErrorInvalidRequest, "该原生会话属于其他私聊，不能在此通知")
 		}
+		if record.State == store.AdoptedArchived {
+			// notify continues in the original topic: restore it in place
+			// instead of creating a new one.
+			restored, restoreErr := g.store.RestoreAdoption(record.Native, time.Now().UnixMilli())
+			if restoreErr != nil {
+				return notifyFailure(core.NotifyErrorInvalidRequest, "归档话题恢复失败")
+			}
+			if restored {
+				g.clearAdoptNotice(record.Room)
+				g.audit(record.Room, "adopted_topic_restored", core.Args{"native": record.Native, "cause": "notify"})
+			}
+			record, found, err = g.store.AdoptedTopicByNative(req.Native)
+			if err != nil || !found {
+				return notifyFailure(core.NotifyErrorInvalidRequest, "认领记录读取失败")
+			}
+		}
 		if record.State != store.AdoptedOpen {
 			result := existingNotifyResult(record)
 			result.SessionName = chosenAdoptName(req.SessionName, record.SessionName, record.Native)
@@ -186,6 +202,7 @@ func (g *Gateway) Notify(ctx context.Context, req core.NotifyRequest) core.Notif
 		if sameSession {
 			warnings = append(warnings, g.registerNotifyHolder(ctx, record, room, req)...)
 		}
+		_ = g.store.TouchAdoptionByNative(req.Native, time.Now().UnixMilli())
 		g.audit(room.Key, "notify", core.Args{"native": req.Native, "message": messageID, "created": false})
 		return core.NotifyResult{OK: true, State: store.AdoptedOpen, ChatID: room.ChatID, RootMessageID: record.Root, ThreadID: record.Thread, MessageID: messageID, SessionName: name, TopicURL: topicAppLink(room.ChatID, record.Thread), Created: false, Warnings: warnings}
 	}
@@ -417,6 +434,7 @@ func (g *Gateway) TopicReply(ctx context.Context, req core.TopicReplyRequest) co
 	if _, err = g.store.MarkForwarded(room.Key, req.MessageID, "done"); err != nil {
 		return core.TopicReplyResult{Error: notifyError(core.NotifyErrorTransportFailure, "回复已发送，但状态写入失败")}
 	}
+	_ = g.store.TouchAdoptionByNative(req.Native, time.Now().UnixMilli())
 	g.settleReceipts(room.Key, record.Session, origin(message), true)
 	g.audit(room.Key, "topic_reply", core.Args{"message": req.MessageID, "native": req.Native, "reply": replyID})
 	return core.TopicReplyResult{OK: true, MessageID: replyID, Truncated: truncated, Warnings: warnings}

@@ -18,6 +18,7 @@ func TestTopicsListsAdoptions(t *testing.T) {
 	c := attachConfig(t, root)
 	native := "11111111-2222-3333-4444-555555555555"
 	pendingNative := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	archivedNative := "cccccccc-dddd-eeee-ffff-000000000000"
 	room, ok := c.AdoptedTopicRoom("oc_dm", "ou_dm", "om_root")
 	if !ok {
 		t.Fatal("adopted room did not resolve")
@@ -44,6 +45,22 @@ func TestTopicsListsAdoptions(t *testing.T) {
 	if _, _, err = st.BeginAdoption(pendingNative, "ou_dm", root, 0, 0); err != nil {
 		t.Fatal(err)
 	}
+	archivedRoom, ok := c.AdoptedTopicRoom("oc_dm", "ou_dm", "om_root_archived")
+	if !ok {
+		t.Fatal("archived room did not resolve")
+	}
+	if _, _, err = st.BeginAdoption(archivedNative, "ou_dm", root, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.BindAdoptionRoot(archivedNative, archivedRoom.Key, "om_root_archived", "session-two", "/config", false, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.OpenAdoption(archivedNative, "omt_archived"); err != nil {
+		t.Fatal(err)
+	}
+	if archived, err := st.ArchiveAdoption(archivedNative, time.Now().UnixMilli()); err != nil || !archived {
+		t.Fatalf("archive: %v %v", archived, err)
+	}
 	if err = st.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -64,12 +81,32 @@ func TestTopicsListsAdoptions(t *testing.T) {
 		byNative[topic.Native] = topic
 	}
 	open := byNative[native]
-	if open.Name != "example-session-82" || open.Thread != "omt_topic" || open.Root != "om_root" || open.State != store.AdoptedOpen || !open.HolderAlive || open.TopicURL == "" {
+	if open.Name != "example-session-82" || open.Thread != "omt_topic" || open.Root != "om_root" || open.State != store.AdoptedOpen || !open.HolderAlive || open.TopicURL == "" || open.LastActive == 0 {
 		t.Fatalf("open topic: %+v", open)
+	}
+	if _, listed := byNative[archivedNative]; listed {
+		t.Fatal("archived topic was listed without --all")
 	}
 	pending := byNative[pendingNative]
 	if pending.Name != core.ShortNative(pendingNative) || pending.State != store.AdoptedPending || pending.HolderAlive {
 		t.Fatalf("pending topic: %+v", pending)
+	}
+
+	out.Reset()
+	if err = runTopics(c, Options{JSON: true, TopicsAll: true}, &out); err != nil {
+		t.Fatal(err)
+	}
+	listing = topicListing{}
+	if err = json.Unmarshal(out.Bytes(), &listing); err != nil {
+		t.Fatalf("json: %v; %s", err, out.String())
+	}
+	byNative = map[string]topicInfo{}
+	for _, topic := range listing.Topics {
+		byNative[topic.Native] = topic
+	}
+	archived := byNative[archivedNative]
+	if len(listing.Topics) != 3 || archived.State != store.AdoptedArchived || archived.LastActive == 0 || archived.Thread != "omt_archived" {
+		t.Fatalf("all topics = %+v", listing.Topics)
 	}
 
 	out.Reset()

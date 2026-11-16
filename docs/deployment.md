@@ -124,6 +124,8 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 | `groups[].topicHistory` | `"topic"` | `"topic"` 默认只读当前话题；`"chat"` 允许 `read_chat_history` 的 `scope: "chat"` 读取同群时间线和其他话题。只适用于 `sessionScope: "thread"`，其他群配置会在加载时拒绝 |
 | `dms[].historyChats` | 空 | 私聊跨群读取白名单：`[{"chatId","name"}]`，目标必须是显式 `groups[]` 绑定；发起人须为目标群 maintainer 或显式 member（`allowAllMembers` 不算），只读文本并审计；读取后本轮写操作改为 DM 用户审批（`approval: "none"`／`"open"` 的固定操作除外，仍直接执行并记 `tainted=true`） |
 | `dms[].adoptRoots` | 空 | 本地 Claude Code 会话认领根目录。仅当该私聊绑定的项目 `nativeConfig: "inherit"` 时允许；每个目录须存在，按配置文件目录解析并转为物理路径，且不得与 `dataDir/rooms` 相互包含。未设置时认领完全关闭 |
+| `groups[].idleNewSessionMs`、`dms[].idleNewSessionMs` | 0（关闭） | 聊天范围会话闲置超过该毫秒数后，下一条人类输入自动新建会话；只对 `sessionScope: "chat"` 的群和私聊生效，thread 群话题和认领话题不受影响；上限 30 天 |
+| `adoptedArchiveMs` | 604800000（7 天） | holder 已不存活且超过该时长没有活动的认领话题在定期清理中标记 `archived` 并删除 endpoint 文件；0 关闭自动归档，上限 365 天 |
 | `runtime.maxWorkers`、`runtime.idleMs` | 8、900000 | 活跃原生进程上限（1–128）与空闲回收时间，见[容量与恢复](#容量与恢复) |
 | `limits.backgroundMessages`／`backgroundMs` | 0／900000 | 非 @ 群消息缓存条数（0–200）与保留时间；默认不缓存 |
 | `limits.textChars` | 20000 | 单条输入正文字符上限（100–200000），超出时明确拒绝 |
@@ -165,6 +167,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/sean2077/feishu-bot/int
 - `mentionOptional: true` 让该群所有获准作者的普通消息和命令无需 @；默认 `false`，只免除 @，不改变群与作者授权，修改后需重启。应用还需能收到未 @ 机器人的群消息（通常为 `im:message.group_msg`，以控制台实际发布范围为准），否则事件不会到达网关。仅建议用于成员很少且互信的小群。
 - `allowOtherBots: true` 只允许在显式群上开启，默认 `false`；开启后其他机器人的消息可入站和进入历史，但只有明确 @ 本机器人才触发，同一话题同一机器人最多连续 2 轮。可选的 `otherBots` 名单供 `mention_bot` 使用：`[{"appId":"cli_example","name":"Helper","openId":"ou_example_bot"}]`；`openId` 是飞书的 open_bot_id，post 的 at 元素不接受 appId，缺少 `openId` 时只可读取该机器人消息、不能 @。名单项只接受显式群绑定；`mention_bot` 仅项目 maintainer 可调用，且本轮所有 senders 都必须是 maintainer。
 - `sessionScope: "thread"` 让该群每个飞书话题使用独立会话；默认 `"chat"` 保持全群一条当前会话。可写在 `chatId: "*"` 兜底条目上，显式绑定优先；修改后需重启，原范围的会话保留，切换前请先处理完待交付输入。该模式不需要额外的消息权限；飞书拒绝话题回复的群（错误码 230071）应保持 `"chat"`。同一群的话题共用工作区、原生 HOME 和自动记忆，每个活跃话题占一个 `runtime.maxWorkers` 名额，话题较多的群应相应调大或设置 `runtime.maxWorkersPerChat`；`messagesPerMinute` 与 `inboxPerRoom` 仍按全群计算。行为细节见[话题会话](conversation-contract.md#话题会话)。
+- `idleNewSessionMs` 按 `groups[]`／`dms[]` 条目配置，默认关闭。聊天范围的会话超过该时长没有已接收的人类输入时，下一条普通消息会先停止旧的空闲原生进程、建立新会话并在回复卡上提示；效果等同自动 `/new`，旧会话保留，可用 `/resume` 回到。管理命令、`/btw`／`/ps`、机器人消息和有待交付输入的聊天不触发；`/resume` 会刷新活动时间，因此切回旧会话后的下一条输入不会被立刻新建。thread 范围群的话题和认领话题不使用该设置。
 
 `groups[].topicHistory` 默认 `"topic"`，保持话题会话只读当前话题。设为 `"chat"` 后，`read_chat_history` 接受 `scope: "chat"`：不带 `threadId` 读取本群时间线，带 `threadId` 只能读取已在本聊天观察到、且属于本群的话题；`expandThreads: true` 会并发读取最近 20 个话题、每话题最多 10 条回复，并按最近回复时间倒序。发现话题时会把群时间线窗口放宽到 3 天再按回复时间筛选，因此更早创建但近期有回复的话题可能仍不在本页；返回统计 `threads`、`expanded`、`omittedThreads`、`omittedReplies`、`failedThreads`，总正文预算沿用 40000 字，先减少每话题回复数，再减少话题数；单个话题读取失败时跳过并降级，全部发现话题都失败才报错。`history_chat_scope_read` 的 `threads` 列出所有被发现的话题根，不只是最终展开的那些。其他话题的消息带 `background: true`，仍按当前群的作者规则过滤；绝不跨群。该字段只对 `sessionScope: "thread"` 有意义，配置在普通群上会加载失败，避免被静默忽略。
 
@@ -709,16 +712,18 @@ JSON 结果字段：`ok`、`state`、`chat_id`、`root_message_id`、`thread_id`
 - socket 缺失、连接/打开失败等确定未开始提交时退回排队并提示；写入后超时、取消或部分写等结果不确定时标 uncertain、不自动重放并提示；已提交但未回复的消息在终端退出、`/new`、重启或转递失败时标 uncertain、不重放。
 - 原生收件箱协议是 CC 内部实现派生的实验性接口，CC 升级可能变化；Codex 会话不在本期范围。
 
+认领话题在 holder 已不存活、且超过 `adoptedArchiveMs`（默认 7 天）没有入站或出站活动时，由定期清理标记为 `archived` 并删除它的 endpoint 文件；阈值 0 关闭自动归档。归档不是删除：owner 再次在话题内发消息，或再次执行 `notify`／`attach`，记录会原地恢复为 `open`，沿用原话题、原原生会话、登记工作目录和 transcript 模型。活动时间来自话题的入站消息、`notify` 追加和 `topic reply`。
+
 ### 查看已认领话题
 
 `feishu-bot topics` 只读列出本机已登记的认领关系，网关运行时也可读取：
 
 ```sh
-feishu-bot topics --config /srv/feishu-bot/config.json [--native ID] [--json]
+feishu-bot topics --config /srv/feishu-bot/config.json [--native ID] [--all] [--json]
 ```
 
 省略 `--config` 时的默认值与 `topic reply` 一致：先取 `$FEISHU_BOT_CONFIG`，未设置时取 `~/.feishu-bot/config.json`。
 
-`--json` 输出 `{"topics":[{"name","native","thread","root","state","holder_alive","topic_url"}]}`；`name` 读不到时用 native ID 前 8 位，`holder_alive` 表示登记的本机终端进程仍持有该会话，`topic_url` 在话题 ID 未确认时省略。`--native` 按完整 native ID 过滤；没有匹配时输出空列表。
+`--json` 输出 `{"topics":[{"name","native","thread","root","state","holder_alive","last_active","topic_url"}]}`；`name` 读不到时用 native ID 前 8 位，`holder_alive` 表示登记的本机终端进程仍持有该会话，`last_active` 是最后一次入站或出站活动的 Unix 毫秒时间，`topic_url` 在话题 ID 未确认时省略。默认不列出 `archived` 话题，加 `--all` 才显示。`--native` 按完整 native ID 过滤；没有匹配时输出空列表。
 
 [场景配置](usage.md#任务结果通知与话题内交互) · [对话规则](conversation-contract.md#任务通知与话题转递) · [术语](terminology.md) · [验收](validation.md)

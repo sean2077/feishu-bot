@@ -56,6 +56,7 @@ MOMO 回复其他机器人时不自动 @ 对方；由 `mention_bot` 发出消息
 | 操作 | 结果 |
 |---|---|
 | 普通输入、同群不同线程（整群范围） | 继续当前会话 |
+| 配置 `idleNewSessionMs` 且会话闲置超过阈值的普通输入 | 自动新建会话，等同 `/new`；旧会话保留，回复卡提示 `/resume` |
 | 话题范围群：顶层触发／话题内触发 | 开启新话题会话／继续该话题会话 |
 | 私聊认领话题：终端仍存活／已退出 | 入队并提示等待／按登记 cwd 续接同一原生会话 |
 | 空闲回收、服务重启 | 重新启动进程，续接相同原生会话 |
@@ -67,6 +68,8 @@ MOMO 回复其他机器人时不自动 @ 对方；由 `mention_bot` 发出消息
 | `/model [配置名]`、`/profile [配置名]` | 查看或选择管理员预定义的模型／effort，在安全轮次边界生效 |
 | `/artifacts [文件ID]` | 查看或重新发送已完成的冻结文件，不重做原任务 |
 | `/usage [--json]` | 只读查询选中会话已报告用量，不唤醒进程 |
+
+`groups[]`／`dms[]` 可配置 `idleNewSessionMs`。只对聊天范围的会话生效：当前会话最后一次接收人类输入距今超过阈值时，下一条普通消息先停止旧会话的空闲原生进程并建立新会话，效果等同自动 `/new`；旧会话保留，回复卡显示一行提示，可用 `/resume` 回到。管理命令、`/btw`／`/ps`、机器人消息以及仍有待交付输入的聊天不触发；`/resume` 会刷新活动时间，因此切回旧会话后的下一条输入不会被再次新建。thread 范围群的话题和认领话题不使用该设置。
 
 ### 话题会话
 
@@ -116,7 +119,7 @@ MOMO 回复其他机器人时不自动 @ 对方；由 `mention_bot` 发出消息
 
 - **根消息与归属。** 认领先发一张根卡片，再以话题回复建立 thread。只有登记在 `adopted_topics` 的 `thread_id` 与根消息 ID 同时精确匹配，入站才进入该话题房间；根消息自身可能带 `thread_id` 但没有 `root_id`，不能据此归属。未登记的私聊话题回复维持普通私聊行为；记录存在但不匹配时拒绝并写 `adopted_topic_rejected` 审计，不回落私聊房间。存储查询失败同样拒绝。
 - **显示身份。** 根卡片标题为 `<本地会话名> · <标题>`，正文给出工作目录、完整 native ID 和 `claude --resume <ID>`。本地会话名优先取显式 `--name`，否则取 `sessions/<holder-pid>.json` 的 `name`（仅当 `sessionId` 与 native ID 完全一致），再退回 native ID 前 8 位；它只用于飞书显示，不重命名原生会话。后续 attach／notify 观察到名称变化时刷新根卡片标题；通知追加和 `topic reply` 末尾带一行 `— <会话名> · <ID 前 8 位>`。话题内 `/status` 显示本地会话名、完整原生 ID 和终端占用，`feishu-bot topics` 可从会话反查已绑定话题。
-- **状态。** `pending` 表示认领尚未完成，`uncertain` 表示外部写入结果未确认。两者都只回显状态，不启动原生进程、不重发根卡片，并保留根消息 ID 供核查。根卡片成功发送后，即使后续事务失败，网关也会尽量把已知的 room/root 写入记录，使话题内回复仍能匹配到该记录并收到 uncertain 提示；根消息本身未知时无法匹配，这是已知限制。网关启动时把遗留 `pending` 全部置为 `uncertain`，因为重启后已没有正在发送中的请求。
+- **状态。** `pending` 表示认领尚未完成，`uncertain` 表示外部写入结果未确认。两者都只回显状态，不启动原生进程、不重发根卡片，并保留根消息 ID 供核查。根卡片成功发送后，即使后续事务失败，网关也会尽量把已知的 room/root 写入记录，使话题内回复仍能匹配到该记录并收到 uncertain 提示；根消息本身未知时无法匹配，这是已知限制。网关启动时把遗留 `pending` 全部置为 `uncertain`，因为重启后已没有正在发送中的请求。`archived` 表示 holder 已不存活且超过 `adoptedArchiveMs` 没有活动；归档时删除 endpoint 文件，但保留话题、原生会话和登记工作目录。owner 再次在话题内发消息、`notify` 或 `attach` 时自动原地恢复为 `open` 并继续原会话，不新建话题。
 - **终端占用。** 登记记录保存本地终端 PID 和可得时的启动时间；进程仍存活（且启动时间不冲突）时，消息排队、加待处理回执并回复一次等待说明，`dispatch` 也拒绝启动。`/status` 显示 `awaiting_terminal_exit` 和认领状态；`/stop` 正常可用；`/new` 在该话题建立新会话，不再受原终端占用约束，原认领记录保留。holder 释放由定期检查发现（默认间隔 30 秒），释放后同一轮检查会处理排队输入，因此终端退出到话题开始处理可能有这个延迟。Linux 上的启动身份由内核 starttime 和 boot ID 组成，不依赖可能被 NTP／虚拟机校时改变的墙钟启动时间。
 - **重新认领。** 对已 open 的话题再次发起认领时，网关先取得该房间的输入与派发锁；仍有存活原生进程、排队／已交出的输入、未完成输出、运行中的操作或审批时拒绝，并提示先在话题内 `/stop`，等运行结束后再认领。现有 holder 仍存活且与本次请求的 PID／启动时间不同时也拒绝，避免另一个终端覆盖正在使用的会话。只有确认空闲且 holder 不是另一个存活进程时才更新终端占用。对已经认领过的会话，在本机执行 `claude --resume` 之前也必须先在话题里 `/stop`；这是本地绕过网关的操作，网关无法阻止两个写入方。
 - **工作目录。** 每次解析房间都重新校验登记的工作目录仍是物理目录并位于当前 adoptRoots 内；目录移走、项目不再是 `inherit` 或 adoptRoots 被移除时拒绝续接并提示，不静默换目录，也不把旧记录迁到新目录。已有会话的启动身份继续由 `session_launch_identity` 核对。
@@ -125,7 +128,7 @@ MOMO 回复其他机器人时不自动 @ 对方；由 `mention_bot` 发出消息
 
 ### 任务通知与话题转递
 
-本地会话可以用 `feishu-bot notify` 把任务结果发到自己的认领话题：第一次调用创建话题（根卡片加摘要回复），之后都在同一话题追加回复，不新开话题。`notify` 复用 `adopted_topics`；`state`、`created`、`message_id` 和错误码见[部署与配置](deployment.md#任务通知与话题内交互)。pending／uncertain 只报告，不重发。网关正在使用该话题时，`notify` 仍追加通知，但不更新本地 holder/endpoint，并在 warnings 中说明。追加回复和 `topic reply` 的正文末尾带 `— <会话名> · <ID 前 8 位>` 页脚；`attach`／`notify` 的 JSON 同时返回会话名和话题 AppLink。`feishu-bot topics --native ID --json` 只读列出本机登记会话的 `name`、`native`、`thread`、`root`、`state` 和 `holder_alive`。
+本地会话可以用 `feishu-bot notify` 把任务结果发到自己的认领话题：第一次调用创建话题（根卡片加摘要回复），之后都在同一话题追加回复，不新开话题。`notify` 复用 `adopted_topics`；`state`、`created`、`message_id` 和错误码见[部署与配置](deployment.md#任务通知与话题内交互)。pending／uncertain 只报告，不重发；`archived` 会在原话题直接恢复为 `open` 后继续。网关正在使用该话题时，`notify` 仍追加通知，但不更新本地 holder/endpoint，并在 warnings 中说明。追加回复和 `topic reply` 的正文末尾带 `— <会话名> · <ID 前 8 位>` 页脚；`attach`／`notify` 的 JSON 同时返回会话名和话题 AppLink。`feishu-bot topics --native ID --json` 只读列出本机登记会话的 `name`、`native`、`thread`、`root`、`state`、`holder_alive` 和 `last_active`；默认隐藏 `archived`，加 `--all` 才显示。
 
 终端仍存活时，话题内 owner 的普通文本消息由网关转递给正在运行的本地 Claude Code 进程，而不是排队等终端退出：
 
