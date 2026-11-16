@@ -455,12 +455,12 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	if err != nil || seen {
 		return err
 	}
-	if room.AdoptedState == store.AdoptedArchived {
-		// An owner message in an archived topic revives it in place; the normal
-		// continuation path below then resumes the same native session.
-		if g.restoreArchivedTopic(room) {
-			room.AdoptedState = store.AdoptedOpen
-		}
+	if room.AdoptedState != "" && g.restoreArchivedTopic(room) {
+		// Re-read the durable record: an owner message in an archived topic
+		// revives it in place, and a sweep that archived just as this input
+		// arrived must not drop the input. The normal continuation path below
+		// then resumes the same native session.
+		room.AdoptedState = store.AdoptedOpen
 	}
 	if room.AdoptedState != "" && room.AdoptedState != store.AdoptedOpen {
 		// An interrupted adoption is durable evidence, not a request to launch
