@@ -70,6 +70,11 @@ func newRender(g *Gateway, s *slot, anchor *core.Delivery) *render {
 		r.replyTo = messageReply(anchor.Message)
 		r.threadID = anchor.Message.ThreadID
 		r.started = anchor.Message.Time
+		if anchor.Notice != "" {
+			// The gateway authored this line when it rotated the idle session;
+			// it is shown once on the reply card for this turn.
+			r.notice = core.Redact(anchor.Notice, g.secrets)
+		}
 	}
 	return r
 }

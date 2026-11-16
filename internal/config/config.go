@@ -147,9 +147,10 @@ func validateProjectEnvironment(p *core.Project, derived map[string]string) erro
 
 func Defaults() core.Config {
 	return core.Config{AppSecretEnv: "FEISHU_APP_SECRET", CardTitle: "飞书助手", DataDir: "state",
-		Runtime: core.RuntimeConfig{MaxWorkers: 8, IdleMS: 900000},
-		Model:   core.ModelConfig{TokenEnv: "MODEL_AUTH_TOKEN", ExtraHeaders: map[string]string{}},
-		Limits:  core.Limits{BackgroundMS: 900000, TextChars: 20000, InboxPerRoom: 64, AttachmentBytes: 20 << 20, ApprovalMS: 300000, UpdateMS: 1000, MessagesPerMinute: 30, ImageBatchMaxImages: 8, ImageBatchBytes: 40 << 20}}
+		Runtime:          core.RuntimeConfig{MaxWorkers: 8, IdleMS: 900000},
+		Model:            core.ModelConfig{TokenEnv: "MODEL_AUTH_TOKEN", ExtraHeaders: map[string]string{}},
+		Limits:           core.Limits{BackgroundMS: 900000, TextChars: 20000, InboxPerRoom: 64, AttachmentBytes: 20 << 20, ApprovalMS: 300000, UpdateMS: 1000, MessagesPerMinute: 30, ImageBatchMaxImages: 8, ImageBatchBytes: 40 << 20},
+		AdoptedArchiveMS: 7 * 86400000}
 }
 func Load(path string) (core.Config, error) {
 	data, err := os.ReadFile(path)
@@ -769,6 +770,9 @@ func validate(c *core.Config, base string) error {
 		if !core.ValidSessionScope(g.SessionScope) {
 			return errors.New("invalid group sessionScope")
 		}
+		if g.IdleNewSessionMS < 0 || g.IdleNewSessionMS > 30*86400000 {
+			return fmt.Errorf("groups[%d].idleNewSessionMs: invalid integer", i)
+		}
 		switch g.TopicHistory {
 		case "":
 			g.TopicHistory = "topic"
@@ -802,6 +806,9 @@ func validate(c *core.Config, base string) error {
 			return errors.New("invalid DM binding")
 		}
 		seen[dm.UserID] = true
+		if dm.IdleNewSessionMS < 0 || dm.IdleNewSessionMS > 30*86400000 {
+			return fmt.Errorf("dms[%d].idleNewSessionMs: invalid integer", i)
+		}
 		if len(dm.HistoryChats) > 32 {
 			return errors.New("too many DM historyChats entries")
 		}
@@ -875,7 +882,8 @@ func validate(c *core.Config, base string) error {
 		{"textChars", int64(c.Limits.TextChars), 100, 200000}, {"inboxPerRoom", int64(c.Limits.InboxPerRoom), 1, 64},
 		{"attachmentBytes", c.Limits.AttachmentBytes, 1024, 100 << 20}, {"approvalMs", c.Limits.ApprovalMS, 1000, 3600000},
 		{"updateMs", c.Limits.UpdateMS, 250, 30000}, {"messagesPerMinute", int64(c.Limits.MessagesPerMinute), 1, 1000},
-		{"imageBatchMs", c.Limits.ImageBatchMS, 0, 5000}, {"imageBatchMaxImages", int64(c.Limits.ImageBatchMaxImages), 2, 12}, {"imageBatchBytes", c.Limits.ImageBatchBytes, 1, 100 << 20}}
+		{"imageBatchMs", c.Limits.ImageBatchMS, 0, 5000}, {"imageBatchMaxImages", int64(c.Limits.ImageBatchMaxImages), 2, 12}, {"imageBatchBytes", c.Limits.ImageBatchBytes, 1, 100 << 20},
+		{"adoptedArchiveMs", c.AdoptedArchiveMS, 0, 365 * 86400000}}
 	for _, v := range checks {
 		if v.v < v.min || v.v > v.max {
 			return fmt.Errorf("%s: invalid integer", v.name)

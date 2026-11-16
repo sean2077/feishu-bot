@@ -6,7 +6,56 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
+
+func TestRotateIdleSessionBoundaryAndResumeRefresh(t *testing.T) {
+	s := openTest(t)
+	first, err := s.NewSession("room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		return RecordSessionActivity(tx, "room", first.ID, 1000)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const window = int64(500)
+	previous, rotated, err := s.RotateIdleSession("room", window, 1500)
+	if err != nil || rotated || previous != "" {
+		t.Fatalf("exact threshold rotated: %q %v %v", previous, rotated, err)
+	}
+	previous, rotated, err = s.RotateIdleSession("room", window, 1501)
+	if err != nil || !rotated || previous != first.ID {
+		t.Fatalf("over threshold: %q %v %v", previous, rotated, err)
+	}
+	current, found, err := s.CurrentSession("room")
+	if err != nil || !found || current.ID == first.ID {
+		t.Fatalf("new session: %+v %v %v", current, found, err)
+	}
+	// Resume refreshes activity so the next input is not rotated again, even
+	// when the resumed session was created long ago.
+	if _, err = s.DB.Exec("UPDATE sessions SET created=1 WHERE id=?", first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec("UPDATE session_activity SET at=1000 WHERE session=?", first.ID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	if _, err = s.Resume("room", first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if previous, rotated, err = s.RotateIdleSession("room", window, now); err != nil || rotated || previous != "" {
+		t.Fatalf("resume did not refresh activity: %q %v %v", previous, rotated, err)
+	}
+	var at int64
+	if err = s.DB.QueryRow("SELECT at FROM session_activity WHERE session=?", first.ID).Scan(&at); err != nil || at < time.Now().UnixMilli()-1000 {
+		t.Fatalf("resume activity = %d, %v", at, err)
+	}
+	if _, rotated, _ = s.RotateIdleSession("room", 0, now); rotated {
+		t.Fatal("disabled window rotated")
+	}
+}
 
 func TestSessionCatalogPagedSearchAndActivity(t *testing.T) {
 	s := openTest(t)

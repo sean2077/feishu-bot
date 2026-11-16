@@ -35,13 +35,13 @@ flowchart TD
 
 [房间键](terminology.md)由 tenant、app、project、聊天类型、chat ID 和私聊用户 ID 组成，整群范围不包含线程；`sessionScope: "thread"` 的群在同样字段后追加话题根消息 ID，每个话题独立排队、执行和恢复，默认共用该群的工作目录。`threadWorkspaces` 只覆盖指定话题的原生 cwd，房间键、聊天级状态和原生 HOME 的布局不变，附件仍按话题分开；网关启动与本地终端交接均核对已有 `session_launch_identity`，不会把历史会话悄悄搬到新目录（见[话题会话](conversation-contract.md#话题会话)）。项目是资源／权限配置单元，不必是代码仓库。首次任务准备工作区并启动 Claude，热进程在后续消息中复用；没有每会话一个的 Node 宿主。
 
-本地认领话题使用同样字段后追加根消息 ID 的七段**私聊**键。`adopted_topics` 保存 room、session、native ID、thread ID、根消息、登记 cwd、终端 holder、本地会话显示名和根卡片标题及 `pending|open|uncertain` 状态；房间的 `WorkspaceCWD` 只从该记录补全，并在每次解析时重新校验 adoptRoots。入站、恢复、outbox、卡片回调、历史读取和 `session run` 都经过同一个 adopted-aware 解析 helper；键形状合法但没有记录、记录不是 open 或工作目录失效时拒绝，不把七段键当作普通私聊。认领的本地控制通道沿用数据目录下的请求文件（临时文件 + rename），结果写回同一目录，不引入 socket 或命名管道；网关启动、本地终端交接和认领共用同一条原生会话身份与启动身份核对路径。
+本地认领话题使用同样字段后追加根消息 ID 的七段**私聊**键。`adopted_topics` 保存 room、session、native ID、thread ID、根消息、登记 cwd、终端 holder、本地会话显示名、根卡片标题、最后活动时间和 `pending|open|uncertain|archived` 状态；房间的 `WorkspaceCWD` 只从该记录补全，并在每次解析时重新校验 adoptRoots。入站、恢复、outbox、卡片回调、历史读取和 `session run` 都经过同一个 adopted-aware 解析 helper；键形状合法但没有记录、记录不是 open 或工作目录失效时拒绝，不把七段键当作普通私聊。定期清理在 holder 不存活且超过 `adoptedArchiveMs` 无活动时归档记录并删除 endpoint 文件；owner 消息、`notify` 或 `attach` 会原地恢复为 open 后走原有续接路径。认领的本地控制通道沿用数据目录下的请求文件（临时文件 + rename），结果写回同一目录，不引入 socket 或命名管道；网关启动、本地终端交接和认领共用同一条原生会话身份与启动身份核对路径。
 
 任务通知复用 `adopted_topics` 和同一控制通道：`notify` 首次创建话题、之后追加回复；`topic reply` 把本地会话的答案写回话题。根卡片、`/status` 和回复页脚使用登记的本地会话显示名与 native ID 标识绑定关系；`feishu-bot topics` 以只读连接反查。终端仍存活时，网关把 owner 的普通话题消息通过 CC 原生跨会话收件箱转递给 holder 进程，转递输入使用独立的 `forwarded` 收件状态，不进入网关的原生输入队列，也不启动第二个进程。收件箱 endpoint 在内存中使用，并以每个 native 一个 0600 文件暂存在 `dataDir/endpoints`（原子写入）；重启只在 holder PID 与启动时间仍匹配且会话未切换时恢复，holder 释放、重新认领未携带新 endpoint、`/new` 或恢复后确定失败时删除文件。写入结果不确定时保留 endpoint、标 uncertain 且不自动重放。token 不写 SQLite、日志或审计。未回复的转递消息标 uncertain、不重放。
 
 授权在保存正文、下载、回执和模型调用之前完成，规则见[授权与触发](conversation-contract.md#授权与触发)。同一授权检查复用于恢复、历史、引用、附件、审批和输出重试。其他机器人的入站只由显式群 `allowOtherBots` 开启，仍要求明确 @，并受同一话题连续轮数限制；它们的内容是不可信输入，不能借 `mention_bot` 获得 action、审批或维护者身份。
 
-每条输入保留独立 UUID、消息 ID、作者和线程信息。状态从 queued 到 sent、consumed、done，另有 cancelled 和 uncertain；管道写入不等于模型已读。原生消费和结果归属决定哪些输入可以完成，后台结果不默认挂到最新提问。SQLite 插入顺序保护 compact 控制边界。待交付额度的计数与入队在同一事务中完成，话题范围的群按整群合计，消息与卡片补充并发到达也不会突破上限。
+每条输入保留独立 UUID、消息 ID、作者和线程信息。状态从 queued 到 sent、consumed、done，另有 cancelled 和 uncertain；管道写入不等于模型已读。原生消费和结果归属决定哪些输入可以完成，后台结果不默认挂到最新提问。SQLite 插入顺序保护 compact 控制边界。待交付额度的计数与入队在同一事务中完成，话题范围的群按整群合计，消息与卡片补充并发到达也不会突破上限。`session_activity` 只在接收人类输入时更新，用于会话目录排序、`/resume` 后的活动和可选的闲置新会话；网关在聊天范围房间的普通输入前检查阈值，旧进程按 `/new` 同一路径停止，旧会话保留。
 
 普通忙时输入交给既有原生输入流。`/btw`／`/ps` 绑定当前前台原输入；网关和原生宿主都检查目标是否仍存在，目标结束后补充不能转成新任务。`/compact` 在轮次结束后使用原生命令，等待期间审批仍可操作。
 

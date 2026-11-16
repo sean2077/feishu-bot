@@ -2,6 +2,8 @@
 
 ## Unreleased — Go 原生网关
 
+- 新增 `groups[].idleNewSessionMs`／`dms[].idleNewSessionMs`：聊天范围会话闲置超过阈值后，下一条普通人类输入自动新建会话（等同 `/new`，旧会话保留），回复卡提示 `/resume`。管理命令、补充、机器人消息、thread 话题和认领话题不触发；`/resume` 刷新活动时间，切回旧会话后不会被立即新建。
+- 新增认领话题自动归档：holder 已不存活且超过 `adoptedArchiveMs`（默认 7 天）无入站或出站活动时，定期清理把话题标为 `archived` 并删除 endpoint 文件；owner 在话题内发消息或再次 `notify`／`attach` 会原地恢复为 `open` 并续接原会话。`adopted_topics` 增加 `last_active` 列；`feishu-bot topics` 增加 `last_active` 字段和 `--all`（默认隐藏归档话题）。
 - CI 的 `go test -race` 整包时限从 360 秒提高到 720 秒，避免慢共享 runner 上 `internal/gateway` 因整包超时误报；真实用例失败仍会报错。
 - 认领话题的本地终端仍存活时，`/stop` 的回执改为说明网关只取消了待交付输入、审批和回执，正在运行的任务需要在本地终端停止；不再声称已停止本聊天运行。
 - `topic reply` 正文超过 `limits.textChars` 时按上限截断（保留页脚），结果增加 `truncated` 和 `warnings`；控制请求文件上限提高到 4 MiB。网关明确拒绝或返回无法套用的结果时，客户端报 `invalid_request` 而不是“结果未确认”。

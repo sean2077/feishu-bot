@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -300,7 +301,45 @@ func adoptedStateNotice(record store.AdoptedTopic) string {
 	if record.State == store.AdoptedUncertain {
 		return "该话题对应的本地会话认领结果未确认（根消息 " + record.Root + "），暂不能启动模型。请在私聊核查；不会自动重发。"
 	}
+	if record.State == store.AdoptedArchived {
+		return "该话题已归档，自动恢复失败；请稍后重新发送这条消息。"
+	}
 	return adoptedPendingNotice
+}
+
+// restoreArchivedTopic revives an archived adoption in place for an inbound
+// owner message. The room input lock is held by the caller.
+func (g *Gateway) restoreArchivedTopic(room core.Room) bool {
+	record, found, err := g.store.AdoptedTopicByRoom(room.Key)
+	if err != nil || !found {
+		return false
+	}
+	if record.State == store.AdoptedOpen {
+		return true
+	}
+	if record.State != store.AdoptedArchived {
+		return false
+	}
+	restored, err := g.store.RestoreAdoption(record.Native, time.Now().UnixMilli())
+	if err != nil {
+		if g.logger != nil {
+			g.logger("adopt_restore_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+		}
+		return false
+	}
+	if !restored {
+		// A concurrent notify or attach may have restored it first.
+		fresh, ok, readErr := g.store.AdoptedTopicByRoom(room.Key)
+		return readErr == nil && ok && fresh.State == store.AdoptedOpen
+	}
+	g.clearAdoptNotice(room.Key)
+	g.audit(room.Key, "adopted_topic_restored", core.Args{"native": record.Native, "cause": "message"})
+	return true
+}
+
+func idleNewSessionNotice(idleMS int64) string {
+	hours := strconv.FormatFloat(float64(idleMS)/3600000, 'f', -1, 64)
+	return "距上次对话已超过 " + hours + " 小时，已开新会话；/resume 可回到上一个。"
 }
 
 // sweepAdoptions expires abandoned intents and releases holders that no longer
@@ -333,6 +372,81 @@ func (g *Gateway) sweepAdoptions(now int64) {
 			g.clearAdoptEndpoint(released)
 		}
 	}
+	// Archive open topics whose terminal is gone and that have had no activity
+	// for the configured window. maybeArchive re-reads under the per-native
+	// lock, so a holder released above is evaluated with its fresh state.
+	records, err = g.store.AdoptedTopics()
+	if err != nil {
+		if g.logger != nil {
+			g.logger("adopt_sweep_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+		}
+		return
+	}
+	for _, record := range records {
+		if record.State == store.AdoptedOpen {
+			g.maybeArchiveAdoption(record.Native, now)
+		}
+	}
+}
+
+// maybeArchiveAdoption archives one inactive adopted topic and then fails any
+// forwards left without a holder. Transport work happens after the lock.
+func (g *Gateway) maybeArchiveAdoption(native string, now int64) {
+	room, archived := g.archiveInactiveAdoption(native, now)
+	if !archived {
+		return
+	}
+	if r, ok := g.roomFromKey(room); ok {
+		g.failForwarded(r, "archived")
+	} else {
+		g.clearAdoptEndpoint(room)
+	}
+}
+
+func (g *Gateway) archiveInactiveAdoption(native string, now int64) (string, bool) {
+	window := g.config.AdoptedArchiveMS
+	if window <= 0 {
+		return "", false
+	}
+	unlock, err := g.adoptLocks.lockContext(g.ctx, native)
+	if err != nil {
+		return "", false
+	}
+	defer unlock()
+	record, found, err := g.store.AdoptedTopicByNative(native)
+	if err != nil {
+		if g.logger != nil {
+			g.logger("adopt_archive_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+		}
+		return "", false
+	}
+	if !found || record.State != store.AdoptedOpen || g.holderAlive(record) {
+		return "", false
+	}
+	last := record.LastActive
+	if last == 0 {
+		last = record.Updated
+	}
+	if last == 0 {
+		last = record.Created
+	}
+	if now-last <= window {
+		return "", false
+	}
+	archived, err := g.store.ArchiveAdoption(native, now)
+	if err != nil {
+		if g.logger != nil {
+			g.logger("adopt_archive_failed", core.Args{"error": core.Redact(err.Error(), g.secrets)})
+		}
+		return "", false
+	}
+	if !archived {
+		return "", false
+	}
+	g.clearAdoptNotice(record.Room)
+	g.audit(record.Room, "adopted_topic_archived", core.Args{"native": native, "lastActive": last})
+	g.removeAdoptEndpoint(record.Room)
+	return record.Room, true
 }
 
 // releaseDeadHolder clears one dead terminal holder and its relay endpoint

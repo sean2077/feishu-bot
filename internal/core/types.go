@@ -64,6 +64,10 @@ type Room struct {
 	// by the gateway from the adopted_topics record and is never trusted from
 	// chat input. Empty means the room is not an adopted DM topic.
 	AdoptedState string `json:"adoptedState,omitempty"`
+	// IdleNewSessionMS starts a new session on the next human input when the
+	// current chat-scope session has been idle for longer than this. Zero keeps
+	// the current behavior. Thread-scope and adopted rooms ignore it.
+	IdleNewSessionMS int64 `json:"idleNewSessionMs,omitempty"`
 }
 type Session struct {
 	ID        string `json:"id"`
@@ -123,6 +127,9 @@ type Delivery struct {
 	// PreContext is populated by the gateway only for the input that starts a
 	// new turn. It is never user input or authorization.
 	PreContext *PreContext `json:"preContext,omitempty"`
+	// Notice is a gateway-authored line shown on this turn's reply card, such
+	// as the idle new-session notice. It is never model or user text.
+	Notice string `json:"notice,omitempty"`
 }
 
 // RequestContext describes the inputs active in a room when a request
@@ -291,6 +298,8 @@ type Group struct {
 	SessionScope     string            `json:"sessionScope,omitempty"`
 	TopicHistory     string            `json:"topicHistory,omitempty"`
 	ThreadWorkspaces map[string]string `json:"threadWorkspaces,omitempty"`
+	// IdleNewSessionMS starts a new session after an idle chat-scope room.
+	IdleNewSessionMS int64 `json:"idleNewSessionMs,omitempty"`
 }
 type HistoryChat struct {
 	ChatID string `json:"chatId"`
@@ -305,6 +314,8 @@ type DM struct {
 	// directories below these roots may be adopted, and only when the bound
 	// project inherits the live Claude configuration.
 	AdoptRoots []string `json:"adoptRoots,omitempty"`
+	// IdleNewSessionMS starts a new session after an idle DM conversation.
+	IdleNewSessionMS int64 `json:"idleNewSessionMs,omitempty"`
 }
 type Limits struct {
 	BackgroundMessages  int   `json:"backgroundMessages"`
@@ -333,6 +344,9 @@ type Config struct {
 	DMs           []DM                    `json:"dms"`
 	Limits        Limits                  `json:"limits"`
 	Feedback      FeedbackSettings        `json:"feedback,omitempty"`
+	// AdoptedArchiveMS archives an adopted topic whose terminal holder is gone
+	// and that has had no activity for this long. Zero disables auto-archive.
+	AdoptedArchiveMS int64 `json:"adoptedArchiveMs,omitempty"`
 }
 
 func (c Config) Project(id string) (Project, bool) {

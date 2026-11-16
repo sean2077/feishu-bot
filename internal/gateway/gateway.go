@@ -455,6 +455,13 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 	if err != nil || seen {
 		return err
 	}
+	if room.AdoptedState != "" && g.restoreArchivedTopic(room) {
+		// Re-read the durable record: an owner message in an archived topic
+		// revives it in place, and a sweep that archived just as this input
+		// arrived must not drop the input. The normal continuation path below
+		// then resumes the same native session.
+		room.AdoptedState = store.AdoptedOpen
+	}
 	if room.AdoptedState != "" && room.AdoptedState != store.AdoptedOpen {
 		// An interrupted adoption is durable evidence, not a request to launch
 		// another native process. Answer once in the topic and keep the input.
@@ -464,6 +471,10 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		record, _, _ := g.store.AdoptedTopicByRoom(room.Key)
 		g.notifyAdoptOnce("state:"+room.Key, room, adoptedStateNotice(record), &original)
 		return nil
+	}
+	if room.AdoptedState == store.AdoptedOpen {
+		// Inbound topic activity keeps an open adopted topic out of archive.
+		_ = g.store.TouchAdoptionByRoom(room.Key, time.Now().UnixMilli())
 	}
 	m := original
 	m.Text = cut(strings.TrimSpace(m.Text), g.config.Limits.TextChars)
@@ -622,6 +633,24 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 		}
 		command = &core.Command{Name: "compact", Instructions: cut(arg, 4000)}
 	}
+	// Idle chat-scope rooms start a fresh session before this human input is
+	// admitted. Commands, supplements, bots, thread rooms and adopted topics
+	// never rotate here. A room with queued work is not idle: its activity was
+	// recorded when the first input was admitted.
+	notice := ""
+	if supplementTo == "" && !otherBot(m) && !strings.HasPrefix(strings.TrimSpace(m.Text), "/") &&
+		room.Thread == "" && room.AdoptedState == "" && room.IdleNewSessionMS > 0 && count == 0 && !g.stopIsBlocked(room.Key) {
+		// Stop the warm worker of the old session first, like /new does; its
+		// slot would otherwise cancel the input carrying the new session ID.
+		if stopErr := g.stopRoom(ctx, room); stopErr != nil {
+			g.audit(room.Key, "idle_new_session_failed", core.Args{"error": core.Redact(stopErr.Error(), g.secrets)})
+		} else if previous, rotated, rotateErr := g.store.RotateIdleSession(room.Key, room.IdleNewSessionMS, now); rotateErr != nil {
+			g.audit(room.Key, "idle_new_session_failed", core.Args{"error": core.Redact(rotateErr.Error(), g.secrets)})
+		} else if rotated {
+			notice = idleNewSessionNotice(room.IdleNewSessionMS)
+			g.audit(room.Key, "idle_new_session", core.Args{"previous": previous, "idleMs": room.IdleNewSessionMS})
+		}
+	}
 	session, err := g.store.Session(room.Key)
 	if err != nil {
 		return err
@@ -648,7 +677,7 @@ func (g *Gateway) Message(ctx context.Context, original core.Message) error {
 			}
 		}
 	}
-	d := core.Delivery{UUID: core.NewID(), RoomKey: room.Key, SessionID: session.ID, Message: m, Background: bg, Command: command, SupplementTo: supplementTo}
+	d := core.Delivery{UUID: core.NewID(), RoomKey: room.Key, SessionID: session.ID, Message: m, Background: bg, Command: command, SupplementTo: supplementTo, Notice: notice}
 	// Decide "held" and queue while g.mu is held, so a stop finishing
 	// concurrently either sees this input in its final cancel (and counted)
 	// or unblocks first, making this an ordinary delivered input.

@@ -36,6 +36,44 @@ func RecordSessionActivity(tx *sql.Tx, room, session string, at int64) error {
 	return err
 }
 
+// RotateIdleSession starts a new open session when the current one has had no
+// admitted human input for longer than idleMS. It reports the previous session
+// ID so the caller can point the user at /resume. An absent session or an
+// activity exactly at the threshold is left unchanged.
+func (s *Store) RotateIdleSession(room string, idleMS, now int64) (string, bool, error) {
+	if idleMS <= 0 {
+		return "", false, nil
+	}
+	previous := ""
+	rotated := false
+	err := s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		var id string
+		var created int64
+		var at sql.NullInt64
+		err := tx.QueryRow(`SELECT s.id,s.created,a.at FROM sessions s LEFT JOIN session_activity a ON a.session=s.id AND a.room=s.room WHERE s.room=? AND s.state='open'`, room).Scan(&id, &created, &at)
+		if errors.Is(err, sql.ErrNoRows) {
+			// Session(room) will create the first session on this input.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		last := created
+		if at.Valid {
+			last = at.Int64
+		}
+		if now-last <= idleMS {
+			return nil
+		}
+		if _, err = newSession(tx, room); err != nil {
+			return err
+		}
+		previous, rotated = id, true
+		return nil
+	})
+	return previous, rotated, err
+}
+
 type SessionEntry struct {
 	core.Session
 	Name        string `json:"name,omitempty"`

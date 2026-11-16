@@ -15,11 +15,13 @@ import (
 const topicsHelp = `List local Claude Code sessions adopted into Feishu DM topics.
 
 Usage:
-  feishu-bot topics [--config PATH] [--native ID] [--json]
+  feishu-bot topics [--config PATH] [--native ID] [--all] [--json]
 
 The listing is read-only and works while the gateway is running. name falls
 back to the first eight native ID characters. holder_alive reports whether the
-registered local terminal process still owns the session.
+registered local terminal process still owns the session. last_active is the
+last inbound or outbound topic activity in Unix milliseconds. Archived topics
+are hidden unless --all is given.
 `
 
 type topicInfo struct {
@@ -29,6 +31,7 @@ type topicInfo struct {
 	Root        string `json:"root"`
 	State       string `json:"state"`
 	HolderAlive bool   `json:"holder_alive"`
+	LastActive  int64  `json:"last_active"`
 	TopicURL    string `json:"topic_url,omitempty"`
 }
 
@@ -55,9 +58,19 @@ func runTopics(c core.Config, o Options, out io.Writer) error {
 		if o.TopicsNative != "" && record.Native != o.TopicsNative {
 			continue
 		}
+		if !o.TopicsAll && record.State == store.AdoptedArchived {
+			continue
+		}
 		name := record.SessionName
 		if name == "" {
 			name = core.ShortNative(record.Native)
+		}
+		last := record.LastActive
+		if last == 0 {
+			last = record.Updated
+		}
+		if last == 0 {
+			last = record.Created
 		}
 		chatID, _, _, _ := core.ParseRoomKey(record.Room)
 		topics = append(topics, topicInfo{
@@ -67,6 +80,7 @@ func runTopics(c core.Config, o Options, out io.Writer) error {
 			Root:        record.Root,
 			State:       record.State,
 			HolderAlive: record.HolderPID > 0 && adoptedSessionHeld(record),
+			LastActive:  last,
 			TopicURL:    core.TopicAppLink(chatID, record.Thread),
 		})
 	}
@@ -87,7 +101,7 @@ func runTopics(c core.Config, o Options, out io.Writer) error {
 		if topic.HolderAlive {
 			holder = "yes"
 		}
-		if _, err = fmt.Fprintf(out, "%s\t%s\t%s\t%s\tholder=%s\n", topic.Name, topic.Native, topic.Thread, topic.State, holder); err != nil {
+		if _, err = fmt.Fprintf(out, "%s\t%s\t%s\t%s\tholder=%s\tlast_active=%d\n", topic.Name, topic.Native, topic.Thread, topic.State, holder, topic.LastActive); err != nil {
 			return err
 		}
 		if topic.TopicURL != "" {
