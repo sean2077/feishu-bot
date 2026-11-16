@@ -97,6 +97,29 @@ func TestApplyProjectEnvironmentFoldsCaseWhenRequested(t *testing.T) {
 	}
 }
 
+func TestApplyProjectEnvironmentInjectsAutoCompactWindow(t *testing.T) {
+	env := map[string]string{}
+	applyProjectEnvironment(env, core.Project{AutoCompactWindow: 400000}, false)
+	if env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] != "400000" {
+		t.Fatalf("missing auto-compact window: %#v", env)
+	}
+	env = map[string]string{}
+	applyProjectEnvironment(env, core.Project{}, false)
+	if _, ok := env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]; ok {
+		t.Fatalf("zero window injected: %#v", env)
+	}
+	// The project value is authoritative and replaces a case variant left by
+	// the deployment environment on Windows.
+	env = map[string]string{"claude_code_auto_compact_window": "1000000"}
+	applyProjectEnvironment(env, core.Project{AutoCompactWindow: 400000}, true)
+	if _, ok := env["claude_code_auto_compact_window"]; ok {
+		t.Fatalf("Windows case variant survived: %#v", env)
+	}
+	if env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] != "400000" {
+		t.Fatalf("project window did not win: %#v", env)
+	}
+}
+
 func TestApplyProjectEnvironmentFoldsPassthroughCase(t *testing.T) {
 	t.Setenv("TEAM_API_TOKEN", "token-value")
 	p := core.Project{EnvPassthrough: []string{"TEAM_API_TOKEN"}}
