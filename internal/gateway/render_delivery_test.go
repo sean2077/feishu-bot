@@ -145,6 +145,9 @@ func TestDeliveryClassificationsControlRetryState(t *testing.T) {
 }
 
 func TestPreviewRetriesWithoutAnotherDeltaAndKeepsCreateIdentity(t *testing.T) {
+	savedRetry := renderRetryBase
+	renderRetryBase = 10 * time.Millisecond
+	t.Cleanup(func() { renderRetryBase = savedRetry })
 	f := newFixture(t, nil)
 	var calls atomic.Int64
 	var mu sync.Mutex

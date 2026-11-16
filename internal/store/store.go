@@ -55,6 +55,27 @@ type Recovery struct {
 }
 
 func Open(path string) (*Store, error) {
+	return openStore(path, true)
+}
+
+// OpenExisting opens a database whose schema is already current without
+// running the idempotent migrations. Callers must have produced or verified
+// that database themselves; test fixtures use it after copying an initialized
+// template. Production service starts still use Open.
+func OpenExisting(path string) (*Store, error) {
+	s, err := openStore(path, false)
+	if err != nil {
+		return nil, err
+	}
+	var version int
+	if err := s.DB.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 5 {
+		s.Close()
+		return nil, fmt.Errorf("open existing state: schema %d is not current", version)
+	}
+	return s, nil
+}
+
+func openStore(path string, initialize bool) (*Store, error) {
 	dsn := path
 	if path != ":memory:" {
 		abs, err := filepath.Abs(path)
@@ -73,9 +94,11 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{DB: db}
-	if err = s.initialize(); err != nil {
-		db.Close()
-		return nil, err
+	if initialize {
+		if err = s.initialize(); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return s, nil
 }
