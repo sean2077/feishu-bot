@@ -371,5 +371,7 @@ feishu-bot topic reply --message-id om_xxx --text-file -.
 
 Use the command included in the forwarded topic message. The gateway verifies
 that the message belongs to this adopted topic and that it has not been replied
-to already.
+to already. Each forwarded message can be replied to once; a duplicate reply
+returns invalid_request (该消息已回复). Use notify to append later progress or
+completion updates to the same topic.
 `
