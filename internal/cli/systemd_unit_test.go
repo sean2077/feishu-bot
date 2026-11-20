@@ -17,7 +17,7 @@ func TestSystemdUnit(t *testing.T) {
 		`ExecStart="/opt/feishu bot/bin/feishu-bot" run --service --config "/opt/feishu bot/config.json"`,
 		`--env-file "/opt/feishu bot/service.env"`,
 		`--log-file "/opt/feishu bot/logs/service.log" --log-max-size 10 --log-max-backups 3`,
-		`WorkingDirectory="/opt/feishu bot"`,
+		`WorkingDirectory=/opt/feishu bot`,
 		`Restart=on-failure`,
 		`TimeoutStopSec=60`,
 		`WantedBy=multi-user.target`,
@@ -35,5 +35,8 @@ func TestSystemdUnit(t *testing.T) {
 func TestSystemdQuote(t *testing.T) {
 	if got, want := systemdQuote(`a b"c\d% e`), `"a b\"c\\d%% e"`; got != want {
 		t.Fatalf("quote = %q, want %q", got, want)
+	}
+	if got, want := systemdEscape(`a b"c\d% e`), `a b\"c\\d%% e`; got != want {
+		t.Fatalf("escape = %q, want %q", got, want)
 	}
 }

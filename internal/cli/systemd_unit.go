@@ -5,12 +5,16 @@ import (
 	"strings"
 )
 
-func systemdQuote(value string) string {
+func systemdEscape(value string) string {
 	value = strings.ReplaceAll(value, `\`, `\\`)
 	value = strings.ReplaceAll(value, `"`, `\"`)
 	value = strings.ReplaceAll(value, `%`, `%%`)
 	value = strings.ReplaceAll(value, "\n", `\n`)
-	return `"` + value + `"`
+	return value
+}
+
+func systemdQuote(value string) string {
+	return `"` + systemdEscape(value) + `"`
 }
 
 func systemdUnit(spec serviceSpec, user bool) string {
@@ -32,7 +36,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-WorkingDirectory=` + systemdQuote(spec.Dir) + `
+WorkingDirectory=` + systemdEscape(spec.Dir) + `
 ExecStart=` + execStart + `
 Restart=on-failure
 RestartSec=5
